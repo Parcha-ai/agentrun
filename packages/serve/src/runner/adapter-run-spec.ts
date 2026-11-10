@@ -53,6 +53,7 @@ import { piAdapter } from "./adapters/pi.js";
 import { entriesOf } from "./loop.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
+import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
@@ -232,13 +233,20 @@ async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<Re
   }
 }
 
-export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
+/** pi's spec for a claimed run. What it makes for the run (its Archil mount credential, its Workspace, its computer, its
+ *  tools) is held until the spec's release; a build that throws part-way lets go what it made by then (spec-holds.ts). */
+export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
+  return specBuilt((holds) => adapterSpec(launch, run, deps, claim, holds));
+}
+
+async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
   // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
   // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
   const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
+  holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   // A run handed a browser sign-in this runner can't read back (its seal does not open here, or nothing of it is kept):
@@ -270,6 +278,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
+  holds.hold({ archil, ws });
 
   // The run's uploaded files, copied into its work/inputs/ before the first turn, as the server's start copied them before
   // the per-run process ran (uploads.copyInto). Once per run: a fresh run has no inputs/ yet; a resumed claim finds them
@@ -303,7 +312,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   // A desktop's or a phone's hold (the person's take-over) wraps its ports: a call made while the person holds it waits,
   // and the agent's hand-over (computer_request_handoff) asks the person through it.
+  holds.hold({ computer });
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}) });
+  holds.hold({ tools });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -491,14 +502,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
-    release: async () => {
-      await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
-      await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
-      // The run's Archil mount credential, revoked at its end on every outcome, even with no computer (the computer's release
-      // revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
-      await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${(error as Error)?.message ?? String(error)}`));
-      await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
-    },
+    // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
+    // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
+    release: () => holds.release(),
   };
 }
 

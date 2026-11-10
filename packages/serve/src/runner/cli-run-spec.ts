@@ -55,6 +55,7 @@ import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
+import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
@@ -117,12 +118,19 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
  * (AdapterRun: a CLI adds no turns to it, its records are its session's); `deps` is the runner's store, data directory
  * and environment; `claim` is the claim this pass holds.
  */
-export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
+export function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
+  // What it makes for the run (its Archil mount credential, its Workspace, its computer, its tools) is held until the
+  // spec's release; a build that throws part-way lets go what it made by then (spec-holds.ts).
+  return specBuilt((holds) => cliSpec(launch, run, deps, claim, holds));
+}
+
+async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
   // The spec's log lines carry error text (a release, a computer, a workspace's end): cut of every secret the runner's env
   // holds.
   const cut = heldRedactor(secretRedactor(runnerSecrets(deps.env)));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
+  holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor (the loop's) and this spec's
@@ -164,6 +172,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
+  // The claim's Archil keys go from memory last, once nothing more reads the disk.
+  holds.hold({ archil, ws, keys: archil });
   if (launch.files?.length) {
     const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
     if (!copied) {
@@ -190,7 +200,9 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   await mkdir(dir, { recursive: true, mode: 0o700 });
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
+  holds.hold({ computer });
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}) });
+  holds.hold({ tools });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
   // The system prompt, as main's harness branch builds it: the environment line, the instructions with what the agent
@@ -366,15 +378,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
       const total = costUsd === null || paid === null ? null : costUsd + paid;
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
-    release: async () => {
-      await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
-      await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
-      // The run's Archil mount credential, revoked at its end on every outcome, even with no computer (idempotent with the
-      // computer's release). A run that minted none revokes nothing.
-      await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${(error as Error)?.message ?? String(error)}`));
-      await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
-      // The claim's Archil keys go from memory once nothing more reads the disk.
-      archil?.release();
-    },
+    // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
+    // the computer's release). A run that minted none revokes nothing.
+    release: () => holds.release(),
   };
 }

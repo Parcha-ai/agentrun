@@ -140,11 +140,21 @@ export async function listTokenUsers(options: ArchilMountCredentialOptions, cont
 
 /** Removes run `run`'s token users of a claim epoch below `epoch` (a runner that died before removing its own), the way
  *  the janitor's releaseOlder does for computers, and answers their identifiers. Others' users are left alone. */
-export async function removeOlderMountTokens(options: ArchilMountCredentialOptions, run: string, epoch: number, context: { readonly signal?: AbortSignal } = {}): Promise<string[]> {
+export function removeOlderMountTokens(options: ArchilMountCredentialOptions, run: string, epoch: number, context: { readonly signal?: AbortSignal } = {}): Promise<string[]> {
+  return removeRunTokens(options, run, (claimed) => claimed < epoch, context);
+}
+
+/** Removes run `run`'s token users of claim epoch `epoch` and below, by their names: at a claim's revoke, a mint whose
+ *  answer was lost (Archil made the user; the claim never heard of it) is one of them, as is an earlier claim's. */
+export function removeRunMountTokens(options: ArchilMountCredentialOptions, run: string, epoch: number, context: { readonly signal?: AbortSignal } = {}): Promise<string[]> {
+  return removeRunTokens(options, run, (claimed) => claimed <= epoch, context);
+}
+
+async function removeRunTokens(options: ArchilMountCredentialOptions, run: string, which: (epoch: number) => boolean, context: { readonly signal?: AbortSignal }): Promise<string[]> {
   const removed: string[] = [];
   for (const user of await listTokenUsers(options, context)) {
     const claim = claimOfNickname(user.nickname);
-    if (claim === undefined || claim.run !== run || claim.epoch >= epoch) continue;
+    if (claim === undefined || claim.run !== run || !which(claim.epoch)) continue;
     await removeMountToken(options, user.identifier, context);
     removed.push(user.identifier);
   }

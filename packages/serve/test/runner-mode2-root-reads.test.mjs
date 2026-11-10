@@ -110,12 +110,13 @@ const mountingComputer = async (_launch, _store, given) => {
  *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). `tools`: the
  *  revision's grant; `monid`: the answer monid's faked API gives (its key then in the runner's environment). `routeOf`: the
  *  run's model route (the stub by default). `fails`: the build is expected to throw, and its error is answered.
- *  `controlFetch`: the claim's fetch to the control fake, given the fake's own (a test that loses an answer wraps it). */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid, routeOf = stubRoute, fails = false, controlFetch = (fetch) => fetch }) {
+ *  `controlFetch`: the claim's fetch to the control fake, given the fake's own (a test that loses an answer wraps it).
+ *  `existing`: token users the disk holds before the claim (another claim's, another run's). */
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid, routeOf = stubRoute, fails = false, controlFetch = (fetch) => fetch, existing = [] }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const control = archilControlFetch();
+  const control = archilControlFetch({ existing });
   const guard = guardFetch(monid);
   let spec;
   let harnessRun;
@@ -380,3 +381,29 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.deepEqual(outbound, []);
   });
 }
+
+// The sweep by name removes the run's users of this claim's epoch and earlier, never a later one: a run reclaimed at a
+// higher epoch keeps its credential when an older claim's cleanup runs late. Here the old claim (epoch 1) loses its
+// mint's answer and cleans up while the run's next claim (epoch 2) already holds a user, and another run holds one too.
+test("pi's spec in Mode 2: the cleanup of a mint never heard of removes the run's users of its own epoch and earlier, never a later epoch's or another run's", async (t) => {
+  const existing = [
+    { identifier: "tok-newer", nickname: `agentrun:${RUN}:2`, token: "fake-test-key-newer" },
+    { identifier: "tok-older", nickname: `agentrun:${RUN}:0`, token: "fake-test-key-older" },
+    { identifier: "tok-other", nickname: "agentrun:run-other:1", token: "fake-test-key-other" },
+  ];
+  const losing = (fetch) => async (input, init) => {
+    const answer = await fetch(input, init);
+    if ((init?.method ?? "GET") === "POST") throw new TypeError("fetch failed: the connection closed before the answer");
+    return answer;
+  };
+  const minting = async (_launch, _store, given) => {
+    await given.workspace.mountSpec();
+    return { release: async () => {} };
+  };
+  const { error, control } = await mode2Spec(t, { build: adapterRunSpecFromLaunch, computer: minting, controlFetch: losing, existing, fails: true });
+  assert.match(error.message, /the connection closed before the answer/);
+  const minted = control.requests.find((one) => one.method === "POST");
+  assert.equal(minted?.body?.nickname, `agentrun:${RUN}:1`, "this claim is epoch 1");
+  const left = [...control.users.values()].map((user) => user.identifier).sort();
+  assert.deepEqual(left, ["tok-newer", "tok-other"], "the run's later epoch's user and another run's stay; this epoch's and the earlier one's are gone");
+});

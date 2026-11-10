@@ -19,7 +19,7 @@ import type { KeyEnv } from "../key-meta.js";
 import type { SealedKeys } from "../store/store.js";
 import { archilApiKey } from "./archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
-import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens } from "./archil-mount-credential.js";
+import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens, removeRunMountTokens } from "./archil-mount-credential.js";
 import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
 
 export { ARCHIL_API_KEY_ROW, type ArchilSettings };
@@ -73,6 +73,8 @@ export interface ArchilClaim {
 }
 
 const RELEASED = "the run's Archil keys were released (its loop ended or its claim was lost)";
+/** How long a revoke waits to read the users list again for a mint it never heard of: past Archil's list lag (mint-4). */
+const LOST_MINT_REREAD_MS = 2_000;
 
 /** The Archil step of a claim: its disk made, its API key opened; the run's mount credential minted when a mount asks. */
 export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilClaim> {
@@ -115,25 +117,36 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}),
   };
   let minted: Promise<MountCredential> | undefined;
+  /** A mint was asked for since the last revoke: its user may stand at Archil though no answer said so. */
+  let asked = false;
   /** The identifier and token of the credential minted, until it is removed. */
   let live: MountCredential | undefined;
   const release = (): void => {
     released = true;
     held.clear();
   };
-  /** Removes the credential minted, by its identifier: idempotent. Then the run's earlier epochs once more: Archil's list,
-   *  read right after another caller's mint, may not hold that user yet (mint-4), so the reclaim before this claim's mint
-   *  can miss an earlier claim's; by the run's end the list holds it. Best effort: one still missed ends at its ttl. */
+  /** Removes the credential minted, by its identifier: idempotent. Then the run's users of this claim's epoch and earlier,
+   *  by their names, once per mint asked for: a mint whose answer was lost (Archil made the user, this claim never heard
+   *  of it) is found there; and Archil's list, read right after another caller's mint, may not hold that user yet
+   *  (mint-4), so the reclaim before this claim's mint can miss an earlier claim's, which by the run's end the list holds.
+   *  A mint never heard of gets one more read 2 s later, past that lag. Best effort: one still missed ends at its ttl. */
   const revoke = async (): Promise<void> => {
     const credential = live ?? (await minted?.catch(() => undefined));
-    if (credential === undefined) return;
-    await removeMountToken(credentialOptions, credential.identifier, { token: credential.token });
-    if (live === credential) live = undefined;
-    minted = undefined;
-    held.delete(credential.token);
+    if (credential !== undefined) {
+      await removeMountToken(credentialOptions, credential.identifier, { token: credential.token });
+      if (live === credential) live = undefined;
+      minted = undefined;
+      held.delete(credential.token);
+    }
     const mount = options.mount;
+    if (!asked || mount === undefined) return;
+    asked = false;
     // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
-    if (mount !== undefined) await removeOlderMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+    const found = await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => []);
+    if (credential === undefined && found.length === 0) {
+      await new Promise((done) => setTimeout(done, LOST_MINT_REREAD_MS));
+      await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+    }
   };
   // A lost claim (or a stopped runner): the values dropped, and the credential removed at once, not left for the ttl.
   const lost = (): void => {
@@ -152,6 +165,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
       const mount = options.mount;
       if (mount === undefined) throw new ArchilClaimRefused("This run's Archil claim was made without a mount credential to mint (its run's label and lifetime), so no computer can mount its folder.");
       // An earlier claim's credential (its runner died before removing it) goes first; then this claim's is minted.
+      asked = true;
       minted ??= removeOlderMountTokens(credentialOptions, mount.runId, mount.epoch, { signal: options.signal })
         .then(() => mintMountToken(credentialOptions, { nickname: nicknameOf(mount.runId, mount.epoch), ttlMs: mount.ttlMs, signal: options.signal }))
         .then(
