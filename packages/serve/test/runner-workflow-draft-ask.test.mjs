@@ -20,10 +20,10 @@ const { launchBody } = await import("../dist/run-launch.js");
 const AGENT = "agent-1";
 const SKILL = "weekly-report";
 
-/** A store's runs of AGENT, newest first: run-1 (the one ending) offered `offered`, then `earlier` runs, each offered the
- *  skills its entry lists. Only `list` and `launch` are read. */
-function storeOf(offered, earlier) {
-  const runs = [{ id: "run-1", skills: offered }, ...earlier.map((skills, i) => ({ id: `run-0${i}`, skills }))];
+/** A store's runs of AGENT, newest first: `newer` runs (started after the one ending), run-1 (the one ending) offered
+ *  `offered`, then `earlier` runs, each offered the skills its entry lists. Only `list` and `launch` are read. */
+function storeOf(offered, earlier, newer = []) {
+  const runs = [...newer.map((skills, i) => ({ id: `run-2${i}`, skills })), { id: "run-1", skills: offered }, ...earlier.map((skills, i) => ({ id: `run-0${i}`, skills }))];
   const bodies = new Map(runs.map(({ id, skills }) => [id, launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "", seedNotes: 0, skills } })]));
   return {
     runs: {
@@ -42,12 +42,18 @@ async function folderWith(t, flows = []) {
   return { learningFolder: (agentId) => learningFolderOf(data, agentId) };
 }
 
-const ask = async (t, { offered = [SKILL], earlier, flows }) => draftForOf({ ...(await folderWith(t, flows)), store: storeOf(offered, earlier) }, AGENT, "run-1", offered);
+const ask = async (t, { offered = [SKILL], earlier, newer, flows }) => draftForOf({ ...(await folderWith(t, flows)), store: storeOf(offered, earlier, newer) }, AGENT, "run-1", offered);
 
 test("the host waits for 3 earlier runs", () => assert.equal(DRAFT_AFTER_RUNS, 3));
 
 test("a skill offered to 3 earlier runs, with no learned workflow of its name, is asked for as a draft", async (t) => {
   assert.deepEqual(await ask(t, { earlier: [[SKILL], [SKILL], [SKILL]] }), [SKILL]);
+});
+
+test("only runs started before the ending one count: 3 newer runs offered the skill, and none earlier, ask nothing", async (t) => {
+  assert.deepEqual(await ask(t, { earlier: [], newer: [[SKILL], [SKILL], [SKILL]] }), []);
+  assert.deepEqual(await ask(t, { earlier: [[SKILL], [SKILL]], newer: [[SKILL]] }), [], "2 earlier and 1 newer: 2");
+  assert.deepEqual(await ask(t, { earlier: [[SKILL], [SKILL], [SKILL]], newer: [[SKILL]] }), [SKILL], "3 earlier still asks");
 });
 
 test("a skill offered to 2 earlier runs is not, and the ending run itself never counts", async (t) => {

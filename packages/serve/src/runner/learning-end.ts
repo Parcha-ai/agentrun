@@ -126,16 +126,24 @@ export const DRAFT_SCAN_RUNS = 200;
 
 /** The learned skill whose job the end-of-run turn asks for as a workflow draft: of the skills run `runId` was offered
  *  (its launch's learning start), the first in the seed's order (the one changed last first) offered to DRAFT_AFTER_RUNS
- *  or more earlier runs of agent `agentId` (each run's launch says what it was offered; its latest DRAFT_SCAN_RUNS runs
- *  are read newest first, only until every skill has its count), with no learned workflow of its name on the agent's main, active or waiting for
+ *  or more runs of agent `agentId` started before it (each run's launch says what it was offered; its latest
+ *  DRAFT_SCAN_RUNS runs are read newest first, those after `runId` in that order counted, only until every skill has its
+ *  count), with no learned workflow of its name on the agent's main, active or waiting for
  *  its owner's OK (the folder's snapshot). One at most: a turn keeps one workflow draft. None when no skill qualifies, or
  *  when the folder can't be read: a read that fails asks for nothing, never a draft that may be there already. */
 export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learningFolder">, agentId: string, runId: string, offered: readonly string[]): Promise<string[]> {
   // Only a skill's name reaches the prompt (reflectPrompt refuses anything else).
   const served = new Map(offered.filter((name) => SKILL_NAME.test(name)).map((name) => [name, 0]));
   if (!served.size) return [];
+  // The list is newest first: only the runs after the ending one in it started before it, and count. A run started
+  // later (a long job's newer runs) never does, and an ending run past the latest DRAFT_SCAN_RUNS + 1 counts none.
+  let earlier = false;
   for (const run of await deps.store.runs.list({ agentId, limit: DRAFT_SCAN_RUNS + 1 })) {
-    if (run.id === runId || run.agentId !== agentId) continue;
+    if (run.id === runId) {
+      earlier = true;
+      continue;
+    }
+    if (!earlier || run.agentId !== agentId) continue;
     const row = await deps.store.runs.launch(run.id).catch(() => undefined);
     const launch = row ? readLaunchBody(row.body) : undefined;
     for (const name of (launch && learningStartOf(launch)?.skills) ?? []) if (served.has(name)) served.set(name, served.get(name)! + 1);
