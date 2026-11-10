@@ -148,6 +148,11 @@ describe("the schedules list", () => {
 });
 
 describe("a new schedule", () => {
+  it("every field's label names its one control, so a click on the label goes to it", async () => {
+    const t = await open(server().v2, { trigger: null });
+    const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name]));
+    expect(named).toMatchObject({ Name: "name", "Cron line": "cron", "Time zone": "timezone", Agent: "agent", "Each run is asked": "content" });
+  });
   it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: null });

@@ -50,14 +50,16 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
 ];
 
 /** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
- *  braces (an arrow function, a comparison) is not the tag's end. */
+ *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. */
 function controlTags(text: string): { line: number; text: string }[] {
   const tags: { line: number; text: string }[] = [];
   for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
     let end = m.index + m[0].length;
-    for (let depth = 0; end < text.length; end++) {
-      const c = text[end];
-      if (c === "{") depth++;
+    for (let depth = 0, quote = ""; end < text.length; end++) {
+      const c = text[end]!;
+      if (quote) { if (c === quote) quote = ""; continue; }
+      if (c === '"' || c === "'" || c === "`") quote = c;
+      else if (c === "{") depth++;
       else if (c === "}") depth--;
       else if (c === ">" && depth === 0) break;
     }
@@ -93,6 +95,7 @@ describe("the console's sources follow the design system", () => {
     expect(breaks(rule("button-by-hand"), one('<button type="button"\n  className={cn("flex w-full border-b text-left", on && "caps")}>')[0]!)).toBe(false);
     expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" checked={on}\n  className="mt-1 accent-primary" />')[0]!)).toBe(false);
     expect(breaks(rule("choice-by-hand"), one('<input type="radio"\n  name="x" />')[0]!)).toBe(true);
+    expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="more > 10" className="accent-primary" />')[0]!)).toBe(false);
     expect(breaks(rule("field-by-hand"), one('<input\n  type="hidden" name="manifest" />')[0]!)).toBe(false);
     expect(breaks(rule("field-by-hand"), one('<input\n  name="q" />')[0]!)).toBe(true);
   });
