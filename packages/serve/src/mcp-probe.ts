@@ -125,12 +125,14 @@ export function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | unde
 }
 
 /** Query parameter names that look like a credential, compared lowercase with every "-" and "_" gone: an MCP server's url
- *  is kept and shown in plain text (its row's url, every read, the console), so a credential belongs in a header. */
+ *  is kept and shown in plain text (its row's url, every read, the console), so a credential belongs in a header. Only
+ *  names that say they hold one: a bare `key`, `session` or `sessionid` names a server's own lookup or routing value as
+ *  often (?key=docs, ?session=eu-1), so those stay the server's. */
 export const CREDENTIAL_QUERY_NAMES: readonly string[] = [
   "token", "accesstoken", "authtoken", "idtoken", "refreshtoken", "sessiontoken", "bearer", "jwt",
-  "key", "apikey", "xapikey", "accesskey", "secretkey", "privatekey",
+  "apikey", "xapikey", "accesskey", "secretkey", "privatekey",
   "secret", "clientsecret", "auth", "authorization", "credential", "credentials",
-  "password", "passwd", "pass", "pwd", "sig", "signature", "session", "sessionid",
+  "password", "passwd", "pass", "pwd", "sig", "signature",
 ];
 const credentialQueryName = (name: string) => CREDENTIAL_QUERY_NAMES.includes(name.toLowerCase().replace(/[-_]/g, ""));
 

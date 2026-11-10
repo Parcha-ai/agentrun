@@ -10,12 +10,12 @@ import { serve, withEnv } from "./support.mjs";
 
 const SECRET = `not-a-secret-${"query-credential"}`;
 
-test("a URL whose query holds a credential-like parameter is refused at the preview, the save and the sign-in's start, in words, and nothing is kept or sent; ?version=2 still saves", async (t) => {
+test("a URL whose query holds a credential-like parameter is refused at the preview, the save and the sign-in's start, in words, and nothing is kept or sent; ?version=2 still saves, and a bare key or session is the server's own", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t, { runner: false });
   const fake = await startFakeMcp();
   t.after(() => fake.close());
-  for (const name of ["api_key", "API-Key", "apikey", "access_token", "token", "key", "secret", "client_secret", "auth", "password", "sig", "signature", "X-Api-Key"]) {
+  for (const name of ["api_key", "API-Key", "apikey", "access_token", "token", "access_key", "secret", "client_secret", "auth", "password", "sig", "signature", "X-Api-Key"]) {
     const url = `${fake.url}?region=eu&${encodeURIComponent(name)}=${SECRET}`;
     const words = `${name} in the URL's query looks like a credential; send it as a header instead (Headers).`;
     for (const [door, answer] of [
@@ -34,4 +34,8 @@ test("a URL whose query holds a credential-like parameter is refused at the prev
   const plain = await api("PUT", "/settings/mcp-servers/versioned", { url: `${fake.url}?version=2`, auth: { type: "none" } });
   assert.equal(plain.status, 200, JSON.stringify(plain.body));
   assert.equal(plain.body.url, `${fake.url}?version=2`);
+  // A bare key, session or sessionid is as often the server's own lookup or routing value: kept, not refused.
+  const routed = await api("PUT", "/settings/mcp-servers/routed", { url: `${fake.url}?key=docs&session=eu-1&sessionid=7`, auth: { type: "none" } });
+  assert.equal(routed.status, 200, JSON.stringify(routed.body));
+  assert.equal(routed.body.url, `${fake.url}?key=docs&session=eu-1&sessionid=7`);
 });
