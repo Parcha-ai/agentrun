@@ -454,6 +454,11 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     });
   }
 
+  it("while the ask waits, a message steers the run and says it doesn't answer the ask", async () => {
+    const p = await screen(async () => DESKTOP_LIVE(), asking("computer"), { onHandBack: async () => ({ hold: "agent" }) });
+    expect(p.host.textContent).toContain("A message steers the run; it doesn't answer the ask.");
+  });
+
   it("Cancel answers the ask cancelled; a refusal is said on the card", async () => {
     const outcomes: unknown[] = [];
     const p = await screen(async () => DESKTOP_LIVE(), asking("computer"), { onHandBack: async (o?: string) => { outcomes.push(o); throw new ClientError(409, "handoff_answered", "this ask was already answered: done", false); } });

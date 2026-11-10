@@ -8,6 +8,7 @@ import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
+import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
@@ -60,6 +61,13 @@ type Tab = "graph" | "report" | "timeline" | "files" | "screen";
 
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
+/** The message box's words while the agent waits on the person at its computer: the server takes a message as one to a
+ *  working run (steered into the turn, or after it where the harness doesn't steer), never as the ask's answer, which
+ *  Done or Cancel is. */
+const NOT_THE_ASK = {
+  steer: { label: "Steer the run", placeholder: "Steer the run...", does: "A message steers the run; it doesn't answer the ask. Do it on the screen, then Done or Cancel above." },
+  follow_up: { label: "Message the run", placeholder: "Message the run...", does: "A message goes to the run after its turn; it doesn't answer the ask. Do it on the screen, then Done or Cancel above." },
+};
 
 /** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
  *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
@@ -93,15 +101,18 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  // The agent's ask at its computer: a message is no answer to it, but one to a working run.
+  const ask = askOf(run);
+  const askMode = ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
-  const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
+  const view = budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
   const approval = approvalOf(run);
-  const waiting = approval ? null : pendingQuestion(run.status, run.state, rows);
+  const waiting = approval || ask ? null : pendingQuestion(run.status, run.state, rows);
   // The approval's timeline row, which follows the call's result: its step points to the card above.
   const approvalRow = approval ? rows.findLast((r) => r.kind === APPROVAL_ROW && r.tool_use_id === approval.call_id) : undefined;
   // A refused answer, in words. The run is read again after it, and when another answer, a stop or a cancel came first
@@ -134,7 +145,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const screenOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
   const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery);
   const machine = run.computer;
-  const hasScreen = !!screen || !!machine;
+  // An ask names its computer, so the tab is there for it before the first read answers.
+  const hasScreen = !!screen || !!machine || !!ask;
   // The Screen tab, selected, goes away (a read says off, or the route refuses): the run's default tab is selected, not
   // none. A tab opened on Screen before the first read is left until there is one to go away.
   const hadScreen = useRef(false);
@@ -152,7 +164,6 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     return () => { alive = false; };
   }, [machine?.kind, machine?.provider]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agent's ask at its computer: its card above the tabs' content, and the page moves to the Screen tab once per ask.
-  const ask = approval ? null : askOf(run);
   const askKey = ask ? `${ask.kind}:${ask.asked_at}` : null;
   const askShown = useRef<string | null>(null);
   useEffect(() => {
@@ -168,6 +179,15 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const hand = async (outcome?: HandBackOutcome) => {
     if (!onHandBack) return "This page can't hand the computer back.";
     try { held((await onHandBack(outcome)).hold); return null; } catch (e) { return computerRefusal(e, "hand"); }
+  };
+  // An answer to the ask, refused: by the ask it answered (its asked_at). The run is read again after it, and an ask
+  // answered first elsewhere or expired is gone with its card, so the words stay here (the card says them while it shows).
+  const [askRefused, setAskRefused] = useState<{ at: string; text: string } | null>(null);
+  const answerAsk = async (outcome: HandBackOutcome) => {
+    const at = ask?.asked_at ?? "";
+    const said = await hand(outcome);
+    setAskRefused(said ? { at, text: said } : null);
+    return said;
   };
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -197,8 +217,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
+          {askRefused && askRefused.at !== ask?.asked_at && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {askRefused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
-            : ask ? <ComputerAskCard key={askKey} ask={ask} onAnswer={onHandBack ? (outcome) => hand(outcome) : undefined} onOpen={hasScreen && tab !== "screen" ? () => setTab("screen") : undefined} />
+            : ask ? <ComputerAskCard key={askKey} ask={ask} onAnswer={onHandBack ? answerAsk : undefined}
+                open={tab !== "screen" ? <Button size="sm" variant="primary" onClick={() => setTab("screen")}>Open the screen</Button> : null} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
           {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions.onRaiseCap} />}
@@ -216,7 +238,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       </div>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
-        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : undefined} /></div></div>
+        <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>
       )}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
     </div>

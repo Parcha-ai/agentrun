@@ -7,7 +7,9 @@ import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { pausedWords } from "@/components/NeedsYou";
-import type { BudgetPending, PendingApproval, Run } from "@/lib/v2";
+import { ComputerAskCard } from "@/components/ComputerAskCard";
+import { askOf } from "@/lib/computerAsk";
+import type { BudgetPending, ComputerAsk, HandBackOutcome, PendingApproval, Run } from "@/lib/v2";
 
 export type NeedsYouProps = {
   /** Runs waiting on a person's answer (`input_required`, with their `pending`: a question, or a tool call's approval). */
@@ -22,6 +24,9 @@ export type NeedsYouProps = {
   /** Answers a run's tool call that waits for the owner's approval (`pending.id`); resolves with the refusal to show, in
    *  words, or null once it went. Without it, an approval links to its run. */
   onApprove?: (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => Promise<string | null>;
+  /** Answers a run's ask for the person at its computer (`pending.kind` "browser" or "computer"): done or cancelled;
+   *  resolves with the refusal to show, in words, or null once taken. Without it, the ask links to its run's screen alone. */
+  onHandBack?: (runId: string, outcome: HandBackOutcome) => Promise<string | null>;
   /** Starts each run again with its own first message; resolves with the runs it started, and the refusal to show
    *  for one it couldn't (null when all started). */
   onRunAgain: (runs: readonly Run[]) => Promise<{ started: string[]; problem: string | null }>;
@@ -35,7 +40,7 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
-export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApprove, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
+export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApprove, onHandBack, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
   const groups = failureGroups(failed);
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
@@ -44,16 +49,27 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, [live.length]);
-  // A refused answer to an approval, in words, by run: the strip reads again after it, and when another answer, a stop or
-  // a cancel came first the run no longer waits, so its card goes; the words stay here until dismissed.
-  const [refused, setRefused] = useState<{ runId: string; approvalId: string; title: string; text: string }[]>([]);
-  const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
-    const said = await onApprove(runId, approvalId, decision, note);
+  // A refused answer, in words, by run: to an approval (`what`, its id) or to an ask at its computer (`ask:` its asked_at).
+  // The strip reads again after it, and when another answer, a stop, a cancel or the ask's expiry came first the run no
+  // longer waits on it, so its card goes; the words stay here until dismissed.
+  const [refused, setRefused] = useState<{ runId: string; what: string; title: string; text: string }[]>([]);
+  const hold = (runId: string, what: string, said: string | null) => {
     const asked = asking.find((r) => r.run_id === runId);
     const title = asked ? runTitle(asked) : runId;
-    setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, approvalId, title, text: said }] : [])]);
+    setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, what, title, text: said }] : [])]);
+  };
+  const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
+    const said = await onApprove(runId, approvalId, decision, note);
+    hold(runId, approvalId, said);
     return said;
   });
+  const handBack = onHandBack && (async (runId: string, ask: ComputerAsk, outcome: HandBackOutcome) => {
+    const said = await onHandBack(runId, outcome);
+    hold(runId, `ask:${ask.asked_at}`, said);
+    return said;
+  });
+  // What a run waits on now, as `what` names it: its card shows the words itself while it waits on the same thing.
+  const waitsOn = (r: Run) => { const ask = askOf(r); return r.pending?.kind === "approval" ? r.pending.id : ask ? `ask:${ask.asked_at}` : null; };
   const failures = groups.reduce((n, g) => n + g.runs.length, 0);
   const needs = asking.length + failures;
   if (!needs && !live.length && !problem && !refused.length) return null;
@@ -63,7 +79,7 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
       {needs > 0 && <h2 className="caps text-[12px] font-semibold">Needs you <span className="text-warning-text">· {needs}</span></h2>}
       {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
       {/* Said apart from the card unless that same approval's card still shows: the run may wait on its next call now. */}
-      {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && r.pending?.kind === "approval" && r.pending.id === x.approvalId)).map((x) => (
+      {refused.filter((x) => !asking.some((r) => r.run_id === x.runId && waitsOn(r) === x.what)).map((x) => (
         <p key={x.runId} className="flex items-start gap-3 border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">
           <span className="min-w-0 flex-1"><a href={runHref(x.runId)} className="underline-offset-4 hover:underline">{x.title}</a>: your answer wasn't taken. {x.text}</span>
           <button type="button" className="caps shrink-0 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setRefused((held) => held.filter((y) => y.runId !== x.runId))}>Dismiss</button>
@@ -73,6 +89,8 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {asking.map((r) => r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
+            : askOf(r)
+            ? <Asking key={`${r.run_id}:${askOf(r)!.asked_at}`} run={r} ask={askOf(r)!} agentName={agentName(r.agent_id)} at={at} onHandBack={handBack} />
             : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : r.pending?.kind === "budget" ? (r.pending.at ?? "") : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
@@ -103,6 +121,19 @@ function Approval({ run, pending, agentName, at, onApprove }: { run: Run; pendin
       <ApprovalCard compact pending={pending}
         heading={<Head run={run} agentName={agentName} since={`asked ${ago(pending.requested_at, at)} ago`} />}
         onAnswer={(decision, note) => (onApprove ? onApprove(run.run_id, pending.id, decision, note) : Promise.resolve("Open the run to answer it."))} />
+    </li>
+  );
+}
+
+/** A run whose agent asks for the person at its computer: what to do, when it's done, when it expires, the way to its
+ *  screen (the run page, which opens on its Screen tab), and Done or Cancel where the page can answer. */
+function Asking({ run, ask, agentName, at, onHandBack }: { run: Run; ask: ComputerAsk; agentName: string; at: number; onHandBack?: (runId: string, ask: ComputerAsk, outcome: HandBackOutcome) => Promise<string | null> }) {
+  return (
+    <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5">
+      <ComputerAskCard compact ask={ask}
+        heading={<Head run={run} agentName={agentName} since={`asked ${ago(ask.asked_at, at)} ago`} />}
+        open={<a href={runHref(run.run_id)} className="text-[13px] underline underline-offset-2">Open its screen</a>}
+        onAnswer={onHandBack && ((outcome) => onHandBack(run.run_id, ask, outcome))} />
     </li>
   );
 }
