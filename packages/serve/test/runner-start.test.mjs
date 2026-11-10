@@ -10,11 +10,11 @@
 //   - SIGTERM hands a held run back at once, for another runner to claim;
 //   - `--check` passes while its heartbeat file (runner-<name>.alive under --data) is younger than twice its renew
 //     interval, and fails in words when it is not;
-//   - a run's agent's bash under the started runner runs on pi's bash tool's own fixed environment (PWD, HOME, LANG,
-//     TMPDIR, TERM, PATH), which holds none of the runner's secrets: the store URL with its password (the real test
-//     Postgres's, with AGENTRUN_TEST_PG_URL; on SQLite another AGENTRUN_STORE_* value), the seal key, the server's token
-//     and API key, the model key. That pins the bash tool's environment, not the runner's strip: the bash never shows
-//     what the runner handed its loops;
+//   - a runner-placed run's agent under the started runner has no bash (no computer mounts its folder, which is one of
+//     this server's own): bash is not offered, and a model's call of it (`env`) answers that it is not available, so
+//     nothing of the runner's environment reaches the model: the store URL with its password (the real test Postgres's,
+//     with AGENTRUN_TEST_PG_URL; on SQLite another AGENTRUN_STORE_* value), the seal key, the server's token and API key,
+//     the model key. A shell in a computer runs on the fixed environment (runner-secret-edge.test.mjs);
 //   - the runner's strip itself, where its output goes: the run environment it hands its loops (runEnv: a claimed run's
 //     model route and computer read it in the runner's own process), and the environment a claimed run's host tools are
 //     handed (claim-secrets.ts over runEnv, as the dispatch builds each claim's ToolHost.env), each with none of the
@@ -358,17 +358,19 @@ test("started without its launcher (node dist/cli.js runner), a runner reads AGE
   assert.deepEqual(await exited, { code: 0, signal: null });
 });
 
-test("a run's agent's bash under the started runner runs on pi's bash tool's fixed environment: its `env` shows no store URL, seal key, token, API key or model key", async (t) => {
+test("a runner-placed run's agent under the started runner has no bash: it is not offered, a model's `env` call answers that it is not available, and no store URL, seal key, token, API key or model key reaches the model", async (t) => {
   let asked = 0;
   const fake = await fakeAnthropic({ reply: () => (++asked === 1 ? { tool: { name: "bash", input: { command: "env" } } } : { text: "Done." }) });
   t.after(() => fake.close());
   const { dir, kind, plant } = await storePlant(t, { runs: [["run-env", "run-env", { mode: "runner" }]] });
   const child = runnerChild(t, ["--data", dir], { ...PLANT, ...plant, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-env" });
   await child.line(READY_ON(kind));
-  await until(() => fake.messages().length >= 2, "the run's agent ran `env` and sent its output back", 60_000);
+  await until(() => fake.messages().length >= 2, "the run's agent called bash and its answer went back", 60_000);
+  assert.ok(!fake.messages()[0].tools.some((name) => name.startsWith("bash")), `no bash family offered: ${fake.messages()[0].tools}`);
   const shown = Object.values(fake.messages()[1].results ?? {}).join("\n");
-  assert.match(shown, /^PATH=/m, `the bash ran env: ${shown.slice(0, 200)}`);
-  assert.deepEqual(plantedIn(shown, plant), [], "no secret of the runner's in the run's own environment");
+  assert.match(shown, /bash is not available/, `the bash call answers that it is not available: ${shown.slice(0, 200)}`);
+  assert.ok(!/^PATH=/m.test(shown), "no command ran");
+  assert.deepEqual(plantedIn(JSON.stringify(fake.messages().map((one) => one.body)), plant), [], "no secret of the runner's reached the model");
   assert.ok(!/AGENTRUN_STORE_|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
 });
 

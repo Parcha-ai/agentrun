@@ -188,7 +188,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
   const dir = join(scratch, "harness");
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  // The run's mode bounds its shell: 600 s locally or on a computer, 295 s on Archil's serverless exec (Mode 2, none).
+  // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
+  // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch] });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
