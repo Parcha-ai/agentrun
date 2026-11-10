@@ -277,8 +277,8 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
   assert.equal(await openUrl(elsewhere.stdout), "http://127.0.0.1:7343/", "only an http(s) URL on the loopback address this command started the server on");
 });
 
-test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and box image lines among them", async (t) => {
-  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.\n", "The Docker box image is ready.\n"]);
+test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and setup lines among them", async (t) => {
+  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Set up this server: https://agentrun.example.com/setup#code=AbCd", "EfGh\n", "GET /v2/agents 200\n"]);
   t.after(() => server.kill());
   const after = [];
   assert.equal(await openUrl(server.stdout, undefined, [], (line) => after.push(line)), "http://127.0.0.1:7344/");
@@ -286,7 +286,7 @@ test("the lines after the Open line go on, one whole line at a time, however the
     assert.ok(i < 100, JSON.stringify(after));
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.", "The Docker box image is ready."]);
+  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Set up this server: https://agentrun.example.com/setup#code=AbCdEfGh"]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
 });
 
