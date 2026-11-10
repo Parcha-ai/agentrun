@@ -17,9 +17,9 @@ import { isMain } from './is-main.mjs';
 
 /** Every workspace directory (packages/* and apps/*) has exactly one layer here. */
 export const LAYERS = {
-  // None yet: the wire protocols (run control, the computer daemon) and the DecisionProvider interface land here as they
-  // move out of the packages below.
-  protocol: [],
+  // The tools protocol and its source adapters (packages/tools); the wire protocols (run control, the computer daemon) and
+  // the DecisionProvider interface land here as they move out of the packages below.
+  protocol: ['packages/tools'],
   kernel: ['packages/run-adapters'],
   'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/computer', 'packages/decisions', 'packages/jev'],
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
