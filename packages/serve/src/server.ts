@@ -104,7 +104,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -1105,10 +1105,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
-  const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  const webhooks = new Webhooks(store, checked.sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
-  secretStores.add("webhook", () => webhooks.signingSecrets());
   stops.push(() => webhooks.close());
+  await webhooks.load();
+  // Where an earlier version kept the webhook: no longer read.
+  if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
+  secretStores.add("webhook", () => webhooks.signingSecrets());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -2824,16 +2827,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "saveWebhook": {
         // Never through `idempotent`: its record would keep the answer, and the first one holds the secret.
         // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets its metadata and the words.
-        const saved = webhooks.save(await bodyOf(req));
+        const saved = await webhooks.save(await bodyOf(req));
         return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, mayHoldSecrets(req)));
       }
       case "deleteWebhook":
-        webhooks.remove();
+        await webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "testWebhook":
         return send(res, 200, await webhooks.test());
       case "listWebhookDeliveries":
-        return send(res, 200, webhooks.attemptsView());
+        return send(res, 200, await webhooks.attemptsView());
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
@@ -3097,7 +3100,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
     const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
-    if (webhooks.emit("run.needs_input", notice, marker) === "unsaved") return false;
+    if ((await webhooks.emit("run.needs_input", notice, marker)) === "unsaved") return false;
     readWaits.set(row.id, seen);
     return true;
   };
@@ -3114,7 +3117,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (now === undefined) return false;
     readWaits.delete(id);
     if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
-    if (webhooks.emit("run.ended", now.notice, now.endedAt) === "unsaved") return (sayUnread(id, "its run.ended is not saved yet"), false);
+    if ((await webhooks.emit("run.ended", now.notice, now.endedAt)) === "unsaved") return (sayUnread(id, "its run.ended is not saved yet"), false);
     toldEnds.set(id, now.endedAt);
     unreadSaid.delete(id);
     return true;
