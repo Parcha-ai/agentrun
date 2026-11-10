@@ -52,6 +52,8 @@ test("beside the server's store, a runner process claims a queued run, runs it t
 test("a runner's arguments: --data D [--loops N], and nothing else", () => {
   assert.deepEqual(runnerArgs(["--data", "/d"]), { dataDir: "/d" });
   assert.deepEqual(runnerArgs(["--data", "/d", "--loops", "12"]), { dataDir: "/d", loops: 12 });
+  assert.deepEqual(runnerArgs(["--data", "/d", "--faux=/m.mjs"]), { dataDir: "/d", faux: "/m.mjs" });
+  assert.throws(() => runnerArgs(["--data", "/d", "--faux"]), /--faux needs a value/);
   assert.throws(() => runnerArgs([]), /needs its data directory/);
   assert.throws(() => runnerArgs(["--data"]), /--data needs a value/);
   assert.throws(() => runnerArgs(["--data", "/d", "--loops", "0"]), /--loops is a whole number/);

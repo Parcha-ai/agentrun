@@ -8,8 +8,8 @@
 // another runner (a loop that never stops is given up when its claim would run out, and its run is claimable when its
 // lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { isFauxName } from "../model.js";
+import { join, resolve } from "node:path";
+import { FAUX_ENV, isFauxName } from "../model.js";
 import { keptSealKey, SealKeyRefused, sealKeyHome } from "../seal-key.js";
 import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
@@ -107,8 +107,9 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
 
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
- *  journal, the seal key and the model route. Refused in words with no seal key. */
-export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env): LoopFactory {
+ *  journal, the seal key and the model route. Refused in words with no seal key. `switches`: the test switches the
+ *  runner's own options name (runnerArgs --faux), assigned onto the run environment, which drops any its process holds. */
+export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, switches: NodeJS.ProcessEnv = {}): LoopFactory {
   // The key handed over (the launcher's pipe, or the environment), else the one the server keeps under the config home
   // (seal-key.ts), read and never made here: the server makes it at its first start, and a runner's own would not open
   // what the server sealed.
@@ -124,7 +125,8 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
     throw error;
   }
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key: ${SEAL_KEY_ENV} handed over by the server's launcher, or the one the server keeps under the config home (start the server on this machine first).`);
-  const runs = runEnv(env);
+  // Assigned, never spread: runEnv's secrets are readable by name but not enumerable.
+  const runs = Object.assign(runEnv(env), switches);
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
   // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.
   const computers = computerDepsFrom({ env: runs, store, sealKey });
@@ -214,17 +216,19 @@ export function ofStore(make: (store: Store) => LoopFactory): (store: Store) => 
 }
 const isStoreFactory = (made: LoopFactory | ((store: Store) => LoopFactory)): made is (store: Store) => LoopFactory => storeFactories.has(made);
 
-/** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. Each option with
- *  a value is also taken as `--option=value` (the bin hands a data directory that starts with "-" so, never read as an
- *  option); an empty one is refused like a missing one. */
-export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; name?: string; check?: true } {
+/** The runner process's arguments: `--data D [--loops N] [--name N] [--faux M]`, or `--check --data D [--name N]`. Each
+ *  option with a value is also taken as `--option=value` (the bin hands a data directory that starts with "-" so, never
+ *  read as an option); an empty one is refused like a missing one. `--faux M`: the test switch a --faux server takes (its
+ *  runs' model is the module M's), the runner's only way to it: a faux name its environment holds enables nothing. */
+export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; name?: string; faux?: string; check?: true } {
   let dataDir: string | undefined;
   let loops: number | undefined;
   let name: string | undefined;
+  let faux: string | undefined;
   let check = false;
   for (let i = 0; i < argv.length; i++) {
     const given = argv[i]!;
-    const equals = /^(--(?:data|loops|name))=(.*)$/s.exec(given);
+    const equals = /^(--(?:data|loops|name|faux))=(.*)$/s.exec(given);
     const arg = equals ? equals[1]! : given;
     const value = () => {
       const next = equals ? equals[2] : argv[++i];
@@ -237,11 +241,12 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
       loops = Number(text);
       if (!Number.isSafeInteger(loops) || loops < 1) throw new RunnerRefused(`--loops is a whole number of runs above zero, not ${JSON.stringify(text)}`);
     } else if (arg === "--name") name = value();
+    else if (arg === "--faux") faux = value();
     else if (arg === "--check") check = true;
-    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--name N], or --check --data D [--name N]`);
+    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--name N] [--faux M], or --check --data D [--name N]`);
   }
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
-  return { dataDir, ...(loops === undefined ? {} : { loops }), ...(name === undefined ? {} : { name }), ...(check ? { check: true as const } : {}) };
+  return { dataDir, ...(loops === undefined ? {} : { loops }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(check ? { check: true as const } : {}) };
 }
 
 /** Runs until SIGTERM or SIGINT, then closes. `ready` is called once the signals are handled, never before: a line that
@@ -301,7 +306,7 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
       name: runnerOf,
       env,
       ...(args.loops ? { loops: args.loops } : {}),
-      createLoop: ofStore((store) => runnerLoop(store, args.dataDir, env)),
+      createLoop: ofStore((store) => runnerLoop(store, args.dataDir, env, args.faux ? { [FAUX_ENV]: resolve(args.faux) } : {})),
       onEvent: (event) => {
         if (event.type === "error") return void console.error(`Runner ${runnerOf}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`);
         const line = said(runnerOf, event);
