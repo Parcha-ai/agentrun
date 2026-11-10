@@ -89,7 +89,7 @@ test("a paid tool call a crash cut (marked, never settled) counts at its held fi
   assert.equal(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }])).tools, null, "an unknown charge is unknown");
   assert.deepEqual(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: "c3", usd: 0.002, seconds: 60 } }])).browser, { usd: 0.002, seconds: 60 }, "the browser's session time apart, with its seconds");
   // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
-  const { toolCostOf } = await import("../dist/runs.js");
+  const { toolCostOf } = await import("../dist/run-view.js");
   assert.equal(toolCostOf(timelineOf(cut)), 0);
   assert.equal(toolCostOf(timelineOf(settled)), 0.003);
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), marked(undefined)])), null, "cut with no figure: unknown, never $0");

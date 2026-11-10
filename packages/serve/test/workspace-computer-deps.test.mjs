@@ -17,7 +17,7 @@ import { after, test } from "node:test";
 import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
-import { DEFAULT_BOX_ALLOW } from "../dist/run-box.js";
+import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerDepsFrom, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";

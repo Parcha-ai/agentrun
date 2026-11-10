@@ -133,7 +133,7 @@ test("which Docker in a VM gets a box's network on a Mac, by docker info's own s
 
 test("on a Mac, a Docker reached by DOCKER_HOST over TCP, or a docker info that fails, gets no network, saying why; Linux keeps its own check, unchanged", async (t) => {
   const { vmDocker } = await import("../dist/box-egress-vm.js");
-  const { boxNetworkOf } = await import("../dist/run-box.js");
+  const { boxNetworkOf } = await import("../dist/box-settings.js");
   const docker = await fakeDocker(t, "docker-desktop");
   const env = { ...process.env, DOCKER_CONFIG: join(docker.state, "no-config") };
   assert.deepEqual(await vmDocker(env, { platform: "darwin" }), { runtime: "Docker Desktop" });

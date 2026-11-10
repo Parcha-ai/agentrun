@@ -68,10 +68,10 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, type Handed, handedMark, handedPointers as handedPointersOf, knownToolCostOf, MALFORMED, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, redactorOf, refusedValuesOf, rowShown as rowShownOf, servedReviewWith, servedRunErrorWith, shownOf, HELD, outcomeSays, outcomeShows, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, UNREADABLE_SIGN_IN, WITHHELD_SIGN_IN, withAsks, withdrawn, withOverCap, withPaused } from "./run-view.js";
 // The cost reads, the served row transforms, the status and pending views and the redaction choke point kept their import
 // path here for the server routes and tests that read them from this module.
-export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, WITHHELD_SIGN_IN };
+export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status, UNREADABLE_SIGN_IN, WITHHELD_SIGN_IN };
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
 const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
@@ -131,9 +131,6 @@ async function handedOnDisk(path: string): Promise<Handed | undefined> {
   return damaged ? MALFORMED : handedMark(stored?.sign_in_handed);
 }
 
-/** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
- *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
-export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
 /** Why a run going when its server started was stopped: its serve.json is there but can't be read or parsed, and with it
  *  went which browser it ran on and whether it was handed its agent's sign-in, so its text can't be cut of the pointer. */
 export const UNREADABLE_RUN_META = "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it.";

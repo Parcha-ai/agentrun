@@ -7,7 +7,7 @@
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
 import { decisionKeysFor } from "../decisions.js";
 import type { RunLaunch } from "../run-launch.js";
-import { keysFor, needsOf, RUN_SECRETS } from "../runs.js";
+import { keysFor, needsOf, RUN_SECRETS } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import type { SealedKeys } from "../store/store.js";

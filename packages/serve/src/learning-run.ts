@@ -24,7 +24,8 @@ import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, keepTurn,
 import { statusesOf } from "./learning-routes.js";
 import { cutStrings, redacted } from "./key-refusal.js";
 import { servedOnly } from "./served-only.js";
-import type { Run, RunsOptions, Status } from "./runs.js";
+import type { Run, RunsOptions } from "./runs.js";
+import type { Status } from "./run-view.js";
 import { secret, SECRET_NAMES } from "./secrets.js";
 import { said, STOPPED } from "./learning-words.js";
 import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";

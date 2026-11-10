@@ -613,6 +613,9 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
 
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+/** Why a run is refused at its claim: the browser sign-in it was handed can't be read here (the seal key changed or is
+ *  missing, or the sign-in is damaged). */
+export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
 
 /** A withheld run's title: a short line that fits the title's length and holds nothing the run said, so a title that
  *  repeats the handed sign-in is never served when this server can't cut it. The full sentence stays in the run's error

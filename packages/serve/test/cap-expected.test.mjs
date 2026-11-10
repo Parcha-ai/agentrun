@@ -15,7 +15,7 @@ import { test } from "node:test";
 import { calculateCost, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { capBefore, capModels, HELD_USD, inputBound, piOverhead, spentIn, useSpend } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
-import { withOverCap } from "../dist/runs.js";
+import { withOverCap } from "../dist/run-view.js";
 
 const SONNET = { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, contextWindow: 1_000_000, maxTokens: 64_000 };
 const CAP = 0.5;

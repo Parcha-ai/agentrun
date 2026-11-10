@@ -111,7 +111,7 @@ function viaSocket(socketPath, options) {
 }
 
 test("AGENTRUN_BOX_ALLOW, read in one place: unset or empty is the default list, never no list; `none` is none; a comma list of names replaces the default; `*`, an address, a CIDR or a URL refuses, naming the setting", async () => {
-  const { boxAllowOf } = await import("../dist/run-box.js");
+  const { boxAllowOf } = await import("../dist/box-settings.js");
   assert.deepEqual(boxAllowOf({}), DEFAULT);
   assert.deepEqual(boxAllowOf({ [BOX_ALLOW_ENV]: "" }), DEFAULT);
   assert.deepEqual(boxAllowOf({ [BOX_ALLOW_ENV]: "  " }), DEFAULT);
