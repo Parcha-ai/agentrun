@@ -1,6 +1,7 @@
-// The owner's remote MCP servers over the one store (store.mcp, store.mcpOauth). The probe and request validation are in
-// mcp-probe.ts. The credential is one sealed blob per row (store/seal.ts §7, the url's origin bound inside), so a read
-// opens it to show the auth's header names, the OAuth note and whether the sign-in expired.
+// The owner's remote MCP servers over the one store (store.mcp, store.mcpOauth): the registry and the sign-ins in flight.
+// The probe and request validation are mcp-probe.ts'. The credential is one sealed blob per row (store/seal.ts §7, the
+// url's origin bound inside), so a read opens it to show the auth's header names, the OAuth note and whether the sign-in
+// expired. The server never starts without its seal key, so every credential is kept sealed under it.
 //
 // Per the run-time ruling, the runner reads MCP servers, pins and credentials from the store at a run's claim
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
@@ -76,7 +77,7 @@ function pendingOverStore(store: McpServersStore, sealKey: Buffer): PendingStore
 }
 
 /** The saved credential opened for a run of this server's own reads (preview by name, refresh, save keeping it): its
- *  headers to send, or the refusal that asks for it again, in the file registry's words. */
+ *  headers to send, or the refusal that asks for it again. */
 type Opened = { headers: HeaderMap; credential: McpCredential & { origin: string } };
 
 export class McpServersOverStore {
@@ -387,7 +388,7 @@ export class McpServersOverStore {
       url: row.url,
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...listed,
-      // Each priced tool's price in USD a call, as the owner saved them (main's file registry served them on every read).
+      // Each priced tool's price in USD a call, as the owner saved them, on every read.
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
@@ -429,7 +430,8 @@ export class McpServersOverStore {
  *  token does not change the url. The staleness key an OAuth sign-in carries from start to callback. */
 const saving = (row: McpServerRow) => `${row.url} ${row.updatedAt}`;
 
-/** The saved MCP servers over the one store. No load() is needed — every read goes to the store (the runner also writes the OAuth state), so a read is always current. */
+/** The owner's MCP registry over the one store. No load() is needed: every read goes to the store (the runner also writes
+ *  the OAuth state), so a read is always current. */
 export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessEnv, version: string, network?: OAuthNetwork): McpServersOverStore {
   return new McpServersOverStore(store, env, version, network);
 }

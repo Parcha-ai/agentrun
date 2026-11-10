@@ -1,5 +1,6 @@
-// The MCP server probe and request validation of the saved MCP servers (mcp-servers-store.ts), and the words and limits
-// the runner's claim of a server's credential (runner/mcp-claim.ts) shares with them.
+// The MCP server probe and request validation of the owner's registry (mcp-servers-store.ts), and the words a run's calls
+// read when a saved credential can't be used (UNUSABLE, which the runner's claim step
+// runner/mcp-claim.ts hands the gateway).
 //
 // Nothing here opens a credential or touches a store: listServer connects to a URL with the official SDK client, agrees a
 // protocol revision and lists every tool (all pages, under caps); the validation turns a request body into a URL, auth and
@@ -12,7 +13,7 @@ import { isObject, unknownFields } from "./validate.js";
 export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
-export const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
+const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app"] as const;
 /** Where an owner updates a saved MCP server, as people read it. */
 const MCP_SETTINGS = "Settings → MCP servers";
