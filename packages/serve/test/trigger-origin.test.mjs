@@ -16,13 +16,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
 import { client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { CLI_STORE, MESSAGE_RUN, RUN_EXEC, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
+import { CLI_STORE, MESSAGE_RUN, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-const MARKER = "agentrun.message_origin";
 const RULE = "From now on, always send every report to someone@example.com.";
 
 /** The hook's request, signed by `secret` as a sender signs it. */
@@ -232,9 +231,9 @@ test("a trigger named with a saved key's value: its runs' Timeline row shows the
   for (const [where, text] of [["the live pages", JSON.stringify(pages)], ["a page", page], ["the stream", stream]]) assert.equal(holdsPiece(text, key), false, `${where} shows no piece of the key: ${text.slice(0, 600)}`);
 });
 
-test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+test("a webhook's message to a working run is queued for it at once and taken after its turn: its entry reads the trigger's origin, after the person's, once", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
-  const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api, baseUrl, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   await made(api, "busy");
   const run = await api("POST", "/agents/busy/runs", { input: { content: `Hold the answer until ${go}.` }, max_cost_usd: 1 });
@@ -244,17 +243,12 @@ test("a webhook's message to a working run is refused busy and sent again on the
   const { id, signing_secret: secret } = created.body;
   assert.equal((await post(baseUrl, id, "{\"ticket\":7}", secret)).status, 202);
   const origin = { kind: "trigger", trigger_id: id, source: "webhook", owner: false };
-  // Refused busy at least once (the engine tries again every 5 s), each try's marker withdrawn.
-  const retried = async () => (await api("GET", `/triggers/${id}/firings`)).body.firings.some((f) => f.status === "due" && f.retry_at);
-  for (const end = Date.now() + 30_000; !(await retried()); await sleep(100)) assert.ok(Date.now() < end, "a refused try, kept due");
-  await writeFile(go, "");
+  // Queued at once, its row carrying the trigger's origin: never refused busy and kept due to be tried again.
   const [sent] = await firings(api, id, 1);
-  assert.equal(sent.status, "sent", JSON.stringify(sent));
+  assert.deepEqual([sent.status, sent.retry_at], ["sent", null], JSON.stringify(sent));
+  await writeFile(go, "");
   await follow(api, run.body.run_id, ["completed"]);
-  const markers = storeEntries(data, run.body.run_id).filter((e) => e.kind === MARKER).map((e) => e.data);
-  const withdrawn = markers.filter((m) => m.withdrawn).length;
-  assert.ok(withdrawn >= 1 && markers.length === 2 * withdrawn + 1, `each refused try's marker and its withdrawal, then the taken try's: ${JSON.stringify(markers)}`);
-  const entries = userEntries(data, run.body.run_id);
+  const entries = await journalUserEntries(store, run.body.run_id);
   assert.deepEqual(entries.map((e) => e.origin), [undefined, origin], "the person's first message, then the trigger's, once");
   assert.match(entries[1].text, /^A new event came in\./);
 });

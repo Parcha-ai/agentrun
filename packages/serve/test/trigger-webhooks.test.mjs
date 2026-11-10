@@ -168,50 +168,49 @@ test("a payload past 16 KiB is cut at a character's start and says so; its closi
   await follow(api, fired.run_id, ["completed"]);
 });
 
-test("a message_run firing to a run that is working waits for its turn to end, never queued behind it, then reaches it as a follow-up", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+test("a message_run firing to a run that is working is queued for it at once as a command row (sent, never kept due to be tried again), and the run takes it once, after its turn", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
-  const { api, baseUrl } = await serve(t);
+  const { api, baseUrl, store } = await serve(t);
   await made(api, "busy");
   const gate = join(await scratch(t), "gate");
   const run = (await api("POST", "/agents/busy/runs", { input: { content: `Hold the answer until ${gate}.` }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"]);
   const { id, signing_secret: secret } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also look at this." } } })).body;
   assert.equal((await post(baseUrl, id, "{\"ticket\":9}", { secret })).status, 202);
-  // Refused at the run's door while its turn works (a message queued behind a turn would answer an ask it ends on).
-  let held;
-  for (const end = Date.now() + 30_000; !held; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    const [firing] = (await api("GET", `/triggers/${id}/firings`)).body.firings;
-    if (firing?.status === "due" && firing.retry_at) held = firing;
-    assert.ok(Date.now() < end, JSON.stringify(firing));
-  }
-  assert.match(held.reason, /working/);
-  await writeFile(gate, "");
   const [sent] = await firings(api, id, 1);
-  assert.deepEqual([sent.status, sent.run_id, sent.error], ["sent", run.run_id, null], JSON.stringify(sent));
+  assert.deepEqual([sent.status, sent.run_id, sent.retry_at, sent.error], ["sent", run.run_id, null, null], JSON.stringify(sent));
+  // Queued while the turn works: a follow-up the run takes at its next safe point, never an answer to an ask it ends on.
+  const queued = (await store.commands(run.run_id, 0)).filter((c) => c.body?.origin?.trigger_id === id);
+  assert.deepEqual(queued.map((c) => [c.kind, c.body.answers, c.takenAt]), [["steer", false, null]]);
+  await writeFile(gate, "");
   const { rows } = await follow(api, run.run_id, ["completed"]);
   assert.equal(rows.filter(isMessageRow).length, 2, "its message, once, after the turn it waited for");
 });
 
-test("a webhook trigger holds at most 20 events due to a busy run: the 21st is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one is sent goes in", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
+test("a webhook trigger holds at most 20 firings due: at its max_active_runs the 21st waiting event is refused 429 with Retry-After, written nowhere and logged, and a sender's retry once one has left due goes in", { timeout: 180_000 }, async (t) => {
   withEnv(t, SEAL);
   const lines = [];
-  const { api, baseUrl, data } = await serve(t, { log: (line) => lines.push(line) });
+  const { api, baseUrl } = await serve(t, { log: (line) => lines.push(line) });
   await made(api, "busy");
   const gate = join(await scratch(t), "gate");
-  const run = (await api("POST", "/agents/busy/runs", { input: { content: `Hold the answer until ${gate}.` }, max_cost_usd: 1 })).body;
-  await follow(api, run.run_id, ["working"]);
-  const { id, signing_secret: secret } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also look at this." } } })).body;
+  // At most one run of its own at once: while that one works, every later event's firing waits due for it.
+  const made1 = await api("POST", "/triggers", { ...hooked("busy"), target: { ...hooked("busy").target, input: { content: `Hold the answer until ${gate}.` } }, max_active_runs: 1 });
+  assert.equal(made1.status, 201, JSON.stringify(made1.body));
+  const { id, signing_secret: secret } = made1.body;
+  assert.equal((await post(baseUrl, id, "{\"ticket\":0}", { secret, id: "msg_0" })).status, 202);
+  const [first] = await firings(api, id, 1);
+  await follow(api, first.run_id, ["working"]);
   for (let n = 1; n <= 20; n++) assert.equal((await post(baseUrl, id, `{"ticket":${n}}`, { secret, id: `msg_${n}` })).status, 202, `event ${n}`);
   const full = await post(baseUrl, id, "{\"ticket\":21}", { secret, id: "msg_21" });
   assert.deepEqual([full.status, full.headers.get("retry-after"), full.body.error.code, full.body.error.retryable], [429, "30", "rate_limited", true], JSON.stringify(full.body));
-  const kept = JSON.parse(await readFile(join(data, "triggers.json"), "utf8")).triggers.find((x) => x.id === id);
-  assert.deepEqual([kept.firings.length, kept.firings.filter((f) => f.status === "due").length], [20, 20]);
+  const kept = (await api("GET", `/triggers/${id}/firings`)).body.firings;
+  assert.deepEqual([kept.length, kept.filter((f) => f.status === "due").length], [21, 20], "the run's firing and twenty waiting: the 21st written nowhere");
   assert.ok(lines.some((line) => /condition=trigger_firings_full/.test(line) && line.includes(`trigger=${id}`) && /due=20/.test(line)), "said in the log");
-  // The run's turn ends: the firings go in one by one, as the run comes idle; the sender's retry of the 21st then fires.
+  // The run's turn ends: a waiting firing starts its run and leaves due; the sender's retry of the 21st then goes in.
   await writeFile(gate, "");
-  for (const end = Date.now() + 60_000; (await post(baseUrl, id, "{\"ticket\":21}", { secret, id: "msg_21" })).status !== 202; await new Promise((resolve) => setTimeout(resolve, 500))) assert.ok(Date.now() < end, "the 21st goes in once a firing is sent");
+  for (const end = Date.now() + 60_000; (await post(baseUrl, id, "{\"ticket\":21}", { secret, id: "msg_21" })).status !== 202; await new Promise((resolve) => setTimeout(resolve, 500))) assert.ok(Date.now() < end, "the 21st goes in once a firing has left due");
   assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
-  await follow(api, run.run_id, ["completed"]);
+  await follow(api, first.run_id, ["completed"]);
 });
 
 test("an event's webhook-id, after 200 later events moved its firing out of the history, still answers that firing for a day: it never fires again", { timeout: 300_000, skip: RUN_EXEC }, async (t) => {
