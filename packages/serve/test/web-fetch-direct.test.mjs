@@ -2,12 +2,10 @@
 // public-host guard. The network here is a table (no socket): every hostile target must be refused before it is dialled,
 // in the fetch itself and in a workflow's call node (an agentic run's, on the runner: web-fetch-ssrf-runner.test.mjs), and the public page must answer.
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fetchPage } from "../dist/web-fetch-direct.js";
 import { network } from "./fixtures/fake-network.mjs";
-import { answerFlow, follow, runDir, serve } from "./support.mjs";
+import { answerFlow, follow, serve } from "./support.mjs";
 
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 
@@ -74,24 +72,6 @@ test("a URL on a port other than 80 or 443 is refused before its host is looked 
   assert.equal(page.refused, "refused: port 8080 is not 80 or 443");
   assert.deepEqual(looked, [], "no lookup for a port it refuses");
 });
-
-/** What each web_fetch call of run `runId` was answered, parsed, from its released store. */
-function pagesOf(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY id").all()
-      .flatMap((row) => JSON.parse(row.record).model ?? [])
-      .filter((message) => message.role === "toolResult" && message.toolName === "web_fetch")
-      .map((message) => {
-        const text = (message.content ?? []).map((c) => c.text ?? "").join("");
-        // pi-durable 1.1 reads a result's `content`, 1.2 and later its `output`: a result missing either reads empty there.
-        assert.notEqual(text, "", "web_fetch's result reached the model empty");
-        return JSON.parse(text);
-      });
-  } finally {
-    db.close();
-  }
-}
 
 test("a workflow's call node runs web_fetch: the Page is its output, a refusal is ok false and the workflow goes on; a call to a tool outside the table is refused at save (422)", async (t) => {
   const { api } = await serve(t, { fauxWeb: FAUX_WEB });
