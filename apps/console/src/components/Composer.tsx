@@ -35,7 +35,7 @@ export function Composer({ mode, onSend, sending: sendingProp, sent, purpose }: 
         className="block w-full resize-none bg-transparent px-4 pt-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
         <span className="min-w-0 text-[11px] text-muted-foreground">
-          <label htmlFor="composer" className="font-medium text-foreground">{words.label}</label> · {sent ? "Sent. It appears on the timeline when the run takes it." : words.does}
+          <label htmlFor="composer" className="font-semibold text-foreground">{words.label}</label> · {sent ? "Sent. It appears on the timeline when the run takes it." : words.does}
         </span>
         <Button type="submit" size="sm" disabled={!text.trim() || !onSend || sending}>
           {sending ? "Sending" : "Send"} <CornerDownLeft aria-hidden />
