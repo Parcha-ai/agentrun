@@ -103,6 +103,7 @@ async function watched(t) {
   return { server, origin, cookie, runId, store, claim, key, id, token, tag, viewer };
 }
 
+const computerOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers });
 const browserOf = (w, headers, runId = w.runId) => call(w.server.port, { path: `/v2/runs/${runId}/browser`, headers });
 const liveWs = (w, path, { origin = w.origin, cookie = w.cookie, headers = {} } = {}) => connect(`ws://127.0.0.1:${w.server.port}${path}`, { origin: origin ?? undefined, headers: { ...(cookie ? { cookie } : {}), ...headers } });
 
@@ -117,6 +118,19 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(answer.status, 200, answer.text);
   assert.deepEqual(answer.json, { state: "live", viewer: link });
   assert.equal(answer.headers["cache-control"], "no-store");
+
+  // The same viewer for the computer family (the console's GET /computer, RunBrowser.tsx opens only its link): kind
+  // browser, its link under /computer/live, whose page opens it (its WebSocket below). A token never reads it there either.
+  assert.equal((await computerOf(w, { authorization: `Bearer ${w.server.token}` })).status, 403, "a token never opens the computer");
+  const computer = await computerOf(w, { cookie: w.cookie });
+  assert.equal(computer.status, 200, computer.text);
+  assert.equal(computer.json.state, "live", computer.text);
+  assert.equal(computer.json.kind, "browser");
+  assert.equal(computer.json.viewer, `/v2/runs/${w.runId}/computer/live/v/${w.id}#t=${w.token}`);
+  assert.equal(computer.headers["cache-control"], "no-store");
+  const computerPage = await call(w.server.port, { path: `/v2/runs/${w.runId}/computer/live/v/${w.id}`, headers: { cookie: w.cookie } });
+  assert.equal(computerPage.status, 200, `its page under /computer/live: ${computerPage.text}`);
+  assert.equal(computerPage.text, viewerAssets.html);
 
   // The page: this server's own copy, under the route's CSP, never the run's port's.
   const pagePath = `/v2/runs/${w.runId}/browser/live/v/${w.id}`;
@@ -155,13 +169,21 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(headers.origin, `http://127.0.0.1:${w.viewer.port}`, "the run's viewer sees its own origin");
   assert.equal(headers.cookie, undefined, "nothing of the owner's reaches the run");
   open.ws.destroy();
+  // The computer family's link opens the same viewer's socket: piped to the same path on the run's port.
+  const viaComputer = await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${w.id}/ws`);
+  assert.equal(viaComputer.status, 101, "its WebSocket under /computer/live");
+  assert.equal(w.viewer.upgrades.length, 2);
+  assert.equal(w.viewer.upgrades[1].url, `/v/${w.id}/ws`);
+  viaComputer.ws.destroy();
 
   // The runner drops it (the session released): none, and the old link opens nothing.
   await dropLiveViewer(w.store, w.claim, w.tag);
   assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" });
   assert.equal((await liveWs(w, wsPath)).status, 404, "the old link's upgrade");
   assert.equal((await call(w.server.port, { path: pagePath, headers: { cookie: w.cookie } })).status, 404, "and its page");
-  assert.equal(w.viewer.upgrades.length, 1, "no new socket reached the run's port");
+  assert.deepEqual((await computerOf(w, { cookie: w.cookie })).json.state, "none", "GET /computer too");
+  assert.equal((await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${w.id}/ws`)).status, 404, "and the computer family's old link");
+  assert.equal(w.viewer.upgrades.length, 2, "no new socket reached the run's port");
 });
 
 test("a runner-path run's viewer token is in the owner's browser answer alone: in no other API answer (its timeline among them), no file under the data directory, no journal or command row, no plaintext computer_viewers column", { timeout: 120_000 }, async (t) => {
