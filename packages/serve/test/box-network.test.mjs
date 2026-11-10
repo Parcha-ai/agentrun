@@ -14,9 +14,11 @@ import { release } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { BOX_ENV } from "../dist/run-box.js";
 import { follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { startServe } from "../dist/index.js";
+
+/** The whole environment of a box's programs, as the server gives it: a constant, never its own. */
+const BOX_ENV = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;

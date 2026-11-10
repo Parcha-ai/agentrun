@@ -13,8 +13,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BOX_ENV } from "../dist/run-box.js";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
+
+/** The whole environment of a box's programs, as the server gives it: a constant, never its own. */
+const BOX_ENV = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;

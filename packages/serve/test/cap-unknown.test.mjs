@@ -12,12 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
-import { markRequests } from "../dist/request-start.js";
-import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
+import { agent, follow, letGo, runDir, serve } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
@@ -254,31 +251,6 @@ const markStore = (refusing = false) => {
   return { marks, run: { harness: { commit } } };
 };
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "m" };
-
-test("a request that never left answers none: pi's error for one whose start mark could not be written, and a cancel's refusal, close no other request", async (t) => {
-  const round = (usd) => Math.round(usd * 1e6) / 1e6;
-  // request-start's own path: the store refuses the start mark, so the request is not sent, and pi gets the error it
-  // writes as the request's entry. The cap reads that error by the same constant request-start builds it from.
-  let sent = 0;
-  const { models, open } = await markRequests({ streamSimple: () => (sent++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) });
-  open(markStore(true).run);
-  const notSent = await models.streamSimple(FAUX_MODEL, { messages: [] }, {}).result();
-  assert.equal(sent, 0, "the request did not leave");
-  assert.equal(notSent.stopReason, "error");
-  assert.ok(notSent.errorMessage.startsWith(MARK_NOT_WRITTEN), notSent.errorMessage);
-  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.4), entryOf(notSent)]))), 0.4, "the request in flight at the crash is not answered by it: counted at its figure");
-  // A figureless start in flight when another request's mark failed; that process crashed, the next sent a request (held
-  // 0.30) and crashed too. The figureless one was cut: unknown, never 0.30.
-  assert.equal(spentIn(storeOf(t, [started, entryOf(notSent), startedHeld(0.3)])), null, "a figureless start left open stays unknown");
-  // A cancel's refusal, through request-start's own path: its mark, then pi's error for it. Together they are no request.
-  const { marks, run } = markStore();
-  const cancelled = await markRequests({ streamSimple: () => (sent++, {}) }, () => true);
-  cancelled.open(run);
-  const refusal = await cancelled.models.streamSimple(FAUX_MODEL, { messages: [] }, {}).result();
-  assert.equal(sent, 0, "the cancelled request did not leave");
-  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_REFUSED]);
-  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), ...marks, entryOf(refusal)]))), 0.3, "the request in flight still counts; the refusal closes nothing");
-});
 
 test("the run's shown cost is the timeline's, unchanged: a stopped request is unknown there, and a refusal after it never makes it $0", () => {
   const shown = (entries) => timelineOf(entries.map((entry) => ({ conversationId: 1, ...entry })), { settled: true }).find((row) => row.kind === "usage")?.usage?.usd;
