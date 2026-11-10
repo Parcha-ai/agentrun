@@ -4,9 +4,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
+import { Worker } from "node:worker_threads";
 import { runDirIn } from "@parcha/pi-durable-agent";
 import { learningRepo } from "../dist/learning.js";
 import { sendFile } from "../dist/run-files.js";
@@ -16,6 +19,7 @@ import { suite } from "./workspace-conformance.mjs";
 
 const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
 const WRITER = new URL("./fixtures/workspace-durable-writer.mjs", import.meta.url).pathname;
+const GREP_WORKER = new URL("../dist/workspace/grep-worker.js", import.meta.url);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -388,7 +392,70 @@ for (const branch of BRANCHES) {
     assert.ok(found.every((text) => !text.includes("host")), `no host line was searched: ${JSON.stringify(found)}`);
     hostUntouched(outside);
   });
+
+  test(`local, ${branch.name}: a read never returns a host file opened through a link that is a folder again when the path is checked`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    const a = join(root, "a");
+    mkdirSync(a);
+    writeFileSync(join(a, "victim"), "the run's file\n");
+    const toLink = () => { renameSync(a, `${a}.real`); symlinkSync(outside, a); };
+    const toFolder = () => { rmSync(a); renameSync(`${a}.real`, a); };
+    // The box's swap: a/ is a link to the host when the file is opened, the run's folder again while the path is
+    // resolved (realpath), and the link once more when that real path is stat'd. A check that resolves the path again
+    // after the open finds a real path under the root that leads to the very file opened, the host's.
+    const realpath = fsPromises.realpath;
+    let armed = false;
+    fsPromises.realpath = async (path, ...rest) => {
+      if (!armed || path !== join(a, "victim")) return realpath(path, ...rest);
+      armed = false;
+      toFolder();
+      try { return await realpath(path, ...rest); } finally { toLink(); }
+    };
+    syncBuiltinESMExports();
+    try {
+      const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: (abs) => { if (abs === a) { toLink(); armed = true; } } });
+      const read = workspace.read("a/victim");
+      if (branch.procFd) assert.equal(Buffer.from(await read).toString("utf8"), "the run's file\n", "read in the folder held, never through the link");
+      else await refused(read, "ESCAPE");
+    } finally {
+      fsPromises.realpath = realpath;
+      syncBuiltinESMExports();
+    }
+    hostUntouched(outside);
+  });
 }
+
+/** grep's worker on its own (grep-worker.ts) with `job` over the defaults, as local.ts starts it off /proc/self/fd:
+ *  each match as "path: text". */
+function grepWorker(root, job) {
+  return new Promise((resolve, reject) => {
+    const workerData = { pattern: "file", limit: 100, fileMax: 1 << 20, lineMax: 1000, probe: 8000, procFd: false, root, ...job };
+    const worker = new Worker(GREP_WORKER, { workerData, execArgv: [] });
+    const found = [];
+    let done;
+    worker.on("message", (message) => {
+      if (message.matches) found.push(...message.matches.map((match) => `${match.path}: ${match.text}`));
+      if (message.done !== undefined) done = message.done;
+    });
+    worker.on("error", reject);
+    worker.on("exit", () => (done === undefined ? reject(new Error("the worker stopped before it was done")) : resolve(found)));
+  });
+}
+
+// local.ts confirms the folder before it starts the worker; the box can swap it for a link to the host after that, while
+// the worker searches. The worker is handed the folder's path, as then: each entry it opens must still be under the root.
+test("local, resolving paths (as off Linux): grep's worker, handed a folder swapped for a link to the host, searches no host file", { skip: process.platform !== "linux" && process.platform !== "darwin" && "only Linux and macOS" }, async () => {
+  const { root, outside } = scratch();
+  hostFiles(outside);
+  mkdirSync(join(root, "b"));
+  writeFileSync(join(root, "b", "kept"), "the run's file\n");
+  symlinkSync(outside, join(root, "a"));
+  assert.deepEqual(await grepWorker(root, { dir: join(root, "b"), rel: "b" }), ["b/kept: the run's file"], "a folder of the run's is searched");
+  assert.deepEqual(await grepWorker(root, { dir: join(root, "a"), rel: "a" }), [], "a folder through the link: no host file searched");
+  assert.deepEqual(await grepWorker(root, { dir: join(root, "a"), rel: "a/victim", only: "victim" }), [], "one file through the link: not searched");
+  hostUntouched(outside);
+});
 
 test("local: every write is durable on return (a crash after it keeps it whole); plain node:fs writes are lost", { skip: SHIM_SKIP, timeout: 60_000 }, () => {
   const { dir } = scratch();

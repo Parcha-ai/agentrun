@@ -1,19 +1,20 @@
 // LocalWorkspace's grep, in a worker thread: the caller's regex runs here, so one that backtracks without end blocks
 // this thread, never the runner's, and local.ts terminates it at the deadline. It searches the folder `dir` names (on
 // Linux, /proc/self/fd/<fd> of a folder local.ts holds open for it), or the one file `only` in it, opening every entry
-// with O_NOFOLLOW: a link is skipped, never followed. Off /proc/self/fd (macOS), where `dir` is a path and every open
-// resolves it again, each entry opened is checked first: its real path is under `root` and is the file opened (dev and
-// inode), else it is skipped, so a folder swapped for a link mid-search never sends a byte from outside. Each match is
-// posted as it is found; the last message is `{ done: false | "max" }`.
-import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, realpathSync, type Stats, statSync } from "node:fs";
-import { sep } from "node:path";
+// with O_NOFOLLOW: a link is skipped, never followed. Off /proc/self/fd (macOS), where `dir` is a path the box can swap
+// for a link mid-search, each entry is opened by its path below `root` through no link anywhere on the way (beneath.ts:
+// macOS's O_NOFOLLOW_ANY), so a link swapped in fails the open and the entry is skipped: no byte from outside is read.
+// Each match is posted as it is found; the last message is `{ done: false | "max" }`.
+import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
+import { openBeneathSync } from "./beneath.js";
 import { globRegex } from "./glob.js";
 
 export type GrepJob = {
   readonly dir: string;
+  /** `dir`'s path below the root (or the file's, with `only`): each match's path starts with it. */
   readonly rel: string;
-  /** Whether `dir` is /proc/self/fd/<fd> (Linux): else a path, and every entry opened is checked under `root`. */
+  /** Whether `dir` is /proc/self/fd/<fd> (Linux): else a path, and every entry is opened by `rel` below `root`. */
   readonly procFd: boolean;
   /** The workspace's root, its real path. */
   readonly root: string;
@@ -60,28 +61,17 @@ function run(job: GrepJob, post: (message: unknown) => void): void {
       post({ matches: [match] });
     }
   };
-  /** Off /proc/self/fd, whether path `at` leads under the root to the file opened (`stats`, its fstat). */
-  const confined = (at: string, stats: Stats): boolean => {
-    if (job.procFd) return true;
-    try {
-      const real = realpathSync(at);
-      const there = statSync(real);
-      return (real === job.root || real.startsWith(job.root + sep)) && there.dev === stats.dev && there.ino === stats.ino;
-    } catch {
-      return false;
-    }
-  };
-  /** Entry `name` of folder `dir`, opened without following a link, searched if it is a file or a folder. */
+  /** Entry `name` of folder `dir` (`rel` below the root), opened without following a link (off /proc/self/fd, none on
+   *  the way either), searched if it is a file or a folder. */
   const searchEntry = (dir: string, name: string, rel: string): void => {
     let fd: number;
     try {
-      fd = openSync(`${dir}/${name}`, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+      fd = job.procFd ?openSync(`${dir}/${name}`, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) : openBeneathSync(job.root, rel, O_RDONLY | O_NONBLOCK);
     } catch {
       return;
     }
     try {
       const stats = fstatSync(fd);
-      if (!confined(`${dir}/${name}`, stats)) return;
       if (stats.isDirectory()) searchDir(job.procFd ? `/proc/self/fd/${fd}` : `${dir}/${name}`, rel);
       else if (stats.isFile()) searchFile(fd, stats.size, rel, name);
     } finally {
