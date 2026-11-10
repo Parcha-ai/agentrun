@@ -351,12 +351,12 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
-  // has a cap.
+  // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).
   const cap = capUsd === undefined
     ? undefined
     : {
         capUsd,
-        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }) => parkOf(refusal as CapRefused, capUsd),
+        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => parkOf(refusal as CapRefused, capNow),
         checkRaise,
         followUpOf: (raised: number) => followUpOf(raised),
       };

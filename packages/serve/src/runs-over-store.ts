@@ -201,7 +201,15 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
     return moment.paused ? { resumed: true } : { resumed: false };
   }
   if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
-  await sendCommand(store, moment.id, { kind: "raise", body: { capUsd: cap } });
+  try {
+    await sendCommand(store, moment.id, { kind: "raise", body: { capUsd: cap } });
+  } catch (error) {
+    // A run a person stopped reads waiting on its next message (its moment is not terminal), but its row takes no command
+    // until a message reopens it: refused in words, nothing written. (Main took the raise and held it for the run's next
+    // process; that waits for a stopped run's reopen here.)
+    if (error instanceof RunFinal && (await store.runs.get(moment.id))?.state === "stopped") throw new ApiError("not_continuable", "This run was stopped: send it a message to go on, then raise its cap.");
+    throw error;
+  }
   // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation); a run working
   // now keeps the cap its process was opened with until its next one.
   if (moment.paused) return { resumed: true };

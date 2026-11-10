@@ -85,10 +85,12 @@ export interface AdapterRunSpec {
    *  gives capUsd: () => undefined. */
   readonly runCap: RunCapConfig;
   /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
-   *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words). */
+   *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words), at the
+   *  cap the run is held to when it parks (`capUsd`: the newest raise's, else the launch's), which its pending budget
+   *  names and the next raise is checked against. */
   readonly cap?: {
     readonly capUsd: number;
-    park(refusal: { message: string; forGood: boolean; figures?: Refusal["figures"] }): { outcome: "parked"; pending: BudgetData["pending"]; words: string } | { outcome: "failed"; error: string };
+    park(refusal: { message: string; forGood: boolean; figures?: Refusal["figures"] }, capUsd: number): { outcome: "parked"; pending: BudgetData["pending"]; words: string } | { outcome: "failed"; error: string };
     /** The kernel cap's raise rule (checkRaise), as E2 hands it in: the loop never imports the cap. Absent: a raise is
      *  refused, the run having no cap rule to raise by. */
     checkRaise?(state: RaiseState, raiseUsd: number): RaiseCheck;
@@ -476,6 +478,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
    *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
   const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
+  /** The cap the run is held to after a raise: the newest raise entry's (read from the run's root when a claim opens, then
+   *  each one this claim's raise commit lands), else none and the spec's figure (its launch's) holds. The spec gives the
+   *  launch's cap and nothing more (a raise is a command row, all the server writes), so this is the one place a raise
+   *  reaches every admission (runCap's capUsd) and every park (the pending budget's cap), on this claim and any later
+   *  one, another runner's included. */
+  let raisedCapUsd: number | undefined;
+  /** The run's cap now: the newest raise's, else the spec's. */
+  const capNow = (): number | undefined => raisedCapUsd ?? specNow?.runCap.capUsd();
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
@@ -586,6 +596,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await landed;
+    // The raise holds from here, at every admission and park: once its entry is in, never before.
+    if (data.capUsd > 0) raisedCapUsd = data.capUsd;
   }
 
   const steer = async (command: Command): Promise<CommandOutcome> => {
@@ -684,7 +696,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let capBuilt: RunCap | undefined;
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
-          return (capBuilt ??= runCap({ sessions, ...specNow.runCap }));
+          // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
+          return (capBuilt ??= runCap({ sessions, ...specNow.runCap, capUsd: capNow }));
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -781,7 +794,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // reaches pi: pi stores the refused turn only after it, so a claim lost in between leaves the pause, and the next
             // claim resumes the run parked (an unanswered pause), never ends it as a failed turn. One that cannot land (the
             // journal sealed) is left to the turn's end, as before.
-            const park = spec.cap?.park(refusalOf(answer));
+            const park = spec.cap?.park(refusalOf(answer), raisedCapUsd ?? spec.cap.capUsd);
             if (park?.outcome === "parked" && !pausedAtRefusal && harness && gate && !gate.sealed) {
               const on = gate;
               // From here a raise row waits for the next claim (raise): one taken now would answer no pause this claim
@@ -918,6 +931,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }, context), now);
           await computerNow.up();
         }
+        // The cap a raise left the run at, from its root (the newest raise entry), before any request of this claim: a
+        // claim that takes over a raised run (a resume, another runner's) holds it to the raise, never the launch's cap.
+        if (spec.cap) raisedCapUsd = (await raiseStateOf()).lastRaise?.to ?? raisedCapUsd;
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
         // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.
@@ -1059,7 +1075,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
           // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
           // check's own words, never as a run with no answer.
-          const park = spec.cap?.park(refusalOf(refused));
+          const park = spec.cap?.park(refusalOf(refused), raisedCapUsd ?? spec.cap.capUsd);
           if (park?.outcome === "parked" && pausedAtRefusal) {
             // Its pause and the run parked landed before pi heard of the refusal.
             await releaseHost(harness);

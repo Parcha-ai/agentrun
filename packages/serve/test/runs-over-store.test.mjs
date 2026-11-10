@@ -197,6 +197,19 @@ test("raiseCap above the run's cap writes one raise command with the new cap", a
   assert.equal(rows[0].body.capUsd, 5);
 });
 
+test("raiseCap of a run a person stopped is refused not_continuable in words, never a bare RunFinal, nothing written", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  const claim = await store.claim(id, "runner-a");
+  await store.runs.update(claim, { state: "stopped" });
+  // A person-stopped run reads waiting on its next message (input_required), not ended: its moment is not terminal.
+  await assert.rejects(
+    () => raiseCap(store, moment({ maxCostUsd: 2, working: false, live: false }), 5),
+    (error) => error?.code === "not_continuable" && error.message === "This run was stopped: send it a message to go on, then raise its cap.",
+  );
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
 test("raiseCap of a run paused at its cap reports resumed", async () => {
   const store = await freshStore();
   await queuedRun(store);

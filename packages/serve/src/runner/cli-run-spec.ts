@@ -258,7 +258,8 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     ? undefined
     : {
         capUsd,
-        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }) => parkOf(refusal as CapRefused, capUsd),
+        // A park names the cap the loop holds the run to then (a raise's, else this one).
+        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => parkOf(refusal as CapRefused, capNow),
         checkRaise,
         followUpOf: (raised: number) => followUpOf(raised),
       };
