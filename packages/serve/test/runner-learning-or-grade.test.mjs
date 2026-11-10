@@ -85,7 +85,7 @@ for (const named of ["anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4.5
 test("on a host with Anthropic's own key, a named Anthropic grade model keeps the runner's route as named: Anthropic's origin and key", async () => {
   const { gradeRouteOf } = await import("../dist/runner/learning-dispatch.js");
   const asked = [];
-  const route = await gradeRouteOf("anthropic/claude-sonnet-4-5", { ...OR_ALONE, ANTHROPIC_API_KEY: "not-a-secret-a" }, (model) => (asked.push(model), { model: "as-named", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => "a" } }));
+  const route = await gradeRouteOf("anthropic/claude-sonnet-4-5", { ...OR_ALONE, ANTHROPIC_API_KEY: "fake-test-key" }, (model) => (asked.push(model), { model: "as-named", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => "a" } }));
   assert.deepEqual([asked, route.model], [["anthropic/claude-sonnet-4-5"], "as-named"]);
   const openai = [];
   await gradeRouteOf("openai/gpt-5", OR_ALONE, (model) => (openai.push(model), { model, provider: { api: "anthropic-messages", origin: "x", credential: () => "k" } }));
