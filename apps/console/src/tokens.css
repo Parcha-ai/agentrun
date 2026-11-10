@@ -1,0 +1,132 @@
+/* The AgentRun console's design tokens: the one place a colour, a layer, a duration or a size gets its value.
+   docs/console-design-system.md says what each is for; src/design-system.test.ts checks this file (both themes define
+   every colour, the text pairs pass WCAG AA) and that the console's sources use these names and no literal.
+
+   Colours are HSL triplets, so a class can add its own alpha: `bg-primary/10` is hsl(var(--primary) / 0.1).
+   A token that points at another one (`var(--primary-text)`) follows it in both themes.
+   `.light` and `.dark` also work on an element inside the page: a panel of the other theme (the Storybook shows both). */
+:root, .light {
+  color-scheme: light;
+
+  /* Surfaces, and the text that sits on them. */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 4% 43%;
+  /* The hover and "you are here" surface of a neutral control. */
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  /* What dims the page under a dialog. Used with an alpha: bg-overlay/70. */
+  --overlay: 240 10% 3.9%;
+
+  /* The brand. --primary is a fill and an indicator; text on it is --primary-foreground. Orange words on a page
+     surface are --primary-text, which passes 4.5:1 where the fill does not. */
+  --primary: 30 100% 50%;
+  --primary-foreground: 240 10% 3.9%;
+  --primary-text: 30 100% 34%;
+
+  /* Tones. The bare name is a fill, a border or a dot; `-text` is words in that tone on a page surface or on the
+     tone's own 10% wash. */
+  --success: 142 71% 45%;
+  --success-text: 142.4 71.8% 29.2%;
+  --warning: 38 92% 50%;
+  --warning-text: 35.5 91.7% 32%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-text: 0 72% 46%;
+  --info: 217 91% 60%;
+  --info-text: 217 91% 48%;
+
+  /* Lines. --border divides; --border-strong is a hovered or open control's edge; --input is a field's own edge,
+     3:1 against the page so the field is findable; --ring is the keyboard focus ring. */
+  --border: 240 5.9% 90%;
+  --border-strong: 216 12% 84%;
+  --input: 240 4% 56%;
+  --ring: var(--foreground);
+
+  /* A run. Working is the brand's colour; a failed run's panel has its own surface. */
+  --run-active: var(--primary-text);
+  --run-error-surface: 0 85.7% 97.3%;
+
+  /* The workflow graph: who does a step's work. */
+  --wf-jev: 322 58% 51%;
+  --wf-parallel: 174 72% 33%;
+  --wf-openrouter: 239 70% 60%;
+  --wf-tool: 207 70% 41%;
+  --wf-exit: 251 55% 53%;
+
+  /* Shape. The console is square: every corner is --radius. */
+  --radius: 0px;
+  /* Lines are 1px. 2px marks where you are (the active nav item, the open tab) and the focus ring. */
+  --border-width: 1px;
+  --border-width-strong: 2px;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* Sizes. Controls come in three heights; the sidebar and the two page widths are fixed. */
+  --control-sm: 2rem;
+  --control-md: 2.5rem;
+  --control-lg: 2.75rem;
+  --sidebar-width: 220px;
+  --page-width: 1100px;
+  --page-width-wide: 1600px;
+
+  /* Motion. Fast: a hover or a switch. Base: a panel or a toast arriving. Slow: a state settling on the graph. */
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
+  --duration-slow: 400ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* The one shadow: under what floats over the page (a menu, a tip, a toast, a dialog). */
+  --shadow-float: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* Layers, lowest first. Nothing uses a number of its own. A popover (a menu, a picker's list, a tip) is above a
+     dialog because a dialog can open one. */
+  --layer-raised: 10;
+  --layer-sticky: 20;
+  --layer-overlay: 30;
+  --layer-dialog: 40;
+  --layer-popover: 50;
+  --layer-toast: 60;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 240 6% 9%;
+  --foreground: 0 0% 95%;
+  --card: 240 5% 12%;
+  --card-foreground: 0 0% 95%;
+  --muted: 240 5% 18%;
+  --muted-foreground: 240 5% 66%;
+  --accent: 240 5% 18%;
+  --accent-foreground: 0 0% 98%;
+  --overlay: 240 10% 3.9%;
+  --primary: 30 100% 50%;
+  --primary-foreground: 240 10% 3.9%;
+  --primary-text: 30 100% 50%;
+  --success: 142 71% 45%;
+  --success-text: 142 71% 45%;
+  --warning: 38 92% 55%;
+  --warning-text: 38 92% 55%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-text: 0 90.6% 70.8%;
+  --info: 217 91% 66%;
+  --info-text: 217 91% 66%;
+  --border: 240 5% 18%;
+  --border-strong: 240 5% 45%;
+  --input: 240 5% 45%;
+  --ring: var(--foreground);
+  --run-active: var(--primary-text);
+  --run-error-surface: 0 33.3% 17.1%;
+  --wf-jev: 318 73% 61%;
+  --wf-parallel: 172 66% 50%;
+  --wf-openrouter: 234 89% 74%;
+  --wf-tool: 206 83% 65%;
+  --wf-exit: 253 100% 81%;
+  --shadow-float: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+}
+
+/* Before the script puts the theme on <html>, a dark OS's page is dark already (.dark's background), never a white
+   flash. */
+@media (prefers-color-scheme: dark) { html:not(.light):not(.dark) { --background: 240 6% 9%; color-scheme: dark; } }

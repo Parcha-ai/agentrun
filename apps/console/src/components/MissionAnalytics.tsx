@@ -202,7 +202,7 @@ function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLo
                     <div key={i} className={cn(p.className, i === parts.length - 1 && "rounded-t-[4px]")} style={{ height: Math.max(1, Math.round((p.value / top) * (H - 2 * (parts.length - 1)))) }} />
                   ))}
                 </div>
-                <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap border bg-card px-2 py-1 text-left font-mono text-[11px] shadow-sm group-hover:block group-focus-visible:block">
+                <div className="pointer-events-none absolute bottom-full left-1/2 z-raised mb-1 hidden -translate-x-1/2 whitespace-nowrap border bg-card px-2 py-1 text-left font-mono text-[11px] shadow-float group-hover:block group-focus-visible:block">
                   <span className="block font-semibold">{readout(d)[0]}</span>
                   {readout(d).slice(1).map((line) => <span key={line} className="block text-muted-foreground">{line}</span>)}
                   <span className="block text-muted-foreground">{d.day}</span>

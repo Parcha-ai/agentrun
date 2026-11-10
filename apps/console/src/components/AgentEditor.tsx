@@ -199,7 +199,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <li key={s.id} className="shrink-0">
               <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => goTo(s.id)}
                 className={cn("flex w-full items-start gap-3 border-l-2 px-3 py-2.5 text-left font-mono", step === s.id ? "border-l-foreground bg-foreground/5" : "border-l-transparent text-muted-foreground hover:text-foreground")}>
-                <span className={cn("inline-flex size-6 shrink-0 items-center justify-center border text-[11px] font-bold", step === s.id ? "border-foreground bg-foreground text-background" : i < at ? "border-border-strong" : "border-border")}>
+                <span className={cn("inline-flex size-6 shrink-0 items-center justify-center border text-[11px] font-semibold", step === s.id ? "border-foreground bg-foreground text-background" : i < at ? "border-border-strong" : "border-border")}>
                   {i < at ? <Check className="size-3" aria-hidden /> : i + 1}
                 </span>
                 <span className={cn("hidden min-w-0", step !== "workflow" && "md:block")} title={step === "workflow" ? s.label : undefined}>
