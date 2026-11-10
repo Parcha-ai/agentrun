@@ -54,3 +54,16 @@ describe("drawWorkflowGraph", () => {
     expect(s.textContent).toContain("<img");
   });
 });
+
+// The count a page prints beside a graph is the boxes the drawing shows: on a workflow with a fan, frames and nesting too.
+describe("drawnNodeCount", () => {
+  it("counts the boxes the drawing shows, not the root chain the steps sit on", async () => {
+    const { drawnNodeCount, nodesWord } = await import("./wfGraph");
+    const g = workflowGraph(kybWorkflow);
+    const s = svg();
+    drawWorkflowGraph(s, g);
+    expect(drawnNodeCount(g)).toBe(s.querySelectorAll("g[data-path]:not(.chain)").length);
+    expect(drawnNodeCount(g)).toBeLessThan(g.nodes.length);
+    expect([nodesWord(1), nodesWord(4), nodesWord(0)]).toEqual(["1 node", "4 nodes", "0 nodes"]);
+  });
+});

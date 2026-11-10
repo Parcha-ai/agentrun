@@ -157,7 +157,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // it names (one the form does not show, such as a place, only above).
   const warnings = agent?.warnings ?? [];
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
-  const set = (patch: AgentFields) => setF((x) => ({ ...x, ...patch }));
+  // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
+  const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
+  // The Save button, which keeps the focus after a save the server refused, where its reason shows.
+  const saveButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (problem?.kind === "invalid" || problem?.kind === "other") saveButton.current?.focus(); }, [problem]);
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
@@ -278,6 +282,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           ))}
         </ol>
         <section className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-10">
+          {/* A new agent's form is read-only while its Create is under way: what the request sent is the form, and no edit
+              made meanwhile is left behind. A refused Create gives it back as it was. */}
+          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           <p className="caps text-label text-muted-foreground">Step {at + 1}</p>
           <h2 className="caps mb-6 border-b pb-4 text-prose font-semibold">{steps[at].label}</h2>
 
@@ -340,7 +347,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
-                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
+                {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
@@ -351,13 +359,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name) : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places));
+                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
+                    // (cut to one line); the reason in full is its title, and in Details.
+                    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
                     return (
-                      <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-body", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-                        <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-primary" />
-                        <span className="min-w-0">{t.name}{why && <span className="ml-2 text-label text-muted-foreground">{why}</span>}
-                          {t.summary && <Summary text={t.summary} />}</span>
-                      </label></li>
+                      <li key={t.name}><ToolCard name={t.name} blurb={t.blurb} summary={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
+                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
                     );
                   })}
                   {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
@@ -432,7 +441,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   {held.length > 0 && (
                     <div className="mt-3 border px-3 py-2 font-mono text-small" role="status" aria-label="Tools this harness doesn't run">
                       <p className="text-warning-text">{choices.find((h) => h.id === f.harness)?.label ?? f.harness} doesn't run {held.length === 1 ? "this tool" : "these tools"} here, so {held.length === 1 ? "it's" : "they're"} unticked. Switching back ticks {held.length === 1 ? "it" : "them"} again.</p>
-                      <ul className="mt-1 space-y-0.5">{held.map((t) => <li key={t}>{t}: <span className="text-muted-foreground">{notOn(f.harness ?? "pi", t, caps.mcpHarnesses)}</span></li>)}</ul>
+                      <ul className="mt-1 space-y-0.5">{held.map((t) => <li key={t}>{t}: <span className="text-muted-foreground">{notOn(f.harness ?? "pi", t, caps.tools, caps.mcpHarnesses)}</span></li>)}</ul>
                     </div>
                   )}
                 </Field>
@@ -488,6 +497,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               ))}
             </ul>
           )}
+          </fieldset>
         </section>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t px-5 py-3 md:px-8">
@@ -496,7 +506,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
+        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
         {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so
             none is made up for them. */}
         {creating && !saving && !viewing && createNeeds.map((why) => <p key={why} className="w-full text-right font-mono text-small text-muted-foreground">{why}</p>)}
@@ -517,16 +527,33 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
  *  the group; `named`: what it holds is a radiogroup with that name already. */
 const Field = ({ named, ...props }: Omit<React.ComponentProps<typeof UiField>, "group"> & { named?: boolean }) => <UiField {...props} group={props.id ? false : named ? "heading" : true} />;
 
-/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
- *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
-function Summary({ text }: { text: string }) {
+/** One tool in the editor's grid. Collapsed, every card is one height: its name, ONE human line (the served `blurb`; an
+ *  MCP server's tool has none, so its description, clamped to two lines), its state as a short tag (the full reason its
+ *  title), and Details. Details shows the model-facing description and the reason in place, and that card grows; Details
+ *  never ticks it. */
+function ToolCard({ name, blurb, summary, why, tag, on, disabled, onToggle }: { name: string; blurb?: string; summary?: string; why?: string; tag?: string; on: boolean; disabled: boolean; onToggle: () => void }) {
   const [open, setOpen] = useState(false);
+  const toggle = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); };
   return (
-    <span className="mt-0.5 block font-sans text-label text-muted-foreground">
-      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
-      {text.length > 120 && (
-        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
+    <label title={why} className={cn("flex flex-col border px-3 py-2.5 font-mono text-body", open ? "min-h-32" : "h-32 overflow-hidden", on && "border-foreground", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+      <span className="flex min-w-0 items-center gap-3">
+        <input type="checkbox" value={name} checked={on} disabled={disabled} onChange={onToggle} className="shrink-0 accent-primary" />
+        {/* Cut to one line on the card, whole in its title; whole, wrapping, once Details opens (an MCP tool's id has no
+            spaces, and tools from one server share a long prefix). */}
+        <span title={name} className={cn("min-w-0", open ? "break-all" : "truncate")}>{name}</span>
+      </span>
+      {blurb ? <span className="mt-1 truncate font-sans text-small text-muted-foreground">{blurb}</span>
+        : summary && !open ? <span className="mt-1 line-clamp-2 font-sans text-label text-muted-foreground" title={summary}>{summary}</span> : null}
+      {tag && <span data-tag title={why} className="mt-1 max-w-full self-start truncate border px-1.5 text-micro text-muted-foreground">{tag}</span>}
+      {open && (
+        <span className="mt-2 space-y-1 font-sans text-label text-muted-foreground">
+          {summary && <p className="whitespace-pre-wrap break-words">{summary}</p>}
+          {why && <p className="break-words">{why}</p>}
+        </span>
       )}
-    </span>
+      {(summary || why) && (
+        <button type="button" onClick={toggle} className="mt-auto self-start pt-1 font-sans text-label underline underline-offset-2 hover:text-foreground">{open ? "Hide details" : "Details"}</button>
+      )}
+    </label>
   );
 }

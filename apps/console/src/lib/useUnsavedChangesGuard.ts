@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-/** A move held for the person's answer: the address it goes to, and how to make it (`replay`; else the address is set). */
-type Held = { to: string; replay?: () => void };
+/** A move held for the person's answer: the address it goes to (null: out of the console, a sign-out), and how to make it
+ *  (`replay`; else the address is set). */
+type Held = { to: string | null; replay?: () => void };
 
 /** The page holding the console's moves while it has unsaved changes: answers whether a move waits for the person (it
  *  asks them), or goes. One page at a time holds; none, and every move goes. */
@@ -9,9 +10,9 @@ let holder: ((move: Held) => boolean) | null = null;
 
 /** Whether a move to the address `to` waits on a page's unsaved changes. The console's router asks this before it moves
  *  (its `go`), and when the address has moved under it (a link, back or forward, an address typed), with `replay`, which
- *  makes that move again once the router has taken it back. A held move does not open its page, and the page asks
- *  "Leave without saving?". */
-export function holdsMove(to: string, replay?: () => void): boolean {
+ *  makes that move again once the router has taken it back. A sign-out asks with `to` null and itself as `replay`. A
+ *  held move does not happen, and the page asks "Leave without saving?". */
+export function holdsMove(to: string | null, replay?: () => void): boolean {
   return holder ? holder({ to, replay }) : false;
 }
 
@@ -40,7 +41,7 @@ export function useUnsavedChangesGuard(dirty: boolean): { asking: boolean; stay:
       holder = null;
       setHeld(null);
       if (held.replay) held.replay();
-      else location.hash = held.to;
+      else if (held.to !== null) location.hash = held.to;
     },
   };
 }
