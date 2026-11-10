@@ -66,6 +66,6 @@ The npm commands print summaries. Run the underlying `.mjs` scripts directly for
 | `1` | Configuration, execution or saving failed |
 | `130` | Cancelled or deadline exceeded |
 
-`configuration` points to missing access or saved-default setup; `ERR_MODULE_NOT_FOUND` points to a config path or dependency. Confirm the offline command works, then correct the prerequisite.
+`configuration` points to missing access or a missing `--config` for agent steps; `ERR_MODULE_NOT_FOUND` points to a config path or dependency. Confirm the offline command works, then correct the prerequisite.
 
-Ctrl-C and SIGTERM cancel the run. The default whole-command deadline is 600 seconds; use `--deadline 900` to change it (1 to 3600 seconds). The default Pi/Jev limits permit a 540-second execution path, leaving setup margin. Cancellation cannot undo an admitted provider call; custom adapters must cooperate.
+Ctrl-C and SIGTERM cancel the run. The default whole-command deadline is 600 seconds; use `--deadline 900` to change it (1 to 3600 seconds). Keep your adapters' own time limits inside the deadline, with margin for setup. Cancellation cannot undo an admitted provider call; custom adapters must cooperate.
