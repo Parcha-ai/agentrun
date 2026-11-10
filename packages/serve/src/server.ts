@@ -1068,7 +1068,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
    *  computerReadiness): over the registry the claim reads (workspace/computer-deps.ts claimKinds, asked with what the
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
-   *  now, with keys read the claim's way (the environment's, else the saved one). What runnable.ts checks for an agent with
+   *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
+   *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
    *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
    *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
   const dockerAnswers = (provider: string): true | string => {
@@ -1076,7 +1077,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
   const computerReady = async (setting: { kind: string; provider?: string }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, checked.sealKey, process.env), dockerAnswers);
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, checked.sealKey, withSecrets(process.env, "own")), dockerAnswers);
   const archil = createArchilRoutes({ store, sealKey: checked.sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
