@@ -623,8 +623,9 @@ export const MCP_REFRESH_CALL_MS = 2 * 4_000;
 export const STORE_WRITE_DEADLINE_MS = 10_000;
 /** A refresh lease's length by default: it covers the holder's whole custody of the refresh token, the refresh call
  *  (MCP_REFRESH_CALL_MS) and then the keep of its new set (STORE_WRITE_DEADLINE_MS, from the keep's call), with 2 s to
- *  spare. A lease shorter than both lapses while a slow commit is still landing a set whose token the provider already
- *  spent, and a waiter then takes over and refreshes with the spent one. Made from the two bounds so it cannot drift. */
+ *  spare (a Postgres commit sent at the deadline is given 1 s of it to answer). A lease shorter than both lapses while a
+ *  slow commit is still landing a set whose token the provider already spent, and a waiter then takes over and refreshes
+ *  with the spent one. Made from the two bounds so it cannot drift. */
 export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 2_000;
 
 export interface Mcp {
@@ -1012,8 +1013,9 @@ export class CommandTaken extends Error {
 /** An interactive transaction still open at its deadline: rolled back, nothing of it written, and the calls behind it go on. */
 export class StoreDeadline extends Error {
   readonly deadlineMs: number;
-  constructor(deadlineMs: number) {
-    super(`the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
+  /** `message`: words of its own (a connection the store's database never gave, StoreConnect's); by default a transaction's. */
+  constructor(deadlineMs: number, message?: string) {
+    super(message ?? `the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
     this.name = "StoreDeadline";
     this.deadlineMs = deadlineMs;
   }
