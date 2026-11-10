@@ -4,9 +4,13 @@
 // (hands.ts) and the executors the registry takes from the host: pi's read, write and edit, and pi's bash as bash's own
 // run, all on one file environment over the Workspace (pi-env.ts).
 //
-// Where the run's shell is: in the computer ("computer": the folder at /workspace, every host tool), or, with none, the
-// run's folder itself ("local": bash runs there, asking first, and the background tools are refused in words). The
-// longest command is 600 s, or 295 s on Archil's serverless exec (Mode 2 with no computer); bash's words follow it.
+// Where the run's shell is (resolve-computer.ts shellPlaceOf, the one rule runShellOf reads off a setting too): in the
+// computer ("computer": the folder at /workspace, every host tool); with none, in Mode 2 the folder's own exec, Archil's
+// serverless one, a fresh container holding the run's folder alone ("local": bash only, asking first, and the background
+// tools refused in words); in Mode 1 nowhere ("none"): the folder is one of this server's own, and a command there would
+// run on the server with everything it can read (its data, its keys), so the run gets the file tools alone, confined to
+// the folder, and no bash family at all. The longest command is 600 s, or 295 s on Archil's serverless exec; bash's
+// words follow it.
 //
 // The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. TMPDIR is .agentrun/tmp in
 // the run's folder, and bash's full output goes to .agentrun/output/<id> there; the run's end sweeps both.
@@ -17,7 +21,7 @@
 // The computer's kind (the agent's computer setting) says what else the run gets. The run's folder is attached to the
 // computer only when the kind has files and exec AND its provider mounts the folder: a sandbox always, a desktop when
 // its provider mounts (the caller gives the mount check only then). Otherwise the folder stays the no-computer Workspace
-// and the shell is "local", and the computer adds only its kind's tools: a desktop's screen and input, a phone's
+// with no computer's shell (above), and the computer adds only its kind's tools: a desktop's screen and input, a phone's
 // screen, touch and apps (computer-ports.ts, over its computerd calls, as its groups offer them), a browser's tools over
 // its CDP connect (pi-browser's definitions, BROWSER_TOOLS, and the runs the caller gives).
 //
@@ -35,6 +39,7 @@ import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./execut
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
 import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
+import { type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
 import type { Workspace } from "./workspace.js";
 
 /**
@@ -94,8 +99,8 @@ export type RunHands = {
   /** The run's Workspace: attached to the computer when there is one. */
   readonly workspace: Workspace;
   readonly hands: Hands;
-  /** Where the run's shell is: the registry's ShellPlace. */
-  readonly shell: "computer" | "local";
+  /** Where the run's shell is: the registry's ShellPlace (shellPlaceOf). "none": no bash family at all. */
+  readonly shell: ShellPlace;
   /** The computer's kinds whose tools the run gets, past files and a shell. */
   readonly kinds: readonly CapabilityKind[];
   /** The kinds' tools the computer does not offer (its groups lack them), not listed to the model. */
@@ -105,8 +110,9 @@ export type RunHands = {
   readonly cwd: string;
   /** Every absolute name of the run's folder a text may hold: cwd, its path here, the aliases given. */
   readonly names: readonly string[];
-  /** The registry's host executors: pi's read, write and edit, and pi's bash as bash's own run. */
-  readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash: PiExecutor };
+  /** The registry's host executors: pi's read, write and edit, and pi's bash as bash's own run where the run has a shell
+   *  (none where it is "none", so nothing can run a command on this server). */
+  readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash?: PiExecutor };
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
    *  and its TMPDIR swept. */
   sweep(): Promise<void>;
@@ -123,6 +129,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
   const here = spec?.kind === "bind" ? spec.path : undefined;
   const mounted = mountedIn(computer);
+  const shell = shellPlaceOf(mounted !== undefined, options.mode);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
   // The folder's name: /workspace in a computer (and on Archil's exec, which has no path of this machine), its own path here.
   const cwd = mounted === undefined && here !== undefined ? here : COMPUTER_ROOT;
@@ -142,13 +149,13 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
     // attached. The kind's ports beside them.
     hands: { ...handsOf(attached, { maxExecS, env, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
-    shell: mounted === undefined ? "local" : "computer",
+    shell,
     kinds,
     without,
     maxExecS,
     cwd,
     names,
-    executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), bash: executor(tools.bash!) },
+    executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), ...(shell === "none" ? {} : { bash: executor(tools.bash!) }) },
     async sweep() {
       // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });
