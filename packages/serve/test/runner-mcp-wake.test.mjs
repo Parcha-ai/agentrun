@@ -168,14 +168,20 @@ test("two in-memory stores are different data: each its own where, and one's rel
   const waiter = new AbortController();
   const timer = manualTimer();
   const waiting = mcpClaim({ store: b, claim: await b.claim("run-1", "runner-b", { leaseMs: 60_000 }), grants: ["mcp:fake/add"], sealKey: KEY, signal: waiter.signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, network: heldNetwork(), timer });
-  await timer.waiting();
+  const wait = await timer.waiting();
+  let woke = false;
+  void waiting.then(() => (woke = true), () => (woke = true));
   // On a, a claim refreshes the same server name and lets its lease go.
   const net = heldNetwork();
   const holding = stepOf(a, await a.claim("run-1", "runner-a", { leaseMs: 60_000 }), { network: net, timer: manualTimer() });
   await net.reached;
   net.answer();
   (await holding).release();
-  assert.equal(await within(waiting, 300), "asleep", "a's release did not wake the waiter on b");
+  // A wake clears the waiter's armed wait in the same turn as the release (settledNow is synchronous); a bounded drain
+  // lets anything it queued run before looking.
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(wait.cleared, false, "a's release did not wake the waiter on b: its wait is still armed");
+  assert.equal(woke, false, "and the waiter on b is still waiting");
   waiter.abort();
   await waiting.then((step) => step.release(), () => {});
 });
