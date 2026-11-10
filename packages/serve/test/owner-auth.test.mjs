@@ -424,54 +424,82 @@ test("a setup code is compared as bytes: one with characters outside ASCII is a 
   assert.equal((await setup(server, { password: PASSWORD, code })).status, 403, "the odd code was the first of the five");
 });
 
+const shape = (answer) => (answer.ok ? { ok: true, untracked: answer.untracked } : answer);
+// Let a try in and end it at once, a right password: the server's count of tries under way is back where it was.
+const tried = (limit, address) => { const answer = limit.allow(address); if (answer.ok) answer.done(false); return shape(answer); };
+
 test("the sign-in limit keeps a bounded table: expired addresses are swept, a full table counts a new address by the server's budget only, and a waiting one keeps waiting", () => {
   let now = 1_000_000;
   const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
-  for (let i = 0; i < 10; i++) assert.equal(limit.allow("held").ok, true);
-  assert.equal(limit.allow("held").ok, false);
-  for (let i = 1; i < SIGN_IN_PEERS; i++) assert.deepEqual(limit.allow(`peer-${i}`), { ok: true, untracked: false });
-  assert.deepEqual(limit.allow("one-more"), { ok: true, untracked: true }, "a full table lets a new address in, uncounted by itself");
-  assert.equal(limit.allow("held").ok, false, "a flood of new addresses never resets a waiting one");
-  assert.deepEqual(limit.allow("peer-1"), { ok: true, untracked: false }, "an address already counted still counts");
+  for (let i = 0; i < 10; i++) assert.equal(tried(limit, "held").ok, true);
+  assert.equal(tried(limit, "held").ok, false);
+  for (let i = 1; i < SIGN_IN_PEERS; i++) assert.deepEqual(tried(limit, `peer-${i}`), { ok: true, untracked: false });
+  assert.deepEqual(tried(limit, "one-more"), { ok: true, untracked: true }, "a full table lets a new address in, uncounted by itself");
+  assert.equal(tried(limit, "held").ok, false, "a flood of new addresses never resets a waiting one");
+  assert.deepEqual(tried(limit, "peer-1"), { ok: true, untracked: false }, "an address already counted still counts");
   now += 15 * 60_000;
-  assert.deepEqual(limit.allow("one-more"), { ok: true, untracked: false }, "expired addresses are swept");
-  assert.equal(limit.allow("held").ok, true);
+  assert.deepEqual(tried(limit, "one-more"), { ok: true, untracked: false }, "expired addresses are swept");
+  assert.equal(tried(limit, "held").ok, true);
 });
 
 test("past its free tries an address waits a second, then twice that each time, never more than a minute, and is told how long", () => {
   let now = 0;
   const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
-  for (let i = 0; i < 10; i++) assert.equal(limit.allow("a").ok, true);
+  for (let i = 0; i < 10; i++) assert.equal(tried(limit, "a").ok, true);
   const waits = [];
   for (let i = 0; i < 9; i++) {
-    const held = limit.allow("a");
+    const held = tried(limit, "a");
     assert.equal(held.ok, false);
     assert.equal(held.by, "address");
     waits.push(held.retryAfterMs);
     now += held.retryAfterMs;
-    assert.equal(limit.allow("a").ok, true, "let in once the wait is over");
+    assert.equal(tried(limit, "a").ok, true, "let in once the wait is over");
   }
   assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
   assert.equal(SIGN_IN_MAX_WAIT_MS, 60_000);
-  assert.equal(limit.allow("b").ok, true, "another address is not held");
+  assert.equal(tried(limit, "b").ok, true, "another address is not held");
 });
 
 test("wrong passwords past the server's budget hold every address, a minute at most, so a spread of addresses gains nothing and the owner can always try again", () => {
   let now = 0;
   const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
   for (let i = 0; i < 100; i++) {
-    assert.equal(limit.allow(`guesser-${i}`).ok, true);
-    limit.failed();
+    const guess = limit.allow(`guesser-${i}`);
+    assert.equal(guess.ok, true);
+    guess.done(true);
   }
-  const held = limit.allow("owner");
+  const held = tried(limit, "owner");
   assert.deepEqual([held.ok, held.by, held.retryAfterMs], [false, "server", 1000]);
   now += 1000;
-  assert.equal(limit.allow("owner").ok, true, "after the wait the owner's try goes through");
-  for (let i = 0; i < 10; i++) { now += SIGN_IN_MAX_WAIT_MS; assert.equal(limit.allow(`guesser-x${i}`).ok, true, `guesser ${i} after a minute`); limit.failed(); }
-  const later = limit.allow("owner");
+  assert.equal(tried(limit, "owner").ok, true, "after the wait the owner's try goes through");
+  for (let i = 0; i < 10; i++) { now += SIGN_IN_MAX_WAIT_MS; const guess = limit.allow(`guesser-x${i}`); assert.equal(guess.ok, true, `guesser ${i} after a minute`); guess.done(true); }
+  const later = tried(limit, "owner");
   assert.deepEqual([later.ok, later.by, later.retryAfterMs], [false, "server", SIGN_IN_MAX_WAIT_MS], "110 wrong in the window: the wait is a minute, never more");
   now += 15 * 60_000;
-  assert.equal(limit.allow("owner").ok, true, "a quiet window clears the budget");
+  assert.equal(tried(limit, "owner").ok, true, "a quiet window clears the budget");
+});
+
+test("a try let in holds its place in the server's budget until it ends, so tries at once never outrun it: within the budget no more than its places, past it one at a time", () => {
+  let now = 0;
+  const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
+  const under = [];
+  for (let i = 0; i < 100; i++) {
+    const answer = limit.allow(`spread-${i}`);
+    assert.equal(answer.ok, true, `try ${i} at once`);
+    under.push(answer);
+  }
+  assert.deepEqual(shape(limit.allow("one-more")), { ok: false, retryAfterMs: 1000, by: "server" }, "the 101st at once waits, though nothing has failed yet");
+  under[0].done(false);
+  under[0].done(true);
+  const more = limit.allow("one-more");
+  assert.equal(more.ok, true, "a right password frees its place, once");
+  more.done(true);
+  for (const answer of under.slice(1)) answer.done(true);
+  now += 1000;
+  const alone = limit.allow("owner");
+  assert.equal(alone.ok, true, "past the budget, after the wait, one try goes in");
+  assert.deepEqual(shape(limit.allow("another")), { ok: false, retryAfterMs: 1000, by: "server" }, "and only one at a time");
+  alone.done(false);
 });
 
 test("the limit's key: IPv4 as it is, IPv4-mapped IPv6 as IPv4, IPv6 by its /64, anything else as given", () => {

@@ -72,15 +72,20 @@ const waitAfter = (at: readonly number[], free: number, now: number): number =>
   at.length < free ? 0 : Math.max(0, at[at.length - 1]! + Math.min(SIGN_IN_STEP_MS * 2 ** (at.length - free), SIGN_IN_MAX_WAIT_MS) - now);
 
 /** What the sign-in limit answers a try: let in (`untracked` when the table is full and its address is counted by the
- *  server's budget only), or how long to wait, and whether the address's tries or the server's failures hold it. */
-export type SignInAllowed = { ok: true; untracked: boolean } | { ok: false; retryAfterMs: number; by: "address" | "server" };
+ *  server's budget only), with `done` to call once when the try ends (`wrong` for a wrong password); or how long to wait,
+ *  and whether the address's tries or the server's failures hold it. */
+export type SignInAllowed = { ok: true; untracked: boolean; done(wrong: boolean): void } | { ok: false; retryAfterMs: number; by: "address" | "server" };
 
 /** The sign-in limit. Every try is counted against its address's key (peerKey) before the password is checked, so a
- *  flood never makes scrypt work past it; every wrong password is counted against the whole server. Neither ever refuses
- *  for good: past its free ones each next try waits (waitAfter), and the answer says how long. */
+ *  flood never makes scrypt work past it; every wrong password is counted against the whole server, and a try let in
+ *  holds a place in that count until it ends, so tries at once can't all pass before any of them fails: within the
+ *  budget, no more are let in at once than its places left; past it, one at a time. Neither ever refuses for good: past
+ *  its free ones each next try waits (waitAfter), and the answer says how long. */
 export class SignInLimit {
   private readonly tries = new Map<string, number[]>();
   private failures: number[] = [];
+  /** Tries let in and not yet ended (`done`). */
+  private pending = 0;
   constructor(private readonly addresses = SIGN_IN_PEERS, private readonly now: () => number = () => Date.now()) {}
 
   allow(address: string): SignInAllowed {
@@ -92,15 +97,22 @@ export class SignInLimit {
     const tracked = this.tries.has(key) || this.tries.size < this.addresses;
     const recent = (this.tries.get(key) ?? []).filter(live);
     const byAddress = waitAfter(recent, SIGN_INS_PER_PEER, now);
-    const byServer = waitAfter(this.failures, SIGN_IN_FREE_FAILURES, now);
+    // The server's places: its free failures left, less the tries under way; past the budget, one try at a time, each a
+    // step after the one before it ends.
+    const left = SIGN_IN_FREE_FAILURES - this.failures.length - this.pending;
+    const byServer = left > 0 ? 0 : this.pending > 0 ? SIGN_IN_STEP_MS : waitAfter(this.failures, SIGN_IN_FREE_FAILURES, now);
     const wait = Math.max(byAddress, byServer);
     if (tracked) this.tries.set(key, wait > 0 ? recent : [...recent, now]);
-    return wait > 0 ? { ok: false, retryAfterMs: wait, by: byAddress >= byServer ? "address" : "server" } : { ok: true, untracked: !tracked };
-  }
-
-  /** A wrong password, counted against the server's budget. */
-  failed(): void {
-    this.failures.push(this.now());
+    if (wait > 0) return { ok: false, retryAfterMs: wait, by: byAddress >= byServer ? "address" : "server" };
+    this.pending += 1;
+    let ended = false;
+    const done = (wrong: boolean) => {
+      if (ended) return;
+      ended = true;
+      this.pending -= 1;
+      if (wrong) this.failures.push(this.now());
+    };
+    return { ok: true, untracked: !tracked, done };
   }
 }
 

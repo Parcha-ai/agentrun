@@ -2218,12 +2218,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw new ApiError("rate_limited", `too many sign-ins ${allowed.by === "address" ? "from this address" : "on this server"}; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
         }
         if (allowed.untracked) authFailed("/v2/auth/sign-in", "sign_in_table_full");
-        const { password } = await passwordIn(req, ["password"], false);
-        if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
-        if (!(await me.check(password))) {
-          me.signIns.failed();
-          authFailed("/v2/auth/sign-in", "wrong_password");
-          throw new ApiError("unauthenticated", "that is not the password");
+        // The try holds its place in the server's count until it ends, whatever ends it: a wrong password is charged.
+        let wrong = false;
+        try {
+          const { password } = await passwordIn(req, ["password"], false);
+          if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
+          if (!(await me.check(password))) {
+            wrong = true;
+            authFailed("/v2/auth/sign-in", "wrong_password");
+            throw new ApiError("unauthenticated", "that is not the password");
+          }
+        } finally {
+          allowed.done(wrong);
         }
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
