@@ -41,7 +41,7 @@ export type Rule =
   | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
   | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full"
   | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node"
-  | "skill_front_matter" | "skill_status" | "duplicate";
+  | "skill_front_matter" | "skill_status" | "duplicate" | "consolidate";
 
 /** One problem with what a run proposed, printable as it is. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
