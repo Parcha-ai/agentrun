@@ -408,14 +408,14 @@ test("the claim's Docker provider is built with the named data volume where this
 // On a host no read is made: the provider reads its own interfaces.
 test("on a named data volume the Docker provider's host addresses are the read's and the operator's, unioned; a failed read leaves the operator's; on a host nothing is read", async () => {
   const compose = async () => ({ paths: { at: "/data", volume: "agentrun_agentrun-data" } });
-  const claimWith = async ({ dockerPaths, read, named }) => {
+  const claimWith = async ({ dockerPaths, read, named, boxAllow }) => {
     const root = scratch();
     const sealKey = randomBytes(32);
     const store = await savedKeysStore(sealKey);
     const record = { created: [], released: [], loaded: [] };
     let reads = 0;
     const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record));
-    const env = { ...ENV, ...(named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: named } : {}) };
+    const env = { ...ENV, ...(named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: named } : {}), ...(boxAllow ? { AGENTRUN_BOX_ALLOW: boxAllow } : {}) };
     const { computerForClaim, computerDeps } = computerDepsFrom({ env, store, sealKey, kinds: KINDS, load, dockerPaths, hostAddresses: async () => (reads++, read) });
     const answer = await computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
     await answer.release();
@@ -425,6 +425,9 @@ test("on a named data volume the Docker provider's host addresses are the read's
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { why: "it failed" }, named: "198.51.100.9" }), { egress: { hostAddresses: ["198.51.100.9"] }, reads: 1 });
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { why: "it failed" } }), { egress: undefined, reads: 1 }, "none made up");
   assert.deepEqual(await claimWith({ dockerPaths: async () => ({ here: true }), read: { addresses: ["203.0.113.7"] } }), { egress: undefined, reads: 0 }, "no read on a host");
+  // Under AGENTRUN_BOX_ALLOW=none no computer has a network: nothing is read, only the operator's are given.
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, boxAllow: "none" }), { egress: undefined, reads: 0 }, "no read under none");
+  assert.deepEqual(await claimWith({ dockerPaths: compose, read: { addresses: ["203.0.113.7"] }, named: "198.51.100.9", boxAllow: "none" }), { egress: { hostAddresses: ["198.51.100.9"] }, reads: 0 });
 });
 
 // The whole of compose's path through the computer package's own Docker provider, over its fake docker (no daemon): a

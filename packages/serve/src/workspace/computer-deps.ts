@@ -23,6 +23,7 @@ import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
+import { boxAllowOf } from "../run-box.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
@@ -182,11 +183,14 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
    *  holds its data and the daemon copy's place under it (dockerVolumeOf), and the Docker host's own addresses for its
    *  egress proxy, the union of the read through the socket (`hostAddresses`) and the operator's; on a host, the
    *  operator's alone (the provider reads its own interfaces). With none, none are given, and the provider refuses an
-   *  allow-list where it isn't on the Docker host, in its words. */
+   *  allow-list where it isn't on the Docker host, in its words. The read is made only where a run's computer can have
+   *  an allow-list: this server's AGENTRUN_BOX_ALLOW, which every launch's box_allow is stamped from, is a list (the
+   *  server's start check asks the same); under none no computer has a network, and nothing is read. */
+  const listed = boxAllowOf(env as NodeJS.ProcessEnv) !== "none";
   const dockerOptions = async (): Promise<Record<string, unknown>> => {
     const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
     const volume = dockerVolumeOf(where);
-    const read = volume && options.hostAddresses ? await options.hostAddresses() : undefined;
+    const read = volume && listed && options.hostAddresses ? await options.hostAddresses() : undefined;
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
     return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };

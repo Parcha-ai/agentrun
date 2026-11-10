@@ -269,20 +269,42 @@ test("a server whose AGENTRUN_DOCKER_HOST_ADDRESSES holds an entry that is no IP
   await assert.rejects(serve(t, { data: await dataDir(t), faux: PROBE }), { message: `AGENTRUN_DOCKER_HOST_ADDRESSES is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): "host.docker.internal" is not an IP address` });
 });
 
-test("a DOCKER_HOST other than a local unix socket is another machine's daemon; unset, empty or unix:// is this machine's", async () => {
-  const { remoteDocker } = await import("../dist/box-paths.js");
-  for (const host of ["tcp://docker.example.com:2376", "ssh://builder@docker.example.com", "npipe:////./pipe/docker_engine"]) assert.equal(remoteDocker({ DOCKER_HOST: host }), true, host);
-  for (const host of [undefined, "", "  ", "unix:///var/run/docker.sock"]) assert.equal(remoteDocker(host === undefined ? {} : { DOCKER_HOST: host }), false, String(host));
+test("the daemon docker reaches: DOCKER_HOST when set, else the current context's endpoint as the CLI resolves it; unix:// is this machine's, and a context that can't be read is taken as this machine's", async () => {
+  const { remoteDockerOf } = await import("../dist/box-paths.js");
+  const asked = [];
+  const context = (answer) => async (args) => (asked.push(args), answer);
+  const never = async () => assert.fail("DOCKER_HOST decides: no context is read");
+  for (const host of ["tcp://docker.example.com:2376", "ssh://builder@docker.example.com", "npipe:////./pipe/docker_engine"]) assert.equal(await remoteDockerOf({ DOCKER_HOST: host }, never), host);
+  assert.equal(await remoteDockerOf({ DOCKER_HOST: "unix:///var/run/docker.sock" }, never), undefined);
+  for (const host of [undefined, "", "  "]) {
+    const env = host === undefined ? {} : { DOCKER_HOST: host };
+    assert.equal(await remoteDockerOf(env, context({ code: 0, stdout: '"tcp://docker.example.com:2376"\n', stderr: "" })), "tcp://docker.example.com:2376", String(host));
+    assert.equal(await remoteDockerOf(env, context({ code: 0, stdout: '"unix:///var/run/docker.sock"\n', stderr: "" })), undefined);
+  }
+  assert.deepEqual(asked.at(-1), ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]);
+  assert.equal(await remoteDockerOf({}, context({ code: 1, stdout: "", stderr: "context not found" })), undefined);
+  assert.equal(await remoteDockerOf({}, context({ code: 0, stdout: "<html>", stderr: "" })), undefined);
 });
 
-test("a server whose DOCKER_HOST is another machine's daemon: Docker computers aren't offered, saying why", { timeout: 120_000 }, async (t) => {
-  const REMOTE = "DOCKER_HOST names a Docker daemon that isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
-  const fake = await containerDocker(t, { mounts: [] });
-  withEnv(t, { DOCKER_HOST: "tcp://docker.example.com:2376" });
-  const { api } = await serve(t, { data: await dataDir(t), faux: PROBE, fauxEgress: FAKE_EGRESS });
-  const offer = await docker(api);
-  assert.deepEqual([offer.available, offer.reason], [false, REMOTE], JSON.stringify(offer));
-  assert.deepEqual(fake.runs(), []);
+// A daemon of another machine has none of this machine's paths: whether DOCKER_HOST names it, DOCKER_CONTEXT picks a
+// context whose endpoint it is, or the CLI's saved current context is one (each read through the fake docker), Docker
+// computers aren't offered, in words naming the endpoint.
+test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_CONTEXT or the saved current context: Docker computers aren't offered, saying why", { timeout: 240_000 }, async (t) => {
+  const words = (endpoint) => `this server's Docker daemon (${endpoint}) isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
+  for (const [given, endpoint] of [
+    [{ env: { DOCKER_HOST: "tcp://docker.example.com:2376" } }, "tcp://docker.example.com:2376"],
+    [{ env: { DOCKER_CONTEXT: "builder" }, contexts: { builder: "tcp://builder.example.com:2376" } }, "tcp://builder.example.com:2376"],
+    [{ saved: "ssh://ops@docker.example.com" }, "ssh://ops@docker.example.com"],
+  ]) {
+    const fake = await containerDocker(t, { mounts: [] });
+    if (given.contexts) await writeFile(join(fake.state, "contexts.json"), JSON.stringify(given.contexts));
+    if (given.saved) await writeFile(join(fake.state, "docker-context"), given.saved);
+    withEnv(t, given.env ?? {}, ["DOCKER_HOST", "DOCKER_CONTEXT"]);
+    const { api } = await serve(t, { data: await dataDir(t), faux: PROBE, fauxEgress: FAKE_EGRESS });
+    const offer = await docker(api);
+    assert.deepEqual([offer.available, offer.reason], [false, words(endpoint)], JSON.stringify({ given, offer }));
+    assert.deepEqual(fake.runs(), []);
+  }
 });
 test("the start check: a Docker whose data root this server can't see blocks the network, unless the server found its own container's mount of its data directory", async () => {
   const { egressBlockedBy } = await import("../dist/box-egress.js");

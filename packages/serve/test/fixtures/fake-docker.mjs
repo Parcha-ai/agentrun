@@ -110,6 +110,15 @@ const held = (mark, failMark, then) => {
 };
 
 switch (args[0]) {
+  // `context inspect --format {{json .Endpoints.docker.Host}}`: the current context's daemon, as the CLI resolves it:
+  // DOCKER_CONTEXT's, by its name in `contexts.json` in the state directory; else the saved current one,
+  // `docker-context`; else the local socket.
+  case "context": {
+    const named = process.env.DOCKER_CONTEXT && existsSync(join(state, "contexts.json")) ? JSON.parse(readFileSync(join(state, "contexts.json"), "utf8"))[process.env.DOCKER_CONTEXT] : undefined;
+    if (process.env.DOCKER_CONTEXT && named === undefined) fail(`context "${process.env.DOCKER_CONTEXT}" does not exist`);
+    done(`${JSON.stringify(named ?? (existsSync(join(state, "docker-context")) ? readFileSync(join(state, "docker-context"), "utf8").trim() : "unix:///var/run/docker.sock"))}\n`);
+    break;
+  }
   case "version":
     // The probe's `{{.Server.Version}}`; `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
     if (args.some((arg) => arg.includes("APIVersion"))) done(existsSync(join(state, "docker-api")) ? readFileSync(join(state, "docker-api"), "utf8") : "1.47\n");
@@ -199,9 +208,15 @@ switch (args[0]) {
     }
     container.Config.Env = container.env;
     // The server's read of the Docker host's addresses (docker-host-addresses.ts): its answer is `host-addresses.json` in
-    // the state directory (the host's interfaces and host.docker.internal's), else none; `host-addresses-fail` fails it.
+    // the state directory (the host's interfaces and host.docker.internal's), else none; `host-addresses-fail` fails it;
+    // `host-addresses-hold` stalls it, its container made and running, the client never answering.
     if (container.Config.Labels["agentrun.read"] === "host-addresses") {
       note("host-reads.jsonl", args);
+      if (existsSync(join(state, "host-addresses-hold"))) {
+        save(container);
+        setInterval(() => {}, 60_000);
+        break;
+      }
       if (existsSync(join(state, "host-addresses-fail"))) fail(readFileSync(join(state, "host-addresses-fail"), "utf8").trim() || "docker: Error response from daemon: the fake's read failed.", 125);
       done(existsSync(join(state, "host-addresses.json")) ? readFileSync(join(state, "host-addresses.json"), "utf8") : `${JSON.stringify({ interfaces: ["127.0.0.1", "::1"], gateway: [] })}\n`);
     }

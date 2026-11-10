@@ -26,24 +26,47 @@ export const IN_COMPOSE = "run AgentRun in a container with `docker compose up` 
 /** An engine that cannot mount a volume's subpath. */
 export const OLD_ENGINE = "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+";
 
-/** Why a Docker computer can't run for a server whose Docker daemon is another machine's: a run's computer mounts the
- *  run's folder (and the computer's daemon) by this server's own paths, which that daemon doesn't have. */
-export const COMPUTERS_REMOTE_DOCKER = "DOCKER_HOST names a Docker daemon that isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)";
+/** Why a Docker computer can't run for a server whose Docker daemon (at `endpoint`) is another machine's: a run's
+ *  computer mounts the run's folder (and the computer's daemon) by this server's own paths, which that daemon doesn't
+ *  have. */
+export const remoteDockerWords = (endpoint: string): string =>
+  `this server's Docker daemon (${endpoint}) isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
 
-/** Whether `env`'s DOCKER_HOST names a daemon other than a local unix socket (tcp://, ssh://, or any other). Unset or
- *  unix://, the daemon is this machine's. */
-export const remoteDocker = (env: NodeJS.ProcessEnv): boolean => {
+/** The daemon `env`'s docker reaches, when it is not a local unix socket: DOCKER_HOST when set, else the current
+ *  context's endpoint as the CLI resolves it (DOCKER_CONTEXT, else the saved current context), read as the computer
+ *  package's Docker provider reads it (`docker context inspect`); undefined for a unix:// socket. A context that can't be
+ *  read is taken as this machine's: its Docker provider still refuses at create where it isn't. `docker` is the tests'. */
+export async function remoteDockerOf(env: NodeJS.ProcessEnv, docker: DockerCall = dockerCall(env)): Promise<string | undefined> {
   const host = env.DOCKER_HOST?.trim();
-  return host !== undefined && host !== "" && !host.startsWith("unix://");
-};
+  if (host) return host.startsWith("unix://") ? undefined : host;
+  const ran = await docker(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]);
+  if (ran.code !== 0) return undefined;
+  let endpoint: unknown;
+  try {
+    endpoint = JSON.parse(ran.stdout.trim());
+  } catch {
+    return undefined;
+  }
+  return typeof endpoint === "string" && endpoint !== "" && !endpoint.startsWith("unix://") ? endpoint : undefined;
+}
+
+/** remoteDockerOf, once per process for each environment's docker. */
+const remotes = new Map<string, Promise<string | undefined>>();
+export function remoteDockerOnce(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const key = [env.PATH, env.DOCKER_HOST, env.DOCKER_CONTEXT, env.DOCKER_CONFIG].map((one) => one ?? "").join("\0");
+  let known = remotes.get(key);
+  if (!known) remotes.set(key, (known = remoteDockerOf(env)));
+  return known;
+}
 
 /** Why this server can't run a Docker computer, or undefined when it can: on its Docker's own host (`here`), or in a
  *  container of that Docker's with its data on a named volume (`paths`: the computer mounts the run's folder and its
  *  daemon as that volume's subpaths, workspace/computer-deps.ts dockerVolumeOf). Any other layout says why (`reason`,
- *  dockerPathsOf), and so does a daemon of another machine. The one check every reader of Docker's offer takes. */
-export function dockerComputerRefusal(paths: DockerPaths, env: NodeJS.ProcessEnv): string | undefined {
+ *  dockerPathsOf), and so does a daemon of another machine (`remote`, remoteDockerOf's endpoint). The one check every
+ *  reader of Docker's offer takes. */
+export function dockerComputerRefusal(paths: DockerPaths, remote: string | undefined): string | undefined {
   if ("reason" in paths) return paths.reason;
-  return remoteDocker(env) ? COMPUTERS_REMOTE_DOCKER : undefined;
+  return remote !== undefined ? remoteDockerWords(remote) : undefined;
 }
 
 /** Where a runner's Docker has the data directory `data`, read once by the runner that makes a Docker computer: as the

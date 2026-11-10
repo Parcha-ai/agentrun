@@ -6,12 +6,13 @@
 //     network (`--network host`) from the egress proxy's image (@parcha/agentrun-computer's EGRESS_IMAGE, pinned by
 //     digest, which every Docker computer with an allow-list needs on the host anyway), as nobody (65534:65534), with no
 //     capability, no new privileges, a read-only root, 64 MiB and 32 processes, removed when it exits, bound to
-//     READ_MS. It prints the host's interface addresses (Node's os.networkInterfaces: IPv4 and IPv6 alike) and what
+//     READ_MS, after which it is removed by its name (killing the client would leave it running). It prints the host's interface addresses (Node's os.networkInterfaces: IPv4 and IPv6 alike) and what
 //     host.docker.internal resolves to (host-gateway: on Docker Desktop or OrbStack the listing is the VM's, and the
 //     gateway is the way back to the Mac). A read that fails gives none, in words.
 //   - the operator's AGENTRUN_DOCKER_HOST_ADDRESSES (workspace/computer-deps.ts), for what no interface shows: a NAT'd
 //     or elastic public address.
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import { EGRESS_IMAGE } from "@parcha/agentrun-computer";
 import { withoutSecrets } from "./secrets.js";
@@ -28,12 +29,19 @@ const SCRIPT = [
   "dns.lookup('host.docker.internal', { all: true }, (error, found) => { process.stdout.write(JSON.stringify({ interfaces, gateway: error ? [] : found.map((one) => one.address) }) + '\\n'); });",
 ].join(" ");
 
-/** The read's `docker run`, every argument. */
-export const READ_ARGS: readonly string[] = [
-  "run", "--rm", "--network", "host", "--add-host", "host.docker.internal:host-gateway", "--pull", "missing",
+/** The read's `docker run`, every argument, its container named `name` (a fresh one per read: helperName), so a read
+ *  that runs out of time removes it by that name. */
+export const readArgsOf = (name: string): readonly string[] => [
+  "run", "--rm", "--name", name, "--network", "host", "--add-host", "host.docker.internal:host-gateway", "--pull", "missing",
   "--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
   "--memory", "64m", "--pids-limit", "32", "--label", READ_LABEL, "--entrypoint", "node", EGRESS_IMAGE, "-e", SCRIPT,
 ];
+
+/** A fresh name for one read's container. */
+export const helperName = (): string => `agentrun-host-read-${randomBytes(6).toString("hex")}`;
+
+/** How long removing a read's container that ran out of time, and checking it is gone, may each take. */
+const REMOVE_MS = 15_000;
 
 /** Loopback and link-local: no address another machine reaches the host by. */
 const local = (address: string): boolean => /^127\./.test(address) || address === "::1" || /^169\.254\./.test(address) || /^fe[89ab][0-9a-f]:/i.test(address);
@@ -62,11 +70,21 @@ const dockerRun = (env: NodeJS.ProcessEnv): DockerRun => (args, ms) =>
     child.stdin?.end();
   });
 
+/** Removes the read's container `name` after its client ran out of time (killing the client leaves the container
+ *  running), and checks it is gone: the words for the read's why. */
+async function removeHelper(docker: DockerRun, name: string): Promise<string> {
+  await docker(["rm", "-f", name], REMOVE_MS);
+  const left = await docker(["inspect", "--type", "container", "--format", "{{.State.Running}}", name], REMOVE_MS);
+  return left.code === 0 ? `its container ${name} is still there: remove it with docker rm -f ${name}` : `its container was removed`;
+}
+
 /** The Docker host's addresses, read through `env`'s docker as above. Never throws: a read that fails, or whose answer
- *  can't be read, says why. `docker` is the tests'. */
-export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRun = dockerRun(env)): Promise<HostRead> {
-  const ran = await docker(READ_ARGS, READ_MS);
-  if (ran.code !== 0) return { why: `the read through Docker's socket failed (${ran.code === "timeout" ? `it took over ${READ_MS / 1000} s` : `exit ${ran.code}: ${ran.stderr.trim().slice(0, 200)}`})` };
+ *  can't be read, says why; one that runs out of time has its container removed. `docker`, `ms` and `name` are the
+ *  tests'. */
+export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRun = dockerRun(env), ms = READ_MS, name = helperName()): Promise<HostRead> {
+  const ran = await docker(readArgsOf(name), ms);
+  if (ran.code === "timeout") return { why: `the read through Docker's socket took over ${ms / 1000} s (${await removeHelper(docker, name)})` };
+  if (ran.code !== 0) return { why: `the read through Docker's socket failed (exit ${ran.code}: ${ran.stderr.trim().slice(0, 200)})` };
   try {
     return { addresses: addressesOf(ran.stdout) };
   } catch {
