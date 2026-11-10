@@ -183,7 +183,9 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   const parkedAt = await epoch();
   await server.command("run-1", { kind: "stop" });
   await releasedAfter(server, 1);
-  assert.equal(events.filter((event) => event.type === "claimed" && event.claim.runId === "run-1").at(-1).claim.from, "parked", "the refused end's claim took the run from parked");
+  // A parked run's stop is its end: the claim that took it from its park only ended it, with no loop (#2204), so the one
+  // loop it was ever given is its first.
+  assert.deepEqual(events.filter((event) => event.type === "claimed" && event.claim.runId === "run-1").map((event) => event.claim.from), ["queued"], "the refused end's claim started no loop");
   assert.equal((await epoch()) - parkedAt, 2, "one claim (and its release) for the first refusal");
   // Released after its first refusal: it reads running (the branch of claimable that honours backoff_until), and through
   // 20 more polls of the runner on an unmoved clock it is claimed no more.
