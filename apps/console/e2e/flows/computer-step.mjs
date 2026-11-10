@@ -33,8 +33,14 @@ export default {
     const status = await page.evaluate(async (value) => (await fetch("/v2/computers/faux-sandbox/keys", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ FAUX_SANDBOX_KEY: value }) })).status, fake);
     check(status === 200, `saving Faux sandbox's key answered ${status}`);
 
-    // The editor again: Faux sandbox is ready; pick it, see the tools its loop gets, and save.
+    // The sandbox kind picked above is an unsaved edit: leaving the editor asks first (its guard), and the flow leaves.
+    let asked = "";
+    page.once("dialog", (dialog) => { asked = dialog.message(); void dialog.accept(); });
     await page.goto(`${base}/#/`);
+    await page.waitForFunction(() => !location.hash.includes("/edit"));
+    check(asked === "You have unsaved changes. Leave and discard them?", `leaving the editor asked ${JSON.stringify(asked)}`);
+
+    // The editor again: Faux sandbox is ready; pick it, see the tools its loop gets, and save.
     await page.goto(`${base}/#/agents/${encodeURIComponent(id)}/edit`);
     await page.locator("ol").first().getByRole("button", { name: /Computer/ }).click();
     await page.locator('input[name="computer-kind"][value="sandbox"]').check();
