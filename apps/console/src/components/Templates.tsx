@@ -9,7 +9,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choicesOf, grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -170,8 +170,14 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
               <label className="block">
                 <span className="caps text-[12px] font-semibold">{key}{p.required && <span className="text-destructive-text"> *</span>}</span>
-                <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}{p.pattern ? ` (as ${p.pattern})` : ""}</span>
-                {p.type === "boolean"
+                {/* The parameter's own words; its pattern is the server's to check, never printed. */}
+                <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}</span>
+                {choicesOf(p)
+                  ? <select className={input} value={values[key] ?? ""} required={p.required} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}>
+                      <option value="">{p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen"}</option>
+                      {choicesOf(p)!.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  : p.type === "boolean"
                   ? <input type="checkbox" checked={values[key] === "true"} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.checked ? "true" : "false" }))} />
                   : <input className={input} type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
                       onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))} />}
