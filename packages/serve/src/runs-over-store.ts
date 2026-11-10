@@ -342,7 +342,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
 
 /** The run's learning start as the old start decided it (learning-run.ts onStart): undefined when the run does not learn (the
  *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
- *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
+ *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
 async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
@@ -350,7 +350,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
   if (!learns || !deps.seedFor) return undefined;
   const seeded = await deps.seedFor(entry.agent.id);
   if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
-  // The run's input goes to the note selector (learning.ts NoteSelector; byRecency, the default, reads none of it).
+  // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
   const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
   // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
   // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
@@ -475,7 +475,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's model, resolved once, at start (the runner reads launch.model only).
   const model = await deps.modelOf(entry, revision);
   // The run's learning start, decided here as the old start did (learning-run.ts onStart): a run learns when the server's
-  // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (givenOf,
+  // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (learnedParts,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
   const learning = await learningStartFor(deps, entry, revision, rbody, input);

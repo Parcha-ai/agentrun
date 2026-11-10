@@ -30,9 +30,9 @@ test("BM25: a note holding the input's rarer words scores above one holding its 
     { name: "Tables", description: "Answer with tables", body: "One row per option." },
     { name: "Ledger", description: "The ledger", body: "Ledger ledger." },
   ];
-  const [invoices, tables, ledger] = bm25(docs, wordsOf("reconcile the invoices against the ledger"));
+  const [invoices, tables, ledger] = bm25(docs, queryOf({ content: "reconcile the invoices against the ledger" }));
   assert.ok(invoices > ledger && ledger > 0 && tables === 0, JSON.stringify({ invoices, tables, ledger }));
-  assert.deepEqual(bm25(docs, []), [0, 0, 0]);
+  assert.deepEqual(bm25(docs, new Map()), [0, 0, 0]);
 });
 
 test("a code review's changed paths outweigh its prose: a diff touching db/migrations whose message talks about the refund window ranks the migrations notes above the refunds notes (#2274)", async () => {

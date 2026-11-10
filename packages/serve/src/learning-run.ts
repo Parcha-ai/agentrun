@@ -303,7 +303,7 @@ export class LearningRuns {
     const seeded = await this.seedFor(agentId);
     return async (started, at) => {
       let failed = "failed" in seeded ? seeded.failed : undefined;
-      // The notes its # Learned section names (learning.ts givenOf, as its pin keeps them): what it started with.
+      // The notes its # Learned section names (learning.ts learnedParts, as its pin keeps them): what it started with.
       let given: NonNullable<Learning["given"]> = [];
       if ("seed" in seeded) {
         try {

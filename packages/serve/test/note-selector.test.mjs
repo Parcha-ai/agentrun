@@ -1,13 +1,14 @@
-// Which of an agent's notes a run gets is one port (learning.ts NoteSelector), behind learnedOf and givenOf. Its default,
-// byRecency, gives exactly what the server gave before the port: the golden (fixtures/note-selector-golden.json) is
-// learnedOf and givenOf as main answered them over note-selector-cases.mjs. Another selector chooses alone: the section and
-// the given notes are its one choice, cut of the host's secrets as ever, and it reads the run's input.
+// Which of an agent's notes a run gets is one port (learning.ts NoteSelector), behind learnedParts. byRecency, and the
+// default (byRelevance) on an input no note bears on, give exactly what the server gave before the port: the golden
+// (fixtures/note-selector-golden.json) is the section and the given notes as main answered them over
+// note-selector-cases.mjs. Another selector chooses alone: the section and the given notes are its one choice, cut of
+// the host's secrets as ever, and it reads the run's input.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CASES, OPTIONS, SECRET } from "./note-selector-cases.mjs";
 
-const { byRecency, givenOf, learnedOf, learnedParts, secretsShown } = await import("../dist/learning.js");
+const { byRecency, learnedParts, secretsShown } = await import("../dist/learning.js");
 const GOLDEN = JSON.parse(readFileSync(new URL("./fixtures/note-selector-golden.json", import.meta.url), "utf8"));
 
 test("the default selector, by recency, gives every case exactly what the server gave before the port: the section and the given notes", () => {
@@ -15,8 +16,8 @@ test("the default selector, by recency, gives every case exactly what the server
   for (const [name, seed] of CASES) for (const [label, opts] of OPTIONS) {
     const key = `${name} | ${label}`;
     for (const options of [{ ...opts, shown: secretsShown([SECRET]) }, { ...opts, shown: secretsShown([SECRET]), select: byRecency, run: { input: { content: "anything" } } }]) {
-      assert.equal(learnedOf(seed, options) ?? null, GOLDEN[key].section, `${key}: the section`);
-      assert.deepEqual(givenOf(seed, options), GOLDEN[key].given, `${key}: the given notes`);
+      assert.equal(learnedParts(seed, options).section ?? null, GOLDEN[key].section, `${key}: the section`);
+      assert.deepEqual(learnedParts(seed, options).given.map(({ file, name }) => ({ file, name })), GOLDEN[key].given, `${key}: the given notes`);
     }
   }
 });
@@ -85,7 +86,7 @@ test("within the budget nothing changes, whatever the input: the default reads e
     const options = { ...opts, shown, run: { input: { content: "Note 1 applies: the rule about note 2." } } };
     const fits = Object.values(seed.notes).reduce((sum, text) => sum + Buffer.byteLength(text), 0) < opts.budget / 2;
     if (!fits) continue;
-    assert.equal(learnedOf(seed, options) ?? null, GOLDEN[`${name} | ${label}`].section, `${name} | ${label}`);
+    assert.equal(learnedParts(seed, options).section ?? null, GOLDEN[`${name} | ${label}`].section, `${name} | ${label}`);
   }
 });
 
@@ -93,8 +94,8 @@ test("an input with no word any note holds, or none at all, reads by recency pas
   for (const [name, seed] of CASES) for (const [label, opts] of OPTIONS) {
     for (const input of [undefined, { content: "" }, { content: "zzzz qqqq" }]) {
       const options = { ...opts, shown, ...(input ? { run: { input } } : {}) };
-      assert.equal(learnedOf(seed, options) ?? null, GOLDEN[`${name} | ${label}`].section, `${name} | ${label} | ${JSON.stringify(input)}`);
-      assert.deepEqual(givenOf(seed, options), GOLDEN[`${name} | ${label}`].given);
+      assert.equal(learnedParts(seed, options).section ?? null, GOLDEN[`${name} | ${label}`].section, `${name} | ${label} | ${JSON.stringify(input)}`);
+      assert.deepEqual(learnedParts(seed, options).given.map(({ file, name }) => ({ file, name })), GOLDEN[`${name} | ${label}`].given);
     }
   }
   assert.deepEqual(byRelevance({ notes: [], indexBytes: 0, indexComplete: true, budget: 0 }, {}), { whole: [], index: false });

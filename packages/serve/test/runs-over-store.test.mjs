@@ -12,7 +12,7 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
-const { givenOf, learnedOf } = await import("../dist/learning.js");
+const { learnedParts } = await import("../dist/learning.js");
 
 const dirs = [];
 after(() => {
@@ -428,7 +428,7 @@ test("startRun records the exact given notes, seed, # Learned section and seedNo
   const run = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
   const launch = readLaunchBody((await store.runs.launch(run.id)).body);
   const options = { budget: 8000, read: true, shown: shown() };
-  const expected = { given: givenOf(learningSeed(), options), seed: "seed-abc", section: learnedOf(learningSeed(), options) ?? "", seedNotes: Object.keys(learningSeed().notes).length };
+  const expected = { given: learnedParts(learningSeed(), options).given.map(({ file, name }) => ({ file, name })), seed: "seed-abc", section: learnedParts(learningSeed(), options).section ?? "", seedNotes: Object.keys(learningSeed().notes).length };
   assert.deepEqual(launch.learning, expected);
   assert.deepEqual(learningStartOf(launch), expected);
   // Each given entry carries its name, not just a file.
