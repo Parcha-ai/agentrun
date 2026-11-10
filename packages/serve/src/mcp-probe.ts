@@ -124,6 +124,16 @@ export function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | unde
   return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);
 }
 
+/** Query parameter names that look like a credential, compared lowercase with every "-" and "_" gone: an MCP server's url
+ *  is kept and shown in plain text (its row's url, every read, the console), so a credential belongs in a header. */
+export const CREDENTIAL_QUERY_NAMES: readonly string[] = [
+  "token", "accesstoken", "authtoken", "idtoken", "refreshtoken", "sessiontoken", "bearer", "jwt",
+  "key", "apikey", "xapikey", "accesskey", "secretkey", "privatekey",
+  "secret", "clientsecret", "auth", "authorization", "credential", "credentials",
+  "password", "passwd", "pass", "pwd", "sig", "signature", "session", "sessionid",
+];
+const credentialQueryName = (name: string) => CREDENTIAL_QUERY_NAMES.includes(name.toLowerCase().replace(/[-_]/g, ""));
+
 export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   if (typeof value !== "string" || value === "") return void issues.push({ field: "url", reason: value === undefined ? "missing" : "wrong_type", message: "url is the MCP server's Streamable HTTP endpoint, as text." });
   let url: URL;
@@ -134,6 +144,10 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   }
   if (value.length > MAX_URL) issues.push({ field: "url", reason: "too_long", message: `url is at most ${MAX_URL} characters.` });
   else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds a user or password: send a credential as auth instead." });
+  else if ([...url.searchParams.keys()].some(credentialQueryName)) {
+    const name = [...url.searchParams.keys()].find(credentialQueryName)!;
+    issues.push({ field: "url", reason: "invalid", message: `${name} in the URL's query looks like a credential; send it as a header instead (Headers).` });
+  }
   else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: `url is http://${url.host}, which is not this machine's loopback: use https, or http only on loopback.` });
   else if (url.protocol !== "https:" && url.protocol !== "http:") issues.push({ field: "url", reason: "invalid", message: "url is https, or http on loopback." });
   url.hash = "";
