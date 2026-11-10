@@ -52,17 +52,22 @@ test("a read that fails or answers what is not its list gives no addresses, sayi
   assert.equal(noHostAddresses("it failed"), "the server runs in a container and doesn't know the Docker host's own addresses (it failed), so a Docker computer can't keep this server's allow-list: set AGENTRUN_DOCKER_HOST_ADDRESSES to the host's IP addresses, or AGENTRUN_BOX_ALLOW=none for no network");
 });
 
-test("a read that runs out of time removes its container by name and checks it is gone, saying so; one still there is named with the way to remove it", async () => {
-  for (const [stillThere, why] of [
-    [false, "the read through Docker's socket took over 60 s (its container was removed)"],
-    [true, `the read through Docker's socket took over 60 s (its container ${NAME} is still there: remove it with docker rm -f ${NAME})`],
+test("a read that runs out of time removes its container by name and checks it is gone, saying so; one still there, or one Docker can't say of, is named with the way to remove it", async () => {
+  const DAEMON = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+  for (const [inspected, why] of [
+    [{ code: 1, stdout: "", stderr: `Error: No such object: ${NAME}` }, "the read through Docker's socket took over 60 s (its container was removed)"],
+    [{ code: 1, stdout: "", stderr: `Error response from daemon: No such container: ${NAME}` }, "the read through Docker's socket took over 60 s (its container was removed)"],
+    [{ code: 0, stdout: "true\n", stderr: "" }, `the read through Docker's socket took over 60 s (its container ${NAME} is still there: remove it with docker rm -f ${NAME})`],
+    // A daemon that didn't answer says nothing of the container: it may still run.
+    [{ code: 1, stdout: "", stderr: `${DAEMON}\n` }, `the read through Docker's socket took over 60 s (its container ${NAME} may still be running (docker inspect failed: ${DAEMON}): remove it with docker rm -f ${NAME})`],
+    [{ code: "timeout", stdout: "", stderr: "" }, `the read through Docker's socket took over 60 s (its container ${NAME} may still be running (docker inspect failed: exit timeout): remove it with docker rm -f ${NAME})`],
   ]) {
     const calls = [];
     const docker = async (args) => {
       calls.push(args);
       if (args[0] === "run") return { code: "timeout", stdout: "", stderr: "" };
       if (args[0] === "rm") return { code: 0, stdout: `${NAME}\n`, stderr: "" };
-      return stillThere ? { code: 0, stdout: "true\n", stderr: "" } : { code: 1, stdout: "", stderr: `Error: No such object: ${NAME}` };
+      return inspected;
     };
     assert.deepEqual(await readHostAddresses({}, docker, READ_MS, NAME), { why });
     assert.deepEqual(calls.map((args) => args.slice(0, 2)), [["run", "--rm"], ["rm", "-f"], ["inspect", "--type"]]);
@@ -85,4 +90,9 @@ test("a stalled read's container is removed through the fake docker, and the rea
   const name = helperName();
   assert.deepEqual(await readHostAddresses(env, undefined, 2_000, name), { why: "the read through Docker's socket took over 2 s (its container was removed)" });
   assert.equal(existsSync(join(state, "host-reads.jsonl")), true, "the read was made");
+  // The same, its daemon failing the check (`inspect-fail` in the fake's state): the container may still run, and the
+  // read says so with the way to remove it.
+  await writeFile(join(state, "inspect-fail"), "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
+  const again = helperName();
+  assert.deepEqual(await readHostAddresses(env, undefined, 2_000, again), { why: `the read through Docker's socket took over 2 s (its container ${again} may still be running (docker inspect failed: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?): remove it with docker rm -f ${again})` });
 });

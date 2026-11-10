@@ -282,6 +282,8 @@ switch (args[0]) {
     break;
   }
   case "inspect": {
+    // `inspect-fail` in the state: the daemon doesn't answer an inspect, in its words.
+    if (existsSync(join(state, "inspect-fail"))) fail(readFileSync(join(state, "inspect-fail"), "utf8").trim());
     const container = read(args.at(-1));
     if (!container) fail(`Error: No such object: ${args.at(-1)}`);
     // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object, `{{json .Mounts}}` its mounts; without it

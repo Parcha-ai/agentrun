@@ -75,8 +75,14 @@ const dockerRun = (env: NodeJS.ProcessEnv): DockerRun => (args, ms) =>
 async function removeHelper(docker: DockerRun, name: string): Promise<string> {
   await docker(["rm", "-f", name], REMOVE_MS);
   const left = await docker(["inspect", "--type", "container", "--format", "{{.State.Running}}", name], REMOVE_MS);
-  return left.code === 0 ? `its container ${name} is still there: remove it with docker rm -f ${name}` : `its container was removed`;
+  if (left.code === 0) return `its container ${name} is still there: remove it with docker rm -f ${name}`;
+  // Gone only when Docker says it has no such container; a daemon that didn't answer says nothing of it.
+  if (NO_SUCH_CONTAINER.test(left.stderr)) return `its container was removed`;
+  return `its container ${name} may still be running (docker inspect failed: ${left.stderr.trim().slice(0, 160) || `exit ${left.code}`}): remove it with docker rm -f ${name}`;
 }
+
+/** Docker's words for a container it doesn't have, as `docker inspect` gives them. */
+const NO_SUCH_CONTAINER = /no such (object|container)/i;
 
 /** The Docker host's addresses, read through `env`'s docker as above. Never throws: a read that fails, or whose answer
  *  can't be read, says why; one that runs out of time has its container removed. `docker`, `ms` and `name` are the
