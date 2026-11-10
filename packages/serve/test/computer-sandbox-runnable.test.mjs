@@ -96,6 +96,29 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
+// A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a
+// server whose AGENTRUN_BOX_ALLOW is none, the operator's word for no network at all, its run is refused at the start in
+// words naming the setting, as the claim refuses it; under the default list (the setting unset) or the operator's own
+// list it is not, and runs open (the claim's networkOf).
+const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).";
+for (const boxAllow of ["none", undefined, "pypi.org"]) {
+  const refused = boxAllow === "none";
+  test(`a cloud phone, its key saved, is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {
+    withEnv(t, boxAllow === undefined ? {} : { AGENTRUN_BOX_ALLOW: boxAllow }, ["AGENTRUN_BOX_ALLOW"]);
+    const api = await server(t, {});
+    const saved = await api("PUT", "/computers/phone-harness/keys", { PHONE_HARNESS_API_KEY: "fake-test-key" });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const said = await saveAndStart(api, `phone-${boxAllow ?? "unset"}`.replace(/\./g, "-"), { computer: { kind: "phone", provider: "phone-harness" } });
+    if (!refused) {
+      assert.deepEqual(said.refused, [], `the run is refused for its computer: ${JSON.stringify(said)}`);
+      return;
+    }
+    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.equal(said.refused[0][2], NO_NETWORK_PHONE);
+    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  });
+}
+
 test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount of this machine's folder, which only Docker gives", async (t) => {
   // main's design (resolve-computer.ts): Mode 1 runs a sandbox only on Docker, whose bind mount reaches the run's folder on
   // this machine; a remote sandbox cannot, whatever keys it has.

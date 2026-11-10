@@ -1112,7 +1112,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
   const computerReady = async (setting: { kind: string; provider?: string }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers);
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {

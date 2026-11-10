@@ -73,6 +73,15 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
     return keys;
   };
 
+/** Whether a provider's computers run only on the vendor's own network: the network forms it declares (its module's
+ *  NETWORK, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
+export const vendorNetworkOnly = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && network.every((one) => one === "open");
+
+/** Why a vendor-hosted computer is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the fix:
+ *  the operator said no network at all, and the computer can't run without the vendor's. */
+export const noNetworkRefusal = (label: string, kind: string): string =>
+  `This agent's computer is a ${label} ${kind}, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).`;
+
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
  *  that name the fix. Nothing starts. A run's start asks it before the run is made (runnable.ts).
@@ -80,8 +89,12 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
  *  `answers`: whether a provider that binds a folder of this machine (Docker) answers here now, or why not, in words
  *  that say how to fix it (the server's start-time probe of it). A Mode 1 sandbox on such a provider is refused in those
  *  words here, at the start, where the claim would only fail to launch it. Asked here, not in resolveComputer: the claim
- *  has no such answer and launches it. Absent: not asked. */
-export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
+ *  has no such answer and launches it. Absent: not asked.
+ *
+ *  `boxAllow`: this server's allow setting (run-box.ts boxAllowOf). Under "none", a computer that runs only on the
+ *  vendor's own network is refused (noNetworkRefusal), as the claim refuses it; under a list it runs open. Absent: not
+ *  asked. */
+export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string, boxAllow?: readonly string[] | "none"): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
   const resolved = await resolveComputer(setting, mode, registry, {
     keysOf: providerKeys(registry, keyOf),
     // A setting is given, so the Mode 1 default (the only asker) is never read; and nothing is launched.
@@ -93,6 +106,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   const why = mode === 1 && resolved.mounts && entry?.mounts.includes("bind") && answers ? answers(entry.id) : true;
   // It names the box whose probe said no (a refusal's details.box), as the box check did.
   if (why !== true) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${why.replace(/[.!?]+$/, "")}.`, box: entry!.id };
+  if (boxAllow === "none" && entry && vendorNetworkOnly(entry.network)) return { refused: noNetworkRefusal(entry.label, resolved.kind) };
   return { ok: true };
 }
 
