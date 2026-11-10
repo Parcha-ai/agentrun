@@ -38,6 +38,10 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
   return (request) => {
     const capUsd = options.capUsd();
     if (capUsd === undefined) return undefined;
+    // `owed`: money already owed at the provider: booked and held, never asked of the rule; only for charges incurred
+    // outside a call (a browser session's release, the time a person used). It counts in the run's spend and holds like
+    // any paid step, so every refusable step after it sees it. Only a figure is money: one that is not goes to the rule.
+    if (request.paid?.owed && isFigure(request.feeUsd ?? 0)) return { holdUsd: request.feeUsd ?? 0 };
     const model = options.modelOf(request.model) ?? unpriced(request.model);
     // A request the host sends beside the harness's own (its host label: a learned workflow's node) is another
     // conversation's prompt: nothing of the session's cache is read for it, so it is priced as a cache miss.
