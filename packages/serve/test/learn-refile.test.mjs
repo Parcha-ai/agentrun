@@ -27,6 +27,7 @@ const { CAPS } = await import("../dist/learn/check.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalEntries } = await import("../dist/runner/journal-reader.js");
 const { seedOf } = await import("../dist/learning.js");
+const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 
 /** The QA finding: a rule for every report, written as a skill. */
 const SKILL = { file: "skills/report-format/SKILL.md", text: "---\nname: report-format\ndescription: How every report is laid out\n---\nStart every report with STATUS, at most 5 lines, and end it with Next:.\n" };
@@ -84,7 +85,7 @@ test("keptOf and mergeChangeOf: a re-filed skill merges as its note, held when p
 /** A learning run of run-1, which proposed NOTE and SKILL; its faux grader keeps NOTE and re-files SKILL as a note.
  *  `existing`: a note's text main holds at report-format.md first. Answers its end, the folder's notes and skills after,
  *  and the words its learning ended with. */
-async function refileRun(t, { existing, skill, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
+async function refileRun(t, { existing, skill, committed, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(tmpdir(), "learn-refile-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
@@ -114,6 +115,18 @@ async function refileRun(t, { existing, skill, race = {}, notes: runNotes = [NOT
     }
   }
   const seed = (await seedOf(data, "agent-1")).sha;
+  // `committed`: run-1's merge landing on main while it is graded (these files), as a learning run that committed and
+  // went down before it recorded its end leaves it for its resume: graded, and its own merge already on main.
+  const commitFirst = async () => {
+    if (!committed) return;
+    const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+    try {
+      const made = await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "first attempt", graded: {}, files: committed });
+      assert.equal(made.ok, true, JSON.stringify(made));
+    } finally {
+      await folder.end();
+    }
+  };
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const proposal = { seed, notes: runNotes, files, asked: ["start every report with STATUS, at most 5 lines, end with Next:"] };
@@ -122,7 +135,7 @@ async function refileRun(t, { existing, skill, race = {}, notes: runNotes = [NOT
   const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
   const answer = given ?? verdictOf([{ file: NOTE.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report, whatever the job" }]);
   // `race`: notes another run merges while this one is graded, after its read of main and before its merge.
-  const loop = learningLoopFactory({ store, data, ask: async () => (await land(race), { text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = learningLoopFactory({ store, data, ask: async () => (await land(race), await commitFirst(), { text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const end = await loop.start(claim);
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
   const words = entries.find((entry) => entry.kind === KINDS.learningMerged || entry.kind === KINDS.learningDropped)?.data.detail;
@@ -130,7 +143,7 @@ async function refileRun(t, { existing, skill, race = {}, notes: runNotes = [NOT
   try {
     const snapshot = await readSnapshot(folder.workspace);
     const notes = await mainTexts(folder.workspace, snapshot.notes.map(({ file }) => file));
-    return { end, notes, skills: snapshot.skills, words };
+    return { end, notes, skills: snapshot.skills, words, learning: await runLearningEnd(store, "run-1") };
   } finally {
     await folder.end();
   }
@@ -341,4 +354,34 @@ test("a skill re-filed as a note stays within a run's note cap, so the host's or
   const size = Buffer.byteLength(head) - 1 + over;
   assert.ok(size > CAPS.runNote && size <= CAPS.note, `a note between the caps (${size})`);
   assert.equal(skillAsNote(SKILL.file, text), undefined, "over the run's cap: no note");
+});
+
+test("a note the merge leaves out is no note the run learned: its learning end lists it neither as learned nor as waiting, and its item says it was left out", async (t) => {
+  // The merge's own settle leaves check-units.md out (units.md, active on main, holds its rule); a re-filed rule whose name
+  // main holds with other text is left out before the commit (takenOnMain). Neither is learned.
+  const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  const other = "---\nname: Report format\ndescription: How a report is laid out\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const answer = verdictOf([{ file: again.file, decision: "keep", why: "useful" }, { file: NOTE.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", question: "Risky", why: "a rule for every report" }]);
+  const { end, learning } = await refileRun(t, { existing: { [units.file]: units.text, "report-format.md": other }, notes: [again, NOTE], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(learning.state, "merged");
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["retries.md"], "only the note written is learned");
+  assert.equal(learning.pending, undefined, "the held re-filed rule was left out: nothing waits");
+  const item = (file) => learning.verdict.items.find((one) => one.file === file);
+  assert.deepEqual([item(again.file).keep, item(again.file).why], [false, SAME_NOTE], "left out, as the same rule");
+  assert.deepEqual([item(SKILL.file).keep, item(SKILL.file).why], [false, NOTE_NAME_TAKEN("report-format")], "left out, its name taken");
+});
+
+test("a merge already on main (a resume after its commit) reads the same: its left-out note is neither learned nor waiting, and says why", async (t) => {
+  const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  // The first attempt's commit wrote retries.md alone (check-units.md left out); the resume meets that merge.
+  const { end, learning, words, notes } = await refileRun(t, { existing: { [units.file]: units.text }, committed: [{ path: NOTE.file, text: NOTE.text }], notes: [again, NOTE], files: [], answer: KEEP_BOTH([again.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes[again.file], undefined);
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["retries.md"]);
+  assert.equal(learning.pending, undefined);
+  assert.deepEqual([learning.verdict.items.find(({ file }) => file === again.file).keep, learning.verdict.items.find(({ file }) => file === again.file).why], [false, SAME_NOTE]);
+  assert.equal(words, "Learned: Retries", "the resumed merge says what the first would have");
 });
