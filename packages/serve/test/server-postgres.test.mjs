@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import pg from "pg";
 import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
 import { client as pgClient, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
@@ -109,6 +110,58 @@ test("a role with no CREATE on the database, on a schema that does not exist, is
   assert.match(refused.message, new RegExp(`the Postgres schema ${schema} does not exist, and this role may not create it \\(no CREATE on the database\\): create the schema ahead of time, owned by this role, or grant this role CREATE on the database`));
   assert.ok(!refused.message.includes(new URL(url).password), "never the password");
   assert.deepEqual(await admin("SELECT nspname FROM pg_namespace WHERE nspname = $1", [schema]), [], "no schema made");
+});
+
+/** `text` on the test database as `url`'s role, answered with its rows, or the error it was refused with. */
+async function asRole(url, text) {
+  const c = new pg.Client({ connectionString: url });
+  c.on("error", () => undefined);
+  await c.connect();
+  try {
+    return await c.query(text).then((result) => result.rows, (error) => error);
+  } finally {
+    await c.end();
+  }
+}
+
+test("a least-privilege deployment (a host's three roles): the server as the schema's owner with no CREATE on the database migrates and serves; a runner as a write-only role runs what the server started and may not change the schema; a reader with no grants reads nothing", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
+  // The roles a host makes (grep's agentrun_migrator, agentrun_runtime, grep_agentrun_reader): none may create a schema.
+  const migrator = await roleWithoutCreate(t);
+  const runtime = await roleWithoutCreate(t);
+  const reader = await roleWithoutCreate(t);
+  // The schema made ahead by an administrator, owned by the migrator. The runtime role reads and writes the migrator's
+  // tables through its default privileges, set before the server makes any; the reader is granted nothing.
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  await admin(`CREATE SCHEMA ${schema} AUTHORIZATION ${migrator.role}`);
+  await admin(`REVOKE ALL ON SCHEMA ${schema} FROM PUBLIC`);
+  await admin(`GRANT USAGE ON SCHEMA ${schema} TO ${runtime.role}`);
+  await admin(`ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator.role} IN SCHEMA ${schema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${runtime.role}`);
+  await admin(`ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator.role} IN SCHEMA ${schema} GRANT USAGE, SELECT ON SEQUENCES TO ${runtime.role}`);
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const server = cli(t, ["--data", data, "--port", "0", "--faux", FAUX, "--no-runner"], storeEnv(root, migrator.url, schema));
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await printed(server, /^Open /m))[1]);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "the server migrated the schema and serves");
+  const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
+  assert.equal((await api("POST", "/agents", agent("plain", { place: { mode: "runner" } }))).status, 201);
+  const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The runner as the runtime role: it claims, journals, renews and ends the run on its grants alone.
+  const runner = cli(t, ["runner", "--data", data], { ...storeEnv(root, runtime.url, schema), AGENTRUN_RUNNER_NAME: "runner-runtime", AGENTRUN_SERVE_FAUX: FAUX });
+  const err = [];
+  createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
+  runner.once("exit", (code) => err.push(`exited ${code}`));
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed", "cancelled"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", `the run, under the runtime role: ${last.status} ${err.join("\n")}`);
+  // The runtime role may not change the schema, and the reader may not read or open it.
+  const ddl = await asRole(runtime.url, `CREATE TABLE ${schema}.extra (id int)`);
+  assert.equal(ddl?.code, "42501", `the runtime role may not create a table: ${ddl?.message ?? "created"}`);
+  const drop = await asRole(runtime.url, `DROP TABLE ${schema}.runs`);
+  assert.equal(drop?.code, "42501", `nor drop one: ${drop?.message ?? "dropped"}`);
+  const read = await asRole(reader.url, `SELECT id FROM ${schema}.runs`);
+  assert.equal(read?.code, "42501", `the reader reads nothing: ${read?.message ?? "read"}`);
+  await assert.rejects(openPostgresStore({ url: reader.url, schema, role: "runner" }), "and opens no store");
 });
 
 test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
