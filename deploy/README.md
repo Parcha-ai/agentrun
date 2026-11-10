@@ -95,6 +95,10 @@ AGENTRUN_STORE_URL=postgres://agentrun:<the same password>@postgres:5432/agentru
 then `docker compose --profile pg up -d`. The server and runners do not wait for it: one that cannot reach its store yet
 exits and is started again.
 
+On a database you run yourself, the store's role needs no `CREATE` on the database when the schema is made ahead of time
+and given to it (`CREATE SCHEMA agentrun AUTHORIZATION <role>`, or the name in `AGENTRUN_STORE_SCHEMA`): the server
+migrates a schema its role owns.
+
 **Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
 it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
 `--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`. A first
