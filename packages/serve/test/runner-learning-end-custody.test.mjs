@@ -47,8 +47,9 @@ const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ f
  *  a Browserbase plane, the person's words quoting the pointer. The runner runs run-1 on the adapter loop (bound to the
  *  pointer whose hash is `handed` at its claim, as the runner's bind writes it; or, with `mark`, its row's
  *  sign_in_handed set to that value as written, which no writer writes) with the learning end over the store's
- *  sign-ins, and any learning run it queues on the learning loop, whose grader keeps everything. */
-async function world(t, { handed, mark }) {
+ *  sign-ins (and `stored`, the server's sealed secrets as the learning end reads them, when given), and any learning
+ *  run it queues on the learning loop, whose grader keeps everything. */
+async function world(t, { handed, mark, stored }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-learning-custody-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
@@ -78,7 +79,7 @@ async function world(t, { handed, mark }) {
     return { ...(await script(claim, run)), agentId: "agent-1", input: launch.input.content };
   };
   const signIns = signInsOverStore(store, KEY, { remove: async () => {} });
-  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), signIns });
+  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), signIns, ...(stored ? { stored } : {}) });
   const createLoop = (deps) => {
     const job = createAdapterLoop(spec)({ ...deps, endOfRun });
     const learn = learningLoopFactory({ store, data: dir, ask: async () => ({ text: KEEP, usd: 0 }) })(deps);
@@ -169,3 +170,14 @@ for (const [what, markOf] of [["a legacy true", () => true], ["an object", (hash
     for (const [path, text] of Object.entries(folderFiles(w.dir))) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
   });
 }
+
+test("a run whose server secrets can't be read learns nothing: its learning is dropped saying why, and no learning run is queued", { timeout: 120_000 }, async (t) => {
+  // Its sign-in reads back; the server's sealed secrets do not (the store's read throws): never a check over a shorter list.
+  const w = await world(t, { handed: pointerHash(POINTER), stored: async () => { throw new Error("the store is gone"); } });
+  const kept = await w.learned();
+  assert.ok(kept, "the run kept its learning's end");
+  assert.deepEqual([kept.proposal?.state, kept.proposal?.reason], ["dropped", "propose_failed"], JSON.stringify(kept.proposal));
+  assert.match(kept.proposal?.detail ?? "", /server's secrets/, "the drop says why");
+  assert.ok(!kept.learningRunId, "no learning run queued");
+  assert.deepEqual(holds(JSON.stringify(kept)), [], "its kept learning holds no pointer");
+});

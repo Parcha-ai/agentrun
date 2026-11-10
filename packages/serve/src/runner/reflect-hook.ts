@@ -59,11 +59,12 @@ export interface ReflectDeps {
 /** A learning dropped before its turn answered: kept with its reason and words, beside the end. */
 const droppedRow = (turn: ReflectTurn | null, reason: string, detail: string, extra: object = {}): AlsoRow => ({ table: "learning_proposals", row: { turn, proposal: { ...extra, state: "dropped", reason, detail } } });
 
-/** A kept-learning row with every string in it cut of `refuse` in every form (learn/secrets.ts redactSecrets, as
- *  proposeRun cuts what the person said): the turn as it answered, and the proposal's words. A proposal the checks kept
- *  holds none of them already (unstorable refuses it whole). */
+/** A kept-learning row with every string in it cut of `refuse` in every form and of every secret-shaped run
+ *  (learn/secrets.ts redactSecrets, as proposeRun cuts what the person said), with an empty list too: the turn as it
+ *  answered, and the proposal's words. A proposal the checks kept holds none of them already (unstorable refuses it
+ *  whole). */
 const cutRow = (row: AlsoRow, refuse: readonly string[]): AlsoRow =>
-  row.table === "learning_proposals" && refuse.length ? { table: row.table, row: cutStrings(row.row, (text) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY)) as typeof row.row } : row;
+  row.table === "learning_proposals" ? { table: row.table, row: cutStrings(row.row, (text) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY)) as typeof row.row } : row;
 
 /** The end-of-run turn for runs that learn. */
 export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
@@ -98,7 +99,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // Every end from here closes through this one function: looked's timings first, then the cut LAST, over every
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
-    if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.signInUnread))]);
+    if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
     const { active, tools } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
