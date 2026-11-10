@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, runDir, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
 import { openSqliteStore, sealMcpCredential } from "../dist/store/index.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -44,15 +44,6 @@ async function filesUnder(dir) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...(await filesUnder(path)));
     else if (entry.isFile()) out.push({ path, text: await readFile(path, "utf8").catch(() => "") });
-  }
-  return out;
-}
-
-/** Every folder under `dir`, recursively, a folder at a time (one that went is skipped). */
-async function foldersUnder(dir) {
-  const out = [];
-  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    if (entry.isDirectory()) out.push(join(dir, entry.name), ...(await foldersUnder(join(dir, entry.name))));
   }
   return out;
 }
@@ -273,9 +264,8 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const runId = await runOf(api, "claude-adder", "Add 2 and 3 with the add tool.");
   await held.reached;
   const scratchFiles = await scratchOf(data, runId);
-  // The scan reached the CLI's own folder (its home and state, made at the session's start); it may hold no file yet, as
-  // the CLI writes some only later: the scan of what is there is what proves no file of its holds the token.
-  assert.ok((await foldersUnder(join(data, "scratch"))).some((folder) => folder.endsWith(`/${runId}/harness`)), `the CLI's own folder is read: ${scratchFiles.map((file) => file.path).join(", ")}`);
+  // Mid-call, an extra check: what the CLI has written so far (maybe nothing yet) holds no token. The scan that must read
+  // files is the one after the CLI exited, below.
   const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leakedMidCall, [], "no file of the CLI's own (its home, its MCP config) holds the token");
   held.release();
@@ -288,6 +278,15 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
+  // After the run's end, once its runner let the claim go (the session closed and the CLI process with it), the CLI's own
+  // files are all written: its home, its cache, its MCP client's log. The scan must read some, and none may hold the token.
+  for (let i = 0; runRecordOf(data, runId).holder; i++) {
+    assert.ok(i < 600, `the run is let go: ${JSON.stringify(runRecordOf(data, runId))}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const cliFiles = (await scratchOf(data, runId)).filter((file) => file.path.includes(`/${runId}/harness/`));
+  assert.ok(cliFiles.length > 0, "the CLI's own files are read, after it exited");
+  assert.deepEqual(cliFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path), [], "no file of the CLI's own (its home, its cache, its MCP log) holds the token");
   const leaked = (await dataFiles(data)).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file under the data directory, the store among them, holds the token");
 });
