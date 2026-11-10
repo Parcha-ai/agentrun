@@ -752,9 +752,9 @@ export const byRecency: NoteSelector = (candidates) => {
 };
 
 /** The default selector, by relevance, past the budget: while the notes fit it, recency's choice (byRecency). Else each
- *  note is scored against the run's input (learn/relevance.ts: BM25 over its name, description and body, a code review's
- *  changed paths counted twice; no model call), and the run reads the notes that bear on it most whole, in score order,
- *  while they fit, then one rule line for each of the rest, best first, in place of the index; the lines count toward the
+ *  note is scored against the run's input (learn/relevance.ts: BM25 over its name, description and body, a code
+ *  review's changed paths' words weighed PATH_WEIGHT; no model call), and the run reads the notes that bear on it most
+ *  whole, in score order, while they fit, then one rule line for each of the rest, best first, in place of the index; the lines count toward the
  *  budget before the whole notes, as the index did, and no more of them than a run reads of the index (loadedIndex). An
  *  input with no word any note holds reads by recency. */
 export const byRelevance: NoteSelector = (candidates, run) => {
