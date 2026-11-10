@@ -66,9 +66,21 @@ export const KINDS = {
    *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */
   handover: "agent.handover",
   /** A run waiting on the person: ask_person ended its turn. Its data is the ask_person call's id; its commit carries the
-   *  run parked. A person's message after it answers it. Neither a call nor a message, so the reader passes over it. */
+   *  run parked. A person's message after it answers it. Neither a call nor a message, so the reader passes over it.
+   *  `inClaim: true` with `at` (ms): the run waits for the answer in its claim instead (adapter-loop waitInClaim), from
+   *  `at`, its commit carrying the row's ASK_PERSON_WAITING summary; `answered: true` clears that summary. */
   personAsked: "agentrun.person.asked",
 } as const;
+
+/** The run row's summary while it waits on the person's answer to its question (ask_person), parked or in its claim: the
+ *  view reads the question from the call, never from here, so the model's text is never copied into the row. The server
+ *  tells run.needs_input for a run held in its claim by this summary (server.ts readEnds). */
+export const ASK_PERSON_WAITING = "Waiting for your reply";
+/** The run row's summary while its agent's browser hand-over (browser_request_handoff) waits on the person, its claim
+ *  held: set by the ask's waiting entry's commit, cleared by its answer's (tools.ts, through AdapterRun.rowSummaryOn). */
+export const HANDOVER_WAITING = "Waiting for you in the browser";
+/** The summaries of a run held in its claim while it waits on its person: the server tells run.needs_input by them. */
+export const HELD_WAITS: ReadonlySet<string> = new Set([ASK_PERSON_WAITING, HANDOVER_WAITING]);
 
 /** How a browser hand-over ended: the person's two answers, or its expiry. */
 export type HandoverOutcome = "done" | "cancelled" | "expired";

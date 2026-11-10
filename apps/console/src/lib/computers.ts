@@ -19,3 +19,8 @@ export function pickKind(kind: ComputerKindView, current: Computer | undefined):
 /** The place a computer is, as the server keeps place as its view: a sandbox is that provider's box; any other computer
  *  leaves the run's folder on the runner. */
 export const placeOfComputer = (computer: Computer): Place => (computer.kind === "sandbox" && computer.provider ? { mode: "sandbox", box: computer.provider } : { mode: "runner" });
+
+/** Said on a metered provider of a kind that bills by the minute: its minutes are the vendor's, outside the run's cap. */
+export const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
+/** The kinds whose metered providers bill by the minute: never the browser. */
+export const BY_THE_MINUTE: ReadonlySet<string> = new Set(["sandbox", "desktop", "phone"]);

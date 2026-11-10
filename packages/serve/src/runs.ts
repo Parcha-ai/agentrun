@@ -656,16 +656,6 @@ function resumeShows(approval: Approval, given: { decision: string; by?: string;
   return outcomeShows(approval.tool, answer, rest, failed);
 }
 // micro and microUp move to run-view.ts (the run's served view), imported above.
-/** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
-export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
-/** The refresh step's test-only wait, in ms: none unless the server runs under a test runner (node --test's
- *  NODE_TEST_CONTEXT; NODE_ENV=test alone is none, as a production server can carry it), so a value set by mistake in a
- *  server holds no launch; within one, REFRESH_DELAY_ENV's value, at most a second. */
-export function refreshDelayMs(env: NodeJS.ProcessEnv = process.env): number {
-  if (!env.NODE_TEST_CONTEXT) return 0;
-  const ms = Number(env[REFRESH_DELAY_ENV]);
-  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
-}
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
@@ -2367,14 +2357,6 @@ export class Runs {
    *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
    *  slow to answer never holds an abort. */
   private mcpFresh(run: Run): Promise<void> | undefined {
-    // A test's seam (refreshDelayMs): every launch path waits this long here, as one whose authorization server is slow
-    // to answer does. Nothing outside a test runner.
-    const delay = refreshDelayMs();
-    if (delay > 0) return new Promise<void>((resolve) => setTimeout(resolve, delay)).then(() => this.mcpFreshNow(run));
-    return this.mcpFreshNow(run);
-  }
-
-  private mcpFreshNow(run: Run): Promise<void> | undefined {
     const source = this.options.mcpServers;
     if (!source?.refresh) return undefined;
     // The servers its pin names, or, before its first launch makes the pin (which may refuse the launch in words, there

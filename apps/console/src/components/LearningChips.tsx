@@ -1,7 +1,7 @@
 import { BookOpen, CircleSlash, Hourglass, Sparkles, Workflow, Wrench } from "lucide-react";
 import { Chip } from "@/components/ui/chip";
 import { Tip } from "@/components/ui/tip";
-import { counted, dropKind, dropWords, givenBy, goingWords, learnedBy, type LearnedFileRef, learningHash, type NoteRef, notes, pendingBy, readBy, REDACTED, skillsBy, underWay, waitsForOk, waitWords, workflowsBy } from "@/lib/learning";
+import { counted, dropKind, dropWords, givenBy, goingWords, learnedBy, type LearnedFileRef, learningHash, type NoteRef, notes, pendingBy, readBy, REDACTED, skillsBy, underWay, waitingWords, waitsForOk, waitWords, workflowsBy } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
@@ -107,4 +107,11 @@ function NotesChip({ agentId, refs, link, kind, replaces = 0 }: { agentId: strin
       <a href={learningHash(agentId, linked.map((r) => r.file))} aria-label={said} className="inline-flex">{chip}</a>
     </Tip>
   );
+}
+
+/** How many of an agent's learned items wait for its owner's OK, in the warning tone, its label in words ("2 learned items
+ *  wait for your OK"): on its page's Learning tab. Nothing at 0. */
+export function WaitingCount({ n, className }: { n: number; className?: string }) {
+  if (n <= 0) return null;
+  return <span aria-label={waitingWords(n)} className={cn("inline-flex min-w-[18px] items-center justify-center border border-warning/50 bg-warning/10 px-1 font-mono text-[10px] text-warning-text", className)}>{n}</span>;
 }

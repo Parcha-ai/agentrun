@@ -15,23 +15,33 @@ import {
   type Auth, authOf, canonical, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
-import "./mcp-secret-writes.js";
+import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
-import { type ClientKind, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { type ClientKind, issuerOf, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
-import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
+import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
+/** How many writes an owner's save or tools refresh makes over a row whose credential a run's refresh keeps changing,
+ *  each re-applied onto the row read again, before it is refused in words. */
+const REWRITE_TRIES = 3;
 const SCOPE_LIST = "scopes is a list of 1 to 32 OAuth scopes.";
 const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 
 /** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
 type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put">; flush: Store["flush"] };
+
+/** The row a conditional save wrote, or the refusal when it wrote nothing: the server's credential changed while the save
+ *  listed its tools (another save, a sign-in or a removal landed), and writing would drop or undo it. */
+function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpServerRow {
+  if (!saved) throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
+  return saved;
+}
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
  *  client, with its secret) sealed together by its state, the rest of its working state plain JSON the callback rebuilds.
@@ -164,13 +174,18 @@ export class McpServersOverStore {
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
    *  auth type and the URL's origin stay the same. */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark) {
     nameOf(name);
     const { url, auth, prices } = this.admit(body, true);
     const was = await this.store.mcp.server(name);
+    // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
+    // its credentialMark), else the one read here. The write compares it in its own statement, after the listing's wait.
+    const against = checkedAgainst !== undefined ? checkedAgainst : credentialMark(was);
     let credential: McpCredential | undefined;
-    // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
-    let kept: number | null | undefined;
+    // A credential kept (no new one sent): the row's sealed value as read, never sealed again nor written; the save rewrites
+    // the rest of the row by a compare-and-set on it (rewriteKeeping), so a run's refreshed set kept meanwhile stands. A new
+    // one is the owner's, written over whatever is there.
+    let keeping = false;
     let headers = auth.headers;
     if (auth.type === "github_app") {
       // Its own headers are only its static ones (its token is minted): new ones are kept; none sent keeps the saved ones,
@@ -179,29 +194,36 @@ export class McpServersOverStore {
       else if (was?.auth === "github_app" && was.sealed !== null) {
         if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the headers again, so saved ones never go to another origin.`)]);
         const open = await this.opened(name, was, "auth.headers");
-        credential = open.credential;
         headers = open.headers;
-        kept = was.credentialChangedAt;
+        keeping = true;
       }
     } else if (auth.type !== "none" && !headers) {
       if (!was || was.auth !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
       if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the credential again, so a saved one never goes to another origin.`)]);
       const open = await this.opened(name, was, credentialMissing(auth.type, "").field);
-      credential = open.credential;
       headers = open.headers;
-      kept = was.credentialChangedAt;
+      keeping = true;
     } else if (auth.type !== "none") {
       credential = { type: "headers", headers: headers! };
     }
     const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), stop);
     const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
-    // A body with no `prices` keeps the saved ones, for the tools still listed at the same address.
-    const priced = prices ?? (was?.url === url.href ? pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
-    const saved = await saveMcpServer(this.store, this.sealKey, {
-      name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
-      ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}), ...(kept !== undefined ? { credentialChangedAt: kept } : {}),
-    }, { githubMcpOrigin: this.appOrigin });
+    // The row as saved over `row` (the one read, or read again): a body with no `prices` keeps the saved ones, for the tools
+    // still listed at the same address.
+    const fields = (row: McpServerRow | undefined) => {
+      const priced = prices ?? (row?.url === url.href ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
+      return {
+        name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
+        ...(priced && Object.keys(priced).length ? { prices: priced } : {}),
+      };
+    };
+    const saved = keeping
+      // Re-applied only onto a row that still holds a credential of this auth type at this origin: never onto another one's.
+      // It writes no credential column, so it never drops or replaces one.
+      ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && new URL(fresh.url).origin === url.origin)
+      // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
+      : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
     await this.store.flush();
     return this.view(saved);
   }
@@ -213,14 +235,16 @@ export class McpServersOverStore {
     const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), stop);
     const before = new Map((was.tools as McpTool[]).map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
-    const prices = pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools);
-    const saved = await saveMcpServer(this.store, this.sealKey, {
-      name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
-      ...(Object.keys(prices).length ? { prices } : {}), ...(was.sealed !== null ? { credential: open.credential } : {}),
-      // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and the credential's time, and lets
-      // listed_at move to now.
-      updatedAt: was.updatedAt, credentialChangedAt: was.credentialChangedAt,
-    }, { githubMcpOrigin: this.appOrigin });
+    // A refresh re-lists the tools and leaves the credential as it is (rewriteKeeping: a run's refreshed set kept meanwhile
+    // stands); it keeps updated_at (not an owner edit) and lets listed_at move to now. Re-applied only onto the same address
+    // and auth type it listed.
+    const saved = await this.rewriteKeeping(name, was, (row) => {
+      const prices = pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools);
+      return {
+        name, url: row.url, auth: row.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
+        ...(Object.keys(prices).length ? { prices } : {}), updatedAt: row.updatedAt,
+      };
+    }, "refresh", (fresh) => fresh.url === was.url && fresh.auth === was.auth);
     await this.store.flush();
     return {
       added: [...after.keys()].filter((tool) => !before.has(tool)),
@@ -230,9 +254,29 @@ export class McpServersOverStore {
     };
   }
 
-  async remove(name: string): Promise<void> {
+  /** Writes the owner's change over the row it read (`was`), its credential left as it is, by a compare-and-set on that
+   *  credential (store.mcp.rewrite). A lost one (a run kept a refreshed set meanwhile) reads the row again and re-applies the
+   *  change onto it, while `still` holds of it, at most REWRITE_TRIES writes; then it is refused in words, nothing written. */
+  private async rewriteKeeping(name: string, was: McpServerRow, fields: (row: McpServerRow) => Parameters<typeof rewriteMcpServer>[1], doing: "save" | "refresh", still: (row: McpServerRow) => boolean): Promise<McpServerRow> {
+    let row = was;
+    for (let tries = 1; ; tries++) {
+      const saved = await rewriteMcpServer(this.store, fields(row), row.sealed, { githubMcpOrigin: this.appOrigin });
+      if (saved) return saved;
+      const fresh = await this.store.mcp.server(name);
+      if (!fresh) throw notFound(name);
+      if (!still(fresh)) throw new ApiError("unavailable", `The MCP server ${name} was changed while this ${doing} was made; nothing was saved. Read it again and try again.`);
+      if (tries >= REWRITE_TRIES) throw new ApiError("unavailable", `The MCP server ${name}'s credential kept changing while this ${doing} was made (a run refreshing its token); nothing was saved. Try again.`);
+      row = fresh;
+    }
+  }
+
+  /** DELETE. `checkedAgainst`: the credential the secret-write gate let a token's removal through against (one with
+   *  none: removing it drops no secret); the row goes only while it is still that, in the store's one statement, so a
+   *  credential saved meanwhile is never dropped by it. */
+  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<void> {
     await this.need(name);
-    await removeMcpServer(this.store, name);
+    if (checkedAgainst === undefined) await removeMcpServer(this.store, name);
+    else if (checkedAgainst === null || !(await removeMcpServerIfCredential(this.store, name, checkedAgainst))) changedMeanwhile(name, undefined);
     await this.store.flush();
   }
 
@@ -250,7 +294,9 @@ export class McpServersOverStore {
     const was = await this.store.mcp.server(name);
     // A body with no client_id signs in again with the client kept in the sealed token set, for the same origin only.
     const kept = typeof client_id !== "string" && was?.auth === "oauth" && new URL(was.url).origin === url!.origin ? await this.openedSet(name, was) : undefined;
-    const client = typeof client_id === "string" ? { client: { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) }, kind: "pre-registered" as const } : kept ? { client: kept.client, kind: kept.kind } : {};
+    // The kept client goes with the authorization server it was registered at (keptFor): another one gets a new client.
+    const keptFor = kept ? issuerOf(kept.discovery) : undefined;
+    const client = typeof client_id === "string" ? { client: { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) }, kind: "pre-registered" as const } : kept && keptFor ? { client: kept.client, kind: kept.kind, keptFor } : {};
     return { authorization_url: await this.signIns.start(name, url!, { was: was ? saving(was) : null, ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...client }) };
   }
 
@@ -278,10 +324,13 @@ export class McpServersOverStore {
       // Saved, signed in to again or forgotten since this sign-in started: that stands.
       if ((now ? saving(now) : null) !== entry.was) return back("changed_meanwhile");
       const prices = now?.url === entry.url ? ((now.prices ?? undefined) as McpPrices | undefined) : undefined;
-      await saveMcpServer(this.store, this.sealKey, {
+      // Written only while the row is still the one just read, in the store's one statement: a save that lands in between
+      // stands too.
+      const saved = await saveMcpServerIfCredential(this.store, this.sealKey, {
         name: entry.name, url: entry.url, auth: "oauth", protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(prices && Object.keys(prices).length ? { prices } : {}), credential: { type: "oauth", set },
-      });
+      }, credentialMark(now));
+      if (!saved) return back("changed_meanwhile");
       await this.store.flush();
       return back();
     } catch (error) {

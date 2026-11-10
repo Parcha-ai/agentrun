@@ -2,10 +2,9 @@
 // an agent made and run to its answer, its file and its events; the Bearer token taken and nothing else (no cookie, no
 // credential, no foreign Origin, no GET); each tool answering as its /v2 routes do; and llms.txt, public.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { call, cookieOf, scratch, serve, withEnv } from "./support.mjs";
+import { call, cookieOf, serve } from "./support.mjs";
 
 const TOOLS = ["whoami", "agents_list", "agents_create", "agents_revise", "runs_start", "runs_get", "runs_events", "runs_files", "runs_respond", "runs_cancel"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -256,17 +255,15 @@ test("GET /v2/runs/{id}/timeline takes a limit: pages of at most that many rows,
   await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
   await mcp.until(run_id, ["completed"]);
-  // The status reads completed before the run is settled, and settling replaces its rows with the store's (the live
-  // run:start and run:end rows go): every read is made once the timeline says final, so all of them see the same rows.
-  let whole;
-  for (const end = Date.now() + 5_000; !(whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body).final; await sleep(50)) {
-    assert.ok(Date.now() < end, `the run's timeline is final within 5 s: ${JSON.stringify({ status: whole.status, rows: whole.rows.map((r) => r.id) })}`);
-  }
+  // A run is settled once its end is in the store (settled = terminal): the first read after it reads completed is final.
+  const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
+  assert.equal(whole.final, true, `final at the first read after completed: ${JSON.stringify({ status: whole.status, rows: whole.rows.map((r) => r.id) })}`);
   const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
   assert.deepEqual([first.rows.length, first.has_more], [1, true]);
   const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;
   assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
   for (const limit of ["0", "501", "x"]) assert.equal((await v2(server, "GET", `/runs/${run_id}/timeline?limit=${limit}`)).status, 400, limit);
+  assert.deepEqual((await v2(server, "GET", `/runs/${run_id}/timeline`)).body.rows.map((r) => r.id), whole.rows.map((r) => r.id), "no row a reader saw goes");
 });
 
 test("the protocol's own refusals: an unknown method or tool, a batch, bad JSON, a malformed message, another method than POST, an unknown protocol version", async (t) => {
@@ -334,34 +331,6 @@ test("the MCP SDK's own client connects, lists the ten tools and calls one", asy
   assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), TOOLS);
   assert.equal((await client.callTool({ name: "whoami", arguments: {} })).structuredContent.authenticated, true);
   assert.deepEqual((await client.callTool({ name: "agents_list", arguments: {} })).structuredContent, { agents: [], next_cursor: null });
-});
-
-test("the timeline is final once an answered run's end is in the store, even while its process is still exiting: its pages are the whole timeline, and the same rows after", async (t) => {
-  // On the switch a run is settled once its end is in the store (store-view.ts:301, settled = terminal): a process lingering
-  // on a held SIGTERM is cleanup the store does not see, so the timeline is final as soon as the end is written, not only
-  // once the process exits. The gate keeps that process alive across the first read, then lets it exit before the server stops.
-  const gate = join(await scratch(t), "gate");
-  withEnv(t, { EXIT_GATE: gate });
-  const server = await serve(t, { faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
-  const mcp = mcpClient(server);
-  await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
-  const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
-  await mcp.until(run_id, ["completed"]);
-  /** The whole timeline's ids, checked against the same timeline read one row, then the rest. */
-  const read = async () => {
-    const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
-    const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
-    const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;
-    assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
-    return { ids: whole.rows.map((r) => r.id), final: whole.final };
-  };
-  // Read while the run's process still lingers (its end is in the store; the gate is still missing): final already.
-  const answered = await read();
-  assert.equal(answered.final, true, "final once the end is in the store (store-view.ts:301); the lingering process is cleanup the store does not see");
-  await writeFile(gate, "");
-  const ended = await read();
-  assert.equal(ended.final, true);
-  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes");
 });
 
 test("a run paused at its spend cap: the instructions, runs_get and runs_respond say it waits for its cap to be raised and is not answered; runs_get gives pending kind budget, and runs_respond is refused 409 budget_reached", async (t) => {
