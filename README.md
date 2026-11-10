@@ -117,7 +117,8 @@ client reads its server and token from the environment; the server prints both w
 `npx @parcha/agentrun`, the token is in `~/.agentrun/.token`, and the address is normally `http://127.0.0.1:7340`):
 
 ```sh
-export AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2 AGENTRUN_API_KEY="$(cat ~/.agentrun/.token)"
+export AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
+export AGENTRUN_API_KEY=$(cat ~/.agentrun/.token)
 ```
 
 ```ts
