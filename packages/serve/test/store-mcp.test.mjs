@@ -155,7 +155,7 @@ function racedBy(store, rotate) {
   const mcp = new Proxy(store.mcp, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
-      if (key === "put") return async (...args) => {
+      if (key === "put" || key === "rewrite") return async (...args) => {
         const row = await target.server(args[0].name);
         const sealed = row && (await rotate(row));
         if (sealed) {
