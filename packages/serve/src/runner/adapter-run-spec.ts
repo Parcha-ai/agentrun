@@ -22,7 +22,7 @@ import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
-import { type RunFiles, runGate } from "../tool-gate.js";
+import { mcpServersOf, type RunFiles, runGate } from "../tool-gate.js";
 import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
@@ -194,12 +194,14 @@ type RevisionBody = {
  * Whether anyone can answer an ask is the store's too (server-approvers.ts), read once at the claim: no one (the
  * server's accounts off), an asked call is refused at once in words, never parked.
  */
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]>> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, mcpServers: readonly string[] = []): Promise<NonNullable<AdapterRunSpec["gate"]>> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
-  const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root, approvers);
+  // The run's MCP servers (mcpServersOf its grants), so a harness naming an MCP tool its own way (OpenCode's `<server>_<tool>`)
+  // is held to that tool's settings, never to a table tool's of the same shape.
+  const gate = runGate({ root: folder, work: folder, mcpServers }, claim.runId, revision, () => current, root, approvers);
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
     current = await storeSettings(store);
     return gate.decide(call.tool, call.args);
@@ -320,7 +322,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
   // The gate reads the run's own files (the turn's origin) through the run's Workspace: in Mode 2, its folder on the run's
   // disk, never this machine's folder at the same path.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, mcpServersOf(granted));
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the

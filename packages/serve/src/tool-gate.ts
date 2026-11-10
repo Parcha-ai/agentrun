@@ -67,6 +67,10 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const mcpToolName = (server: string, tool: string): string => `mcp:${server}/${tool}`;
 /** Whether `name` is an MCP tool's gate name. */
 export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name);
+/** The MCP servers a revision grants tools of, by their catalog names (`mcp:<server>/<tool>`, a server's wildcard too), each
+ *  once: what a harness that names a session's MCP tool its own way (its facts' toolAlias: OpenCode's `<server>_<tool>`) is
+ *  matched against, so its call is held to that tool's settings and never to a table tool's of the same shape. */
+export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => /^mcp:([^/]+)\//.exec(name)?.[1] ?? []))];
 /** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or an MCP server's (`mcp:<server>/<tool>`). */
 export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
 /** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. */
@@ -454,8 +458,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
  *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim.
  *  `approvers`: whether anyone can answer an ask here. The runner gives the store's (server-approvers.ts, read at each
  *  claim); absent, the old per-run process's environment says (NO_APPROVER_ENV, set for it by runs.ts). */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles, approvers: boolean = process.env[NO_APPROVER_ENV] !== "1"): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", approvers, approvalsOf(revision.body.approvals), serverSettings, files);
+export function runGate(where: { root: string; work: string; mcpServers?: readonly string[] }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles, approvers: boolean = process.env[NO_APPROVER_ENV] !== "1"): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}) }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", approvers, approvalsOf(revision.body.approvals), serverSettings, files);
 }
 
 /** Where a gate reads the run's own files (the turn's origin): the run's Workspace (Mode 2: its folder on the run's disk,
