@@ -118,9 +118,10 @@ test("a runner refuses a schema not set up yet, and one of a version it does not
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === null && error.message.includes(`the Postgres schema ${schema}`));
   const server = await openPostgresStore({ url: PG_URL, schema });
   await server.close();
-  // A later build's migration, applied.
-  await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES (2, 'later', 'x', 0)");
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === 2 && error.known === 1);
+  // A later build's migration, applied: one past this build's last.
+  const known = migrationsIn().at(-1).version;
+  await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, 'later', 'x', 0)", known + 1);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === known + 1 && error.known === known);
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "nor does the server open a later build's schema");
 });
 
@@ -133,26 +134,29 @@ test("a runner sets nothing up: its open of a schema not set up leaves no schema
 test("the server applies each migration once, in one transaction, recording its version, name and file hash", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const migrations = migrationsIn();
-  assert.deepEqual(migrations.map((m) => [m.version, m.name]), [[1, "initial"]]);
+  // Numbered 1, 2, 3 … from the initial schema, each file once.
+  assert.deepEqual(migrations.map((m) => m.version), migrations.map((_, index) => index + 1));
+  assert.equal(migrations[0].name, "initial");
   const first = await openPostgresStore({ url: PG_URL, schema });
   await first.close();
   const second = await openPostgresStore({ url: PG_URL, schema });
   await second.close();
   const rows = await sql(schema, "SELECT version, name, sha256 FROM schema_migrations ORDER BY version");
-  assert.deepEqual(rows.map((row) => [Number(row.version), row.name, row.sha256]), [[1, "initial", migrations[0].sha256]], "applied once");
+  assert.deepEqual(rows.map((row) => [Number(row.version), row.name, row.sha256]), migrations.map((m) => [m.version, m.name, m.sha256]), "each applied once");
 });
 
 test("a migration that fails leaves nothing of it: the schema's version is unchanged and its tables absent", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const connection = await PgConnection.open({ url: PG_URL, schema });
   t.after(() => connection.close());
-  const broken = [...migrationsIn(), { version: 2, name: "broken", sql: "CREATE TABLE half_made (id BIGINT); SELECT no_such_function()", sha256: "y" }];
+  const shipped = migrationsIn();
+  const broken = [...shipped, { version: shipped.length + 1, name: "broken", sql: "CREATE TABLE half_made (id BIGINT); SELECT no_such_function()", sha256: "y" }];
   await assert.rejects(connection.withClient((c) => migrate(c, schema, 0, broken)));
   assert.deepEqual(await sql(undefined, "SELECT nspname FROM pg_namespace WHERE nspname = $1", schema), [], "the first open's transaction rolled back whole, its schema too");
   await connection.withClient((c) => migrate(c, schema, 0));
   await assert.rejects(connection.withClient((c) => migrate(c, schema, 0, broken)));
   const rows = await sql(schema, "SELECT version FROM schema_migrations ORDER BY version");
-  assert.deepEqual(rows.map((row) => Number(row.version)), [1], "version 2 not recorded");
+  assert.deepEqual(rows.map((row) => Number(row.version)), shipped.map((m) => m.version), "the broken version not recorded");
   assert.deepEqual(await sql(schema, "SELECT to_regclass('half_made') AS t"), [{ t: null }], "its table not made");
 });
 
