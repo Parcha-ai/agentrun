@@ -48,6 +48,12 @@ export interface TransactionOptions {
    *  write lock, the statements and the commit all fit in it. Past it, it is never begun; reached before its commit, it
    *  is rolled back. Rejects StoreDeadline either way, nothing of it written. */
   readonly fromCall?: boolean;
+  /** A claim's renew: on Postgres it runs on the store's own lease connection, never waiting for a client behind the pool's
+   *  other work (a runner's loops' commits), so a busy runner still renews within its lease, and all of it, connect to
+   *  commit, within 8 s of its call (LEASE_DEADLINE_MS, from the call whatever `fromCall` says), so a renew on a
+   *  connection gone silent has failed before the runner's next tick, which renews on a fresh one. SQLite's one
+   *  connection has no pool and never goes silent: there it changes nothing. */
+  readonly lease?: boolean;
 }
 
 /** The store's connection as its shared domain code (store.ts here, run-patch.ts, journal/storage.ts) uses it, whichever
