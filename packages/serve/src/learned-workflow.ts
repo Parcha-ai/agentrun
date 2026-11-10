@@ -6,8 +6,8 @@
 // unavailable, a model node that names any tool, a code node or a shell or executor call is refused before any node
 // runs, never after earlier ones spent), then runs it with the workflow DSL's runWorkflow:
 //   - a model node (agent, decide, extract, report) on the run's model of its tier, else the run's own model (the one
-//     model the run was made with and handed the key of: app.ts), in a fresh session of its own (agentrun-pi's host
-//     runner), with no tool of its own;
+//     model the run was made with and handed the key of: app.ts), in a fresh session of its own (the host
+//     runner, workflow/host-session.ts), with no tool of its own;
 //   - a call node `via: "tool"` on the tool table's effect, as a workflow revision's (app.ts), for a tool the agent has,
 //     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
 //     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
@@ -200,9 +200,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
-  // agentrun-pi's root loads its host runner and @earendil-works/pi-coding-agent, an optional peer of agentrun-pi: serve
-  // depends on it (package.json) so an installed server has it, not only this repository.
-  const { createPiHostRunner } = await import("@parcha/agentrun-pi");
+  // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
+  const { createPiHostRunner } = await import("./workflow/host-session.js");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
   const runnerFor = async (tier: string | undefined) => {
     const known = runners.get(tier ?? "default");

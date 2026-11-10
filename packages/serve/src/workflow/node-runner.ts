@@ -18,8 +18,8 @@ import {
 import type { Message } from "@earendil-works/pi-ai";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalSha256, runStopOf, type RecoveryNodeParams } from "@parcha/agentrun-dsl/recovery";
-import { SUBMIT_TOOL } from "../host-tools.js";
-import { nodeThinking } from "../thinking.js";
+import { SUBMIT_TOOL } from "./host-tools.js";
+import { nodeThinking } from "./thinking.js";
 import { closeNodeAttempt, runNodeAttempt, type NodeScope } from "./node.js";
 import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, type RecordContract, type Reviewer } from "./record.js";
 import { workspaceRecordFile } from "./record-file.js";

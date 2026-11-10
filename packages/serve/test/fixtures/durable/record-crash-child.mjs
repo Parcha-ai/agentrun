@@ -8,7 +8,7 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, defineExtension, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { GateDoc, RecordDoc, recordTool } from '@parcha/agentrun-pi/durable';
+import { GateDoc, RecordDoc, recordTool } from '../../../dist/workflow/record-tool.js';
 
 const [mode, file, counter] = process.argv.slice(2);
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' } } };

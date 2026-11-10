@@ -12,7 +12,8 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery, RecoveryError } from '@parcha/agentrun-dsl/recovery';
 import { crossing } from '@parcha/agentrun-dsl/recovery/testing';
-import { documentStore, toolResult } from '@parcha/agentrun-pi/durable';
+import { documentStore } from '../../../dist/workflow/store.js';
+import { toolResult } from '../../../dist/workflow/pi-versions.js';
 
 const [, , , directory] = process.argv;
 const MODEL = { provider: 'faux', modelId: 'faux-1' };

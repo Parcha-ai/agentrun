@@ -2,7 +2,7 @@
 // takes a WAL's end at its last verified commit frame, so such a reader recovers no frame, and its close, an empty
 // checkpoint, removes the WAL the run's process is still writing, its committed rows with it. That window is a fresh WAL's
 // first transaction while it holds more than one page: pi-durable's schema commit, and every relaunch's first commit after
-// a take-back checkpointed and removed the WAL. Both reader paths (run-db.ts readRunDbSync, agentrun-pi's `unlocked`
+// a take-back checkpointed and removed the WAL. Both reader paths (run-db.ts readRunDbSync, workflow/readers.ts's `unlocked`
 // read) read such a database as the file alone, and no row the writer committed is lost.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -11,8 +11,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
-import { keptWalWalks } from "@parcha/agentrun-pi/durable";
-import { withDurableFile } from "../../pi/dist/durable/readers.js";
+import { keptWalWalks } from "../dist/workflow/wal.js";
+import { withDurableFile } from "../dist/workflow/readers.js";
 import { checkpointRunDb, readRunDbSync } from "../dist/run-db.js";
 import { scratch } from "./support.mjs";
 
@@ -90,7 +90,7 @@ const rowsOf = (file) => {
 
 const PATHS = {
   "run-db readRunDbSync": (file) => readRunDbSync(file, true, (db) => db.prepare("SELECT count(*) AS n FROM sqlite_schema").get().n),
-  "agentrun-pi unlocked": (file) => withDurableFile(file, (db) => db.prepare("SELECT count(*) AS n FROM sqlite_schema").get().n, { unlocked: true }),
+  "workflow readers unlocked": (file) => withDurableFile(file, (db) => db.prepare("SELECT count(*) AS n FROM sqlite_schema").get().n, { unlocked: true }),
 };
 
 for (const [path, read] of Object.entries(PATHS)) {

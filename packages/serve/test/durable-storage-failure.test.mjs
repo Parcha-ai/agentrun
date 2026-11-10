@@ -13,7 +13,7 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension } from '../dist/workflow/task.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-storage-failure-'));
 after(() => rmSync(root, { recursive: true, force: true }));

@@ -11,7 +11,8 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
 import { EffectOutcomeUnknownError, runWorkflow } from '@parcha/agentrun-dsl';
 import { FROZEN_SNAPSHOT_SCHEMA_V4, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { committedRoutes, documentStore, durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
+import { committedRoutes, durableDoc, readJournal } from '../dist/workflow/readers.js';
+import { documentStore } from '../dist/workflow/store.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
 after(() => rmSync(root, { recursive: true, force: true }));

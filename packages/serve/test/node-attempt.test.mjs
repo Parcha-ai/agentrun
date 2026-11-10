@@ -6,8 +6,8 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, defineDoc, defineExtension, defineTask, Harness, MemoryStorage } from '@earendil-works/pi-durable';
-import { hostScope, NodeBindingMismatch, NodeIndex, runNodeAttempt, taskScope } from '../dist/durable/node.js';
-import { RecordDoc, recordTool } from '../dist/durable/record-tool.js';
+import { hostScope, NodeBindingMismatch, NodeIndex, runNodeAttempt, taskScope } from '../dist/workflow/node.js';
+import { RecordDoc, recordTool } from '../dist/workflow/record-tool.js';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' } } };

@@ -9,10 +9,10 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-work
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { isItemFailure, runWorkflow } from '@parcha/agentrun-dsl';
 import { memoryStore, openRecovery, runStoppedError, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { hostScope, NodeIndex, taskScope } from '../dist/durable/node.js';
-import { NodeDoc, NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
-import { RecordDoc } from '../dist/durable/record-tool.js';
-import { atLeast, resultOf } from './fixtures/pi-version.mjs';
+import { hostScope, NodeIndex, taskScope } from '../dist/workflow/node.js';
+import { NodeDoc, NodeFailure, nodeRunner } from '../dist/workflow/node-runner.js';
+import { RecordDoc } from '../dist/workflow/record-tool.js';
+import { atLeast, resultOf } from './fixtures/durable/pi-version.mjs';
 import { defineTask } from '@earendil-works/pi-durable';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };

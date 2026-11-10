@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const CHILD = fileURLToPath(new URL('./fixtures/node-runner-legacy-child.mjs', import.meta.url));
+const CHILD = fileURLToPath(new URL('./fixtures/durable/node-runner-legacy-child.mjs', import.meta.url));
 const OLD_SYSTEM = 'Decide buy or pass.\n\nThe stance the older build wrote.';
 
 function child(mode, dir, env = {}) {

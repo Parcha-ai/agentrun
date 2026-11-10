@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, defineDoc, defineDocFamily, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { durableDecisions } from '@parcha/agentrun-pi/durable';
+import { durableDecisions } from '../dist/workflow/readers.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-reader-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -57,7 +57,7 @@ test('unlocked: a read-only, lock-free read (vfs=unix-none) of a store its proce
     writer.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; BEGIN EXCLUSIVE; COMMIT');
     assert.throws(() => durableDecisions(file), /locked|busy/i, 'a plain read waits on the lock');
     assert.deepEqual(durableDecisions(file, { unlocked: true }).map((r) => r.decision_id), ['a', 'b']);
-    const { withDurableFile } = await import('../dist/durable/readers.js');
+    const { withDurableFile } = await import('../dist/workflow/readers.js');
     withDurableFile(file, (db) => {
       assert.throws(() => db.exec('CREATE TABLE written (a)'), /readonly/i, 'read-only by construction');
     }, { unlocked: true });

@@ -12,7 +12,8 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { recoveryBound, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, documentStore } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension } from '../../../dist/workflow/task.js';
+import { documentStore } from '../../../dist/workflow/store.js';
 
 export const WORKFLOW = {
   v: 2, name: 'task-crash',

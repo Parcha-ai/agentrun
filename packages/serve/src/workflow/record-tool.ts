@@ -18,7 +18,7 @@ import {
   DELIVERY_ATTEMPTS, deliver, deliveryTerminates, deliveryText, fileSubmission, mixedFileSubmission, nudgeText, repairRecord,
   VIOLATIONS_SHOWN, type Delivery, type Disagreement, type RecordContract, type RecordStore,
 } from "./record.js";
-import { SUBMIT_TOOL } from "../host-tools.js";
+import { SUBMIT_TOOL } from "./host-tools.js";
 import { toolResult } from "./pi-versions.js";
 
 /** The record a conversation delivered, or null while it has not, and the delivery attempts it has spent. */

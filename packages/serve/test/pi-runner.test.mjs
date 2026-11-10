@@ -4,7 +4,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { authorContract, authorWorkflow } from '@parcha/agentrun-dsl';
-import { createPiRunner, PiRunError } from '../dist/index.js';
+import { createPiRunner } from '../dist/workflow/runner.js';
+import { PiRunError } from '../dist/workflow/run-error.js';
 
 const request = { kind: 'agent', label: 'test', system: ['Host instructions'], user: 'Return a count', schema: { type: 'object', properties: { count: { type: 'number' } }, required: ['count'], additionalProperties: false } };
 function scripted(script, extra = {}) {

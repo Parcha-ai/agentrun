@@ -9,7 +9,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { childPath } from './fixtures/cross-version.mjs';
+import { fileURLToPath } from 'node:url';
+
+/** A fixture of this suite's, by name: the child a crash test spawns. */
+const childPath = (name) => fileURLToPath(new URL(`./fixtures/durable/${name}`, import.meta.url));
 
 const CHILD = childPath('node-replace-child.mjs');
 

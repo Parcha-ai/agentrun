@@ -10,7 +10,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { DECISION_ROW_VERSION, appendDecision, readDecisions } from '@parcha/agentrun-pi/durable';
+import { DECISION_ROW_VERSION, appendDecision, readDecisions } from '../dist/workflow/decisions.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-admission-'));
 after(() => rmSync(root, { recursive: true, force: true }));

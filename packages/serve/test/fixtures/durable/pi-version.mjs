@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const pkg = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const pkg = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 
 /** The version of `name` a module of this package loads: the nearest node_modules copy above it. */
 export function installedVersion(name) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ModelRuntime, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from '@earendil-works/pi-ai';
-import { createPiHostRunner, createPiHostSessionFactory } from '../dist/index.js';
+import { createPiHostRunner, createPiHostSessionFactory } from '../dist/workflow/host-session.js';
 
 const request = { kind: 'agent', label: 'host-child', system: ['Return the count with submit.'], user: 'Count the selected source.', schema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'], additionalProperties: false } };
 async function host(responses) {

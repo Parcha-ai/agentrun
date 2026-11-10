@@ -13,9 +13,12 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { hostScope } from '../dist/durable/node.js';
-import { NodeDoc, nodeRunner } from '../dist/durable/node-runner.js';
-import { childPath } from './fixtures/cross-version.mjs';
+import { hostScope } from '../dist/workflow/node.js';
+import { NodeDoc, nodeRunner } from '../dist/workflow/node-runner.js';
+import { fileURLToPath } from 'node:url';
+
+/** A fixture of this suite's, by name: the child a crash test spawns. */
+const childPath = (name) => fileURLToPath(new URL(`./fixtures/durable/${name}`, import.meta.url));
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const VERDICT = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' } } };

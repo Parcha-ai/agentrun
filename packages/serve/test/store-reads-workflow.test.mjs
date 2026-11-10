@@ -3,7 +3,8 @@
 // result (node status, outcome, output) from that journal, read with no claim.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { nodeRunner, taskScope } from "@parcha/agentrun-pi/durable";
+import { nodeRunner } from "../dist/workflow/node-runner.js";
+import { taskScope } from "../dist/workflow/node.js";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
 import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";

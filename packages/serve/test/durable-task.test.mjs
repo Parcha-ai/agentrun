@@ -11,7 +11,9 @@ import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, recoveryBound, withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, documentStore, durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension } from '../dist/workflow/task.js';
+import { documentStore } from '../dist/workflow/store.js';
+import { durableDoc, readJournal } from '../dist/workflow/readers.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-task-'));
 after(() => rmSync(root, { recursive: true, force: true }));

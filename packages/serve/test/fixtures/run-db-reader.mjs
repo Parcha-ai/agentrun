@@ -1,10 +1,10 @@
 // A reader of a run's database for run-db-checkpoint.test.mjs: reads `SELECT count(*) FROM t` over and over, for
 // `ms`, the way the server's lock-free readers open it (`how`: `run-db`, run-db.ts readRunDbSync, as readStore,
-// tookMessage, cap.ts, import-summary and import.ts do; `durable`, agentrun-pi's withDurableFile with `unlocked`, as
+// tookMessage, cap.ts, import-summary and import.ts do; `durable`, workflow/readers.ts's withDurableFile with `unlocked`, as
 // durableDecisions does), and prints `{reads, errors, behind, last}`: a read that failed, and one that saw fewer rows
 // than a read before it.
 import { readRunDbSync } from "../../dist/run-db.js";
-import { withDurableFile } from "../../../pi/dist/durable/readers.js";
+import { withDurableFile } from "../../dist/workflow/readers.js";
 
 const [file, how, ms] = process.argv.slice(2);
 const count = how === "durable"

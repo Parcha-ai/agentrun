@@ -10,7 +10,9 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { hostScope, NodeDoc, nodeRunner, RecordDoc } from '@parcha/agentrun-pi/durable';
+import { hostScope } from '../../../dist/workflow/node.js';
+import { NodeDoc, nodeRunner } from '../../../dist/workflow/node-runner.js';
+import { RecordDoc } from '../../../dist/workflow/record-tool.js';
 
 const [mode, file, counter] = process.argv.slice(2);
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' } } };

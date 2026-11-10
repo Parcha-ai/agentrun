@@ -2,7 +2,7 @@
 // under pi 1.1's `content` is refused (it would reach the model empty), and a failed Session's error is the storage's.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESULT_KEY, resultBlocks, storageError, toolResult, ToolResultKeyError } from '../dist/durable/pi-versions.js';
+import { RESULT_KEY, resultBlocks, storageError, toolResult, ToolResultKeyError } from '../dist/workflow/pi-versions.js';
 
 const blocks = [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }];
 

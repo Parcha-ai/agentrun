@@ -9,7 +9,8 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, defineExtension, defineTask, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { RecordDoc, recordTool, runNodeAttempt, taskScope } from '@parcha/agentrun-pi/durable';
+import { RecordDoc, recordTool } from '../../../dist/workflow/record-tool.js';
+import { runNodeAttempt, taskScope } from '../../../dist/workflow/node.js';
 
 const [mode, file, counter] = process.argv.slice(2);
 const MODEL = { provider: 'faux', modelId: 'faux-1' };

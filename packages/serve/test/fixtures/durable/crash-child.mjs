@@ -4,7 +4,7 @@
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery, RecoveryError } from '@parcha/agentrun-dsl/recovery';
 import { crossing } from '@parcha/agentrun-dsl/recovery/testing';
-import { documentStore } from '@parcha/agentrun-pi/durable';
+import { documentStore } from '../../../dist/workflow/store.js';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
-import { forgetWalWalk, keptWalWalks, walHasCommit } from '@parcha/agentrun-pi/durable';
+import { forgetWalWalk, keptWalWalks, walHasCommit } from '../dist/workflow/wal.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-wal-commit-'));
 after(() => rmSync(root, { recursive: true, force: true }));

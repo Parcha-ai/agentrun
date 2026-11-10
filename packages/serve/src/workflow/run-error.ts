@@ -1,4 +1,4 @@
-// Kept apart from runner.ts so the workflow service loads without a pi package installed.
+// Kept apart from runner.ts, which loads pi-coding-agent, so a reader of the error type loads none of it.
 export class PiRunError extends Error {
   /** The node's turn limit for this attempt, or null when it had none. */
   public readonly maxTurns?: number | null;

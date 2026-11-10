@@ -1,7 +1,7 @@
-// What this package holds pi-durable to about a tool result and a failed Session, in one place (pi-durable 1.5).
+// What the workflow code holds pi-durable to about a tool result and a failed Session, in one place (pi-durable 1.5).
 //
 // A tool result's blocks are its `output`. pi 1.1 read `content` instead; a result that carries only `content` reaches
-// the model empty on 1.5, with no error from pi: where this package receives a result it did not write, that is refused
+// the model empty on 1.5, with no error from pi: where the workflow code receives a result it did not write, that is refused
 // here. A storage error fails the Session, and its later calls reject with `SessionFailed` whose cause is that error.
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 

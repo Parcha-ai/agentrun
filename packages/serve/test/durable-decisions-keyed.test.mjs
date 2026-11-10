@@ -8,10 +8,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { apply } from '@earendil-works/chord/delta';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, defineDoc, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, decisionRecovery, durableDecisions, readDecisions, recordingLines } from '@parcha/agentrun-pi/durable';
+import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, readDecisions } from '../dist/workflow/decisions.js';
+import { decisionRecovery } from '../dist/workflow/decision-recovery.js';
+import { durableDecisions } from '../dist/workflow/readers.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-keyed-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -38,7 +41,22 @@ function documentsOf(file, kind) {
     return { single: count(0), family: count(1) };
   } finally { db.close(); }
 }
-const decisionBytes = (file) => recordingLines(file).lines.filter((line) => String(line.kind).startsWith('agentrun.decisions')).reduce((sum, line) => sum + JSON.stringify(line).length, 0);
+/** Every revision of the file's decision documents, in commit order, as a recording line carries one: its kind, and its
+ *  document's kind, key (a family member's), whole value and version. */
+function decisionLines(file) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const revisions = db.prepare("SELECT d.id, d.kind AS doc, d.family, d.key_value, r.seq, r.kind, r.version, r.content FROM documents d JOIN document_revisions r ON r.document_id = d.id WHERE d.kind LIKE '\"agentrun.decisions%' ORDER BY r.seq").all();
+    const values = new Map();
+    return revisions.map((rev) => {
+      const value = rev.kind === 'base' ? JSON.parse(rev.content) : apply(structuredClone(values.get(rev.id)), JSON.parse(rev.content));
+      values.set(rev.id, value);
+      const kind = JSON.parse(rev.doc);
+      return { kind, data: { doc: kind, ...(rev.family === 1 ? { key: JSON.parse(rev.key_value) } : {}), value, version: rev.version } };
+    });
+  } finally { db.close(); }
+}
+const decisionBytes = (file) => decisionLines(file).filter((line) => String(line.kind).startsWith('agentrun.decisions')).reduce((sum, line) => sum + JSON.stringify(line).length, 0);
 
 async function fill(n) {
   const file = fileOf();
@@ -70,8 +88,8 @@ test('a row stored keyed is, field for field and byte for byte, the receipt the 
   const read = async (file) => { const h = await open(file); try { return await readDecisions(h, ctx); } finally { await h.close(ctx); } };
   assert.deepEqual((await read(keyed)).map((r) => JSON.stringify(r)), (await read(oldFile)).map((r) => JSON.stringify(r)));
   // In the recording: the keyed line's value is exactly one element of the old line's receipts list.
-  const newLines = recordingLines(keyed).lines.filter((line) => line.kind === 'agentrun.decisions');
-  const oldLast = recordingLines(oldFile).lines.filter((line) => line.kind === 'agentrun.decisions').at(-1);
+  const newLines = decisionLines(keyed).filter((line) => line.kind === 'agentrun.decisions');
+  const oldLast = decisionLines(oldFile).filter((line) => line.kind === 'agentrun.decisions').at(-1);
   assert.equal(newLines.length, 3);
   newLines.forEach((line, i) => { assert.equal(typeof line.data.key, 'string'); assert.equal(JSON.stringify(line.data.value), JSON.stringify(oldLast.data.value.receipts[i])); });
 });

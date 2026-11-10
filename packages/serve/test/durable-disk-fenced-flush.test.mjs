@@ -11,7 +11,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry } from '@earendil-works/pi-durable';
 import { FencedError, openClaimDir, openDurableRun } from '@parcha/pi-durable-disk';
-import { createWorkflowExtension } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension } from '../dist/workflow/task.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-fenced-flush-'));
 after(() => rmSync(root, { recursive: true, force: true }));

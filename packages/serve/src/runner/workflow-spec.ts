@@ -50,11 +50,7 @@ import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
-
-/** A model node's submit tool, by name: pi's SUBMIT_TOOL (packages/pi/src/host-tools.ts). Named here, not imported from
- *  @parcha/agentrun-pi, whose root loads its runner and with it pi-coding-agent, an optional peer an installed server
- *  does not have: importing it here stopped the runner from starting. workflow-submit-name.test.mjs holds the two equal. */
-export const SUBMIT_TOOL = "submit";
+import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = "workflow";
@@ -857,7 +853,7 @@ function bookedNodeTools(binding: ToolBinding, paid: () => RunTools | undefined,
   };
 }
 
-/** The tool names a workflow's model node offers its model: the node's `submit` (pi's SUBMIT_TOOL) and every tool the
+/** The tool names a workflow's model node offers its model: the node's `submit` (SUBMIT_TOOL) and every tool the
  *  workflow's model nodes name. */
 export function nodeOffer(workflow: Workflow): string[] {
   return [...new Set([SUBMIT_TOOL, ...workflowTools(workflowNodes(workflow, inspectWorkflow(workflow))).nodes])];

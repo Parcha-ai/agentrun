@@ -13,9 +13,10 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { DECISION_ROW_VERSION, appendDecision, decisionRecovery, readDecisions } from '@parcha/agentrun-pi/durable';
+import { DECISION_ROW_VERSION, appendDecision, readDecisions } from '../dist/workflow/decisions.js';
+import { decisionRecovery } from '../dist/workflow/decision-recovery.js';
 
-const child = fileURLToPath(new URL('./fixtures/durable-decision-child.mjs', import.meta.url));
+const child = fileURLToPath(new URL('./fixtures/durable/durable-decision-child.mjs', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'agentrun-decision-recovery-'));
 let server, url, judged = 0;
 before(async () => {

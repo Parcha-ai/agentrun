@@ -9,7 +9,9 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, decisionRecovery, readDecisions } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension } from '../../../dist/workflow/task.js';
+import { decisionRecovery } from '../../../dist/workflow/decision-recovery.js';
+import { readDecisions } from '../../../dist/workflow/decisions.js';
 
 export const WORKFLOW = {
   v: 2, name: 'decision-crash',

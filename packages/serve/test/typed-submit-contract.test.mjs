@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { Compile } from 'typebox/compile';
 import Ajv from 'ajv';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
-import { createPiRunner, createPiHostRunner } from '../dist/index.js';
-import { tempCwd } from './fixtures/temp-cwd.mjs';
+import { createPiRunner } from '../dist/workflow/runner.js';
+import { createPiHostRunner } from '../dist/workflow/host-session.js';
+import { tempCwd } from './fixtures/durable/temp-cwd.mjs';
 
 // All transport and answers here are fictional; the real native Agent validates tools.
 const object = { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'], additionalProperties: false };

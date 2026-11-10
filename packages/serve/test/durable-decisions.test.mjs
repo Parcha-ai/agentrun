@@ -11,7 +11,7 @@ import { apply } from '@earendil-works/chord/delta';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, defineDoc, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from '@parcha/agentrun-pi/durable';
+import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from '../dist/workflow/decisions.js';
 
 // Every field a stored row carries; `error` and `driver_spend` only when they apply.
 const ROW_FIELDS = ['v', 'at', 'node', 'kind', 'item', 'execution_path', 'request_sha256', 'request_bytes', 'model', 'questions', 'answers', 'rule', 'action', 'usage', 'cost_usd', 'latency_ms'];

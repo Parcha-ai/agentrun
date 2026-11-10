@@ -7,7 +7,7 @@ import {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, extrasNotInRecord, fileSubmission, gate,
   healNullSpellings, lintRecordRoot, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers,
   repairRecord, spend, submitFooter, VIOLATIONS_SHOWN,
-} from '../dist/durable/record.js';
+} from '../dist/workflow/record.js';
 
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' }, score: { type: 'integer' }, note: { type: ['string', 'null'] } } };
 

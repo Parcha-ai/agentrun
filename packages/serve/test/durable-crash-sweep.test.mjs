@@ -3,7 +3,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { crashSweep } from '@parcha/agentrun-dsl/recovery/testing';
-import { childPath } from './fixtures/cross-version.mjs';
+import { fileURLToPath } from 'node:url';
+
+/** A fixture of this suite's, by name: the child a crash test spawns. */
+const childPath = (name) => fileURLToPath(new URL(`./fixtures/durable/${name}`, import.meta.url));
 
 const child = childPath('crash-child.mjs');
 const COMPLETE = { status: 'complete', output: { ok: true } };

@@ -13,7 +13,9 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-work
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, nodeRunner, taskScope } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension } from '../../../dist/workflow/task.js';
+import { nodeRunner } from '../../../dist/workflow/node-runner.js';
+import { taskScope } from '../../../dist/workflow/node.js';
 
 export const WORKFLOW = {
   v: 2, name: 'node-replace',

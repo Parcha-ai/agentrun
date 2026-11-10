@@ -3,7 +3,7 @@
 //   - agentic: the root agent with the revision's instructions and skills, and the tools it names, bound from the
 //     closed table in tools.ts;
 //   - workflow: the revision's workflow, started with startWorkflowRevision of @parcha/pi-durable-agent/workflow on
-//     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the tools it names of the
+//     the durable workflow task (workflow/task.ts), each model node on the host's model of its tier with the tools it names of the
 //     table's node tools, and its typed questions on Jev or Parallel when the server hands this process the provider's key. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
@@ -280,9 +280,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};
-  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, durableDecisions, nodeRunner, taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
+  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension }, { decisionRecovery }, { durableDecisions }, { nodeRunner }, { taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
     import("@earendil-works/chord/context"),
-    import("@parcha/agentrun-pi/durable"),
+    import("./workflow/task.js"),
+    import("./workflow/decision-recovery.js"),
+    import("./workflow/readers.js"),
+    import("./workflow/node-runner.js"),
+    import("./workflow/node.js"),
     import("@parcha/agentrun-dsl"),
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),

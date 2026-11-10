@@ -10,8 +10,8 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, defineExtension, Harness, MemoryStorage } from '@earendil-works/pi-durable';
-import { workspaceRecordFile } from '../dist/durable/record-file.js';
-import { deliveredRecord, GateDoc, RecordDoc, recordNudge, recordTool, spendNudge } from '../dist/durable/record-tool.js';
+import { workspaceRecordFile } from '../dist/workflow/record-file.js';
+import { deliveredRecord, GateDoc, RecordDoc, recordNudge, recordTool, spendNudge } from '../dist/workflow/record-tool.js';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string', description: 'buy or pass' }, score: { type: 'integer' } } };

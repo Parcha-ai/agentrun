@@ -14,7 +14,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { BARRIER, localRun, openDurableRun, syncNow } from "@parcha/pi-durable-disk";
-import { createWorkflowExtension } from "@parcha/agentrun-pi/durable";
+import { createWorkflowExtension } from "../../dist/workflow/task.js";
 import { capModels, spentIn } from "../../dist/cap.js";
 import { wireName } from "../../dist/catalog.js";
 import { FAUX_ENV, runModels } from "../../dist/model.js";

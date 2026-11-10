@@ -1350,7 +1350,7 @@ export class Runs {
     const root = read.reduce((min, r) => Math.min(min, r.conversation), Infinity);
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
     if (run.kind === "workflow") {
-      const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+      const { durableDecisions } = await import("./workflow/readers.js");
       // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
       // does (readDecisionCost): never its model nodes' total alone.
       try { run.decisions = durableDecisions(file, { unlocked: true }); } catch { run.decisions = null; }
@@ -2967,7 +2967,7 @@ export class Runs {
   /** A workflow run's decisions' cost, from their receipts in its released store: a receipt whose cost is unknown leaves
    *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
   private async readDecisionCost(run: Run): Promise<void> {
-    const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+    const { durableDecisions } = await import("./workflow/readers.js");
     // Not its `llm` calls: each completes on the run's marked models, so its cost is a REQUEST_COST entry its usage row
     // already sums (request-start.ts).
     const paid = durableDecisions(this.storeFile(run), { unlocked: true }).map((row) => row.cost_usd);
