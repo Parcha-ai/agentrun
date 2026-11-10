@@ -7,7 +7,7 @@
 // Through the real loop (startRunner over createWorkflowLoop and workflowSpecOf) on a real store: three `llm` call nodes in
 // a chain, each one request to a scripted Messages origin that counts them by node and can hold one.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,7 +18,17 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
 
-const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+/** A steady lease (this file tests pause and resume, not leases): a lease the suite's load can outlast would cut a call
+ *  node's admitted effect, which the next claim refuses to repeat (runner-call-claim-lapse.test.mjs pins that). */
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+/** The words the run's store holds about why a call node failed (the engine's effect records, the node's error), for a
+ *  failure's message: a red then says why, never only "failed at call-0". */
+let storeDir;
+const whyWords = () => {
+  if (!storeDir) return [];
+  const text = ["store.sqlite", "store.sqlite-wal"].map((name) => join(storeDir, name)).filter(existsSync).map((file) => readFileSync(file).toString("utf8")).join("\n");
+  return [...new Set(text.match(/FROZEN_[A-Z_]+[^"\\]{0,160}|Reconcile[^"\\]{0,160}|"error":"[^"]{0,200}/g) ?? [])].slice(0, 6);
+};
 /** Long enough for the runner to hand a command row to the loop (it polls every commandPollMs, 30 ms). */
 const DELIVERED_MS = 600;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,6 +86,7 @@ function scriptedOrigin() {
 
 async function worldWith(t, origin) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-pause-calls-"));
+  storeDir = dir;
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   let runner;
@@ -104,7 +115,7 @@ async function rowWhen(server, done, what, ms = 30_000, stop) {
     if (stop?.aborted) return undefined;
     const row = await server.runs.get("run-1");
     if (done(row)) return row;
-    if (["ended", "failed", "stopped"].includes(row.state) || Date.now() - from > ms) assert.fail(`${what}: the run is ${JSON.stringify({ state: row.state, runner: row.runner, summary: row.summary })}`);
+    if (["ended", "failed", "stopped"].includes(row.state) || Date.now() - from > ms) assert.fail(`${what}: the run is ${JSON.stringify({ state: row.state, runner: row.runner, summary: row.summary, why: whyWords() })}`);
     await sleep(20);
   }
 }
@@ -115,7 +126,7 @@ test("the control: three call nodes, never paused, each run once and the run end
   const origin = scriptedOrigin();
   const { server } = await worldWith(t, origin);
   const row = await rowWhen(server, endedRow, "the run ends");
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyWords() }));
   assert.deepEqual(origin.counts, { "CALL-ONE": 1, "CALL-TWO": 1, "CALL-THREE": 1 });
 });
 
@@ -136,6 +147,6 @@ test("a pause during call node 1: it finishes, call node 2 does not start until 
   assert.deepEqual(origin.counts, { "CALL-ONE": 1, "CALL-TWO": 0, "CALL-THREE": 0 }, "call node 1 finished; call node 2 never started");
   await server.command("run-1", { kind: "resume", body: {} });
   const row = await rowWhen(server, endedRow, "the resumed run ends");
-  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, why: whyWords() }));
   assert.deepEqual(origin.counts, { "CALL-ONE": 1, "CALL-TWO": 1, "CALL-THREE": 1 }, "each call node once");
 });

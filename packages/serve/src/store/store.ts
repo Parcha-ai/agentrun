@@ -108,10 +108,14 @@ export type RunOutcome = "completed" | "escalated";
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
-/** Where an imported run came from: the harness that ran it, and its own session id. */
+/** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
+ *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
+ *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
+ *  on source and session alone, so a re-import of the same session with a different `file` is still the same run. */
 export interface ImportedFrom {
   readonly source: ImportSource;
   readonly session: string;
+  readonly file?: { readonly path_sha256: string; readonly size: number; readonly mtime_ms: number };
 }
 
 /** What a run was started under: `key`, the caller's name for it (a create's idempotency key, a trigger's firing key),
@@ -513,6 +517,13 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
+  /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner
+   *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
+   *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,
+   *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
+   *  Only an agentic run that ended completed (state 'ended'), not imported and not a learning run, reopens: a workflow,
+   *  a failed, stopped or cancelled run, any other, or none is RunFinal, and nothing is written. */
+  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -642,6 +653,25 @@ export interface SealedKeyRow {
   readonly name: string;
   readonly sealed: Uint8Array;
   readonly updatedAt: number;
+}
+
+/** The tables the store keeps a sealed value in: each a plane of the server's secrets. */
+export type SealedPlane = "sealed_keys" | "mcp_servers" | "mcp_oauth_pending" | "trigger_settings" | "sign_ins" | "sign_in_tombstones" | "computer_viewers" | "run_launch";
+
+/** One sealed value the store keeps: its plane, where in it (its row's key, by column), the AAD it was sealed under (the
+ *  store's documented one for that table: store/seal.ts aadOf, or trigger_settings|<adapter>|<scope>|<field>), and its
+ *  sealed bytes. The store never opens it. */
+export interface SealedSecretRow {
+  readonly plane: SealedPlane;
+  readonly where: Readonly<Record<string, string>>;
+  readonly aad: string;
+  readonly sealed: Uint8Array;
+}
+
+/** Every sealed value the store keeps, across all its planes, in one read: what a runner's redaction set holds at each
+ *  claim (runner/store-secrets.ts), so a run's text that quotes any secret the server keeps is cut when it is written. */
+export interface SealedSecrets {
+  all(): Promise<SealedSecretRow[]>;
 }
 
 export interface SealedKeys {
@@ -863,6 +893,8 @@ export interface Store {
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
    *  forgotten pointers kept as tombstones. */
   readonly signIns: SignIns;
+  /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
+  readonly sealedSecrets: SealedSecrets;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
@@ -982,13 +1014,15 @@ export class StoreOwned extends Error {
 
 
 /** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
- *  neither reads nor moves it. `found`: what was found, relative to the directory. */
+ *  neither reads nor moves it, and its words give the two ways on: keep the directory with the earlier version, or start
+ *  this one on a new directory and add the agents again. `found`: what was found, relative to the directory. */
 export class StoreFromEarlierVersion extends Error {
   readonly found: readonly string[];
   constructor(dataDir: string, found: readonly string[]) {
     super(
-      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move: ` +
-        "start with a new, empty directory, and add your MCP servers, keys and sign-ins there again.",
+      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move. ` +
+        "Keep this directory with the earlier version, or start this version on a new, empty directory and add your " +
+        "agents, MCP servers, keys and sign-ins there again.",
     );
     this.name = "StoreFromEarlierVersion";
     this.found = found;
@@ -1028,11 +1062,20 @@ export class StoreLaunchMissing extends Error {
   }
 }
 
-/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). */
+/** Which of a table's rules refused a row, as both databases report it by code (never by its message's words). */
+export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
+
+/** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
+ *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
 export class StoreConstraint extends Error {
-  constructor(message: string) {
+  readonly rule?: ConstraintRule;
+  readonly unique?: { readonly table: string; readonly columns: readonly string[] };
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
     super(message);
     this.name = "StoreConstraint";
+    if (details.rule) this.rule = details.rule;
+    if (details.unique) this.unique = details.unique;
   }
 }
 

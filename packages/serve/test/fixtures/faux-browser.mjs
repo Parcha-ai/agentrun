@@ -32,8 +32,8 @@ const encode = (text) => {
   const head = n < 126 ? Buffer.from([0x81, n]) : Buffer.from([0x81, 126, n >> 8, n & 255]);
   return Buffer.concat([head, payload]);
 };
-/** Masked client text frames out of a growing buffer. */
-const decoder = (onText) => {
+/** Masked client text frames out of a growing buffer; a close frame calls `onClose`. */
+const decoder = (onText, onClose = () => {}) => {
   let buffer = Buffer.alloc(0);
   return (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -51,6 +51,7 @@ const decoder = (onText) => {
       const opcode = buffer[0] & 15;
       buffer = buffer.subarray(at + length);
       if (opcode === 1) onText(body.toString("utf8"));
+      else if (opcode === 8) return onClose();
     }
   };
 };
@@ -73,6 +74,10 @@ const devtoolsUrl = () => (devtools ??= new Promise((resolve) => {
       if (method === "Target.setDiscoverTargets") send({ method: "Target.targetCreated", params: { targetInfo: page } });
       else if (method === "Target.attachToTarget") send({ method: "Target.attachedToTarget", params: { sessionId: "FLAT1", targetInfo: page, waitingForDebugger: false } });
       else if (method === "Page.startScreencast") send({ method: "Page.screencastFrame", sessionId: "FLAT1", params: { data: FRAME.bytes.toString("base64"), metadata: { deviceWidth: FRAME.w, deviceHeight: FRAME.h }, sessionId: 1 } });
+    }, () => {
+      // The client's close (the live view's stream closed at a session's release): answered and ended, as a browser's
+      // DevTools endpoint does, so no half-closed socket outlives it. The runner runs in a test's own process.
+      if (!socket.destroyed) socket.end(Buffer.from([0x88, 0x00]));
     }));
   });
   server.listen(0, "127.0.0.1", () => {
@@ -98,7 +103,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     process.exit(3);
   }
   const start = "https://example.test/";
-  const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.`, "Example") }, ...(log ? { logFile: log } : {}) });
+  // Tests of the run's cut: FAUX_BROWSER_PAGE_ECHO names a variable of the provider's env whose value the page shows (a page
+  // that echoes a key the run holds), and FAUX_BROWSER_CREATE_401_ECHO one a vendor's 401 on create echoes.
+  const echoed = (name) => (name ? String(env[name] ?? "") : "");
+  const pageEcho = echoed(process.env.FAUX_BROWSER_PAGE_ECHO);
+  const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.${pageEcho ? ` The page shows ${pageEcho} here.` : ""}`, "Example") }, ...(log ? { logFile: log } : {}) });
   // The vendor's sessions as the last process left them.
   const stateFile = process.env.FAUX_BROWSER_STATE;
   const saved = stateFile ? (() => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return []; } })() : [];
@@ -111,6 +120,7 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     // A saving session refused in the words pi-browser's one-saver rule uses, which name the vendor's profile (Kernel's
     // name is the run's pointer).
     if (signIn && spec.profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) throw new BrowserFailureError(browserFailure("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`));
+    if (process.env.FAUX_BROWSER_CREATE_401_ECHO) throw Object.assign(new Error(`401 Unauthorized: the API key ${echoed(process.env.FAUX_BROWSER_CREATE_401_ECHO)} is not valid for this project`), { status: 401 });
     return provider.create(spec, signal).then((ref) => (save(), ref));
   };
   const release = (ref, signal) => provider.release(ref, signal).finally(save);

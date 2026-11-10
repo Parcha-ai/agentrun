@@ -14,7 +14,7 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
-import { BROWSER_IMAGE, type ComputerSpec, DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
@@ -24,29 +24,13 @@ import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-import type { ComputerSettingKind, KindRegistry } from "./resolve-computer.js";
+import type { ComputerSettingKind, KindRegistry, ProviderEntry } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
 
 /** How long a run's computer lives whatever happens to the server: a bound on a leaked one, never its clean end (the old
  *  box's lifetime). The clean end is the run's release. */
 export const COMPUTER_LIFETIME_MS = 24 * 60 * 60_000;
-
-/** Each provider's own image for each kind it makes, by provider id: the one table serve reads a computer's image from
- *  (until the computer package's registry carries its own). A kind a provider has none for here is refused in words.
- *  Docker's sandbox is the package's recipe; a Docker desktop needs an image with an X server, which the recipe lacks,
- *  so it has none here: the owner names one (AGENTRUN_DOCKER_IMAGE). Modal's is a registry image Modal builds on its
- *  side; E2B's are its templates, Orgo's its base desktop, Daytona's its default snapshot. */
-export const DEFAULT_IMAGE: Readonly<Record<string, Readonly<Partial<Record<ComputerKindOf, string>>>>> = {
-  docker: { sandbox: DEFAULT_DOCKER_IMAGE },
-  e2b: { sandbox: "base", desktop: "desktop" },
-  orgo: { desktop: "linux" },
-  daytona: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
-  modal: { sandbox: "debian:bookworm-slim" },
-  browserbase: { browser: BROWSER_IMAGE },
-  kernel: { browser: BROWSER_IMAGE },
-  "phone-harness": { phone: "android" },
-};
 
 /** A computer this server cannot make here, with the code the run fails with and its words. */
 const refused = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
@@ -76,15 +60,18 @@ export interface ComputerDepsOptions {
 }
 
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
- *  owner's AGENTRUN_DOCKER_IMAGE when set; else DEFAULT_IMAGE's for the provider and kind, a kind with none refused in
- *  words), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
+ *  owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox the package's recipe; any other provider's: its registry
+ *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
+ *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
  *  sandbox's egress list: a sandbox with none, or "none", has no network; a browser, desktop or phone with none has its
  *  provider's own ("open"); an explicit list or "none" applies to any kind. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
-  const imageOf = (entry: { readonly id: string; readonly label: string }, kind: ComputerKindOf): string => {
+  const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
     if (entry.id === "docker" && named !== undefined) return named;
-    const image = Object.hasOwn(DEFAULT_IMAGE, entry.id) ? DEFAULT_IMAGE[entry.id]![kind] : undefined;
+    // Docker's sandbox: the package's own recipe, which serve builds (the registry gives Docker no default).
+    if (entry.id === "docker" && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
+    const image = entry.defaultImage?.[kind];
     if (image !== undefined) return image;
     if (entry.id === "docker" && kind === "desktop") throw refused("A Docker desktop needs an image with an X server; set one for desktops.");
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
@@ -113,7 +100,13 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   const { env, store, sealKey, faux } = options;
   // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
   const kinds = (faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
-  const providers = computerProviderMakers(options.load ? { load: options.load } : {});
+  // The Docker provider is given its image's source, which it makes ready itself (its image(): built from the recipe
+  // when Docker lacks it, or pulled by name): the owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the
+  // recipe's bare tag, which no registry has.
+  const named = envValue(env, DOCKER_IMAGE_ENV);
+  const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
+  const load = options.load ?? (providerFor as unknown as ProviderLoad);
+  const providers = computerProviderMakers({ load: (id, given) => load(id, id === "docker" ? { ...given, image: dockerImage } : given) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

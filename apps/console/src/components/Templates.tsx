@@ -9,7 +9,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choicesOf, grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -103,9 +103,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
-      // Opens the agent at once only when there is nothing to show first: a warning, a webhook's secret (shown this once),
-      // or the server's note on a retry.
-      if (!done.warnings.length && !done.webhook_secrets?.length && !done.note) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
+      // Opens the agent at once only when there is nothing to show first: a warning (a webhook trigger's among them).
+      if (!done.warnings.length && !done.webhook_secrets?.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
       setSentValues(sending);
       setMade(done);
     } catch (e) {
@@ -123,12 +122,37 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-[14px]">The agent is made. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-[13px]" role="status" aria-label="Warnings">
-            {made.warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>)}
+            {made.warnings.map((w, i) => {
+              // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
+              // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
+              const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
+              const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
+              const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}</li>;
+              return (
+                <li key={`${w.field}:${i}`}><span className="font-mono text-[12px] text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
+                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-[12px] text-primary underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
+                </li>
+              );
+            })}
           </ul>
         </>}
-        {/* Each webhook trigger's signing secret, this once, beside its URL (a schedule or GitHub trigger has none). */}
-        {made.webhook_secrets?.map((w) => <SecretOnce key={w.trigger_id} label={`The webhook's URL and secret (${w.trigger_id})`} url={hookUrlOf({ id: w.trigger_id })} secret={w.secret} />)}
-        {made.note && <p className="mt-4 text-[13px] text-muted-foreground" role="note">{made.note}</p>}
+        {/* Each webhook trigger the apply made: its signing secret this once, in the first answer to this session (held in
+            this screen's state alone, never stored or logged), beside its URL; else the server's note and the trigger to
+            rotate it from. */}
+        {made.webhook_secrets?.map((x) => {
+          const index = made.trigger_ids.indexOf(x.trigger_id);
+          const named = index >= 0 ? t.triggers[index]?.name : undefined;
+          const name = typeof named === "string" && named ? named : x.trigger_id;
+          return x.signing_secret
+            ? <SecretOnce key={x.trigger_id} label={`The webhook's URL and secret (${name})`} url={hookUrlOf({ id: x.trigger_id })} secret={x.signing_secret} />
+            : (
+              <div key={x.trigger_id} className="mt-4 border px-4 py-3 text-[13px]">
+                {x.note && <p className="text-muted-foreground" role="note">{x.note}</p>}
+                <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="mt-1 block font-mono text-[12px] text-primary underline-offset-2 hover:underline">Open {name} to get its signing secret (Rotate)</a>
+              </div>
+            );
+        })}
         <div className="mt-5" />
         <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="inline-flex border px-3 py-2 font-mono text-[13px] font-semibold hover:bg-accent">Open the agent</a>
       </section>
@@ -146,8 +170,14 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
               <label className="block">
                 <span className="caps text-[12px] font-semibold">{key}{p.required && <span className="text-destructive-text"> *</span>}</span>
-                <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}{p.pattern ? ` (as ${p.pattern})` : ""}</span>
-                {p.type === "boolean"
+                {/* The parameter's own words; its pattern is the server's to check, never printed. */}
+                <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}</span>
+                {choicesOf(p)
+                  ? <select className={input} value={values[key] ?? ""} required={p.required} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}>
+                      <option value="">{p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen"}</option>
+                      {choicesOf(p)!.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  : p.type === "boolean"
                   ? <input type="checkbox" checked={values[key] === "true"} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.checked ? "true" : "false" }))} />
                   : <input className={input} type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
                       onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))} />}

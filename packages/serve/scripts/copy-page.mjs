@@ -1,5 +1,6 @@
-// The vendored OpenAPI contract (src/openapi), llms.txt and the learning folder's script (src/learn/learning.sh) are plain
-// files; tsc leaves them out, so the build copies them next to the server.
+// The vendored OpenAPI contract (src/openapi), llms.txt, the learning folder's script (src/learn/learning.sh) and the
+// computer kinds' skills (src/workspace/kind-skills) are plain files; tsc leaves them out, so the build copies them next
+// to the server.
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 cpSync(join(root, "src", "openapi"), join(root, "dist", "openapi"), { recursive: true });
 cpSync(join(root, "src", "llms.txt"), join(root, "dist", "llms.txt"));
 cpSync(join(root, "src", "learn", "learning.sh"), join(root, "dist", "learn", "learning.sh"));
+// The store's Postgres migrations (store/postgres/migrate.ts reads them beside itself).
+cpSync(join(root, "src", "store", "postgres", "migrations"), join(root, "dist", "store", "postgres", "migrations"), { recursive: true });
+cpSync(join(root, "src", "workspace", "kind-skills"), join(root, "dist", "workspace", "kind-skills"), { recursive: true });
 
 // The console (apps/console), when its own build ran first: its index.html and Vite's assets, never a source map, into
 // dist/console, which the server answers at /, with the notices of what it bundles. Without that build the server says

@@ -103,7 +103,7 @@ const mountingComputer = async (_launch, _store, given) => {
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
  *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }) }) {
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -153,7 +153,8 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   // The run's whole local folder path, the run's directory above its work folder included.
   const watcher = watch ? watchReads(resolve(local, "..")) : undefined;
   try {
-    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+    // `signal`: the claim's, as the adapter loop hands the run (AdapterRun.signal: aborted on a lost claim or a shutdown).
+    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}) }, deps, claim);
     await use(spec);
   } finally {
     watcher?.off();
@@ -203,9 +204,23 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "an earlier claim's credentials looked for, then one minted");
     assert.equal(control.requests[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
     assert.match(control.requests[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
-    assert.equal(control.requests[1].body?.ttl, "604800s", "its safety-net lifetime, MOUNT_TTL_MS (7 days), in case the removal never comes");
+    assert.equal(control.requests[1].body?.ttl, "86400s", "its safety-net lifetime, MOUNT_TTL_MS: no longer than its computer can live (COMPUTER_LIFETIME_MS, 24 h), in case the removal never comes");
     await spec.release();
-    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`], "removed once at the end: the computer's release and the run's end revoke it, idempotently");
+    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed once at the end (the computer's release and the run's end revoke it, idempotently), then the run's earlier epochs looked for");
     assert.deepEqual(outbound, [], "nothing left this machine");
+  });
+
+  test(`${name} in Mode 2: a lost claim (its signal aborted) removes the run's mount credential at once, before the run's release`, async (t) => {
+    const claimSignal = new AbortController();
+    const { control } = await mode2Spec(t, { harness, build, computer: mountingComputer, signal: claimSignal.signal });
+    const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
+    assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "minted at the claim");
+    claimSignal.abort(new Error("claim lost (fenced)"));
+    // The lost claim's revoke settles with its list read for an earlier epoch's, after its remove: awaited, then read.
+    const swept = control.seen((one, index, all) => one.method === "GET" && all.slice(0, index).some((before) => before.method === "DELETE"));
+    let timer;
+    const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the lost claim's token was never removed: ${JSON.stringify(callsOf(control))}`)), 20_000); });
+    await Promise.race([swept, bound]).finally(() => clearTimeout(timer));
+    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed when the claim was lost, with no release yet, then the run's earlier epochs looked for");
   });
 }

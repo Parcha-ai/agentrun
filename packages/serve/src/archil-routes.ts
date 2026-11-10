@@ -11,28 +11,40 @@
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { envValue, type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
+import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
+import { registerSecretWrite, secretName } from "./secret-writes.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
-import { ArchilClaimRefused, archilClaim } from "./workspace/archil-claim.js";
+import { ArchilClaimRefused } from "./workspace/archil-claim.js";
+import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk, pinnedImage } from "./workspace/archil-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil"]);
 
 /** The key the owner gives, by the name the API takes, and the sealed-key row it is kept in. */
-const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: "ARCHIL_API_KEY", row: ARCHIL_API_KEY_ROW }];
+const KEYS: readonly { readonly name: string; readonly row: string }[] = [{ name: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW }];
+/** The key names the Archil settings take, as the document names them. */
+export const ARCHIL_KEY_NAMES: readonly string[] = KEYS.map((key) => key.name);
 
-/** The Archil settings as the owner reads them: the key in the shared secret shape (key-meta.ts), never a value. */
-export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; keys: KeyMeta[] };
+// Every PUT of the Archil settings is a secret write (secret-writes.ts), whatever its body: the account key, and the disk,
+// region and S3 URL too, which say where every run's files go, so a token never re-points them. The server's one dispatch
+// check keeps it to the owner's session. Turning Archil off keeps the key, so it is not registered.
+registerSecretWrite("putWorkspaceArchil", () => true);
+
+/** The account key as its one SecretMeta: named "workspace:archil", set by ARCHIL_API_KEY or its sealed row. */
+const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };
+
+/** The Archil settings as the owner reads them: the account key as `secret`, its SecretMeta, never a value. */
+export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
 
 export interface ArchilRoutesOptions {
   /** The server's one store: its settings and sealed keys. */
   readonly store: Pick<Store, "settings" | "sealedKeys">;
-  /** The server's seal key; absent, no key is kept here. */
-  readonly sealKey: Buffer | undefined;
+  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  readonly sealKey: Buffer;
   /** Makes the disk for the test (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
   /** The server's environment: an ARCHIL_API_KEY variable overrides the saved key (source "env"). */
@@ -52,7 +64,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store);
-    return { on: settings !== undefined, ...(settings ?? {}), keys: await keyMetaOf(store, KEYS, env) };
+    return { on: settings !== undefined, ...(settings ?? {}), secret: (await keyMetaOf(store, [SECRET], env))[0]! };
   }
 
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */
@@ -76,15 +88,12 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       if (!KEYS.some((key) => key.name === name)) issues.push({ field: `keys.${name}`, reason: "not_allowed", message: `Archil takes ARCHIL_API_KEY alone, not ${name}: no disk token is kept, a computer's mount credential is minted per run from the account key` });
       else if (value !== null && !nonEmpty(value)) issues.push({ field: `keys.${name}`, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` });
     }
-    // Kept until the server refuses to start without a seal key (the secrets plan's rule 2); then this branch can't be
-    // reached, and it goes.
-    if (!sealKey && entries.some(([, value]) => value !== null)) issues.push({ field: "keys", reason: "unavailable", message: "this server was given no seal key, so it keeps no key: start it with AGENTRUN_SEAL_KEY" });
     if (issues.length) throw invalid(issues);
     const settings: ArchilSettings = { diskId: (given.diskId as string).trim(), region: (given.region as string).trim(), s3Url: given.s3Url as string, ...(given.image !== undefined ? { image: given.image as string } : {}) };
     for (const [name, value] of entries) {
       const row = KEYS.find((key) => key.name === name)!.row;
       if (value === null) await removeSealedKey(store, row);
-      else await putSealedKey(store, sealKey!, row, value as string);
+      else await putSealedKey(store, sealKey, row, value as string);
     }
     await saveArchilSettings(store, settings);
     return view();
@@ -95,30 +104,27 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     return view();
   }
 
-  /** One listing of the disk's root, with its key opened as a claim opens it; the exec image is left out, as nothing runs. */
+  /** One listing of the disk's root, with the account key by the one resolver (archil-key.ts: the environment's, else
+   *  the sealed row) and the disk made as the claim makes it; no exec image, as nothing runs. The key is dropped after. */
   async function test(signal?: AbortSignal): Promise<ArchilTest> {
     const settings = await loadArchilSettings(store);
     if (settings === undefined) return { ok: false, why: OFF };
+    let key: string | undefined;
     let disk: ArchilDisk;
-    let secrets: ReadonlySet<string> = new Set();
-    const done = new AbortController();
-    const fromEnv = envValue(env, KEYS[0]!.name);
     try {
-      if (fromEnv !== undefined) {
-        // The environment's key wins over a saved one: the disk made with it, as the claim makes it.
-        secrets = new Set([fromEnv]);
-        disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => fromEnv });
-      } else {
-        const claim = await archilClaim({ settings: { diskId: settings.diskId, region: settings.region, s3Url: settings.s3Url }, keys: store.sealedKeys, sealKey, signal: done.signal, ...(options.makeDisk ? { makeDisk: options.makeDisk } : {}) });
-        disk = claim.disk;
-        secrets = new Set(claim.secrets);
-      }
+      key = (await archilApiKey({ env, keys: store.sealedKeys, sealKey })).value;
+      const held = key;
+      disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => {
+        if (key === undefined) throw new Error("the test's Archil key was released once the test was done");
+        return held;
+      } });
     } catch (error) {
       if (error instanceof ArchilClaimRefused) return { ok: false, why: error.message };
-      if (fromEnv !== undefined) return { ok: false, why: `This server's Archil settings can't make its disk: ${[...secrets].reduce((out, value) => out.split(value).join("[the key]"), describe(error))}` };
-      throw error;
+      const words = key ? describe(error).split(key).join("[the key]") : describe(error);
+      return { ok: false, why: `This server's Archil settings can't make its disk: ${words}` };
     }
-    const scrub = (text: string): string => [...secrets].reduce((out, value) => (value ? out.split(value).join("[the key]") : out), text);
+    const secret = key;
+    const scrub = (text: string): string => text.split(secret).join("[the key]");
     try {
       if (signal?.aborted) return { ok: false, why: "The test of Archil was cancelled." };
       await disk.listPage("", { recursive: false });
@@ -129,7 +135,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       if (status === 404) return { ok: false, why: `Archil has no disk ${settings.diskId} in ${settings.region}: check the disk and region, then test again.` };
       return { ok: false, why: `Archil could not be reached: check the S3 URL and the network, then test again. (${scrub(describe(error))})` };
     } finally {
-      done.abort();
+      key = undefined;
     }
   }
 

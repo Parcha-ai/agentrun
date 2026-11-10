@@ -11,6 +11,7 @@ import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
+import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { learningLoopOf } from "./learning-dispatch.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -28,7 +29,9 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     if (revision && isWorkflowRevision(revision)) {
       // A workflow run on the workflow loop: its claim-time spec (workflow-spec.ts) resolves each tier's model the one way
       // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
-      return createWorkflowLoop(workflowSpecOf({ store: deps.store, ...(deps.env ? { env: deps.env } : {}) }));
+      // The runner's seal key and data directory go with it: a claim's sealed secrets are read with them (claim-secrets.ts,
+      // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
+      return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
     }
     if (harness === "learning") {
       // A built-in learning run on the learning loop: its grade goes through the runner's one model route, on the grade
@@ -58,4 +61,14 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     return undefined;
   };
+}
+
+/** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
+ *  dispatch (dispatch.ts) reads each run's launch and asks the switch (resolveRunnerLoop) for its harness loop. The server
+ *  start and the test server pass this to startRunner. */
+export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
+  return createDispatchLoop({
+    launchOf: (runId) => deps.store.runs.launch(runId),
+    resolve: resolveRunnerLoop(deps),
+  });
 }

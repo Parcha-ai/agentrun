@@ -12,32 +12,17 @@
 // folder and it offers files and exec; a phone and a browser never do. A provider whose required keys are not all saved
 // is refused here, before anything starts; start hands the provider its declared keys alone.
 import type { CdpSession } from "@parcha/agentrun-kernel/kernel";
-import type { ComputerClient, ComputerKind, Group, MountKind, MountReadBack, MountSpec, Result } from "@parcha/agentrun-computer";
+import type { ComputerClient, ComputerSettingKind, Group, KindCapabilities, MountKind, MountReadBack, MountSpec, ProviderEntry, Result } from "@parcha/agentrun-computer";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
-/** The setting kind: what an agent is given (the computer module's ComputerSettingKind). Not the machine kind, a
- *  computer's capabilities().kind. */
-export type ComputerSettingKind = "none" | "sandbox" | "desktop" | "phone" | "browser";
+/** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
+ *  provider of the kind registry: the computer module's own types. */
+export type { ComputerSettingKind, KindCapabilities, ProviderEntry };
 
 /** An agent's computer setting. */
 export type ComputerSetting = { readonly kind: string; readonly provider?: string | null };
-
-/** A machine's kind and groups, as the module's KindCapabilities gives what servingRefusals reads. */
-export type KindCapabilities = { readonly kind: ComputerKind | string; readonly groups: readonly (Group | string)[] };
-
-/** One provider of the kind registry (the module's ProviderEntry), as the claim reads it: its id and label, the setting
- *  kinds it serves, the key names it declares (Settings → Computers saves them), the mounts it takes ([] none), and its
- *  static capabilities, one per configuration. */
-export type ProviderEntry = {
-  readonly id: string;
-  readonly label: string;
-  readonly kinds: readonly ComputerSettingKind[];
-  readonly keys: readonly { readonly name: string; readonly required: boolean }[];
-  readonly mounts: readonly MountKind[];
-  readonly capabilities: readonly KindCapabilities[];
-};
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */

@@ -15,14 +15,12 @@
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
 // the store's sealed keys and the seal key are handed in.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings } from "../archil-settings.js";
-import { envValue, type KeyEnv } from "../key-meta.js";
-
-/** The environment variable that names the Archil account key (archil-routes.ts's key name). */
-const ARCHIL_API_KEY_NAME = "ARCHIL_API_KEY";
-import { sealedAt, unsealColumn } from "../store/seal.js";
+import type { KeyEnv } from "../key-meta.js";
 import type { SealedKeys } from "../store/store.js";
+import { archilApiKey } from "./archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens } from "./archil-mount-credential.js";
+import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
 
 export { ARCHIL_API_KEY_ROW, type ArchilSettings };
 
@@ -31,10 +29,10 @@ export class ArchilClaimRefused extends Error {
   override name = "ArchilClaimRefused";
 }
 
-/** The credential's safety net, not its lifetime: it's removed at the computer's release, the run's end, a lost claim and a
- *  reclaim; the ttl only ends one whose removal never ran (a crashed server), and by then its only holder, the computer, is
- *  gone. Seven days: longer than any run keeps one computer mounted. */
-export const MOUNT_TTL_MS = 7 * 24 * 60 * 60_000;
+/** The credential's safety net: no longer than its computer can live (COMPUTER_LIFETIME_MS). It's removed at the
+ *  computer's release, the run's end, a lost claim and a reclaim; the ttl only ends one whose removal never ran (a
+ *  crashed server, or a reclaim's list read that missed it), and by then its only holder, the computer, is gone too. */
+export const MOUNT_TTL_MS = COMPUTER_LIFETIME_MS;
 
 export interface ArchilClaimOptions {
   /** The server's Archil settings (loadArchilSettings); undefined when they are not set up. */
@@ -88,25 +86,11 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   } catch (error) {
     throw new ArchilClaimRefused(`This server's Archil exec image ${JSON.stringify(settings.image)} can't be used: ${(error as Error).message}`, { cause: error });
   }
-  // The server's environment wins (key-meta.ts): an ARCHIL_API_KEY variable is the account key, over a saved one, for
-  // the disk and for the run's mount credential alike.
-  const fromEnv = options.env === undefined ? undefined : envValue(options.env, ARCHIL_API_KEY_NAME);
-  if (fromEnv === undefined && sealKey === undefined) {
-    throw new ArchilClaimRefused(`This runner was started without the server's seal key, so it can't open the saved ${ARCHIL_API_KEY_ROW} key: start it with the key the server keeps.`);
-  }
-  const open = async (name: string): Promise<string> => {
-    if (sealKey === undefined) throw new ArchilClaimRefused(`This runner was started without the server's seal key, so it can't open the saved ${name} key: start it with the key the server keeps.`);
-    const sealed = await options.keys.get(name);
-    if (sealed === undefined) throw new ArchilClaimRefused(`no ${name} key is saved on this server: save it in the server's keys, then run again.`);
-    try {
-      return unsealColumn(sealKey, sealedAt.sealedKey(name), sealed).toString("utf8").trim();
-    } catch {
-      throw new ArchilClaimRefused(`the saved ${name} key does not open under this server's seal key (it was saved under another key, or for another row): save it again.`);
-    }
-  };
+  // The account key by the one resolver (archil-key.ts): the server's ARCHIL_API_KEY variable first, else the sealed
+  // row, for the disk and for the run's mount credential alike.
   const held = new Set<string>();
   let released = false;
-  const apiKey = fromEnv ?? (await open(ARCHIL_API_KEY_ROW));
+  const apiKey = (await archilApiKey({ ...(options.env ? { env: options.env } : {}), keys: options.keys, sealKey })).value;
   held.add(apiKey);
   let disk: ArchilDisk;
   try {
@@ -137,7 +121,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     released = true;
     held.clear();
   };
-  /** Removes the credential minted, by its identifier: idempotent. */
+  /** Removes the credential minted, by its identifier: idempotent. Then the run's earlier epochs once more: Archil's list,
+   *  read right after another caller's mint, may not hold that user yet (mint-4), so the reclaim before this claim's mint
+   *  can miss an earlier claim's; by the run's end the list holds it. Best effort: one still missed ends at its ttl. */
   const revoke = async (): Promise<void> => {
     const credential = live ?? (await minted?.catch(() => undefined));
     if (credential === undefined) return;
@@ -145,6 +131,9 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     if (live === credential) live = undefined;
     minted = undefined;
     held.delete(credential.token);
+    const mount = options.mount;
+    // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
+    if (mount !== undefined) await removeOlderMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
   };
   // A lost claim (or a stopped runner): the values dropped, and the credential removed at once, not left for the ttl.
   const lost = (): void => {

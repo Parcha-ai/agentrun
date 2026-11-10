@@ -93,6 +93,10 @@ export interface ComputerForClaimDeps {
   readonly revokeMount?: () => Promise<void>;
   /** The live view's registration for a desktop or a phone (proxy-only). Absent: no view is opened. */
   readonly openComputerView?: OpenComputerView;
+  /** Told once, before the claim waits on its computer's image (a provider that makes its own: Docker's recipe built on
+   *  a host that lacks it, or a named image pulled); never when the host has it. The run's caller says it on the run's
+   *  timeline. Absent: nothing is said. */
+  readonly onImageWait?: ImageWait;
   readonly signal?: AbortSignal;
 }
 
@@ -128,6 +132,21 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
 }
 
 /** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
+/** A provider that makes its computers' image ready itself (Docker's image(): its recipe built when Docker lacks it, or
+ *  its image by name pulled), answering the tag to start from. */
+type ImageMaker = { image(context: { readonly signal?: AbortSignal; readonly onWait?: ImageWait }): Promise<Result<string>> };
+/** Told once, before the claim waits on its computer's image being built or pulled; never when the host has it. */
+export type ImageWait = (making: "build" | "pull", tag: string) => void;
+/** The image `provider` made ready, when it makes its own; undefined for one that does not. A failure is the provider's
+ *  words. `onWait`: told once if the claim waits on a build or a pull. */
+async function readyImage(provider: ComputerProvider, signal: AbortSignal | undefined, onWait: ImageWait | undefined): Promise<string | undefined> {
+  const maker = provider as Partial<ImageMaker>;
+  if (typeof maker.image !== "function") return undefined;
+  const ready = await maker.image({ ...(signal ? { signal } : {}), ...(onWait ? { onWait } : {}) });
+  if (!ready.ok) throw new Error(ready.error.message);
+  return ready.value;
+}
+
 type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
 const watching = (provider: ComputerProvider): Watching | undefined =>
   typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
@@ -221,7 +240,11 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       if (!options.ok) throw new Error(options.error.message);
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
       const run: ComputerRun = launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow };
-      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      // A provider that makes its own image ready (Docker's image(): its recipe built when Docker lacks it, an image by name
+      // pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no registry, so a
+      // run of it unbuilt would be refused.
+      const ready = await readyImage(provider, signal, deps.onImageWait);
+      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
@@ -264,7 +287,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       }
       view = opened.view;
     }
-    endHold = () => theHold.give("ended");
+    // The run's end closes the hold (workspace/computer-hold.ts close()): a take in force ends `released` (the computer
+    // goes; the composer's `ended` ViewEnd maps onto it), the agent's open ask is let go at once, and nothing is taken after.
+    endHold = () => theHold.close();
     hold = (ports) => heldHands(ports as never, theHold);
   }
   let released: Promise<void> | undefined;

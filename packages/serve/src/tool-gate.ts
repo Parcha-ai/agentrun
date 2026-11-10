@@ -57,7 +57,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
 import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
-import { deniedText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
+import { deniedText, modelNodeAskText, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
 /** What the gate does with a tool's calls. */
@@ -102,7 +102,12 @@ export function permissionKeys(name: string): string[] {
 const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
 /** A computer kind's tools, by name, to the one settings key their kind is held to (`desktop`, `phone`): the kernel
  *  registry's own definitions say it (their settingsKey), so a tool a kind gains is held to its key with no line here. */
-const KIND_TOOLS: ReadonlyMap<string, string> = new Map([...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS].map((def) => [def.name, def.settingsKey] as const));
+const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
+  const keys = new Map<string, string[]>();
+  for (const def of [...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  return keys;
+})();
+const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
@@ -126,9 +131,10 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
     const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
     return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read";
   }
-  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`.
+  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`; one both kinds have
+  // (the hand-over) is named by the first, its permission the stricter of both (RunGate's setting).
   const kind = KIND_TOOLS.get(name);
-  if (kind !== undefined) return kind;
+  if (kind !== undefined) return kind[0];
   // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
   const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
   const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;
@@ -454,9 +460,11 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. `serverSettings`: where the server's tool
  *  settings are read from, read at each call as the gate reads them; absent, the file beside the run's data directory (the
- *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1", approvalsOf(revision.body.approvals), serverSettings, files);
+ *  old per-run process). The runner gives the one store's (tool-plane.ts loadToolSettings), read once at the claim.
+ *  `approvers`: whether anyone can answer an ask here. The runner gives the store's (server-approvers.ts, read at each
+ *  claim); absent, the old per-run process's environment says (NO_APPROVER_ENV, set for it by runs.ts). */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings?: () => ReturnType<typeof readToolSettings>, files?: RunFiles, approvers: boolean = process.env[NO_APPROVER_ENV] !== "1"): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: dataOfRun(where.root), runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", approvers, approvalsOf(revision.body.approvals), serverSettings, files);
 }
 
 /** Where a gate reads the run's own files (the turn's origin): the run's Workspace (Mode 2: its folder on the run's disk,
@@ -499,7 +507,8 @@ export class RunGate {
    *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. `enter`'s
    *  order: the end-of-run turn's write under .learning/ (learningRefusal), the deny (with where it was set, and that
    *  nothing was sent or charged), a pin, then the allow, then the ask, so an allow that approvals "never" made is decided
-   *  only after every refusal. */
+   *  only after every refusal. Where no one can approve (accounts off: the store's approvers row a runner reads at each
+   *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = this.askedAs(name);
@@ -509,7 +518,8 @@ export class RunGate {
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
-    return verdict === "allow" ? "allow" : "ask";
+    if (verdict === "allow") return "allow";
+    return this.approvers ? "ask" : { deny: noApproverText(tool, "no") };
   }
 
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
@@ -521,7 +531,17 @@ export class RunGate {
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers);
+    // A tool the desktop and the phone both have (the hand-over): the gate knows not the run's kind, so it is held to the
+    // stricter of both keys' settings, never more permissive than the run's own kind's.
+    const shared = KIND_TOOLS.get(tool.replace(/^mcp__hands__/, ""));
+    if (shared && shared.length > 1) {
+      return shared.map((key) => this.settingOf(tool, key)).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
+    }
+    return this.settingOf(tool, settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers));
+  }
+
+  /** `tool`'s permission under its settings key `key`, and where it was set. */
+  private settingOf(tool: string, key: string | undefined): { permission: Permission; from: SettingFrom } {
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows, under approvals "never"
     // too: no setting of it was read, so none says it may run.
     if (key === undefined) return { permission: "ask", from: "default" };
@@ -611,7 +631,7 @@ export class RunGate {
     if (verdict === "allow") return undefined;
     // No one can answer here: refused at once with why, never parked until a cancel.
     if (!this.approvers) return { text: noApproverText(tool, ran), isError: true };
-    if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
+    if (!this.parks) return { text: modelNodeAskText(tool), isError: true };
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
     const other = [...this.requests.values()].find((held) => !held.resolved && held.id !== id);

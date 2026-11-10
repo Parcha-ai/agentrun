@@ -11,6 +11,7 @@
 // writes sign_in_handed.
 import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
+import { type SecretMeta, signInSecretMeta } from "./sign-ins-secrets.js";
 import { type Claim, sealColumn, sealedAt, SignInHandedTo, SignInMissing, type SignInRow, type Store, unsealColumn } from "./store/index.js";
 
 /** The one saved sign-in an agent keeps per provider is named this; the owner's label, never the model's. */
@@ -180,7 +181,12 @@ async function firstSignIn(store: Pick<Store, "signIns">, sealKey: Buffer, agent
   // the one this run is handed. Exactly one object is left, saved.
   if (!won.saved) await gone();
   const pointer = open(sealKey, agentId, vendor, won.row.pointerSealed);
-  return pointer === undefined ? "unreadable" : { pointer };
+  if (pointer === undefined) {
+    // The winner's sign-in won't open under this server's seal key: the run starts signed out, said as every other path.
+    log?.("its browser starts signed out: the saved sign-in can't be opened here");
+    return "unreadable";
+  }
+  return { pointer };
 }
 
 /** Whether every sign-in run `run` was handed (its sign_in_handed hashes) reads back here: a live sign-in of its agent, or
@@ -293,8 +299,9 @@ const settleFor = (provider: string): number => (provider === "browserbase" ? BR
 /** A browser the server keeps a sign-in for; a local Chrome keeps none. Ported from sign-ins.ts, kept here so this module
  *  does not depend on the file store the switch deletes. */
 export type Vendor = "browserbase" | "kernel";
-/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer. Identical to the old SignInView. */
-export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null };
+/** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer: the old SignInView's fields, and its
+ *  one secret's metadata under `secret` (sign-ins-secrets.ts signInSecretMeta). */
+export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null; secret: SecretMeta };
 
 /** The vendor a run's browser resolves to keeps a sign-in for: Browserbase's and Kernel's; a local Chrome is refused by
  *  name; an unavailable browser has none. Ported from sign-ins.ts. */
@@ -309,15 +316,17 @@ const isoOf = (ms: number | null): string | null => (ms === null ? null : new Da
 /** The agent's sign-ins as the v2 API shows them (the old SignIns.view), never a pointer. Per sign-in: `held`/`held_by`
  *  when a live run holds its pointer's hash (store.signIns.handedHolder), a Browserbase one for its settle window past the
  *  run's end too (settleFor, so the view matches the save lease); `unreadable` when its pointer does not open under this
- *  server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store. */
+ *  server's seal key (then held_by is null — no hash to match a run by); `verified_at` from the store; and `secret`, its
+ *  secret's metadata, changed_at being its saved_at. */
 export async function signInViews(store: SignInsStore, sealKey: Buffer | undefined, agentId: string): Promise<SignInView[]> {
   const rows = await store.signIns.list(agentId);
   return Promise.all(rows.map(async (row): Promise<SignInView> => {
     const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
     const heldBy = pointer === undefined ? null : (await store.signIns.handedHolder(pointerHash(pointer), { settleMs: settleFor(row.provider) })) ?? null;
     const base = { key: row.name, provider: row.provider as Vendor, held_by: heldBy, verified_at: isoOf(row.verifiedAt) };
-    if (pointer === undefined) return { ...base, state: "unreadable" };
-    return { ...base, state: heldBy ? "held" : "ready" };
+    const secret = signInSecretMeta(row);
+    if (pointer === undefined) return { ...base, state: "unreadable", secret };
+    return { ...base, state: heldBy ? "held" : "ready", secret };
   }));
 }
 

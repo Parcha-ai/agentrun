@@ -10,9 +10,11 @@ import {
   forgetSignIn, forgottenPointers, handedTo, openSavedPointer, pointerHash, savedSignIns, saveSignIn, signInsOverStore, SignInHandedTo, SignInMissing,
 } from "../dist/sign-ins-store.js";
 import { ApiError } from "../dist/errors.js";
-import { agentWithRevision, storeOn } from "./store-helpers.mjs";
+import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
+/** The secret a sign-in of alpha's saved at T0 for Browserbase carries beside the old view's fields (sign-ins-secrets.ts). */
+const META = { secret: { name: "sign-in:alpha:browserbase", set: true, source: "sign-in", changed_at: new Date(T0).toISOString() } };
 /** A vendor port that records removals, or refuses them. */
 function fakeVendors({ refuse = false } = {}) {
   const removed = [];
@@ -194,15 +196,15 @@ test("a ':' in the agent or the provider is refused", async (t) => {
 
 // The view bridge: the old SignIns shapes (view/peek/forgotten/forget), byte for byte, so the v2 API answers unchanged.
 
-test("signInsOverStore.view: the old SignInView shape; ready, then held/held_by while a live run holds the hash, and verified_at from the store", async (t) => {
+test("signInsOverStore.view: the old SignInView shape and the secret metadata; ready, then held/held_by while a live run holds the hash, and verified_at from the store", async (t) => {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
   await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
   const bridge = signInsOverStore(store, KEY, fakeVendors());
-  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: null }]);
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: null, ...META }]);
   // A live run handed the pointer's hash: held, held_by names it.
   const { runId, claim } = await runningRun(store, { hashes: [pointerHash("ctx-1")] });
-  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: null }]);
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: null, ...META }]);
   assert.ok(!JSON.stringify(await bridge.view("alpha")).includes("ctx-1"), "the view never holds the pointer");
   // A run verifies it (E2's run path through store.signIns.verify): verified_at shows that time, as ISO.
   clock.now += 1000;
@@ -211,9 +213,9 @@ test("signInsOverStore.view: the old SignInView shape; ready, then held/held_by 
   await store.runs.update(claim, { state: "ended" });
   // Browserbase keeps its save lease the settle window past the run's end (the context is still being written back): the
   // view matches, staying held and named by that run until the window passes, then ready.
-  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: new Date(verifiedAt).toISOString() }]);
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: runId, verified_at: new Date(verifiedAt).toISOString(), ...META }]);
   clock.now += 10_000 + 1; // past BROWSERBASE_SETTLE_MS
-  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(verifiedAt).toISOString() }]);
+  assert.deepEqual(await bridge.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: new Date(verifiedAt).toISOString(), ...META }]);
 });
 
 test("signInsOverStore.view: an unreadable sign-in reads unreadable with held_by null; peek and forgotten carry the old shapes", async (t) => {
@@ -221,7 +223,7 @@ test("signInsOverStore.view: an unreadable sign-in reads unreadable with held_by
   await agentWithRevision(store, "alpha", "alpha-rev");
   await saveSignIn(store, KEY, { agentId: "alpha", provider: "browserbase", pointer: "ctx-1" });
   const other = signInsOverStore(store, randomBytes(32), fakeVendors());
-  assert.deepEqual(await other.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: null, verified_at: null }]);
+  assert.deepEqual(await other.view("alpha"), [{ key: "default", provider: "browserbase", state: "unreadable", held_by: null, verified_at: null, ...META }]);
   // peek maps a browser resolution to { ref } / "unreadable" / undefined.
   const bridge = signInsOverStore(store, KEY, fakeVendors());
   assert.deepEqual(await bridge.peek("alpha", "browserbase"), { ref: "ctx-1" });

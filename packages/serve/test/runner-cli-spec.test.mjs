@@ -20,6 +20,7 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { DATA_ENV } = await import("../dist/server-fs.js");
 const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
@@ -67,8 +68,9 @@ async function responsesGateway(t, text) {
   return { seen, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
-/** A run of `harness` stored with its launch, and a runner whose dispatch resolves a CLI harness to cliRunSpecFromLaunch. */
-async function runOn(t, { harness, model, env: envOf, prepare }) {
+/** A run of `harness` stored with its launch (`launch`: more of its body, as the server writes it), and a runner whose
+ *  dispatch resolves a CLI harness to cliRunSpecFromLaunch. */
+async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {} }) {
   assert.equal(typeof spec.cliRunSpecFromLaunch, "function", "runner/cli-run-spec.js exports cliRunSpecFromLaunch");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-"));
   await prepare?.(dir);
@@ -83,7 +85,7 @@ async function runOn(t, { harness, model, env: envOf, prepare }) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness, tools: ["read"] } });
-  const launch = { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness, model };
+  const launch = { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness, model, ...more };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const computers = noComputer();
@@ -104,7 +106,7 @@ async function runOn(t, { harness, model, env: envOf, prepare }) {
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
   }, "the run's end");
   const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
-  return { row, messages: messagesOf(entries), dir, computers };
+  return { row, messages: messagesOf(entries), dir, computers, server };
 }
 
 /** A stored `harness` run's spec, built for its claim as the dispatch builds it (no session opened), with the CLI's
@@ -217,6 +219,30 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   await until(() => computers.released() === 1, "the computer's release");
   assert.equal(computers.released(), 1, "released once");
 });
+
+// A run a trigger started: its launch names the trigger and the first input's origin (run-launch.ts, as the server writes
+// it at the firing), a schedule's with owner true (its owner wrote the words) and a webhook's with owner false. The CLI's
+// record writes that first input as the trigger's, with the launch's own owner flag, never as the person's: so its
+// Timeline shows a trigger row and no "You" row, and a webhook's payload never reads as the owner's words.
+const TRIGGER = { id: "trg_0123456789abcdef01234567", firing_key: `fir_${"a".repeat(32)}` };
+const LABEL = { schedule: "Schedule", webhook: "Webhook" };
+for (const [source, owner] of [["schedule", true], ["webhook", false]]) {
+  test(`an opencode run a ${source} trigger started journals its first input as the trigger's (owner ${owner}), never the person's: its Timeline shows the trigger's row, never "You"`, async (t) => {
+    const gateway = await responsesGateway(t, "Hello from OpenCode.");
+    const env = {
+      AGENT_MODEL_BASE_URL: gateway.origin,
+      AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
+      [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }),
+    };
+    const origin = { kind: "trigger", trigger_id: TRIGGER.id, source, owner };
+    const { row, messages, server } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env, launch: { trigger: TRIGGER, input_origin: origin } });
+    assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+    assert.deepEqual(messages.map((message) => [message.role, message.text, message.origin ?? null]), [["person", "Say hello.", origin], ["model", "Hello from OpenCode.", null]], "the first input is the trigger's, with the launch's owner flag");
+    const rows = await runTimeline(server, RUN, ctx, { settled: true });
+    assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), [], "no row reads as the person's");
+    assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.summary, r.trigger]), [[`${LABEL[source]} ${TRIGGER.id}: Say hello.`, { id: TRIGGER.id, source, owner }]]);
+  });
+}
 
 test("a CLI's install is looked up in the server's data directory (deps.data), as main's server names it to its runs (AGENTRUN_SERVE_DATA), never under the runner's HOME/.local/share", async (t) => {
   // The runner's own environment names no data directory, and its HOME is a folder of the test's: claude-agent's Agent SDK

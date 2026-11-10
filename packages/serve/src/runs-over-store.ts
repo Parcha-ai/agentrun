@@ -104,13 +104,12 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
 
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
  *  Verbatim from runs.ts pause: an agentic run has no pause here (501, a turn is stopped instead), an ended or cancelling one
- *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view.
- *  (The runner's "pause"/"resume" command kinds are added on the runner side; written through the store directly until they
- *  are in runner/commands.ts's COMMAND_KINDS, then this routes through sendCommand like the others — a named TODO.) */
+ *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view. The runner
+ *  acks the command in an agentrun.pause or agentrun.resume entry's commit (runner/commands.ts COMMAND_KINDS). */
 async function pauseOrResume(store: RunsStore, moment: RunMoment, paused: boolean): Promise<{ run_id: string; paused: boolean }> {
   if (moment.kind !== "workflow") throw unsupported("runs.pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.");
   if (moment.terminal || moment.cancelled) throw finished(moment);
-  await store.command(moment.id, { kind: paused ? "pause" : "resume", body: {} });
+  await sendCommand(store, moment.id, { kind: paused ? "pause" : "resume", body: {} });
   return { run_id: moment.id, paused };
 }
 
@@ -144,10 +143,11 @@ export async function message(
   if (!answers && moment.waitsOnPerson) throw waitingRefusal();
   // A person's message while a tool call waits for approval declines it, with the message as the reason: a deny the run's
   // gate acts on as any deny, resuming the session with the refusal and the person's words in one turn. A trigger's never
-  // does (answers false, refused above).
+  // does (answers false, refused above). Marked as the person's message (`by`), so its approval reads "Declined by your
+  // message", as main's declineBy kept it.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content } });
+    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } });
     return { mode: "answer", messageId };
   }
   if (moment.terminal) throw finished(moment);
@@ -192,9 +192,10 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   return { resumed: false, ...(moment.live ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
 }
 
-/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered. */
-function alreadyAnswered(id: string, decision: ApprovalDecision): ApiError {
-  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${decision}`;
+/** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered; a withdrawal by a run
+ *  that ended (completed or failed, `ended`) says its run ended, never that it was stopped. */
+function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false): ApiError {
+  const how = decision === "canceled" ? "canceled with its run" : decision === "withdrawn" ? (ended ? "withdrawn when its run ended" : "withdrawn when its run was stopped") : `answered: ${decision}`;
   return new ApiError("not_continuable", `The tool call ${id} was already ${how}.`, { details: { reason: "already_answered", decision } });
 }
 
@@ -206,7 +207,7 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   if (!given && !(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   if (given) {
     if (given.decision === decision) return;
-    throw alreadyAnswered(id, given.decision);
+    throw alreadyAnswered(id, given.decision, given.ended === true);
   }
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
   await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
@@ -271,7 +272,7 @@ export interface StartDeps {
   /** The run's model, pinned at start: resolved exactly as the old per-run process resolved it from the revision and agent
    *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
    *  resolution happens, here. Required. */
-  modelOf(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
+  modelOf(entry: AgentEntry, revision: Revision): Promise<{ provider: string; modelId: string } | undefined>;
   /** The server's learning switch (learning.ts LearningMode): a run learns only when it is not "off" and its revision says
    *  so. Absent, no run learns. */
   readonly learning?: LearningMode;
@@ -356,7 +357,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const tooling = await toolingOf(revision);
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
   // The run's model, resolved once, at start (the runner reads launch.model only).
-  const model = deps.modelOf(entry, revision);
+  const model = await deps.modelOf(entry, revision);
   // The run's learning start, decided here as the old start did (learning-run.ts onStart): a run learns when the server's
   // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (givenOf,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
