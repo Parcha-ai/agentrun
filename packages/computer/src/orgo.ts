@@ -39,9 +39,12 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { type ComputerError, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
+
+/** This module's failures: one with code vendor names Orgo. */
+const fail = failFor("orgo");
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
 export const MOUNT: readonly MountKind[] = ORGO.mounts;
@@ -467,7 +470,7 @@ export class OrgoProvider implements ComputerProvider {
 			return fail(made.error.code, `${made.error.message}${await this.#deleteNamed(name)}`);
 		}
 		const id = made.value?.id;
-		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return fail("orgo", `Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
+		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return vendorFail("orgo",`Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
 		const ref = { id, name };
 		const file: LabelsFile = { name, labels, deadline, maxDeadline, image: spec.image, cpus: cpu, memoryMb: ram * 1024 };
 		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal);
@@ -572,7 +575,7 @@ export class OrgoProvider implements ComputerProvider {
 			if (!read.ok) return read;
 			last = read.value.status;
 			if (last === "running") return ok(undefined);
-			if (!RUNNING.has(last)) return fail("orgo", `Orgo read ${ref.name} ${last}, not running`);
+			if (!RUNNING.has(last)) return vendorFail("orgo",`Orgo read ${ref.name} ${last}, not running`);
 			if (Date.now() >= until) return fail("timeout", `Orgo did not read ${ref.name} running within ${seconds(this.#timeouts.createMs)}; it last read ${last}`);
 			await pause(this.#timeouts.pollMs, signal);
 			if (signal?.aborted) return fail("aborted", "create was aborted while Orgo made the computer");
@@ -651,7 +654,7 @@ export class OrgoProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${ref.name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${ref.name} did not answer hello within ${seconds(helloMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return { ...fail("orgo", `cannot reach the daemon in ${ref.name}: ${stream.said() || hello.error.message}`), notListening: true };
+			return { ...vendorFail("orgo",`cannot reach the daemon in ${ref.name}: ${stream.said() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value, close });
 	}
@@ -670,7 +673,7 @@ export class OrgoProvider implements ComputerProvider {
 	async #get(id: string, signal?: AbortSignal): Promise<Result<OrgoComputer>> {
 		const read = await this.#rest.request<OrgoComputer>("GET", `/computers/${encodeURIComponent(id)}`, { timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
-		if (typeof read.value?.name !== "string" || typeof read.value.status !== "string") return fail("orgo", `Orgo's record of ${id} has no name or status`);
+		if (typeof read.value?.name !== "string" || typeof read.value.status !== "string") return vendorFail("orgo",`Orgo's record of ${id} has no name or status`);
 		return ok(read.value);
 	}
 
@@ -737,7 +740,7 @@ export class OrgoProvider implements ComputerProvider {
 		const read = await this.#rest.request<{ desktops?: unknown }>("GET", `/workspaces/${encodeURIComponent(this.#workspaceId)}`, { timeoutMs: this.#timeouts.listMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
 		const desktops = read.value?.desktops;
-		if (!Array.isArray(desktops)) return fail("orgo", `Orgo's workspace ${this.#workspaceId} lists no computers array`);
+		if (!Array.isArray(desktops)) return vendorFail("orgo",`Orgo's workspace ${this.#workspaceId} lists no computers array`);
 		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: this.#workspaceId })));
 	}
 

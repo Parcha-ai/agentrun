@@ -1023,7 +1023,7 @@ test("release never terminates a sandbox that is not this provider's", async () 
 test("release: a terminate that fails is an error unless the sandbox has finished", async () => {
 	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", running: false })], terminate: "fail" });
 	const failed = await provider.release(refOf(fake), "delete");
-	assert.equal(failed.error?.code, "modal");
+	assert.deepEqual([failed.error?.code, failed.error?.vendor], ["vendor", "modal"]);
 	assert.match(failed.error.message, /terminate failed/);
 	assert.deepEqual(await provider.release(refOf(fake, "computer-000000000002"), "delete"), { ok: true, value: undefined });
 });

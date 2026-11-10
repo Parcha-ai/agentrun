@@ -87,6 +87,7 @@ test("computer keys: each coded error comes back in plain words naming the provi
     limit: /^E2B says the account is at a limit\. \(/,
     invalid: /^E2B's settings are not valid\. \(/,
     unsupported: /^E2B can't be tested here\. \(/,
+    vendor: /^E2B answered with an error\. \(/,
     e2b: /^E2B answered with an error\. \(/,
     gone: /^The test of E2B failed\. \(/,
   };

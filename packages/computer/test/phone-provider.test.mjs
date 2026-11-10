@@ -264,7 +264,7 @@ test("the service's refusals are words with a code, and never the key", async ()
 test("a phone that fails or is not ready within readyMs is ended, in words", async () => {
 	const failed = await setup({ start: "error" });
 	const broke = await failed.provider.create(SPEC);
-	assert.equal(broke.error.code, "phone");
+	assert.deepEqual([broke.error.code, broke.error.vendor], ["vendor", "phone-harness"]);
 	assert.match(broke.error.message, /^the phone sess_0001 did not start: the emulator did not boot; it was ended$/);
 	assert.equal(failed.fake.sessions.size, 0);
 	assert.deepEqual(await failed.ledger.list(), []);
@@ -364,7 +364,7 @@ test("a create answered 5xx, or 2xx with no session, is uncertain: recovered by 
 	const unmade = await setup({ postAnswer: "503-unmade" });
 	const failed = await unmade.provider.create(SPEC);
 	assert.equal(failed.ok, false);
-	assert.equal(failed.error.code, "phone");
+	assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", "phone-harness"]);
 	assert.match(failed.error.message, /^POST \/sessions: the gateway timed out \(503\); and the service has no session for the request: .*; the ledger keeps the request's key/);
 	const key = unmade.fake.requests()[0].headers["idempotency-key"];
 	assert.deepEqual((await unmade.ledger.list()).map((entry) => entry.request), [key]);
@@ -587,8 +587,8 @@ test("the adb server's answers are read as its socket protocol frames them: OKAY
 	assert.deepEqual(phone.adbAnswer(frame("OKAY", "connected to live.phone-harness.test:22221"), "host:connect"), { ok: true, value: "connected to live.phone-harness.test:22221" });
 	assert.deepEqual(phone.adbAnswer(Buffer.from("OKAY"), "host:disconnect"), { ok: true, value: "" });
 	const refused = phone.adbAnswer(frame("FAIL", "no such device"), "host:disconnect");
-	assert.deepEqual(refused, { ok: false, error: { code: "phone", message: "the adb server refused host:disconnect: no such device" } });
-	assert.equal(phone.adbAnswer(Buffer.from("HTTP/1.1 400"), "host:devices-l").error.code, "phone");
+	assert.deepEqual(refused, { ok: false, error: { code: "vendor", vendor: "phone-harness", message: "the adb server refused host:disconnect: no such device" } });
+	assert.equal(phone.adbAnswer(Buffer.from("HTTP/1.1 400"), "host:devices-l").error.code, "vendor");
 	// A service is named in words by its kind and first word, never by its code or endpoint.
 	assert.equal(phone.serviceWords(`shell:unlock ${ADB_CODE}`), "shell:unlock");
 	assert.equal(phone.serviceWords(`host:connect:${ADB_HOST}:22221`), "host:connect");
@@ -853,7 +853,7 @@ test("a ledger put that fails once the phone's id is known ends the phone and an
 		let created;
 		await assert.doesNotReject(async () => (created = await provider.create(SPEC)), when);
 		assert.equal(created.ok, false, `${when}: ${JSON.stringify(created)}`);
-		assert.equal(created.error.code, "phone", when);
+		assert.deepEqual([created.error.code, created.error.vendor], ["vendor", "phone-harness"], when);
 		assert.match(created.error.message, /the phone ledger could not be written: the disk is full; the phone was ended$/, when);
 		assert.ok(fake.requests().some((r) => r.method === "DELETE" && r.path === "/sessions/sess_0001"), `${when}: DELETE sent`);
 		assert.equal(fake.sessions.size, 0, `${when}: no phone is left running`);
@@ -867,7 +867,7 @@ test("an unreadable ledger is a result in words from list and testConnection, ne
 		const { provider, fake } = await setup({}, { ledger });
 		const listed = await provider.list({});
 		assert.equal(listed.ok, false);
-		assert.equal(listed.error.code, "phone");
+		assert.deepEqual([listed.error.code, listed.error.vendor], ["vendor", "phone-harness"]);
 		assert.match(listed.error.message, /^the phone ledger could not be read: /);
 		const tested = await provider.testConnection();
 		assert.equal(tested.ok, false);

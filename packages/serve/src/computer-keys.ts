@@ -120,7 +120,7 @@ function wordsFor(code: string, providerId: string, said: string, table: KeyTabl
       return `${label}'s settings are not valid.${vendor}`;
     case "unsupported":
       return `${label} can't be tested here.${vendor}`;
-    // The one code for a vendor's own error (ComputerErrorCode "vendor"), whatever the vendor.
+    // The computer package's one code for a vendor's own failure (ComputerErrorCode "vendor"), whatever the vendor.
     case "vendor":
       return `${label} answered with an error.${vendor}`;
     default:

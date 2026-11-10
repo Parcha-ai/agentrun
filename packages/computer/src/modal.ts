@@ -57,10 +57,13 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
+
+/** This module's failures: one with code vendor names Modal. */
+const fail = failFor("modal");
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
 export interface ModalApp {
@@ -508,8 +511,9 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidError" || code === 3) return "invalid";
 	// gRPC's UNAUTHENTICATED and PERMISSION_DENIED: a token Modal refused.
 	if (code === 16 || code === 7) return "denied";
-	return "modal";
+	return "vendor";
 }
+
 
 /** Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. */
 function race<T>(promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
@@ -1288,7 +1292,7 @@ export class ModalProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return { ...fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
+			return { ...vendorFail("modal",`cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value, close });
 	}

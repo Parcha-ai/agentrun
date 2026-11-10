@@ -273,7 +273,7 @@ test("compose: a subpath the volume does not have fails create in Docker's words
 	mkdirSync(join(scratch, "empty-volume"), { recursive: true });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /cannot access path cache\/daemon-[0-9a-f]{64} of volume agentrun_agentrun-data/);
 	assert.deepEqual(names(), []);
 });

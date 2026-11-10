@@ -84,7 +84,7 @@ test("a docker run that ended with an exit of its own is cleaned up as before, o
 	const egress = fakeDocker({ egress: "exits" });
 	const made = await egress.provider.create({ ...SPEC, network: { allow: ALLOW } });
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /ended \(exit code 2\) before it was ready/);
 	assert.deepEqual([egress.names(), egress.volumeNames()], [[], []]);
 	assert.ok(!egress.calls().some((args) => args[0] === "volume" && args[1] === "inspect"), "no settle loop");

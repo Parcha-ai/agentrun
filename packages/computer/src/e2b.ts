@@ -54,10 +54,13 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
+
+/** This module's failures: one with code vendor names E2B. */
+const fail = failFor("e2b");
 
 /** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
 export interface E2BConnectionOptions {
@@ -369,8 +372,9 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidArgumentError" || name === "TemplateError") return "invalid";
 	if (name === "RateLimitError" || name === "NotEnoughSpaceError") return "limit";
 	if (name === "TimeoutError" || name === "SandboxUnreachableError") return "timeout";
-	return "e2b";
+	return "vendor";
 }
+
 
 /** Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. */
 function race<T>(promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
@@ -1165,7 +1169,7 @@ export class E2BProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(helloMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return { ...fail("e2b", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
+			return { ...vendorFail("e2b",`cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value as HelloResult, close });
 	}
@@ -1376,11 +1380,11 @@ export class E2BProvider implements ComputerProvider {
 		}
 		const found = new Map<string, E2BListedSandbox>();
 		for (let page = 0; paginator.hasNext; page++) {
-			if (page >= MAX_PAGES) return fail("e2b", `Sandbox.list ran past ${MAX_PAGES} pages`);
+			if (page >= MAX_PAGES) return vendorFail("e2b",`Sandbox.list ran past ${MAX_PAGES} pages`);
 			const left = Math.max(1, until - Date.now());
 			const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: Math.min(requestMs, left), ...(signal ? { signal } : {}) }), left, signal);
 			if (!items.ok) return boundBy(items, given === undefined ? undefined : left, requestMs);
-			if (!Array.isArray(items.value)) return fail("e2b", "Sandbox.list: a page that is not a list of sandboxes");
+			if (!Array.isArray(items.value)) return vendorFail("e2b","Sandbox.list: a page that is not a list of sandboxes");
 			for (const sb of items.value) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
 		return ok([...found.values()]);
@@ -1401,7 +1405,7 @@ export class E2BProvider implements ComputerProvider {
 		}
 		const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: requestMs, ...(signal ? { signal } : {}) }), requestMs, signal);
 		if (!items.ok) return countTested("E2B", fail(items.error.code, items.error.message));
-		if (!Array.isArray(items.value)) return countTested("E2B", fail("e2b", "Sandbox.list: a page that is not a list of sandboxes"));
+		if (!Array.isArray(items.value)) return countTested("E2B", vendorFail("e2b","Sandbox.list: a page that is not a list of sandboxes"));
 		const count = items.value.filter((sb) => typeof sb?.sandboxId === "string" && ours(sb.metadata)).length;
 		return countTested("E2B", ok({ count, more: paginator.hasNext }));
 	}

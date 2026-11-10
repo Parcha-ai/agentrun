@@ -46,10 +46,13 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
+
+/** This module's failures: one with code vendor names Daytona. */
+const fail = failFor("daytona");
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
 export interface DaytonaTimeouts {
@@ -418,7 +421,7 @@ function codeOf(status: number, text: string): ComputerErrorCode {
 	if (status === 408) return "timeout";
 	if (status === 429) return "limit";
 	if (status === 400 || status === 409 || status === 422) return "invalid";
-	return "daytona";
+	return "vendor";
 }
 
 /** Whether fetch failed on a redirect it was told not to follow. */
@@ -484,12 +487,12 @@ class Rest {
 				if (response.ok || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				retryable = response.status === 429 || response.status >= 500;
-				failure = { code: codeOf(response.status, text), message: `${what}: ${response.status} ${text}` };
+				failure = errorOf(codeOf(response.status, text), `${what}: ${response.status} ${text}`, "daytona");
 			} catch (cause) {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 				if (timeout.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
-				else if (redirected(cause)) return fail("daytona", `${what}: Daytona answered with a redirect, which is never followed: it would carry the key`);
-				else failure = { code: "daytona", message: `${what}: ${(cause as Error).message}` };
+				else if (redirected(cause)) return vendorFail("daytona",`${what}: Daytona answered with a redirect, which is never followed: it would carry the key`);
+				else failure = { code: "vendor", vendor: "daytona", message: `${what}: ${(cause as Error).message}` };
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
 			await sleep(this.#timeouts.retryMs * 2 ** (attempt - 1), signal);
@@ -506,7 +509,7 @@ class Rest {
 		const found = await this.json("GET", this.sandbox(idOrName), { retry: true }, signal);
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
 		const sb = found.value as Sandbox | null;
-		return typeof sb?.id === "string" ? ok(sb) : fail("daytona", `GET /sandbox/${idOrName}: no sandbox in the answer`);
+		return typeof sb?.id === "string" ? ok(sb) : vendorFail("daytona",`GET /sandbox/${idOrName}: no sandbox in the answer`);
 	}
 }
 
@@ -583,11 +586,11 @@ function sessionStream(socket: WebSocketLike, send: (data: string) => Promise<Re
 		else if (typeof data === "string") lines(Buffer.from(data), false);
 	});
 	socket.addEventListener("error", (event) => {
-		opened(fail("daytona", `the log stream failed: ${event.message ?? "no reason given"}`));
+		opened(vendorFail("daytona",`the log stream failed: ${event.message ?? "no reason given"}`));
 		if (!readable.destroyed) readable.destroy(new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`));
 	});
 	socket.addEventListener("close", ({ code }) => {
-		opened(fail("daytona", `the log stream closed before it opened (code ${code ?? "none"})`));
+		opened(vendorFail("daytona",`the log stream closed before it opened (code ${code ?? "none"})`));
 		if (readable.destroyed) return;
 		lines(Buffer.alloc(0), true);
 		readable.end();
@@ -776,7 +779,7 @@ export class DaytonaProvider implements ComputerProvider {
 			const removed = refused ? ok(undefined) : await this.#delete(name);
 			const left = removed.ok ? "" : `; a sandbox named ${name} may be left (${removed.error.message}), which Daytona ends by ${deadline}`;
 			if (!posted.ok) return fail(posted.error.code, `${posted.error.code === "aborted" ? "create was aborted" : "Daytona did not create the sandbox"}: ${posted.error.message}${left}`);
-			return fail("daytona", `POST /sandbox: no sandbox id in the answer${left}`);
+			return vendorFail("daytona",`POST /sandbox: no sandbox id in the answer${left}`);
 		}
 		const ref = { id: made.id, name };
 		// From here the sandbox exists: every step takes the caller's signal, and a failure or an abort deletes it.
@@ -896,7 +899,7 @@ export class DaytonaProvider implements ComputerProvider {
 					const ran = await this.#rest.json("POST", `${session}/exec`, { json: { command: shellCommand(ROOT_RUN, argv), runAsync: true, suppressInputEcho: true } }, signal);
 					if (!ran.ok) return ran;
 					const commandId = (ran.value as { cmdId?: unknown } | null)?.cmdId;
-					if (typeof commandId !== "string") return fail("daytona", "POST exec: no command id in the answer");
+					if (typeof commandId !== "string") return vendorFail("daytona","POST exec: no command id in the answer");
 					const command = `${session}/command/${encodeURIComponent(commandId)}`;
 					if (stdin !== undefined) {
 						// Its words never carry stdin: it is the disk's token.
@@ -940,7 +943,7 @@ export class DaytonaProvider implements ComputerProvider {
 			if (!first && current?.state === "started") return ok(current);
 			if (current === undefined || GONE.has(current.state ?? "") || current.state === "error" || current.state === "build_failed") {
 				const reason = current?.errorReason ? `: ${current.errorReason}` : "";
-				return fail("daytona", `the sandbox went to ${current?.state ?? "deleted"} while starting${reason}`);
+				return vendorFail("daytona",`the sandbox went to ${current?.state ?? "deleted"} while starting${reason}`);
 			}
 			if (!first && Date.now() >= end) return fail("timeout", `the sandbox did not start within ${this.#timeouts.startMs / 1000} s (state ${current.state})`);
 			if (!first) await sleep(this.#timeouts.pollMs, signal);
@@ -986,9 +989,9 @@ export class DaytonaProvider implements ComputerProvider {
 		try {
 			url = new URL(proxy ?? "");
 		} catch {
-			return fail("daytona", `Daytona gave no toolbox URL for ${sb.id}`);
+			return vendorFail("daytona",`Daytona gave no toolbox URL for ${sb.id}`);
 		}
-		if (url.protocol !== "https:") return fail("daytona", `the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
+		if (url.protocol !== "https:") return vendorFail("daytona",`the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
 		return ok(`${url.href.replace(/\/+$/, "")}/${encodeURIComponent(sb.id)}`);
 	}
 
@@ -1035,7 +1038,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const commandId = ran.ok ? (ran.value as { cmdId?: unknown } | null)?.cmdId : undefined;
 		if (!ran.ok || typeof commandId !== "string") {
 			await removeSession();
-			return ran.ok ? fail("daytona", "POST exec: no command id in the answer") : ran;
+			return ran.ok ? vendorFail("daytona","POST exec: no command id in the answer") : ran;
 		}
 		const command = `${session}/command/${encodeURIComponent(commandId)}`;
 		const logs = `${command.replace(/^https:/, "wss:")}/logs?follow=true`;
@@ -1044,7 +1047,7 @@ export class DaytonaProvider implements ComputerProvider {
 			socket = this.#webSocket(logs, { headers: this.#rest.headers(), protocols: [] });
 		} catch (error) {
 			await removeSession();
-			return fail("daytona", `opening the log stream: ${(error as Error).message}`);
+			return vendorFail("daytona",`opening the log stream: ${(error as Error).message}`);
 		}
 		const stream = sessionStream(socket, async (data) => {
 			const sent = await this.#rest.call("POST", `${command}/input`, { json: { data } });
@@ -1073,7 +1076,7 @@ export class DaytonaProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${sb.name ?? sb.id} was aborted`);
 			if (hello.error.code === "aborted") return timedOut();
 			if (hello.error.code !== "gone") return hello;
-			return fail("daytona", `cannot reach the daemon in ${sb.name ?? sb.id}: ${stream.stderr() || hello.error.message}`);
+			return vendorFail("daytona",`cannot reach the daemon in ${sb.name ?? sb.id}: ${stream.stderr() || hello.error.message}`);
 		}
 		return ok({ client, hello: hello.value, close });
 	}
@@ -1226,15 +1229,15 @@ export class DaytonaProvider implements ComputerProvider {
 			if (!answer.ok) return answer;
 			const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
 			const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
-			if (items === undefined) return fail("daytona", "GET /sandbox: the listing is not a page of sandboxes");
+			if (items === undefined) return vendorFail("daytona","GET /sandbox: the listing is not a page of sandboxes");
 			found.push(...items);
 			const next = Array.isArray(value) ? undefined : value?.nextCursor;
 			if (typeof next !== "string" || next === "") return ok(found);
-			if (seen.has(next)) return fail("daytona", `GET /sandbox: the listing's cursor ${next} came back twice`);
+			if (seen.has(next)) return vendorFail("daytona",`GET /sandbox: the listing's cursor ${next} came back twice`);
 			seen.add(next);
 			cursor = next;
 		}
-		return fail("daytona", `GET /sandbox: the listing ran past ${MAX_PAGES} pages`);
+		return vendorFail("daytona",`GET /sandbox: the listing ran past ${MAX_PAGES} pages`);
 	}
 
 	/**
@@ -1267,7 +1270,7 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!answer.ok) return countTested("Daytona", answer);
 		const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
 		const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
-		if (items === undefined) return countTested("Daytona", fail("daytona", "GET /sandbox: the listing is not a page of sandboxes"));
+		if (items === undefined) return countTested("Daytona", vendorFail("daytona","GET /sandbox: the listing is not a page of sandboxes"));
 		const next = Array.isArray(value) ? undefined : value?.nextCursor;
 		return countTested("Daytona", ok({ count: items.filter((item) => ours(item) && !going(item)).length, more: typeof next === "string" && next !== "" }));
 	}
@@ -1455,7 +1458,7 @@ export class DaytonaProvider implements ComputerProvider {
 			const sb = got.value;
 			last = stateWords(sb);
 			if (sb !== undefined && (sb.state === "error" || sb.state === "build_failed") && sb.desiredState !== "destroyed") {
-				return { failed: fail("daytona", `release ${how} of ${ref.name}: it went to ${sb.state}${sb.errorReason ? `: ${sb.errorReason}` : ""}`) };
+				return { failed: vendorFail("daytona",`release ${how} of ${ref.name}: it went to ${sb.state}${sb.errorReason ? `: ${sb.errorReason}` : ""}`) };
 			}
 			const gone = sb === undefined || sb.state === "destroyed";
 			const reached = gone ? "gone" : want === "stopped" && STOPPED.has(sb.state ?? "") ? "stopped" : undefined;
@@ -1508,6 +1511,6 @@ export class DaytonaProvider implements ComputerProvider {
 			if (attempt === DELETE_ATTEMPTS - 1) await this.#rest.call("POST", this.#rest.sandbox(idOrName, "/stop?force=true"), { timeoutMs: this.#timeouts.deleteMs });
 			if (attempt < DELETE_ATTEMPTS) await sleep(this.#timeouts.retryMs);
 		}
-		return { ok: false, error: failure ?? { code: "daytona", message: `could not delete ${idOrName}` } };
+		return { ok: false, error: failure ?? { code: "vendor", vendor: "daytona", message: `could not delete ${idOrName}` } };
 	}
 }

@@ -7,7 +7,7 @@ import type { CallOptions } from "./client.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods, Group, HelloResult } from "./protocol.js";
 import type { ComputerCapabilities, ComputerSpec, Refusal } from "./provider.js";
 import { checkLifetime } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result } from "./result.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 
 /** The one image a browser computer runs: the vendor's own Chromium (the browser descriptors' default). */
@@ -48,24 +48,27 @@ export const DEFAULT_CONFIRM: ReleaseConfirm = { polls: 6, intervalMs: 500 };
 export const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** A vendor call's failure as the provider returns it: a code and words, and the error the call threw, for a caller that rethrows it as it was. */
-export type VendorFailure = { code: ComputerErrorCode; message: string; readonly cause?: unknown };
+export type VendorFailure = ComputerError & { readonly cause?: unknown };
 
-/** A failure whose cause rides along out of sight: not enumerable, so it is in no JSON, no log line and no report. */
-export function vendorFail(code: ComputerErrorCode, message: string, cause?: unknown): Result<never> {
-	const failed = fail(code, message);
+/**
+ * A failure whose cause rides along out of sight: not enumerable, so it is in no JSON, no log line and no report. With
+ * code vendor, vendor (the provider's id) names whose.
+ */
+export function causedFail(code: ComputerErrorCode, message: string, cause: unknown, vendor: string): Result<never> {
+	const failed: Result<never> = { ok: false, error: errorOf(code, message, vendor) };
 	if (cause !== undefined && !failed.ok) Object.defineProperty(failed.error, "cause", { value: cause, enumerable: false });
 	return failed;
 }
 
-/** The error a vendor call threw, behind a failure vendorFail made; undefined for any other. */
+/** The error a vendor call threw, behind a failure causedFail made; undefined for any other. */
 export const causeOf = (result: Result<unknown>): unknown => (result.ok ? undefined : (result.error as VendorFailure).cause);
 
-/** The code a vendor's HTTP status reads as. */
-export function statusCode(status: number | undefined, vendor: "browserbase" | "kernel"): ComputerErrorCode {
+/** The code a vendor's HTTP status reads as: one of ours, or vendor. */
+export function statusCode(status: number | undefined): ComputerErrorCode {
 	if (status === 401 || status === 403) return "denied";
 	if (status === 404) return "not_found";
 	if (status === 429) return "limit";
-	return vendor;
+	return "vendor";
 }
 
 /** Why labels are not ones a browser provider writes into a vendor's metadata, in words; undefined when they are. */
@@ -258,14 +261,14 @@ const isAbort = (error: unknown) => (error as { name?: unknown } | null)?.name =
 
 /**
  * A vendor call's thrown error as a result: aborted, or the code its status reads as, in words that name the call and the
- * status alone. The error itself rides along as the failure's hidden cause (vendorFail).
+ * status alone. The error itself rides along as the failure's hidden cause (causedFail). vendor is the provider's id.
  */
-export function vendorFailure(vendor: "browserbase" | "kernel", name: string, call: string, error: unknown): Result<never> {
-	if (isAbort(error)) return vendorFail("aborted", `${name} ${call} was aborted`, error);
+export function vendorFailure(vendor: string, name: string, call: string, error: unknown): Result<never> {
+	if (isAbort(error)) return causedFail("aborted", `${name} ${call} was aborted`, error, vendor);
 	const status = (error as { status?: unknown } | null)?.status;
-	const code = typeof status === "number" ? statusCode(status, vendor) : vendor;
+	const code = typeof status === "number" ? statusCode(status) : "vendor";
 	const words = error instanceof BrowserVendorError ? error.message : typeof status === "number" ? `${name} ${call} answered ${status}` : `${name} ${call} failed`;
-	return vendorFail(code, words, error);
+	return causedFail(code, words, error, vendor);
 }
 
 /**

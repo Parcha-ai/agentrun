@@ -21,7 +21,7 @@ function fakeProvider(computers, { lifetime = "janitor", failRelease = [], liste
 		},
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
-			if (failRelease.includes(ref.name)) return { ok: false, error: { code: "docker", message: `cannot remove ${ref.name}` } };
+			if (failRelease.includes(ref.name)) return { ok: false, error: { code: "vendor", vendor: "docker", message: `cannot remove ${ref.name}` } };
 			return { ok: true, value: undefined };
 		},
 	};
@@ -90,7 +90,7 @@ test("sweep() refuses a provider whose vendor ends computers itself, with no cal
 });
 
 test("sweep() returns list's error as it is", async () => {
-	const failed = { ok: false, error: { code: "docker", message: "the docker CLI (docker) was not found" } };
+	const failed = { ok: false, error: { code: "vendor", vendor: "docker", message: "the docker CLI (docker) was not found" } };
 	const { provider } = fakeProvider([], { listed: failed });
 	assert.deepEqual(await sweep(provider, { now: NOW }), failed);
 });
@@ -106,7 +106,7 @@ test("sweep() goes on past a computer it cannot delete, then says which it delet
 	);
 	const swept = await sweep(provider, { now: NOW });
 	assert.equal(swept.ok, false);
-	assert.equal(swept.error.code, "docker");
+	assert.deepEqual([swept.error.code, swept.error.vendor], ["vendor", "docker"], "the first failure's code and vendor are kept");
 	assert.match(swept.error.message, /deleted a, c/);
 	assert.match(swept.error.message, /cannot remove b/);
 	assert.deepEqual(calls.filter(([what]) => what === "release").map(([, name]) => name), ["a", "b", "c"]);
@@ -179,9 +179,9 @@ test("sweep() of a provider with sweepLeftovers removes what its computers left 
 	assert.deepEqual(calls.map((call) => call[0]), ["list", "release", "sweepLeftovers"], "the computers first: a released computer takes its own parts");
 	assert.deepEqual(calls.at(-1), ["sweepLeftovers", { team: "a" }, NOW.toISOString(), true]);
 	// Its failure is the sweep's, after the computers it deleted, in words.
-	provider.sweepLeftovers = async () => ({ ok: false, error: { code: "docker", message: "docker volume rm x failed" } });
+	provider.sweepLeftovers = async () => ({ ok: false, error: { code: "vendor", vendor: "docker", message: "docker volume rm x failed" } });
 	const failed = await sweep(provider, { now: NOW });
 	assert.equal(failed.ok, false);
-	assert.equal(failed.error.code, "docker");
+	assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", "docker"]);
 	assert.match(failed.error.message, /deleted past.*could not remove what its computers left behind: docker volume rm x failed/);
 });

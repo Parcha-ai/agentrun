@@ -13,7 +13,7 @@ import { EPOCH_LABEL, epochOf, RUN_LABEL, runProblem } from "./labels.js";
 import { type MountReadBack, type MountSpec, readBackOf, WORKSPACE } from "./mount.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods } from "./protocol.js";
 import type { ComputerRef, ComputerSpec, Refusal } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, fail, failAs, ok, type Result } from "./result.js";
 
 /** Where the image has the root helper, root:root 0755. */
 export const ARCHIL_HELPER = "/usr/local/sbin/agentrun-archil";
@@ -194,7 +194,7 @@ export interface ArchilMountOptions {
 export async function archilMount({ root, mount, self: computer, releaseOlder, timeoutMs, signal }: ArchilMountOptions): Promise<Result<void>> {
 	const step = async (argv: readonly string[], what: string, stdin?: string) => {
 		const ran = await root.run(argv, { timeoutMs, ...(stdin === undefined ? {} : { stdin }), ...(signal ? { signal } : {}) });
-		if (!ran.ok) return fail(ran.error.code, `archil ${what} in the computer could not run: ${scrub(ran.error.message, mount.token)}`);
+		if (!ran.ok) return failAs(ran.error, `archil ${what} in the computer could not run: ${scrub(ran.error.message, mount.token)}`);
 		return ran;
 	};
 	const failed = (what: string, ran: { exitCode: number; output: string }, code: ComputerErrorCode = "refused") =>
@@ -207,14 +207,14 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 		return fail("refused", `the computer is not as the Archil image makes it: ${drift.length > 0 ? drift.join("; ") : `the preflight exited ${pre.value.exitCode}`}`);
 	}
 	const older = await releaseOlder();
-	if (!older.ok) return fail(older.error.code, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
+	if (!older.ok) return failAs(older.error, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
 	const twinsOf = (kept: ComputerRef[]) => kept.filter((ref) => ref.id !== computer.id).map((ref) => ref.name);
 	const twins = twinsOf(older.value.kept);
 	// Right before any force, the run's listing is read again: a higher epoch made since (two creates of one run
 	// interleaving, this one lagging) fences it, and a twin made since stops it, so nothing is revoked from either.
 	const beforeForce = async (): Promise<Result<void>> => {
 		const again = await releaseOlder();
-		if (!again.ok) return fail(again.error.code, `the run's computers, listed again right before the force, stop it, so nothing was revoked: ${again.error.message}`);
+		if (!again.ok) return failAs(again.error, `the run's computers, listed again right before the force, stop it, so nothing was revoked: ${again.error.message}`);
 		const late = twinsOf(again.value.kept);
 		if (late.length > 0) return fail("refused", `the run has ${late.join(", ")} at this claim's same epoch, listed right before the force: a create never forces off a computer of its own epoch, so nothing was revoked`);
 		return ok(undefined);
