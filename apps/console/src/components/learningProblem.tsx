@@ -1,4 +1,5 @@
 import { TriangleAlert } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ClientError } from "@/lib/client";
 
 // A failed read or write, said for a person, in the shape of the console's problem card that is on its way (`problem`
@@ -36,10 +37,10 @@ export function ProblemCard({ problem: p, onRetry, className = "m-8" }: { proble
     <section className={`flex gap-3 border bg-card px-4 py-4 md:px-5 ${className}`} role="alert">
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive-text" aria-hidden />
       <div className="min-w-0">
-        <p className="text-[15px] font-semibold">{p.title}</p>
-        <p className="mt-1 text-[14px] leading-relaxed">{p.why} {p.next}</p>
-        {(p.said || p.code) && <p className="mt-2 break-words font-mono text-[11px] text-muted-foreground">{[p.said, p.code].filter(Boolean).join(" · ")}</p>}
-        {onRetry && <div className="mt-3 flex flex-wrap gap-3"><button type="button" onClick={onRetry} className="caps border px-3 py-2 text-[12px] hover:bg-accent">Try again</button></div>}
+        <p className="text-prose font-semibold">{p.title}</p>
+        <p className="mt-1 text-lead leading-relaxed">{p.why} {p.next}</p>
+        {(p.said || p.code) && <p className="mt-2 break-words font-mono text-label text-muted-foreground">{[p.said, p.code].filter(Boolean).join(" · ")}</p>}
+        {onRetry && <div className="mt-3 flex flex-wrap gap-3"><Button type="button" onClick={onRetry} size="sm">Try again</Button></div>}
       </div>
     </section>
   );

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { grantOf, grantProblem, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
 import { SERVER_DENY } from "@/lib/toolSettings";
@@ -18,39 +19,39 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
     const off = (!runs || !!refused) && !on;
     const said = warn ?? refused ?? (on && !runs ? `Won't run on ${harness}.` : undefined);
     return (
-      <li key={grant}><label className={cn("flex items-start gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", warn && "border-warning/60", off ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-        <input type="checkbox" value={grant} checked={on} disabled={off} onChange={() => toggle(grant)} className="mt-0.5 accent-[hsl(var(--primary))]" />
+      <li key={grant}><label className={cn("flex items-start gap-3 border px-3 py-2.5 font-mono text-body", on && "border-foreground", warn && "border-warning/60", off ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+        <input type="checkbox" value={grant} checked={on} disabled={off} onChange={() => toggle(grant)} className="mt-0.5 accent-primary" />
         <span className="min-w-0">{label}
-          {note && <span className="mt-0.5 line-clamp-2 block font-sans text-[11px] text-muted-foreground" title={note}>{note}</span>}
-          {said && <span className="mt-0.5 block font-sans text-[11px] text-warning-text" role="alert">{said}</span>}</span>
+          {note && <span className="mt-0.5 line-clamp-2 block font-sans text-label text-muted-foreground" title={note}>{note}</span>}
+          {said && <span className="mt-0.5 block font-sans text-label text-warning-text" role="alert">{said}</span>}</span>
       </label></li>
     );
   };
   const grid = (children: ReactNode) => <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">{children}</ul>;
-  const notHere = !runs && <p className="text-[12px] text-warning-text">{harness} doesn't run MCP tools on this server{harnesses?.length ? `: ${harnesses.join(" and ")} do` : ""}.</p>;
+  const notHere = !runs && <p className="text-small text-warning-text">{harness} doesn't run MCP tools on this server{harnesses?.length ? `: ${harnesses.join(" and ")} do` : ""}.</p>;
   if (servers === "failed") return (
     <div className="mt-4 space-y-2">
-      <p className="font-mono text-[12px] text-warning-text" role="alert">The MCP servers could not be read.{" "}
-        {onRetry && <button type="button" onClick={onRetry} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent">Retry</button>}</p>
+      <p className="font-mono text-small text-warning-text" role="alert">The MCP servers could not be read.{" "}
+        {onRetry && <Button type="button" onClick={onRetry} size="xs" className="ml-1">Retry</Button>}</p>
       {granted.length > 0 && grid(granted.map((g) => box(g, g, "Can't check right now whether its server still lists it.")))}
     </div>
   );
-  if (!servers) return granted.length ? <p className="mt-3 font-mono text-[12px] text-muted-foreground">Reading the MCP servers...</p> : null;
+  if (!servers) return granted.length ? <p className="mt-3 font-mono text-small text-muted-foreground">Reading the MCP servers...</p> : null;
   const stale = staleGrants(tools, servers);
-  if (!servers.length && !stale.length) return <p className="mt-3 text-[12px] text-muted-foreground">No MCP server is saved: add one in Settings → MCP servers to grant its tools.</p>;
+  if (!servers.length && !stale.length) return <p className="mt-3 text-small text-muted-foreground">No MCP server is saved: add one in Settings → MCP servers to grant its tools.</p>;
   return (
     <div className="mt-4 space-y-4">
       {notHere}
       {servers.map((s) => (
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
-          <p className="caps mb-2 text-[11px] font-semibold text-muted-foreground">{s.name} · MCP server</p>
+          <p className="caps mb-2 text-label font-semibold text-muted-foreground">{s.name} · MCP server</p>
           {/* A tool its server's read says no price meters: its calls run outside the run's cost and cap. */}
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), s.not_metered?.includes(t.name) ? <>{t.name}<span className="ml-2 font-sans text-[11px] text-muted-foreground">not metered</span></> : t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined))))}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), s.not_metered?.includes(t.name) ? <>{t.name}<span className="ml-2 font-sans text-label text-muted-foreground">not metered</span></> : t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined))))}
         </section>
       ))}
       {stale.length > 0 && (
         <section aria-label="MCP grants that can't run">
-          <p className="caps mb-2 text-[11px] font-semibold text-warning-text">Granted, but not on a saved server</p>
+          <p className="caps mb-2 text-label font-semibold text-warning-text">Granted, but not on a saved server</p>
           {grid(stale.map((x) => box(x.grant, x.grant, undefined, x.why)))}
         </section>
       )}
