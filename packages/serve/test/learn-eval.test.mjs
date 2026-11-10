@@ -62,7 +62,7 @@ for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]
       outcome[c.id] = "empty";
       continue;
     }
-    assert.deepEqual(reflection, { ok: true, notes: c.notes }, `${c.id}: the answer's notes, whole`);
+    assert.deepEqual(reflection, { ok: true, notes: c.notes, order: c.notes.map((n) => ({ kind: "note", name: n.file })) }, `${c.id}: the answer's notes, whole`);
     const checked = checkProposal({ base: { files: ["MEMORY.md", ...c.active.map((n) => n.file)], active: parsed(c.active) }, changes: reflection.notes.map((n) => ({ path: n.file, status: "added", mode: "100644", bytes: Buffer.from(n.text) })) });
     if (checked.problems.length) {
       outcome[c.id] = `checker:${[...new Set(checked.problems.map((p) => p.rule))].join(",")}`;

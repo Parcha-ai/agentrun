@@ -8,7 +8,7 @@
 // commit. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse (a
 // note holding a secret among them) is never kept anywhere.
 import { join } from "node:path";
-import { type Change, checkProposal, draftFiles, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
+import { type Change, checkProposal, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { baseOf } from "./learn/seed-check.js";
 import { writeDurable } from "./files.js";
@@ -91,24 +91,34 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
 export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">> }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
-  // Each skill and draft as the folder would hold it; a draft is its two files, given together or not at all.
-  const given = parsed.ok ? [
-    ...(parsed.skills ?? []).map(({ name, text }) => [{ file: `${SKILLS_DIR}/${name}/SKILL.md`, text }]),
-    ...(parsed.workflows ?? []).map(({ name, text }) => {
-      const { json, readme } = draftFiles(name, text);
-      return [{ file: `${WORKFLOWS_DIR}/${name}/workflow.json`, text: json }, { file: `${WORKFLOWS_DIR}/${name}/README.md`, text: readme }];
-    }),
-  ] : [];
+  // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
+  // answer's order; a draft is its two files, given together or not at all.
+  const fileGroups = new Map<string, { file: string; text: string }[]>();
+  const keyOf = (kind: string, name: string) => `${kind}\u0000${name}`;
+  for (const { name, text } of parsed.ok ? (parsed.skills ?? []) : []) fileGroups.set(keyOf(SKILL_BLOCK, name), [{ file: `${SKILLS_DIR}/${name}/SKILL.md`, text }]);
+  for (const { name, text } of parsed.ok ? (parsed.workflows ?? []) : []) {
+    const { json, readme } = draftFiles(name, text);
+    fileGroups.set(keyOf(WORKFLOW_BLOCK, name), [{ file: `${WORKFLOWS_DIR}/${name}/workflow.json`, text: json }, { file: `${WORKFLOWS_DIR}/${name}/README.md`, text: readme }]);
+  }
+  const given = [...fileGroups.values()];
   // The seed is read whatever the answer: a seed the folder does not hold fails the check.
   const { snapshot, texts } = await seedAt(input.folder, input.seed, () => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file)] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
   const { base, kept } = baseOf(snapshot);
   const held = new Set(base.files);
   const files = given.filter((group) => group.some(({ file, text }) => texts.get(file) !== text)).flat();
-  const changes: Change[] = [
-    ...parsed.notes.filter(({ file, text }) => texts.get(file) !== text).map(({ file, text }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) })),
-    ...files.map(({ file, text }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) })),
-  ];
+  const changeOf = ({ file, text }: { file: string; text: string }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) });
+  // Each changed item in the order the answer gave its block, whatever its kind: a count cap names the items past it in
+  // that order (learn/check.ts), so a skill the answer led with is never the one past the changed-path cap.
+  const noteTexts = new Map(parsed.notes.map(({ file, text }) => [file, text]));
+  const changed = new Set(files.map(({ file }) => file));
+  const changes: Change[] = parsed.order.flatMap(({ kind, name }): Change[] => {
+    if (kind === NOTE_BLOCK) {
+      const text = noteTexts.get(name)!;
+      return texts.get(name) !== text ? [changeOf({ file: name, text })] : [];
+    }
+    return (fileGroups.get(keyOf(kind, name)) ?? []).filter(({ file }) => changed.has(file)).map(changeOf);
+  });
   // The workflow DSL reads a draft, and is loaded only when there is one to read.
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.

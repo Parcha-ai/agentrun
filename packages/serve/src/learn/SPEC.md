@@ -158,8 +158,9 @@ Over a cap is refused, never cut.
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked
   again, until it passes, and goes on to the grader, and the run's learning names what was left out (`problems`). A
-  count cap names the items past it, in the order the answer gave them, and a size cap the item over it: one oversized
-  or extra item is left out, the rest kept. The whole proposal is refused when a problem names no item it proposed,
+  count cap names the items past it, in the order the answer gave them whatever their kind, and a size cap the item
+  over it: one oversized or extra item is left out, the rest kept. A note left out past the supersedes cap holds
+  nothing as superseded for the notes after it. The whole proposal is refused when a problem names no item it proposed,
   when its rule refuses the whole (`outside`, `deleted`, `index_full`, the notes' total, which no one item is past,
   `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
   trusted for any item), or when nothing is left, with every pass's problems. Before any item is kept, every name and text

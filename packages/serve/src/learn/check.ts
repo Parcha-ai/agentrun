@@ -282,17 +282,18 @@ export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseV
   const replaced = new Set<string>();
   // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is. Counted in
   // the order the notes come: a note that would take the count past the cap is named (and left out), and what it
-  // supersedes is not counted for the notes after it.
+  // supersedes is neither counted nor held as superseded for the notes after it, so a later one that fits is kept.
   const counted = new Set<string>();
   for (const note of notes) {
     if (files.has(note.file)) out.push({ rule: "exists", path: note.file, detail: "the folder has a note by this name" });
+    const would = new Set([...counted, ...note.supersedes]);
+    const over = would.size > CAPS.supersedes;
     for (const old of note.supersedes) {
       if (!active.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` });
       else if (replaced.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `${old} is superseded by another new note too` });
-      replaced.add(old);
+      if (!over) replaced.add(old);
     }
-    const would = new Set([...counted, ...note.supersedes]);
-    if (would.size > CAPS.supersedes) out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
+    if (over) out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
     else for (const old of note.supersedes) counted.add(old);
   }
   const gone = supersededBy(notes);

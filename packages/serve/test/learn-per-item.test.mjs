@@ -81,3 +81,29 @@ test("a note that takes the notes superseded past the cap is left out, after a f
   assert.equal(result.notes, 1);
   assert.deepEqual(leftOf(result), [["too_large", "c.md"], ["supersedes", "b.md"]]);
 });
+
+test("a note left out past the supersedes cap holds none of what it names: a later note superseding one of them is kept", async (t) => {
+  // a.md supersedes seven active notes, b.md two more (nine: past the cap, so left out), and c.md one of b.md's two:
+  // with b.md out, c.md takes the count to eight, and supersedes what no kept note does.
+  const seed = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`old${i}.md`, note({ name: `Old${i}`, description: `Old ${i}` })]));
+  const olds = (from, n) => Array.from({ length: n }, (_, i) => `old${from + i}.md`).join(", ");
+  const answer = [
+    block("a.md", note({ name: "A", description: "A", extra: `supersedes: [${olds(0, CAPS.supersedes - 1)}]\n` })),
+    block("b.md", note({ name: "B", description: "B", extra: `supersedes: [${olds(CAPS.supersedes - 1, 2)}]\n` })),
+    block("c.md", note({ name: "C", description: "C", extra: `supersedes: [${olds(CAPS.supersedes - 1, 1)}]\n` })),
+  ].join("\n\n");
+  const result = await proposed(t, answer, seed);
+  assert.equal(result.state, "proposed", JSON.stringify(result));
+  assert.equal(result.notes, 2, JSON.stringify(result));
+  assert.deepEqual(leftOf(result), [["supersedes", "b.md"]]);
+});
+
+test("the changed-path cap counts the answer's items in the order it gave them: a skill given first is kept", async (t) => {
+  // A skill, then 64 notes: 65 paths. The one past the cap is the last note given, never the skill the answer led with.
+  const result = await proposed(t, [skillBlock("check-refunds"), ...notes(CAPS.changes)].join("\n\n"));
+  assert.equal(result.state, "proposed", JSON.stringify(result));
+  assert.deepEqual([result.skills, result.notes], [1, CAPS.newNotes], JSON.stringify(result));
+  const left = leftOf(result);
+  assert.deepEqual(left.filter(([rule]) => rule === "too_many_files"), [["too_many_files", `n${CAPS.changes - 1}.md`]]);
+  assert.equal(left.some(([, path]) => path.startsWith("skills/")), false, JSON.stringify(left));
+});
