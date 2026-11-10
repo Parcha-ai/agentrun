@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, type AgentFields, editBody } from "@/lib/agentForm";
 import { toolChoices } from "@/lib/toolSettings";
+import { optionsOf, pick, valueOf } from "@/test/picker";
 
 // An agent's tool settings, in the editor's Tools step: a provider for each tool it grants that has a choice, the
 // server's pick its default; one set here is marked, with a reset, and saved in the definition's tool_settings.
@@ -32,9 +33,9 @@ async function open(agent: Agent, { providerChoices = choices, editorCaps = caps
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`section[aria-label="Tool settings"] tr[data-tool="${tool}"]`);
-  const select = (tool: string) => row(tool)!.querySelector<HTMLSelectElement>(`select[aria-label="${tool} provider"]`)!;
+  const select = (tool: string) => row(tool)!.querySelector<HTMLButtonElement>(`button[aria-haspopup=listbox][aria-label="${tool} provider"]`)!;
   const choose = async (tool: string, provider: string) => {
-    await act(async () => { const s = select(tool); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, provider); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(select(tool), provider);
   };
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
@@ -47,9 +48,10 @@ describe("AgentEditor, an agent's tool settings", () => {
     expect(page.row("web_search")).toBeTruthy();
     expect(page.row("web_fetch")).toBeNull();
     // A tool with no provider choice has no provider to pick: its row holds only its permission.
-    expect(page.row("read")?.querySelector('select[aria-label="read provider"]') ?? null).toBeNull();
-    expect([...page.select("web_search").options].map((o) => o.textContent)).toEqual(["auto", "native", "Exa keyless (default)", "Parallel", "off"]);
-    expect(page.select("web_search").value).toBe("exa-keyless");
+    expect(page.row("read")).not.toBeNull();
+    expect(page.row("read")?.querySelector('button[aria-haspopup=listbox][aria-label="read provider"]') ?? null).toBeNull();
+    expect((await optionsOf(page.select("web_search"))).map((o) => o.text)).toEqual(["auto", "native", "Exa keyless (default)", "Parallel", "off"]);
+    expect(valueOf(page.select("web_search"))).toBe("exa-keyless");
     expect(page.row("web_search")!.hasAttribute("data-set")).toBe(false);
     // The server's word on what it resolves to for this agent.
     expect(page.row("web_search")!.textContent).toContain("pi: Exa keyless");
@@ -76,7 +78,7 @@ describe("AgentEditor, an agent's tool settings", () => {
     const page = await open(agent, { providerChoices: off, editorCaps: offCaps });
     expect(page.host.querySelector('input[value="web_search"]')!.closest("label")!.textContent).toContain(OFF);
     // The server's off is this agent's default: chosen, unmarked, and what it resolves to is the server's word.
-    expect(page.select("web_search").value).toBe("off");
+    expect(valueOf(page.select("web_search"))).toBe("off");
     expect(page.row("web_search")!.hasAttribute("data-set")).toBe(false);
     expect(page.row("web_search")!.textContent).toContain(`pi: unavailable: ${OFF}`);
   });
@@ -116,11 +118,11 @@ describe("AgentEditor, an agent's tool settings", () => {
   it("reloaded, the agent's own pick is chosen and marked; Reset takes it back to the server's, and the definition carries none", async () => {
     const agent = agentWith({ web_search: { provider: "parallel" } }, "unavailable: PARALLEL_API_KEY is not set");
     const page = await open(agent);
-    expect(page.select("web_search").value).toBe("parallel");
+    expect(valueOf(page.select("web_search"))).toBe("parallel");
     expect(page.row("web_search")!.hasAttribute("data-set")).toBe(true);
     expect(page.row("web_search")!.textContent).toContain("pi: unavailable: PARALLEL_API_KEY is not set");
     await page.click(/^Reset web_search to its default$/);
-    expect(page.select("web_search").value).toBe("exa-keyless");
+    expect(valueOf(page.select("web_search"))).toBe("exa-keyless");
     expect(page.row("web_search")!.hasAttribute("data-set")).toBe(false);
     await page.click(/^Save revision$/);
     expect(page.saves[0].tool_settings).toEqual({});
@@ -140,15 +142,15 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent: agentWith(), caps, providerChoices: choices, step: "tools", onSave: async (fields: AgentFields) => { saves.push(fields); await held; return null; } })));
-    const select = () => host.querySelector<HTMLSelectElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"] select[aria-label="web_search provider"]')!;
-    const choose = async (p: string) => { await act(async () => { const s = select(); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    const select = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!.querySelector<HTMLButtonElement>('button[aria-haspopup=listbox][aria-label="web_search provider"]')!;
+    const choose = async (p: string) => { await pick(select(), p); };
     await choose("parallel");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save/.test((b.textContent ?? "").trim()))!.click(); });
     // While that save is under way, the person picks another provider.
     await choose("native");
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     expect(saves[0]!.tool_settings).toEqual({ web_search: { provider: "parallel" } });
-    expect(select().value).toBe("native");
+    expect(valueOf(select())).toBe("native");
   });
 
   // While a save is under way, the form's settings are measured against what that save sent, which the agent's definition
@@ -164,9 +166,9 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const onSave = async (fields: AgentFields) => { saves.push(fields); if (saves.length === 1) { await held; render(after); } return null; };
     act(() => render(before));
     const row = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!;
-    const select = () => row().querySelector<HTMLSelectElement>('select[aria-label="web_search provider"]')!;
+    const select = () => row().querySelector<HTMLButtonElement>('button[aria-haspopup=listbox][aria-label="web_search provider"]')!;
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-    const choose = async (p: string) => { await act(async () => { const s = select(); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    const choose = async (p: string) => { await pick(select(), p); };
     const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()))!.click(); }); };
     const land = async () => { await act(async () => { release(); }); await settle(); };
     return { saves, row, select, choose, click, land };
@@ -181,7 +183,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     await page.land();
     expect(page.saves[0]!.tool_settings).toEqual({ web_search: { provider: "parallel" } });
     // The reset stands, unsaved: the server's pick, not the Parallel that save put in the definition.
-    expect(page.select().value).toBe("exa-keyless");
+    expect(valueOf(page.select())).toBe("exa-keyless");
     expect(page.row().hasAttribute("data-set")).toBe(false);
     // And the next save sends it: the agent's own provider goes.
     await page.click(/^Save/);
@@ -197,7 +199,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     await page.choose("parallel");
     await page.land();
     expect(page.saves[0]!.tool_settings).toEqual({});
-    expect(page.select().value).toBe("parallel");
+    expect(valueOf(page.select())).toBe("parallel");
     expect(page.row().hasAttribute("data-set")).toBe(true);
     await page.click(/^Save/);
     expect(page.saves[1]!.tool_settings).toEqual({ web_search: { provider: "parallel" } });
@@ -209,7 +211,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const agent = agentWith(undefined, "parallel");
     agent.tools = [{ name: "read" }, { name: "web_search", provider: "parallel", provider_from: "server", default_provider: "exa-keyless", resolved: "parallel" }] as Agent["tools"];
     const page = await open(agent);
-    expect(page.select("web_search").value).toBe("exa-keyless");
+    expect(valueOf(page.select("web_search"))).toBe("exa-keyless");
     expect(page.row("web_search")!.textContent).not.toContain("pi: Parallel");
     // Capabilities' word, read with the provider the select shows.
     expect(page.row("web_search")!.textContent).toContain("pi: Exa keyless");

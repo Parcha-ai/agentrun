@@ -269,7 +269,10 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   // The ask's row commits just after its record (the run may read input_required between the two).
   const waiting = await until(async () => (await w.rows()).findLast((row) => row.kind === "waiting"));
   assert.equal(waiting?.summary, `Waiting for you: ${ASK.instruction}`);
-  // run.needs_input for this ask, once, with pending.kind browser: NEEDS_INPUT_HELD_ASK below.
+  // run.needs_input for this ask, with pending.kind browser, while the runner holds the run's claim (the ask's waiting
+  // entry sets the row's held-wait summary, which the server tells by).
+  const needs = await until(() => got.find((m) => m.type === "run.needs_input" && m.data.run_id === w.runId), 30_000);
+  assert.deepEqual(needs?.data.pending, { kind: "browser" }, "run.needs_input says the run waits on the browser");
 
   // The ask's id (a digest of the session's tag and the model's request id, which pi-browser's durable store keeps to
   // resume its wait) is named by no run read the API serves. The id is the real one: the store at rest holds it. (Its
@@ -304,6 +307,7 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.handed.token)).map(([path]) => path), []);
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "That is all." })).status, 202);
   await follow(w.server.api, w.runId, ["completed"], { after: after.after });
+  assert.equal(got.filter((m) => m.type === "run.needs_input" && m.data.run_id === w.runId && m.data.pending?.kind === "browser").length, 1, "one run.needs_input for the hand-over ask");
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.handed.token)).map(([path]) => path), [], "nor once the run is done");
   assert.deepEqual(await w.viewers(), [], "its viewer went with its session");
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/archive`)).status, 200);
@@ -341,15 +345,13 @@ test("an ask whose words echo a value the server holds as a key shows it cut, ne
   const waiting = (await w.rows()).findLast((row) => row.kind === "waiting");
   assert.ok(waiting?.summary.startsWith(`Waiting for you: ${ASK.instruction} using `), waiting?.summary);
   for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs", "/agents/drive/runs"]) assert.ok(!JSON.stringify((await w.server.api("GET", path)).body).includes(held), `${path} holds no held value`);
-  // The run.needs_input message, cut the same: NEEDS_INPUT_HELD_ASK below. Whatever the receiver got holds no held value.
+  // The run.needs_input message, cut the same: it is sent, and holds no held value.
+  assert.ok(await until(() => got.some((body) => body.includes("run.needs_input")), 30_000), "run.needs_input sent");
   assert.ok(!got.some((body) => body.includes(held)), "no message holds the held value");
 });
 
 // ASK_RECORD_IN_WORKSPACE: the agent's hand-over ask's record on the runner path.
-test.todo("the agent's hand-over ask's record is in no file the run's agent or its file list reaches: on the runner the ToolHost's root is the run's workspace (adapter-run-spec where: { root, work: root }), so browser-person writes it to work/browser-ask/<id>.json, which GET /runs/{id}/files lists and serves and the agent's own file tools can read, change or plant. The answers are the journal's alone there (no answer file is read), so a hand-back cannot be forged through it; the pending asks are still read from those files (asksIn for the viewer's give, adopt and reshow after a restart). Waits on the lead's call: pending asks from the journal's waiting entries, with no record file, on the runner path");
-
-// NEEDS_INPUT_HELD_ASK: the outbound run.needs_input for the agent's hand-over ask on the runner path.
-test.todo("the agent's hand-over ask sends run.needs_input once, with pending.kind browser and every held value cut: on the runner the run waits with its runner still holding its claim and session (running, runner set), and server.ts readEnds tells a wait only for a run its runner let go (parked, or running with no runner), so none is sent; the runner's held state (run_live), which would name the browser_request_handoff call, is never written (withLiveTicker is wired nowhere). Waits on the lead's call: the runner wires its live ticker, or the server reads a held run's journal for its wait");
+test.todo("the agent's hand-over ask's record is in no file the run's agent or its file list reaches: on the runner the ToolHost's root is the run's workspace (adapter-run-spec where: { root, work: root }), so browser-person writes it to work/browser-ask/<id>.json, which GET /runs/{id}/files lists and serves and the agent's own file tools can read, change or plant. The answers are the journal's alone there (no answer file is read), so a hand-back cannot be forged through it; the pending asks are still read from those files (asksIn for the viewer's give, adopt and reshow after a restart). Follow-up (tl-browser, a PR against main after the cutover): pending asks from the journal's waiting entries, with no record file, on the runner path.");
 
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {
   // Paused at its cap, the run's process is let go, its browser's session and its viewer's hand-over with it: the test
