@@ -577,6 +577,15 @@ export interface McpServerRow {
   readonly credentialChangedAt: number | null;
 }
 
+/** A saved MCP server's stamp (Mcp.stamp): its url and auth, when its credential last changed (credentialChangedAt), and
+ *  its access token's time left by the store's own clock (tokenLeftMs), as on its row. */
+export interface McpServerStamp {
+  readonly url: string;
+  readonly auth: string;
+  readonly credentialChangedAt: number | null;
+  readonly tokenLeftMs: number | null;
+}
+
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
 export interface McpPinRow {
   readonly runId: string;
@@ -605,6 +614,10 @@ export interface Mcp {
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;
+  /** The server's stamp, read cheaply (no tools, no sealed bytes): what a claimed run checks before each call
+   *  (runner/mcp-claim.ts) to see its credential removed, replaced or moved, or its access token near its end. Undefined
+   *  when it is no longer saved. */
+  stamp(name: string): Promise<McpServerStamp | undefined>;
   /** The run's pin, or none (a run that grants no MCP tool has none). */
   pin(runId: string): Promise<McpPinRow | undefined>;
   /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the

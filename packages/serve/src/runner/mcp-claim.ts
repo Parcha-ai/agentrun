@@ -27,6 +27,13 @@
 // authorization server may already have spent the old refresh token. A token still valid but near its expiry is
 // used at once and refreshed behind it, never holding the claim. After any awaited refresh the claim's epoch is
 // confirmed again: a claim lost meanwhile is Fenced, and the loop never starts.
+//
+// check(). Before each call leaves (the gateway's `before`), the server's row stamp is read (store.mcp.stamp: its url,
+// auth, credential_changed_at and its token's end by the store's clock; no tools, no sealed bytes): a server removed
+// since loses its entry, so the call is refused unsent; a credential replaced or a server moved since is opened again, so
+// the next call sends the new one (or is refused for the move); and an OAuth access token within REFRESH_MARGIN_MS of its
+// end is refreshed first, through open's lease path, then the call goes. Concurrent calls to one server share one such
+// open.
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
@@ -89,6 +96,9 @@ export interface McpClaimStep {
   /** Refresh what has expired, and open the credentials again; then confirm the claim. Before a resumed loop's next
    *  model request. */
   fresh(): Promise<void>;
+  /** Before each call to pinned server `name` (the gateway's `before`): its row stamp read; opened again when it changed
+   *  or its access token is near its end (refreshed first), its entry dropped when it is no longer saved. */
+  check(name: string): Promise<void>;
   /** Drop every credential held: the loop ended, or the claim is lost. */
   release(): void;
 }
@@ -114,6 +124,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   // Refreshes started behind a token still valid: stopped at release.
   const behind = new AbortController();
   let released = false;
+  /** What each pinned server's entry was opened from (its row's url, auth and credential time, and an OAuth token's end
+   *  on this claim's clock), which check() compares the row's stamp with. */
+  const stamps = new Map<string, { url: string; auth: string; changedAt: number | null; end?: number }>();
+  /** The servers check() found removed: nothing (a github_app token's refresh among it) puts their entry back. */
+  const gone = new Set<string>();
+  /** The opens check() started, by server: concurrent calls share one. */
+  const reopening = new Map<string, Promise<unknown>>();
 
   // A github_app server's installation token: minted at each claim, refreshed mid-run, held here only.
   const github = githubTokens(options.githubApp, { now, ...(options.githubTimer ? { arm: options.githubTimer } : {}) });
@@ -178,17 +195,21 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   /** One pinned server's credential, opened, refreshed when due (awaited for an expired token; behind it for one near
-   *  its expiry). `again`: a row another claim's refresh left, opened as it is, never refreshed from here once more. */
-  const open = async (name: string, pinnedUrl: string, again?: McpServerRow): Promise<{ awaited: boolean }> => {
+   *  its expiry, or awaited too when `first`: a call waits on it, check()). `again`: a row another claim's refresh left,
+   *  opened as it is, never refreshed from here once more. */
+  const open = async (name: string, pinnedUrl: string, again?: McpServerRow, first = false): Promise<{ awaited: boolean }> => {
     const row = again ?? (await store.mcp.server(name));
     // Forgotten since the pin: its entry goes (an earlier open's URL and headers with it), so the gateway finds no URL
     // for it and refuses its calls unsent.
     if (!row) {
+      stamps.delete(name);
       delete credentials[name];
       return { awaited: false };
     }
+    gone.delete(name);
+    stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt });
     const entry = (extra: { headers?: Record<string, string>; unopened?: string }) => {
-      if (released) return;
+      if (released || gone.has(name)) return;
       // Headers go only to the URL the run was pinned to: a server moved since is refused per call by the gateway.
       credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : extra.headers && row.url === pinnedUrl ? { headers: extra.headers } : {}) };
     };
@@ -212,6 +233,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const readAt = now();
     const end = set.expires_at ? Date.parse(set.expires_at) : Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS;
     const left = (): number => (row.tokenLeftMs === null ? end - now() : row.tokenLeftMs - (now() - readAt));
+    stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt, end: readAt + left() });
     if (left() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
     // Another claim's refresh left this row and it is still due: never refreshed from here once more.
     if (again) return entry(left() > 0 ? { headers: bearer(set) } : { unopened: UNUSABLE.silent }), { awaited: false };
@@ -278,10 +300,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       }
     };
     if (left() > 0) {
-      // Still valid: used at once, refreshed behind it.
+      // Still valid: used at once, refreshed behind it; or, for a call about to leave (`first`), refreshed before it, the
+      // token held meanwhile still the one a refresh with no answer leaves.
       entry({ headers: bearer(set) });
-      void settle(AbortSignal.any([signal, behind.signal])).catch(() => undefined);
-      return { awaited: false };
+      if (!first) {
+        void settle(AbortSignal.any([signal, behind.signal])).catch(() => undefined);
+        return { awaited: false };
+      }
     }
     await settle(signal);
     return { awaited: true };
@@ -295,8 +320,33 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (awaited) await confirm(store, claim);
   };
 
+  const check = async (name: string): Promise<void> => {
+    if (!pin || released || !Object.hasOwn(pin, name)) return;
+    const stamp = await store.mcp.stamp(name);
+    if (released) return;
+    if (!stamp) {
+      // Removed since: its entry goes, so its calls are refused unsent; nothing puts it back.
+      gone.add(name);
+      stamps.delete(name);
+      delete credentials[name];
+      return;
+    }
+    const was = stamps.get(name);
+    const changed = !was || gone.has(name) || was.url !== stamp.url || was.auth !== stamp.auth || was.changedAt !== stamp.credentialChangedAt;
+    // The token's end by the store's clock (tokenLeftMs), else as this claim opened it.
+    const left = stamp.tokenLeftMs ?? (was?.end !== undefined ? was.end - now() : null);
+    const due = stamp.auth === "oauth" && left !== null && left <= REFRESH_MARGIN_MS;
+    if (!changed && !due) return;
+    let going = reopening.get(name);
+    if (!going) {
+      going = open(name, pin[name]!.url, undefined, true).finally(() => reopening.delete(name));
+      reopening.set(name, going);
+    }
+    await going;
+  };
+
   await fresh();
-  return { pin, credentials, fresh, release };
+  return { pin, credentials, fresh, check, release };
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */

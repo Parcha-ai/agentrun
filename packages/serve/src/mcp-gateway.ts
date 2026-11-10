@@ -234,6 +234,11 @@ export interface McpGatewayOptions {
    *  address it checked (`send`; none, `fetch` as it is). A refusal is said to the model, nothing sent. None: every
    *  request goes as `fetch` sends it. */
   reach?: (url: string, signal: AbortSignal) => Promise<{ refused: string } | { send?: typeof fetch }>;
+  /** Before each call leaves (after the gate, before the checks that refuse it unsent): with liveCredentials, the
+   *  runner's MCP claim step reads the server's row again and brings `credentials` up to date (mcp-claim.ts check): a
+   *  server removed since is refused unsent, a credential replaced is the one sent, and an access token near its end is
+   *  refreshed first. Its failure refuses the call unsent. */
+  before?: (server: string) => Promise<void>;
 }
 
 /** What a call with no call id answers where a gate must know it by one: nothing was sent. */
@@ -426,6 +431,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** A call the gate let go: a priced one under the run's cap and booked, an unpriced one marked not metered. */
   const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
+    if (options.before) {
+      try {
+        await options.before(server);
+      } catch {
+        return said(`The MCP server ${server}'s credential could not be checked just now; nothing was sent. Try again.`, true);
+      }
+    }
     const why = unsendable(server, tool);
     if (why) return said(why, true);
     const { url, prices, tools: pinnedTools } = pins.get(server)!;

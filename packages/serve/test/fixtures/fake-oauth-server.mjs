@@ -24,6 +24,10 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   let holding;
   /** Who waits on the next request to a path (`next`), each with its path. */
   const nexts = [];
+  /** Each RFC 7009 revocation it was sent: the hint, the client named, and whether the token was a live refresh token
+   *  of its own (never the token). `revoking`: the status `/revoke` answers with, 200 unless failRevocation set one. */
+  const revocations = [];
+  let revoking = 200;
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -39,6 +43,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
         authorization_endpoint: `${issuer()}/authorize`,
         token_endpoint: `${issuer()}/token`,
         registration_endpoint: `${issuer()}/register`,
+        revocation_endpoint: `${issuer()}/revoke`,
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         code_challenge_methods_supported: ["S256"],
@@ -46,6 +51,15 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
         scopes_supported: ["read", "write"],
         ...(cimd ? { client_id_metadata_document_supported: true } : {}),
       });
+    }
+    if (url.pathname === "/revoke" && req.method === "POST") {
+      const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
+      const [id] = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").map(decodeURIComponent) : [form.client_id];
+      const known = refresh.get(form.token)?.client_id === id;
+      revocations.push({ hint: form.token_type_hint, client_id: id, known });
+      if (revoking !== 200) return void res.writeHead(revoking, { "content-type": "text/plain" }).end("revocation is down");
+      if (known) refresh.delete(form.token);
+      return void res.writeHead(200).end();
     }
     if (url.pathname === "/register" && req.method === "POST") {
       const client_id = made("client");
@@ -140,6 +154,12 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     /** The next request to `path` (default `/token`) as logged, once it has reached this server: it is handled in the same
      *  turn, so a grant it makes (a refresh token spent) is made by the time the wait answers. */
     next: (path = "/token") => new Promise((heard) => nexts.push({ path, heard })),
+    /** Each revocation it was sent (`/revoke`, RFC 7009), as { hint, client_id, known }, in order. */
+    revocations,
+    /** From now on `/revoke` answers `status` (a 503, say) and revokes nothing. */
+    failRevocation: (status) => void (revoking = status),
+    /** Whether `token` is a refresh token it would still take. */
+    refreshable: (token) => refresh.has(token),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),

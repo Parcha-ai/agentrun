@@ -367,6 +367,28 @@ export class McpSignIns {
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
   }
 
+  /** A removed server's sign-in let go at its authorization server: its refresh token revoked (RFC 7009) where the
+   *  metadata discovery kept names a revocation_endpoint, sent as every request of a sign-in is (guarded: its address
+   *  checked, dialled at the address checked, no redirect followed), bounded as a refresh is. Best effort: whether it was
+   *  accepted, never a throw. */
+  async revoke(set: TokenSet, mcpUrl: string, stop?: AbortSignal): Promise<boolean> {
+    const endpoint = (set.discovery?.authorizationServerMetadata as { revocation_endpoint?: unknown } | undefined)?.revocation_endpoint;
+    const token = set.tokens.refresh_token;
+    if (typeof endpoint !== "string" || !token) return false;
+    try {
+      const reach: Reach = { own: this.own, allowed: await this.allowed() };
+      const { client_id: id, client_secret: secret } = set.client;
+      const body = new URLSearchParams({ token, token_type_hint: "refresh_token", ...(secret ? {} : { client_id: id }) });
+      // A confidential client authenticates as RFC 6749 says by default (client_secret_basic); a public one names itself.
+      const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", accept: "application/json", ...(secret ? { authorization: `Basic ${Buffer.from(`${encodeURIComponent(id)}:${encodeURIComponent(secret)}`).toString("base64")}` } : {}) };
+      const res = await guarded(stop, mcpUrl, this.network, {}, reach, REFRESH_REQUEST_MS)(endpoint, { method: "POST", headers, body: body.toString() });
+      await res.body?.cancel().catch(() => undefined);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   private provider(entry: Pending, reach: Reach, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void; seen?: Seen }): OAuthClientProvider {
     const metadataUrl = entry.kind === "pre-registered" ? undefined : this.metadataUrl;
     return {

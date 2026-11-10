@@ -242,10 +242,17 @@ export class McpServersOverStore {
     };
   }
 
+  /** DELETE: the server forgotten. An OAuth one's sign-in is then let go at its authorization server (its refresh token
+   *  revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort, never holding or
+   *  failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check). */
   async remove(name: string): Promise<void> {
-    await this.need(name);
+    const row = await this.need(name);
+    // Opened before the row goes; a sign-in kept as expired has no refresh token left to revoke.
+    const open = row.auth === "oauth" ? await openServerCredential(this.store, this.sealKey, name).catch(() => undefined) : undefined;
+    const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
     await removeMcpServer(this.store, name);
     await this.store.flush();
+    if (credential) void this.track(this.signIns.revoke(credential.set as TokenSet, row.url, this.stopped.signal));
   }
 
   /** POST .../{name}/oauth/start: `{url, scopes?, client_id?, client_secret?}`; answers the URL the owner opens. */
