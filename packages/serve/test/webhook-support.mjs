@@ -211,11 +211,14 @@ export function rejections(t) {
 /** A server on `options.data` with a runner beside it on the same data (support's in-process runner, as serve() starts
  *  one), so a run it starts runs: `close()` stops the runner, letting go of its claims, then the server. `runner: false`:
  *  the server alone, for a test that writes its runs into the store itself. */
-export async function startWithRunner({ runner = true, ...options }) {
+export async function startWithRunner(t, { runner = true, ...options }) {
   const server = await startServe({ port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   const stopRunner = runner ? await startInProcessRunner(options.data, { faux: FAUX }) : async () => {};
-  return { ...server, close: async () => (await stopRunner(), await server.close()) };
-
+  // Closed once: by the test, or at its end at the latest, so a case that fails part way leaves no server up.
+  let closed;
+  const close = () => (closed ??= (async () => (await stopRunner(), await server.close()))());
+  t.after(close);
+  return { ...server, close };
 }
 /** A turn of the event loop: past the microtasks, where an unhandled rejection is said. */
 export const turn = () => new Promise((resolve) => setImmediate(resolve));
@@ -279,8 +282,8 @@ export async function endParked(writer, id, state) {
   return (await writer.runs.update(claim, { state })).endedAt;
 }
 /** A server on `data` that had the webhook set to `hook` and stopped: what a restart starts from. */
-export async function hadWebhook(data, hook) {
-  const first = await startWithRunner({ data, runner: false });
+export async function hadWebhook(t, data, hook) {
+  const first = await startWithRunner(t, { data, runner: false });
   assert.equal((await client(first.baseUrl, first.token)("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   await first.close();
 }

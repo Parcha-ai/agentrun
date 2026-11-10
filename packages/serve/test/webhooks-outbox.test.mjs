@@ -254,7 +254,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     let answer = 503;
     const hook = await receiver(t, () => answer);
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner({ data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [2_000] });
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [2_000] });
     let stopped = false;
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
@@ -267,7 +267,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await first.close();
     stopped = true;
     answer = 200;
-    const next = await startWithRunner({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
     t.after(() => next.close());
     api = client(next.baseUrl, next.token);
     await hook.when(2);
@@ -284,7 +284,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a run that ends while its server stops still gives its notice: kept pending, delivered by the next server", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner({ data, port: 0, faux: FAUX, drainTimeout: "10s" });
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "10s" });
     let stopped = false;
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
@@ -294,7 +294,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     // The stop drains the run's turn: it answers, and is carried back, while the server closes.
     await first.close();
     stopped = true;
-    const next = await startWithRunner({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
     t.after(() => next.close());
     api = client(next.baseUrl, next.token);
     // The run ends on the next server's runner (its first runner let it go as its server stopped), and its notice comes from
@@ -309,7 +309,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 200) : 200));
     t.after(() => release());
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
     let stopped = false;
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
@@ -334,7 +334,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     db.prepare("INSERT INTO channel_posts (id, channel, moment, body, next_at, state, created_at) VALUES (?, 'webhook-out', 'webhook.test', ?, ?, 'queued', ?)")
       .run(`msg_${"0".repeat(32)}`, JSON.stringify({ type: "webhook.test", timestamp: new Date().toISOString(), data: {} }), Date.now(), Date.now());
     db.close();
-    const next = await startWithRunner({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
     t.after(() => next.close());
     api = client(next.baseUrl, next.token);
     await hook.when(2);
@@ -389,7 +389,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a run.ended the store refuses is neither queued nor sent, so after a kill the next server queues and sends it, once", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    await hadWebhook(data, hook);
+    await hadWebhook(t, data, hook);
     const writer = await askerStore(t, data);
     const at = await endedInStore(writer, "asker", "unsaved-end");
     // The store refuses the webhook's messages, as on a full disk. A server in a process of its own tries the end, is
@@ -401,7 +401,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await killed(first.child);
     release();
     assert.equal(ofType(hook.got, "run.ended").length, 0, "nothing was sent");
-    const next = await startWithRunner({ data, runner: false });
+    const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run unsaved-end, from the next server", data);
     await settled(data);
@@ -412,7 +412,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a run.needs_input the store refuses is not recorded, so after a kill the next server queues it, once, under its id", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    await hadWebhook(data, hook);
+    await hadWebhook(t, data, hook);
     const writer = await askerStore(t, data);
     await parkedOnQuestion(writer, "asker", "asks-unsaved", "Which region?", { wake: false });
     const release = refusing(t, data, "outbox");
@@ -421,7 +421,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.equal(waitNotice(data, "asks-unsaved"), undefined, "not recorded: the store never held it");
     await killed(first.child);
     release();
-    const next = await startWithRunner({ data, runner: false });
+    const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     await hook.when((got) => ofType(got, "run.needs_input").length === 1, "the run.needs_input of run asks-unsaved, from the next server", data);
     await settled(data);
@@ -567,7 +567,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a cancelled run whose last row is an open question, its wait no longer in the ledger, gives no run.needs_input when a later server reads it: an ended run never asks", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner({ data, runner: false });
+    const first = await startWithRunner(t, { data, runner: false });
     assert.equal((await client(first.baseUrl, first.token)("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const writer = await askerStore(t, data);
     await parkedOnQuestion(writer, "asker", "asks-then-cancelled", "Which region?");
@@ -579,7 +579,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await first.close();
     // The ledger as a pruning leaves it: no wait of the run, and its messages gone from the store.
     leftAs(data, { told: { "asks-then-cancelled": { ended: noticed(data, "asks-then-cancelled").ended } }, cleared: true });
-    const next = await startWithRunner({ data, runner: false });
+    const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     assert.equal((await client(next.baseUrl, next.token)("GET", "/runs/asks-then-cancelled")).body.status, "cancelled");
     // Two runs parked after it show the next server's reads have passed: the second's notice comes from a read after the
@@ -625,7 +625,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a run that ends while the webhook is off leaves its wait behind in the ledger; the next start, the webhook set again, drops it and sends nothing", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner({ data, runner: false });
+    const first = await startWithRunner(t, { data, runner: false });
     const api = client(first.baseUrl, first.token);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const writer = await askerStore(t, data);
@@ -638,7 +638,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     await first.close();
     assert.ok(waitNotice(data, "asks-off"), "the wait is still in the ledger");
-    const next = await startWithRunner({ data, runner: false });
+    const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     await onDisk(data, () => !noticed(data, "asks-off"));
     nothingPending(data);

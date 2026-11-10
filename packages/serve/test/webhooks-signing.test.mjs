@@ -292,12 +292,12 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
   test("a run whose end is in the store while no server is up, its outbox holding nothing of it, gives its run.ended from the next server, once, under the id its end time makes", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    await hadWebhook(data, hook);
+    await hadWebhook(t, data, hook);
     // The run ends with no server up (a runner wrote its end): no server told it, and the outbox holds nothing of it.
     const writer = await askerStore(t, data);
     const at = await endedInStore(writer, "asker", "run-ends");
     assert.equal(ofType(hook.got, "run.ended").length, 0, "no server was up to tell it");
-    const next = await startWithRunner({ data, runner: false });
+    const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run run-ends, from the next server's catch-up", data);
     const [ended] = ofType(hook.got, "run.ended");
@@ -333,11 +333,11 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
   test("a run that comes to wait for its person while no server is up gives exactly one run.needs_input from the next server, under the wait's own id", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
-    await hadWebhook(data, hook);
+    await hadWebhook(t, data, hook);
     // The run asks with no server up: its runner parks it on its question.
     const writer = await askerStore(t, data);
     await parkedOnQuestion(writer, "asker", "asks-late", "Which region?");
-    const next = await startWithRunner({ data, runner: false });
+    const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     const api = client(next.baseUrl, next.token);
     await hook.when((got) => ofType(got, "run.needs_input").length > 0, "the run.needs_input of run asks-late, from the next server", data);
