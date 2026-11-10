@@ -9,7 +9,7 @@ const files = Object.entries(sources)
   .map(([path, text]) => ({ path: path.slice(2), lines: text.split("\n") }));
 
 /** `tag`: the rule reads a whole opening tag of these elements, however many lines it is written on, as one line. */
-type Rule = { id: string; says: string; fix: string; find: RegExp; unless?: RegExp; skip?: (path: string) => boolean; tag?: boolean };
+type Rule = { id: string; says: string; fix: string; find: RegExp; unless?: RegExp; skip?: (path: string) => boolean; tag?: boolean; near?: number };
 const outsideUi = (path: string) => path.startsWith("components/ui/");
 const PALETTE = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
 const RULES: Rule[] = [
@@ -18,13 +18,13 @@ const RULES: Rule[] = [
   { id: "palette-colour", says: "Tailwind's own palette, white and black are not the console's colours.", fix: "bg-background, text-foreground, bg-overlay/70, or a tone token",
     find: new RegExp(`\\b(?:bg|text|border|ring|fill|stroke|outline|decoration|accent|divide|from|to|via|placeholder)-(?:white|black|(?:${PALETTE})-\\d{2,3})\\b`) },
   { id: "token-by-hand", says: "A token has a class; do not spell its variable out.", fix: "text-run-active, bg-primary/[0.28], accent-primary",
-    find: /\b(?:text|bg|border|accent|fill|stroke|ring|outline|decoration)-\[hsl\(var\(/ },
+    find: /\b(?:text|bg|border|accent|fill|stroke|ring|outline|decoration)-\[(?:hsl\(|(?:color:)?)var\(--/ },
   { id: "off-scale-size", says: "Text is one of the type scale's steps.", fix: "text-micro 10, text-label 11, text-small 12, text-body 13, text-lead 14, text-prose 15, text-base 16, text-lg 18, text-xl 20, text-figure 22, text-2xl 24, text-display 32",
     find: /\btext-\[\d[^\]]*\]|\btext-(?:xs|sm|3xl|4xl|5xl|6xl|7xl|8xl|9xl)\b/ },
   { id: "off-scale-weight", says: "There are two weights: font-normal and font-semibold.", fix: "font-semibold",
     find: /\bfont-(?:thin|extralight|light|medium|bold|extrabold|black)\b/ },
   { id: "numbered-layer", says: "A layer has a name.", fix: "z-raised, z-sticky, z-overlay, z-dialog, z-popover, z-toast",
-    find: /(?<![\w-])-?z-(?:[1-9]\d*|\[)/ },
+    find: /(?<![\w-])-?z-(?:\d+|\[)/ },
   { id: "rounded", says: "Every corner is square.", fix: "delete the class", find: /(?<![\w-])rounded(?![\w(])(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
   { id: "shadow", says: "There is one shadow, under what floats over the page.", fix: "shadow-float; for a halo round a mark, ring-*",
     find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?<![\w-])shadow(?=[\s"'`])(?=[^<>]*")/ },
@@ -33,7 +33,7 @@ const RULES: Rule[] = [
   { id: "caps-by-hand", says: "Mono caps is the .caps class.", fix: "caps", find: /(?<![\w-])uppercase\b(?=[\s"'`])/, skip: (path) => path === "components/ui/tip.tsx" },
   { id: "dark-variant", says: "Tokens change with the theme; a component never does.", fix: "the token whose two values you need, or a new one", find: /(?<![\w-])dark:[a-z]/ },
   { id: "focus-removed", says: "outline-none comes with a focus-visible: replacement.", fix: "drop outline-none (the global ring shows), or add focus-visible:outline-offset-0 and friends",
-    find: /(?<![\w:-])outline-none\b/, unless: /focus-visible:(?!outline-none)|focus:(?!outline-none)|data-\[focus\]|tabIndex=\{-1\}/ },
+    find: /(?<![\w:-])outline-none\b/, unless: /focus-visible:(?!outline-none)|focus:(?!outline-none)|data-\[focus\]|tabIndex=\{-1\}/, near: 2 },
   { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /^<button\b.*["`\s]caps\s[^"`]*\bborder\b(?!-[blrtxy]\b)|^<button\b.*["`\s]border\s[^"`]*\bcaps\b/, skip: outsideUi, tag: true },
   { id: "field-by-hand", says: "A field is Input, Textarea, NativeSelect or Picker.", fix: "the primitive from @/components/ui, inside a Field",
     find: /^<(?:select|textarea)\b|^<input\b(?!.*\btype="(?:hidden|file|checkbox|radio)")/, skip: outsideUi, tag: true },
@@ -46,7 +46,6 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },
-  { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
 ];
 
 /** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
@@ -68,10 +67,14 @@ function controlTags(text: string): { line: number; text: string }[] {
   return tags;
 }
 
-const breaks = (rule: Rule, text: string) => rule.find.test(text) && !rule.unless?.test(text);
+/** `around` is what `unless` reads when the rule looks `near` its line: a class list wrapped over a few lines keeps
+ *  its replacement a line or two from the class it replaces. */
+const breaks = (rule: Rule, text: string, around = text) => rule.find.test(text) && !rule.unless?.test(around);
+const lineHits = (rule: Rule, lines: string[]) => lines.flatMap((line, i) =>
+  !/^\s*(?:\/\/|\/?\*)/.test(line) && breaks(rule, line, rule.near ? lines.slice(Math.max(0, i - rule.near), i + rule.near + 1).join(" ") : line) ? [{ line: i + 1, text: line.trim() }] : []);
 const hits = RULES.flatMap((rule) => files.filter((f) => !rule.skip?.(f.path)).flatMap((f) => {
   if (rule.tag) return controlTags(f.lines.join("\n")).filter((t) => breaks(rule, t.text)).map((t) => ({ rule: rule.id, file: f.path, line: t.line, text: t.text }));
-  return f.lines.flatMap((line, i) => (!/^\s*(?:\/\/|\/?\*)/.test(line) && breaks(rule, line) ? [{ rule: rule.id, file: f.path, line: i + 1, text: line.trim() }] : []));
+  return lineHits(rule, f.lines).map((h) => ({ rule: rule.id, file: f.path, ...h }));
 }));
 const allowed = (h: (typeof hits)[number]) => ALLOWED.some((a) => a.rule === h.rule && a.file === h.file && h.text.includes(a.has));
 
@@ -98,6 +101,16 @@ describe("the console's sources follow the design system", () => {
     expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="more > 10" className="accent-primary" />')[0]!)).toBe(false);
     expect(breaks(rule("field-by-hand"), one('<input\n  type="hidden" name="manifest" />')[0]!)).toBe(false);
     expect(breaks(rule("field-by-hand"), one('<input\n  name="q" />')[0]!)).toBe(true);
+  });
+  it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
+    const rule = (id: string) => RULES.find((r) => r.id === id)!;
+    const found = (id: string, source: string) => lineHits(rule(id), source.split("\n")).length;
+    expect(found("focus-removed", 'className={cn("border outline-none",\n  "focus-visible:outline-offset-0")}')).toBe(0);
+    expect(found("focus-removed", 'className="border outline-none"\nonClick={go}\ntitle="x"\naria-label="y"')).toBe(1);
+    for (const c of ["text-[hsl(var(--primary))]", "text-[color:var(--primary-text)]", "bg-[var(--card)]"]) expect(found("token-by-hand", `className="${c}"`), c).toBe(1);
+    expect(found("token-by-hand", 'className="w-[var(--button-width)] [--anchor-gap:2px]"')).toBe(0);
+    for (const c of ["z-0", "z-10", "-z-1", "z-[5]"]) expect(found("numbered-layer", `className="${c}"`), c).toBe(1);
+    expect(found("numbered-layer", 'className="z-popover"')).toBe(0);
   });
   it("every exception still names a line that needs it", () => {
     const stale = ALLOWED.filter((a) => !hits.some((h) => h.rule === a.rule && h.file === a.file && h.text.includes(a.has))).map((a) => `${a.rule} ${a.file} "${a.has}"`);
