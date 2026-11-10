@@ -124,6 +124,8 @@ export interface AdapterSpecDeps {
   readonly routeOf: (model: string | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[], upstream?: typeof fetch, redact?: (text: string) => string) => Promise<ModelRoute>;
   /** The run's log line (what its Workspace and computer have to say that is not a run failure). */
   readonly log?: (message: string) => void;
+  /** For tests: a learning run's grade bound, as a signal (learning-dispatch.ts gradeBound). Default: GRADE_TIMEOUT_MS. */
+  readonly gradeBound?: () => AbortSignal;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;

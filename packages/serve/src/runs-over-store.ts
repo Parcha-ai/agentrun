@@ -281,6 +281,9 @@ export interface StartDeps {
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
   /** The learning budget in bytes (learning.ts LEARNING_BUDGET), for which notes fit a run's # Learned section. */
   readonly learningBudget?: number;
+  /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
+   *  the agent's own grades it. */
+  readonly gradeModel?: string;
   /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
   shown?(): Shown;
 }
@@ -302,16 +305,17 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; gradeModel?: string } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
+  const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", ...grade };
   const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
   // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
   // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
   // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...grade };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made

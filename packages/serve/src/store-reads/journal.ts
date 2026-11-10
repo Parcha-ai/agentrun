@@ -46,6 +46,12 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       const stopReason = data.stopReason === "length" ? "length" : "stop";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}) }] };
     }
+    // The end-of-run turn's answer, as the CLI record keeps it (adapter-loop.ts answered): a model turn that ended, so the
+    // timeline shows it as pi's end-of-run turn shows its own (labelled then marks it the learning's).
+    if (entry.kind === KINDS.endOfRunTurn && data.role === "model") {
+      const text = typeof data.text === "string" ? data.text : "";
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
+    }
     if (entry.kind === KINDS.callStart) {
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }] }] };
     }

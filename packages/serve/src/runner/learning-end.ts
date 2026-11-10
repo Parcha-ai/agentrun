@@ -23,7 +23,7 @@ import { Hearing } from "../heard.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
-import { gradeModelOf, PROPOSAL } from "../learning.js";
+import { PROPOSAL } from "../learning.js";
 import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
@@ -56,8 +56,6 @@ export interface LearningEndDeps {
    *  handed it, as the server's own check refused them (serverSecrets). Read at each run's end, so a key saved while the
    *  run lived is refused too. */
   readonly savedKeys?: () => Promise<readonly string[]>;
-  /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
-  readonly gradeModel?: string;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -66,7 +64,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const start = learningStartOf(launch);
   if (!start) return undefined;
   const env = deps.env ?? process.env;
-  const gradeModel = deps.gradeModel ?? gradeModelOf(env);
+  // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
+  const gradeModel = start.gradeModel;
   const capUsd = launch.maxCostUsd;
   const hookFor = (runId: string) => createReflectHook({
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be

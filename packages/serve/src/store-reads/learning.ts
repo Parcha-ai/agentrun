@@ -6,7 +6,7 @@
 // and what the grade spent. What the server keeps on a run before its end (what it was given and read, its seed's
 // notes, its answer's time and costs) is the run's, not this.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
+import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
@@ -122,6 +122,21 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
   return out;
 }
 
+/** What learning spent outside any run (GET /usage's `learning` meter), one entry per run whose learning ended (merged or
+ *  dropped), as the learning ledger's lines gave it: its agent, when its learning ended, and what its grade cost: 0 for a
+ *  run never graded, null when the grade's spend is unknown (a grade that failed), never $0 then. An imported run keeps
+ *  no learning in the store. */
+export async function learningSpendOverStore(store: Store): Promise<{ agent: string; at: string; cost: number | null }[]> {
+  const out: { agent: string; at: string; cost: number | null }[] = [];
+  for (const run of await store.runs.list({})) {
+    if (run.importedFrom) continue;
+    const end = await runLearningEnd(store, run.id);
+    if (!end || (end.state !== "merged" && end.state !== "dropped")) continue;
+    out.push({ agent: run.agentId, at: end.at, cost: end.cost_usd ? end.cost_usd.grade : 0 });
+  }
+  return out;
+}
+
 /** An agent's learning counts as its learning view gives them (GET /agents/{id}/learning, learning-run.ts ofAgent's
  *  counts): how its runs that tried to learn fared, less `runs`, from the one store. Its notes' runs and its impact are
  *  agentLearningOverStore's. */
@@ -205,9 +220,10 @@ async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunc
 
 /** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
  *  run's learning end (runLearningEnd), the notes it was given and the seed it started from as its launch records them,
- *  what it held for its owner's OK as the store's run view reads it (no statuses: never the learning folder), settled
- *  once the run is final. Null when the run kept no learning. */
-export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[]) {
+ *  what it held for its owner's OK as it stands on its agent's folder's main (`statuses`, learning-routes.ts statusesOf,
+ *  read only when it held something; none: as the merge wrote it), settled once the run is final. Null when the run kept
+ *  no learning. */
+export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[], statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>) {
   const end = await runLearningEnd(store, runId);
   if (!end) return null;
   const started = await learningStartOfRun(store, runId);
@@ -215,6 +231,6 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
   const read = started?.given.length ? notesReadOf(started.given, await runReflect(store, runId, BACKGROUND_CONTEXT), await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled })) : [];
   const learning = withNotes(end, started, read) as Learning;
-  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
+  const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
   return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled }, shown, secrets);
 }

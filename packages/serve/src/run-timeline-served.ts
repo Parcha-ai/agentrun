@@ -9,7 +9,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { withDecisions } from "./decision-rows.js";
-import { currentLearning, holdsForOk, type Learning, secretsShown } from "./learning.js";
+import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
 import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
 import { redacted } from "./key-refusal.js";
@@ -26,6 +26,9 @@ export type ServedTimelineDeps = {
   readonly signIns?: SignInReader;
   /** The environment a run's model key is read from, with the keys a person saved (withSecrets, as main's plainKey). */
   readonly keyEnv: () => NodeJS.ProcessEnv;
+  /** Each learned item's status on an agent's learning folder's main (learning-routes.ts statusesOf): what a run held for
+   *  its owner's OK reads as it stands there. None: as the merge wrote it. */
+  readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
 };
 
 /** Run `runId`'s Timeline rows as served: cut by its one cut set, its decision rows among them, its error rows in the
@@ -55,10 +58,10 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const words = await runErrorWordsOf(deps, store, runId, { workflow });
   if (words === "unreadable") return [];
   // The run's learning row, once its learning was proposed, merged or dropped (learning-run.ts withLearning, main's row):
-  // its end from the store (runLearningEnd), what it held for the owner's OK read as the run's view reads it (no folder),
-  // its words cut by the same set.
+  // its end from the store (runLearningEnd), what it held for the owner's OK read as the run's view reads it (on its agent's
+  // folder's main), its words cut by the same set.
   const end = await runLearningEnd(store, runId);
-  const learning = end ? (holdsForOk(end as Learning) ? currentLearning(end as Learning, undefined) : (end as Learning)) : undefined;
+  const learning = end ? (holdsForOk(end as Learning) && run && deps.statuses ? currentLearning(end as Learning, await deps.statuses(run.agentId)) : (end as Learning)) : undefined;
   const learned = withLearning(own, learning, secretsShown(values));
   // A refused key's plain words are its summary and its text alike; any other error keeps each in the one rule.
   const shown = shownOf(values);

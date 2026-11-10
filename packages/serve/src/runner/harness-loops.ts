@@ -18,6 +18,10 @@ import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
 
+/** `env` with its strong tier named `model`: over `env` itself, never a copy of it, so a key `env` holds as a property it
+ *  does not list (secrets.ts withSecrets) is still read. */
+const strongNamed = (env: NodeJS.ProcessEnv, model: string): NodeJS.ProcessEnv => Object.create(env, { AGENT_MODEL_STRONG: { value: model, enumerable: true } }) as NodeJS.ProcessEnv;
+
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
 export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
@@ -41,8 +45,11 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         data: deps.data,
         // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
         // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
-        routeOf: (grade) => deps.routeOf(grade.model, deps.env, "default", PI_WIRES),
+        // A grade model the launch names is the strong tier named so, as main's grader picked it (grade.ts graderModel);
+        // none, the default.
+        routeOf: (grade) => (grade.model ? deps.routeOf(undefined, strongNamed(deps.env, grade.model), "strong", PI_WIRES) : deps.routeOf(undefined, deps.env, "default", PI_WIRES)),
         ...(deps.log ? { log: deps.log } : {}),
+        ...(deps.gradeBound ? { gradeBound: deps.gradeBound } : {}),
       });
     }
     // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry

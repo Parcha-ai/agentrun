@@ -35,7 +35,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -90,8 +90,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, se
 import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
-import { outcomes } from "./usage.js";
+import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -1184,6 +1183,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
     learning,
     learningBudget,
+    // The model the server names to grade what a run proposes (capabilities' learning.grade_model), carried on each learning
+    // start for the runner's learning run to grade on: none, the agent's own.
+    ...(gradeModelOf(env, options.gradeModel) ? { gradeModel: gradeModelOf(env, options.gradeModel) } : {}),
     seedFor: async (agentId: string) => {
       // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
       // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
@@ -1201,7 +1203,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
   // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
+  // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
+  const statuses = (agentId: string) => statusesOf(data, agentId);
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys), statuses });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1228,7 +1232,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) }, forStore, runId, context),
+    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys), statuses }, forStore, runId, context),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -2015,8 +2019,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (usd === null) total.unpriced++;
       total.usd += usd ?? soFar;
     }
-    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
-    for (const entry of (await outcomes(data)).values()) {
+    // What learning spent on this server, outside any run (store-reads/learning.ts learningSpendOverStore): each run's grade, on
+    // the day its learning ended.
+    for (const entry of await learningSpendOverStore(store)) {
       const at = Date.parse(entry.at);
       if (at >= from && at < to) add(lineKey(entry.agent, entry.at, "learning"), entry.cost);
     }
@@ -2808,9 +2813,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRunLearning": {
         const run = await needRun(id);
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
-        // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
+        // from its launch, what it holds for the owner's OK as the store's run view reads it (on its folder's main), as main.
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
-        return send(res, 200, await servedRunLearning({ serverSecrets, signIns }, store, run.id));
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, statuses }, store, run.id));
       }
       case "getRunLearningDiff": {
         const run = await needRun(id);

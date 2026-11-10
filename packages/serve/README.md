@@ -2437,8 +2437,8 @@ looking back cost, 0 when it did not), after its `serve.json` holds it; a server
 its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
 `{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
 costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
-`agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
-`learning` meter on `GET /usage` reads the same lines.
+`agent`, from the store (each run's kept learning and its learning run's journal; `in_progress` while a proposal waits
+for its grade), never opening a run's files; the `learning` meter on `GET /usage` reads each run's grade from the same.
 
 An eval set of 20 runs and what each proposed, labelled keep or drop (`test/fixtures/learn-eval.json`: lessons the
 agent worked out, user preferences and a "remember" during the task, one-shop facts, secrets, a tool's failure and four

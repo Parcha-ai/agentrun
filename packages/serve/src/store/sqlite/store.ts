@@ -727,7 +727,9 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       list: async ({ agentId, revisionId, state, archived, limit }) => {
-        const where: string[] = [];
+        // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
+        // count, stat or notice names it.
+        const where: string[] = ["id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)"];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
