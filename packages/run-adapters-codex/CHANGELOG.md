@@ -4,7 +4,7 @@
 
 ## 0.1.0-beta.32 (2026-11-10)
 
-- The code taken from vercel-labs/durable-harness is now AgentRun's own: the port froze, and the pristine upstream copies, the named patches, the import tables, `scripts/port-durable-harness.mjs` and `npm run verify:port` are gone. `vendor/durable-harness/UPSTREAM.json` still records where each copy came from, and each copy keeps its header and NOTICE its attribution. With it go the kernel's paths that never run:
+- The code copied from the upstream durable harness is now AgentRun's own: the port froze, and the pristine upstream copies, the named patches, the import tables, `scripts/port-durable-harness.mjs` and `npm run verify:port` are gone. `vendor/durable-harness/UPSTREAM.json` still records where each copy came from, and each copy keeps its header and NOTICE its attribution. With it go the kernel's paths that never run:
   - `AgentAdapter.version` and `AdapterCapabilities.fork` (no adapter forks; a node that asks for `context: "fork"` is refused as before).
   - `DriveContext.config`, and `requires`/`needs` on a host tool and an effect's options; `kernel/types.ts` is no longer pinned to upstream's types.
   - The Codex harness's `codex.spend` ledger and its dollar caps (`sandbox({ budget })`, `GatewayLedger`, the gateway handler's `budget`, `ledger` and `onCap`), which never fired, and its table of removed options.

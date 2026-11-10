@@ -27,7 +27,7 @@ const CLI = join(ROOT, "packages/serve/dist/cli.js");
 const playwright = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
 const chromium = playwright.chromium ?? playwright.default?.chromium;
 if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? "playwright-core"}`);
-const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
+const NOTE = "On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.";
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
 const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/gm;

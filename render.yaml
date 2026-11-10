@@ -1,4 +1,4 @@
-# AgentRun Server on Render: one web service and one persistent disk, built from this repository's Dockerfile.
+# AgentRun Server on Render: one web service and one persistent disk, from the release's published image (no build).
 # The token is generated once; read it in the service's Environment tab.
 # Needs a paid Render instance (plan 1c-2g) and a 10 GB disk: a card on the workspace.
 services:
