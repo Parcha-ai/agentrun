@@ -24,8 +24,8 @@ export default {
 
     // The first tab watches the run's browser.
     await page.goto(`${base}/${runHash}`);
-    await page.getByRole("tab", { name: "Watch live" }).click();
-    await page.locator('section[aria-label="Browser"] iframe').waitFor();
+    await page.getByRole("tab", { name: "Screen" }).click();
+    await page.locator('section[aria-label="Screen"] iframe').waitFor();
 
     // A second tab of the same browser signs out.
     const other = await context.newPage();
@@ -43,7 +43,7 @@ export default {
     await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
     await page.getByRole("button", { name: "Continue" }).click();
     await signedIn(page);
-    await page.getByRole("tab", { name: /^(Watch live|Browser)$/ }).waitFor();
+    await page.getByRole("tab", { name: "Screen" }).waitFor();
 
     // The refused reads are the page's only errors (the browser logs each 401 it got).
     check(errors.every((e) => /status of 401\b/.test(e)), `the page reported errors: ${errors.join(" | ")}`);

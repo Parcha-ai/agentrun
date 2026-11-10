@@ -32,7 +32,12 @@ export const REFRESH_REQUEST_MS = 4_000;
 export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 /** What is sealed: the tokens and all a refresh needs. */
 export type TokenSet = { tokens: OAuthTokens; obtained_at: string; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
-export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+/** `keptFor`: the authorization server (its issuer) a client kept from an earlier sign-in was registered at; the client is
+ *  used again only when discovery finds that same one (else it is dropped, and the sign-in registers anew). */
+export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; keptFor?: string; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+
+/** The authorization server a discovery found, by its issuer (its metadata's, else its URL). */
+export const issuerOf = (state: { authorizationServerUrl?: string; authorizationServerMetadata?: { issuer?: string } } | undefined): string | undefined => state?.authorizationServerMetadata?.issuer ?? state?.authorizationServerUrl;
 
 /** Where sign-ins in flight are kept between start and callback. The default is in-memory (one server per process); the
  *  store-backed server (mcp-servers-store.ts) passes one over store.mcpOauth, so a sign-in survives a restart and the
@@ -361,11 +366,11 @@ export class McpSignIns {
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
-  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind }): Promise<string> {
+  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string }): Promise<string> {
     const now = Date.now();
     if (!this.pendingStore) for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
     const state = randomBytes(32).toString("base64url");
-    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
+    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const seen: Seen = {};
     const reach: Reach = { own: this.own, allowed: await this.allowed() };
@@ -460,6 +465,16 @@ export class McpSignIns {
           throw new Error(why);
         }
         entry.discovery = state;
+        // A client kept from an earlier sign-in goes only to the authorization server it was registered at: another one
+        // (a new address at the same origin, on a host that serves several) gets a client registered anew, never this
+        // one's id or secret.
+        if (entry.keptFor !== undefined) {
+          if (issuerOf(state) !== entry.keptFor) {
+            delete entry.client;
+            entry.kind = "dynamic";
+          }
+          delete entry.keptFor;
+        }
       },
       discoveryState: () => entry.discovery,
       saveResourceUrl: (resource) => void (entry.resource = resource),

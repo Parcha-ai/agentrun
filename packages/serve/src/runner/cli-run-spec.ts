@@ -39,7 +39,7 @@ import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
-import { runTools, type ToolResults } from "../workspace/run-tools.js";
+import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -193,7 +193,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   await mkdir(dir, { recursive: true, mode: 0o700 });
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch] });
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}) });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
   // The system prompt, as main's harness branch builds it: the environment line, the instructions with what the agent
@@ -315,7 +315,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do.
-    tools: [...tools.hostTools(granted, undefined, results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
+    tools: [...tools.hostTools(withKindTools(granted, tools), undefined, results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };
