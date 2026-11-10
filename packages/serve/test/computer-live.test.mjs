@@ -687,3 +687,103 @@ test("a socket that closes mid-take ends the take away on the run's hold at once
   assert.equal(answer, "open", "and unanswered");
   assert.deepEqual(watch.state.inputs, [[{ type: "move", at: [10, 20] }, { type: "down", button: "left" }], [{ type: "up", button: "left" }]], "one release, and nothing after it");
 });
+
+/** Turns of the event loop until `check()` holds (no clock: each turn is setImmediate). */
+const turns = async (check, what, max = 10_000) => {
+  for (let i = 0; !check(); i++) {
+    assert.ok(i < max, what);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+};
+
+test("a viewer that goes while its Take over is still being written: the take, once it lands, goes back away at once", { timeout: 30_000 }, async (t) => {
+  const hold = fakeHold();
+  // The take-over row is still being written when the tab closes: its answer comes after.
+  let answer;
+  hold.hold.take = () => (hold.calls.push("take"), new Promise((resolve) => (answer = resolve)));
+  const { row, watch } = await opened(t, { hold });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await turns(() => hold.calls.includes("take"), "the take is asked");
+  ws.destroy();
+  await turns(() => watch.state.closed >= 1, "the viewer is gone");
+  assert.deepEqual(hold.calls, ["take"], "nothing to hand back before the take lands");
+  // The runner applies the take with nobody watching, then the write answers.
+  const away = hold.nextCall();
+  hold.emit({ state: "person" });
+  answer({ hold: "person" });
+  assert.equal(await away, "away");
+  assert.equal(hold.hold.state(), "agent", "the take went back at once, not at the idle bound");
+});
+
+test("a view closed while its take holds a button lets go of it before the watch closes", { timeout: 30_000 }, async (t) => {
+  const { row, watch, view } = await opened(t, { hold: fakeHold({ grant: true }) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  const pressed = watch.nextInput();
+  ws.sendJson(press(0));
+  await pressed;
+  await view.close("released");
+  assert.deepEqual(watch.state.inputs.at(-1), [{ type: "up", button: "left" }], "the button's up was sent");
+  assert.ok(watch.state.closed >= 1);
+  assert.equal(watch.state.inputs.length, 2);
+});
+
+test("the ups sent when a viewer leaves wait behind the input still being sent: a press in flight is never overtaken by its own release", { timeout: 30_000 }, async (t) => {
+  const { row, watch } = await opened(t, { hold: fakeHold({ grant: true }) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  const release = watch.blockInputs();
+  const pressed = watch.nextInput();
+  ws.sendJson(press(0));
+  await pressed;
+  ws.destroy();
+  // The press is still being sent: its up waits for it.
+  for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(watch.state.inputs.length, 1, "no up while its press is in flight");
+  const lifted = watch.nextInput();
+  release();
+  assert.deepEqual(await lifted, [{ type: "up", button: "left" }]);
+});
+
+test("a computer that never answers the ups or the close holds nothing up: past the bound the watch is let go, the view closes, frames for a gone viewer wait instead of running flat out, and each wait is said in words", { timeout: 30_000 }, async (t) => {
+  const clock = manualTimers();
+  const SETTLE = 777;
+  const logs = [];
+  const watch = fakeWatch({ hangClose: true });
+  const { row, view } = await opened(t, { watch, hold: fakeHold({ grant: true }), timers: clock.timers, limits: { settleMs: SETTLE }, log: (line) => logs.push(line) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  const pressed = watch.nextInput();
+  ws.sendJson(press(0));
+  await pressed;
+  watch.blockInputs();
+  ws.destroy();
+  // The ups never answer: the watch is not let go yet, and a frame for the gone viewer waits, unacked.
+  await turns(() => clock.running(SETTLE).length === 1, "the ups' bound runs");
+  assert.equal(watch.state.closed, 0);
+  void watch.push({ bytes: JPEG });
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(watch.state.acks, 0, "no frame acked at once for a viewer that is gone");
+  clock.running(SETTLE)[0].run();
+  await turns(() => watch.state.closed === 1, "past the bound the watch is let go");
+  await turns(() => watch.state.acks === 1, "and the frame it held is acked");
+  // The close never answers either: with a viewer on again, the view's close goes on past the bound.
+  await viewerOf(row);
+  await turns(() => watch.state.opened === 2, "the second viewer's watch");
+  // (The first watch's close, let go above, never answers either: its own bound still runs.)
+  const before = clock.running(SETTLE).length;
+  const closing = view.close("released");
+  await turns(() => clock.running(SETTLE).length === before + 1, "the close's bound runs");
+  clock.running(SETTLE).at(-1).run();
+  await closing;
+  assert.ok(logs.length >= 1 && logs.every((line) => !/https?:|token/i.test(line)), JSON.stringify(logs));
+  assert.ok(logs.some((line) => /did not answer/.test(line)), JSON.stringify(logs));
+});

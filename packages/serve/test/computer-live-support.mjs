@@ -6,7 +6,7 @@ import { deflateSync } from "node:zlib";
 /** A provider's watch on one computer (provider.watch(ref, handlers, options), bound to its ref). `push(frame)` hands a
  *  frame to the viewer and resolves once the viewer's side acked it; `end(code, message)` ends the watch as a computer
  *  that went; `inputs` is every input() call's actions; `refuse` makes the next input fail in those words. */
-export function fakeWatch({ start, hang = false } = {}) {
+export function fakeWatch({ start, hang = false, hangClose = false } = {}) {
   const state = { handlers: null, options: null, closed: 0, inputs: [], acks: 0, refuse: null, opened: 0 };
   /** While set, each input() waits for the test's release(): a computer slow to take input. */
   let gate = null;
@@ -39,6 +39,8 @@ export function fakeWatch({ start, hang = false } = {}) {
         },
         async close() {
           state.closed += 1;
+          // A computer that never answers the close (`hangClose`).
+          if (hangClose) await new Promise(() => {});
         },
       },
     };
