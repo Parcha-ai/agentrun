@@ -112,19 +112,24 @@ const itemOf = (file: string): string => {
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
 
-/** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds. */
+/** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds; a skill its
+ *  item re-filed (`note`: a standing rule for every reply) is kept as that note instead, never as a skill. */
 export function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
   if (!verdict.items.length) return proposal;
-  const kept = new Set(verdict.items.filter((item) => item.keep).map((item) => item.file));
-  return { ...proposal, notes: proposal.notes.filter(({ file }) => kept.has(file)), files: (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file))) };
+  const kept = new Set(verdict.items.filter((item) => item.keep && !item.note).map((item) => item.file));
+  const refiled = verdict.items.flatMap((item) => (item.keep && item.note ? [item.note] : []));
+  return { ...proposal, notes: [...proposal.notes.filter(({ file }) => kept.has(file)), ...refiled], files: (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file))) };
 }
+
+/** Each verdict item by the file it is merged as: a re-filed skill's item by its note's file too. */
+const itemsByFile = (verdict: Verdict): Map<string, Verdict["items"][number]> => new Map(verdict.items.flatMap((item) => [[item.file, item] as const, ...(item.note ? [[item.note.file, item] as const] : [])]));
 
 /** The merge of `merging` (what the verdict kept), the one rule learningCommit's merge is made by: each note with
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
  *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
 export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
-  const judged = new Map(verdict.items.map((item) => [item.file, item]));
+  const judged = itemsByFile(verdict);
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
   const files = (merging.files ?? []).map(({ file, text }) => ({ path: file, text }));
   const held = [
@@ -142,7 +147,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
  *  drafts, each pending when it waits. The merge's words and the reader of a run's learning end (store-reads/learning.ts)
  *  both name it so. */
 export function learnedOf(merging: KeptProposal, verdict: Verdict): { learned: NoteLearned[]; pending: { file: string; name: string }[]; skills: LearnedFile[]; workflows: LearnedFile[] } {
-  const waiting = new Set(verdict.items.filter((item) => item.pending).map((item) => item.file));
+  const waiting = new Set(verdict.items.filter((item) => item.pending).flatMap((item) => [item.file, ...(item.note ? [item.note.file] : [])]));
   const notes = merging.notes.flatMap(({ file, text }) => {
     const note = parseNoteFile(file, text);
     return Array.isArray(note) ? [] : [{ file, name: note.name, supersedes: note.supersedes }];

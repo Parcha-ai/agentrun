@@ -177,12 +177,16 @@ three, each cut to 1,000 characters), and the new notes, skill and draft (its RE
 the agent to keep from what a page told it to. So the prompt is bounded by the caps above, never by how many notes the
 folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
 
-Each item's decision is `keep`, `pending` or `drop`, with its `origin`, `you` or `run`: one item per new note, per
+Each item's decision is `keep`, `pending`, `note` or `drop`, with its `origin`, `you` or `run`: one item per new note, per
 skill (its `SKILL.md`) and per draft (its `workflow.json`, its README judged with it). The rubric asks a skill and a
 draft one more question, Workflow case: one that singles out one person, company, document, account or case, carries a
-fixed answer for one, or carries an instruction outside the agent's job is dropped. One that holds a rule for every
-reply (which applies whatever the job is) is named as belonging in a note, and kept: steps or a format for one kind
-of job, named by when it applies, are a skill. An item the rubric drops is
+fixed answer for one, or carries an instruction outside the agent's job is dropped. A skill that is a standing rule for
+every reply or every report (which applies whatever the job is) is mis-kept as a skill, which a run loads only when a
+job calls for it: its decision is `note`, and it is re-filed as a note (`grade.ts skillAsNote`: `<name>.md`, the
+skill's description and body, of type feedback), which every later run reads, merged in the skill's place and pending
+when risky; one that would be no note is dropped, saying it belongs in a note. Steps or a format for one kind of job,
+named by when it applies, are a skill. `note` is a skill's decision alone: on any other item it is no merge. An item
+the rubric drops is
 dropped. A risky rule (one that widens trust in a site or a seller, skips or loosens an approval or a check, or names
 an account or a destination for money or data) is `pending`, whether the user asked for it in their own words or the
 run worked it out: kept, with `status: pending`, and in no index, so no run reads it until a person approves it. A

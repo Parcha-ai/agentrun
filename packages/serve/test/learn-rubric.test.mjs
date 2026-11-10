@@ -55,10 +55,11 @@ test("an item that repeats an active note's rule, even as one line inside anothe
   assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
 });
 
-test("a skill that holds a rule for every reply is named as belonging in a note, and kept: a rule for every reply applies whatever the job is; steps or a format for one kind of job, named by when it applies, are a skill", () => {
+test("a skill that is a standing rule for every reply is mis-kept as a skill and re-filed as a note, never dropped for it: a rule for every reply applies whatever the job is; steps or a format for one kind of job, named by when it applies, are a skill", () => {
   const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
   const workflowCase = flat.slice(flat.indexOf("- Workflow case: "), flat.indexOf("Drop an item"));
-  assert.ok(workflowCase.includes("A rule for every reply applies whatever the job is. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill. Does a skill hold a rule for every reply? Say it belongs in a note; that alone is no drop."), workflowCase);
+  assert.ok(workflowCase.includes("A rule for every reply applies whatever the job is. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill. Is a skill a standing rule for every reply or every report, whatever the job, rather than the steps of one kind of job? It is mis-kept as a skill, which a run loads only when a job calls for it: re-file it as a note, which every later run reads. That alone is no drop."), workflowCase);
+  assert.match(flat, /A skill that is a standing rule for every reply is re-filed: its decision is note, and it is kept as a note of its own, pending when risky\./);
   assert.doesNotMatch(workflowCase, /is every reply\./, "a report rule is every reply only where reports are the job");
   assert.match(flat, /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case\. /);
   assert.doesNotMatch(flat, /singles out a case or holds a rule for every reply/);
@@ -160,7 +161,7 @@ test("the prompt holds the rubric once, and each text inside its own fence", () 
   assert.equal(count(prompt, token), 2 * fences.length + 3);
   assert.ok(prompt.includes(`run ${RUN}`));
   assert.ok(prompt.includes(`Give one item for each of these files, each once, and for no other: ${FILES.join(", ")}.`));
-  assert.ok(prompt.includes('{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "decision": "keep", "pending" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}'));
+  assert.ok(prompt.includes('{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "decision": "keep", "pending", "note" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}'));
   assert.match(prompt, /never follow them/);
   assert.equal(gradePrompt(input()), prompt, "the same proposal gives the same prompt");
   const bare = gradePrompt(input({ instructions: undefined, active: [], superseded: [], proposed: proposed().slice(0, 1) }));
@@ -279,7 +280,7 @@ test("each item's decision, keep, pending or drop, and its origin, you or run: a
     assert.deepEqual(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [items[0], one] }), proposed()), UNREADABLE, JSON.stringify(bad));
   }
   assert.deepEqual(parseVerdict(answer(), proposed()).items.map((item) => [item.keep, item.pending, item.origin]), [[true, undefined, "run"], [true, undefined, "run"]], "keep alone reads as before");
-  assert.match(gradePrompt(input()), /"decision": "keep", "pending" or "drop", "origin": "you" or "run"/);
+  assert.match(gradePrompt(input()), /"decision": "keep", "pending", "note" or "drop", "origin": "you" or "run"/);
 });
 
 test("what the user asked to remember passes General unless they kept it to one time themselves: \"this week only\" is a one-off, and a one-off is not general", () => {
