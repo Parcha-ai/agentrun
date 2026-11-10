@@ -1032,6 +1032,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // again on the same budget; its next refusal (a raise short of the need) parks it anew through the cap's rule.
           await deps.delivered;
           raising.resuming = false;
+          // A person's stop or cancel that woke the parked run is its end, before any park again: given back parked on
+          // the same budget, its stop untaken, the run would be claimed again at every poll and never end (#2204). It
+          // ends as a stop does mid-turn: in the stop's words, its row taken, with what the end-of-run step keeps of a
+          // cut run.
+          if (stopReason?.kind === "command") {
+            return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId], await cutRows(claim, spec, "stopped"));
+          }
           const paused = raising.budget;
           const resumes = raising.resumes;
           await takeRaises();
