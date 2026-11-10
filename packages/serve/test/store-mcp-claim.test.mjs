@@ -22,7 +22,7 @@ const { sealMcpCredential } = await import("../dist/store/index.js");
 const { Fenced, MCP_REFRESH_LEASE_MS } = await import("../dist/store/store.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
-const { UNUSABLE } = await import("../dist/mcp-servers.js");
+const { UNUSABLE } = await import("../dist/mcp-probe.js");
 
 const LEASE = 60_000;
 const KEY = randomBytes(32);
