@@ -64,9 +64,10 @@ export function CodingAgentDialog({ open, onClose, context, serverUrl = "/v2", c
 
 /** "… with your coding agent": a button that opens the handoff for `context`, read when the button is pressed (a function
  *  gives the run's input as typed then). `serverUrl`: the console's API endpoint. `iconOnPhone`: under 640 px only the
- *  icon shows (its words stay for a screen reader and as its title), as a header's Edit does. */
-export function CodingAgentHandoff({ context, label, serverUrl = "/v2", size = "sm", iconOnPhone, className }: {
-  context: CodingAgentContext | (() => CodingAgentContext); label: string; serverUrl?: string; size?: ButtonProps["size"]; iconOnPhone?: boolean; className?: string;
+ *  icon shows (its words stay for a screen reader and as its title), as a header's Edit does. `unavailable`: why the
+ *  handoff can't carry what the page holds; the button is off and says so as its title. */
+export function CodingAgentHandoff({ context, label, serverUrl = "/v2", size = "sm", iconOnPhone, unavailable, className }: {
+  context: CodingAgentContext | (() => CodingAgentContext); label: string; serverUrl?: string; size?: ButtonProps["size"]; iconOnPhone?: boolean; unavailable?: string; className?: string;
 }) {
   const [shown, setShown] = useState<CodingAgentContext | null>(null);
   const [open, setOpen] = useState(false);
@@ -74,8 +75,8 @@ export function CodingAgentHandoff({ context, label, serverUrl = "/v2", size = "
   const [opening, setOpening] = useState(0);
   return (
     <>
-      <Button size={size} onClick={() => { setShown(typeof context === "function" ? context() : context); setOpening((n) => n + 1); setOpen(true); }} aria-haspopup="dialog"
-        title={iconOnPhone ? label : undefined} className={cn(iconOnPhone && "max-sm:w-8 max-sm:shrink-0 max-sm:px-0", className)}>
+      <Button size={size} onClick={() => { setShown(typeof context === "function" ? context() : context); setOpening((n) => n + 1); setOpen(true); }} aria-haspopup="dialog" disabled={!!unavailable}
+        title={unavailable ?? (iconOnPhone ? label : undefined)} className={cn(iconOnPhone && "max-sm:w-8 max-sm:shrink-0 max-sm:px-0", className)}>
         <SquareTerminal aria-hidden /> {iconOnPhone ? <span className="max-sm:sr-only">{label}</span> : label}
       </Button>
       {shown && <CodingAgentDialog key={opening} open={open} onClose={() => setOpen(false)} context={shown} serverUrl={serverUrl} />}

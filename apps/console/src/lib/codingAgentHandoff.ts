@@ -42,7 +42,7 @@ export const codingAgentOf = (choice: CodingAgentChoice) => CODING_AGENTS.find((
 
 /** The server's API as a coding agent reaches it: the console's endpoint (`/v2`, or another one) resolved against this
  *  page, keeping only its origin and path, so a user name, password, query or fragment in it never reaches the prompt. */
-export function apiOf(serverUrl: string, page: string = globalThis.location?.href ?? "http://localhost/"): { origin: string; path: string; api: string } {
+export function apiOf(serverUrl: string, page: string | undefined = globalThis.location?.href): { origin: string; path: string; api: string } {
   const url = new URL(serverUrl || "/", page);
   const path = url.pathname.replace(/\/+$/, "");
   return { origin: url.origin, path, api: `${url.origin}${path}` };

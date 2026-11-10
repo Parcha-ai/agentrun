@@ -83,10 +83,12 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         </div>
         {/* Beside the files, the same run handed to the person's coding agent: its input and effort as typed when pressed. A
             coding agent works on a computer, and a phone's run row keeps Attach, Effort and Run on one line: under 640 px
-            it is not shown. */}
+            it is not shown. Files attached here are uploads for this page's run, deleted when it is left, so the handoff
+            is off while any are attached rather than hand over a run without them. */}
         <div className="mt-3 flex flex-wrap items-center gap-2 max-sm:mt-0">
           <div className="min-w-0 flex-1"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
           <CodingAgentHandoff label="Run with your coding agent" className="max-sm:hidden"
+            unavailable={attachments.items.length ? "Remove the attached files first: they are for a run started here, and are deleted when you leave this page. Your coding agent uploads its own." : undefined}
             context={() => ({ kind: "run", agentId: agent.agent_id, revision: agent.revision, ...(built.ok ? { input: built.body.input } : {}), ...(effort ? { effort } : {}) })} />
         </div>
       </div>
