@@ -30,6 +30,7 @@ import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
+import { computerRefusal } from "@/lib/computerAsk";
 import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
@@ -42,7 +43,7 @@ import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
 import { signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
-import type { Run, RunStatus } from "@/lib/v2";
+import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
 
 /** How often the console reads the capabilities again while no model is ready (NoModelBanner, ModelKeyCard). */
 const MODEL_CHECK_MS = 10_000;
@@ -475,6 +476,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setNeedsTry((n) => n + 1);
     return refused;
   };
+  // The agent's ask at its computer, answered from the strip (POST …/computer/hand-back): read again after it, a refusal
+  // too, as an approval's is.
+  const handBack = async (runId: string, outcome: HandBackOutcome) => {
+    let refused: string | null = null;
+    try { await v2.handBackComputer(runId, outcome); } catch (e) { refused = computerRefusal(e, "hand"); }
+    setNeedsTry((n) => n + 1);
+    return refused;
+  };
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -554,7 +563,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null}
-                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onRunAgain={runAgain} onStop={stop} />}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>

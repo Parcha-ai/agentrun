@@ -88,8 +88,11 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
 /** The network a computer of `kind` asks for: as the run allows (box_allow), narrowed to "none" when its provider makes
  *  "none" but not what the run allows. A remote computer (Daytona's or E2B's, each one whose capabilities' network is
  *  ["none"]) runs its programs in a network of their own, so an open or listed network is one it refuses at create;
- *  "none" reaches less than the run allows, never more. Nothing is ever widened. */
+ *  "none" reaches less than the run allows, never more. The one exception is a vendor-hosted computer that runs only on
+ *  the vendor's own network (its capabilities' network is ["open"]: a cloud phone, a hosted browser): it is "open"
+ *  whatever the run allows, since this server's allow-list can't reach it, and it is never refused for a list. */
 function networkOf(kind: ComputerKindOf, run: ComputerRun): ComputerSpec["network"] {
+  if (run.networks && run.networks.length > 0 && run.networks.every((one) => one === "open")) return "open";
   const allowed: ComputerSpec["network"] = run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] };
   const form = allowed === "none" || allowed === "open" ? allowed : "allow";
   return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
