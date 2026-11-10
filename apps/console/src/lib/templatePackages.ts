@@ -70,3 +70,36 @@ export const grantsOf = (t: TemplateView, ticked: ReadonlySet<string>) => t.mcp.
 
 /** A refusal's issues at one field. */
 export const issuesAt = (issues: readonly FieldIssue[], field: string) => issues.filter((i) => i.field === field);
+
+type Parameter = TemplateView["parameters"][string];
+/** A parameter's label, as the Apply form shows it: the template serves no display label, so its key. */
+export const paramLabel = (key: string): string => key;
+
+/** What the Apply form says of a refused parameter: from the served issue's `reason` and the field's label, never the
+ *  server's words, which name the raw path ("parameters.risk_appetite is required: …"). A reason with no words here (or
+ *  a parameter the template doesn't have) keeps the server's. */
+export function paramIssueWords(issue: FieldIssue, key: string, p: Parameter | undefined): string {
+  const label = paramLabel(key);
+  if (!p) return issue.message;
+  switch (issue.reason) {
+    case "missing": return `${label} is required.`;
+    case "wrong_type": return `${label} takes ${p.type === "integer" ? "a whole number" : p.type === "number" ? "a number" : p.type === "boolean" ? "yes or no" : "text"}.`;
+    case "not_an_option": return `${label} takes one of: ${(choicesOf(p) ?? []).join(", ")}.`;
+    case "bad_format": return `${label} isn't in the form its description asks for.`;
+    default: return issue.message;
+  }
+}
+
+/** Whether a parameter's value, as typed or picked, is one the server takes: an issue at it goes once it is. Empty is
+ *  valid only when the parameter isn't required; a choice is one of its choices; a number parses (an integer whole);
+ *  text matches its pattern. The server checks again on Apply. */
+export function paramValid(p: Parameter, text: string): boolean {
+  if (text === "") return !p.required;
+  const choices = choicesOf(p);
+  if (choices) return choices.includes(text);
+  if (p.type === "integer") return /^-?\d+$/.test(text.trim());
+  if (p.type === "number") return text.trim() !== "" && Number.isFinite(Number(text));
+  if (p.type === "boolean") return text === "true" || text === "false";
+  if (p.pattern) { try { return new RegExp(p.pattern, "u").test(text); } catch { return true; } }
+  return true;
+}

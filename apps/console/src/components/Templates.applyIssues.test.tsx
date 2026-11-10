@@ -60,7 +60,7 @@ describe("a template's Apply form, a refused parameter", () => {
     ]); });
     await t.apply();
     expect(t.summary()).toBe("The template's input is not valid.");
-    await act(async () => { await pick(picker(t.host, "risk_appetite")!, "medium"); });
+    await pick(picker(t.host, "risk_appetite")!, "medium");
     await t.settle();
     expect(t.at("parameters.risk_appetite")).not.toContain("is required");
     // One issue is left: the summary stays.

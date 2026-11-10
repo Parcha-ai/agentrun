@@ -10,7 +10,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { choicesOf, grantsOf, issuesAt, needsOf, parametersOf, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choicesOf, grantsOf, issuesAt, needsOf, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -84,7 +84,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const [servers, setServers] = useState<Set<string> | null>(null);
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
-  const [said, setSaid] = useState<string | null>(null);
+  // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
+  const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
   const [sentValues, setSentValues] = useState<ParameterText>({});
@@ -97,6 +98,12 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   }, [v2]);
   const grants = grantsOf(t, ticked);
   const at = (field: string) => issuesAt(issues, field);
+  // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
+  const setParam = (key: string, value: string) => {
+    setValues((was) => ({ ...was, [key]: value }));
+    const p = t.parameters[key];
+    if (p && paramValid(p, value)) setIssues((was) => was.filter((i) => i.field !== `parameters.${key}`));
+  };
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
@@ -109,8 +116,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       setSentValues(sending);
       setMade(done);
     } catch (e) {
-      if (e instanceof ClientError && e.fields?.length) { setIssues(e.fields); setSaid(e.message); }
-      else setSaid(e instanceof Error ? e.message : String(e));
+      if (e instanceof ClientError && e.fields?.length) { setIssues(e.fields); setSaid({ text: e.message, withIssues: true }); }
+      else setSaid({ text: e instanceof Error ? e.message : String(e), withIssues: false });
     } finally { setApplying(false); }
   };
   const params = Object.entries(t.parameters);
@@ -170,18 +177,18 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           {params.map(([key, p]) => (
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
               <label className="block">
-                <span className="caps text-[12px] font-semibold">{key}{p.required && <span className="text-destructive-text"> *</span>}</span>
+                <span className="caps text-[12px] font-semibold">{paramLabel(key)}{p.required && <span className="text-destructive-text"> *</span>}</span>
                 {/* The parameter's own words; its pattern is the server's to check, never printed. */}
                 <span className="mb-1.5 block text-[12px] text-muted-foreground">{p.description}</span>
                 {choicesOf(p)
-                  ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setValues((was) => ({ ...was, [key]: v }))}
+                  ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)}
                       options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
                   : p.type === "boolean"
-                  ? <input type="checkbox" checked={values[key] === "true"} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.checked ? "true" : "false" }))} />
+                  ? <input type="checkbox" checked={values[key] === "true"} onChange={(e) => setParam(key, e.target.checked ? "true" : "false")} />
                   : <input className={input} type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
-                      onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))} />}
+                      onChange={(e) => setParam(key, e.target.value)} />}
               </label>
-              <Issues issues={at(`parameters.${key}`)} />
+              <Issues issues={at(`parameters.${key}`)} words={(i) => paramIssueWords(i, key, p)} />
             </div>
           ))}
         </Section>
@@ -251,7 +258,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying}>{applying ? "Applying…" : "Apply"}</Button>
-        {said && <p className="min-w-0 flex-1 text-[13px] text-destructive-text" role="alert">{said}</p>}
+        {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-[13px] text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}
     </div>
@@ -268,12 +275,13 @@ function Section({ title, note, children }: { title: string; note?: string; chil
   );
 }
 
-/** A field's issues, in the server's words, with its `fix` when it names one. `named`: each with its field. */
-function Issues({ issues, named = false }: { issues: FieldIssue[]; named?: boolean }) {
+/** A field's issues, in the server's words (or `words`, the form's for a parameter), with its `fix` when it names one.
+ *  `named`: each with its field. */
+function Issues({ issues, named = false, words = (i) => i.message }: { issues: FieldIssue[]; named?: boolean; words?: (issue: FieldIssue) => string }) {
   if (!issues.length) return null;
   return (
     <ul className="mt-1.5 space-y-1 text-[12px] text-destructive-text" role="alert">
-      {issues.map((i, n) => <li key={`${i.field}:${n}`}>{named && <span className="font-mono">{i.field} </span>}{i.message}{i.fix && <span className="block text-foreground/80">{i.fix}</span>}</li>)}
+      {issues.map((i, n) => <li key={`${i.field}:${n}`}>{named && <span className="font-mono">{i.field} </span>}{words(i)}{i.fix && <span className="block text-foreground/80">{i.fix}</span>}</li>)}
     </ul>
   );
 }

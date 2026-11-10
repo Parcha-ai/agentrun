@@ -340,7 +340,7 @@ describe("applying a template", () => {
     await pick(depth, "7");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
-    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("parameters.post_to is one of crm, slack, none: where each brief goes");
+    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("post_to takes one of: crm, slack, none.");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {
