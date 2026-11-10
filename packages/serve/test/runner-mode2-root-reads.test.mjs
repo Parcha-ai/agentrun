@@ -103,7 +103,7 @@ const mountingComputer = async (_launch, _store, given) => {
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
  *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal }) {
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -154,7 +154,8 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   const watcher = watch ? watchReads(resolve(local, "..")) : undefined;
   try {
     // `signal`: the claim's, as the adapter loop hands the run (AdapterRun.signal: aborted on a lost claim or a shutdown).
-    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}) }, deps, claim);
+    // `phase`: the loop's AdapterRun.phase, a host step said on the run's timeline.
+    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}), ...(phase ? { phase } : {}) }, deps, claim);
     await use(spec);
   } finally {
     watcher?.off();
@@ -222,5 +223,23 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the lost claim's token was never removed: ${JSON.stringify(callsOf(control))}`)), 20_000); });
     await Promise.race([swept, bound]).finally(() => clearTimeout(timer));
     assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed when the claim was lost, with no release yet, then the run's earlier epochs looked for");
+  });
+
+  test(`${name}: a claim that waits on its computer's image says one phase on the run's timeline, in main's words with the computer's noun`, async (t) => {
+    const { DOCKER_RECIPE_HAS } = await import("@parcha/agentrun-computer");
+    for (const [making, tag, words] of [
+      ["build", "agentrun-computer:0123456789ab", `Preparing the computer's image: building it (${DOCKER_RECIPE_HAS})…`],
+      ["pull", "registry.example/library/base:22.04", "Preparing the computer's image: pulling registry.example/library/base:22.04…"],
+    ]) {
+      const said = [];
+      // The claim's computer waits on its image once (the provider's onWait), as on a host that lacks it.
+      const waiting = async (_launch, _store, given) => (given.onImageWait?.(making, tag), { release: async () => {} });
+      await mode2Spec(t, { harness, build, computer: waiting, phase: (summary) => void said.push(summary) });
+      assert.deepEqual(said, [words], `${making}: one phase, in its words`);
+    }
+    // A claim with no image to wait on says nothing.
+    const said = [];
+    await mode2Spec(t, { harness, build, phase: (summary) => void said.push(summary) });
+    assert.deepEqual(said, []);
   });
 }
