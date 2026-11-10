@@ -35,14 +35,46 @@ test("a run's final answer quoting a held key, plainly and base64-encoded, is se
   assert.match(run.result.final_answer, /^Here it is: \[redacted\] and \[redacted\][A-Za-z0-9+/=]{0,3}\. The rest stays\.$/, run.result.final_answer);
 });
 
-// SKIP (follow-up #2089): a long final answer is cut short instead of served whole
-test.skip("a long final answer (about 50 KB) quoting a held key near its end is served whole, not cut, with no piece of the key", { timeout: 60_000 }, async (t) => {
+test("a long final answer (about 50 KB) quoting a held key near its end is served whole, not cut, with no piece of the key", { timeout: 60_000 }, async (t) => {
   const run = await answered(t, "Answer at length quoting the held key.");
   const answer = run.result.final_answer;
   noKey(answer, "the answer");
   assert.ok(answer.startsWith("word word "), answer.slice(0, 40));
   assert.ok(answer.endsWith("near the end [redacted] done."), answer.slice(-60));
   assert.equal(answer.length, "word ".length * 10_000 + "near the end [redacted] done.".length, "nothing cut");
+});
+
+test("an unattended run's answer of 6,000 characters reads whole in its result, its Timeline row and the Timeline's live pages, as the console's Report and Timeline show it (#2224)", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  const { api } = await serve(t);
+  // Unattended (approvals never), as the release-notes template's run that read cut at 2,000.
+  assert.equal((await api("POST", "/agents", agent("notes", { approvals: "never" }))).status, 201);
+  // The faux model answers "On <the message>: done.": a message of 5990 characters is an answer of 6000.
+  const content = `${"note ".repeat(1200).slice(0, 5990 - 4)} end`;
+  const answer = `On ${content}: done.`;
+  assert.equal(answer.length, 6000);
+  const started = await api("POST", "/agents/notes/runs", { input: { content } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  // The Timeline as the console reads it: its long-poll pages, followed to the run's end.
+  const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 50_000 });
+  const live = rows.findLast((row) => row.kind === "final_answer");
+  assert.equal(live?.text?.length, 6000, `the live pages' answer row: ${live?.text?.length} characters`);
+  assert.equal(live.text, answer);
+  // A fresh read of the Timeline, and the run's result: whole too.
+  const page = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body;
+  assert.equal(page.rows.findLast((row) => row.kind === "final_answer")?.text, answer, "the Timeline's answer row");
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(view.result.final_answer, answer, "the run's result");
+});
+
+test("an answer one character past a timeline row's cap (2001) is served whole by GET /runs/{id}", { timeout: 60_000 }, async (t) => {
+  // The faux model answers "On <the message>: done." (10 characters around it): a message of 1991 is an answer of 2001.
+  const content = `${"z".repeat(1991 - 4)} end`;
+  assert.equal(`On ${content}: done.`.length, 2001);
+  const run = await answered(t, content);
+  const answer = run.result.final_answer;
+  assert.equal(answer.length, 2001, `served ${answer.length} characters, ending ${JSON.stringify(answer.slice(-16))}`);
+  assert.equal(answer, `On ${content}: done.`);
 });
 
 test("a workflow's output carrying a held key in a string field is served with it redacted, the record's shape kept", { timeout: 60_000 }, async (t) => {
@@ -97,8 +129,7 @@ test("two property names that redact to the same name withhold their object whol
 
 // A view reads the answer the server already redacted for this run and these held values: a console polls a run's view,
 // and an answer a run was made to write can be large.
-// SKIP (follow-up #2089): a run whose answer is a megabyte of sk- runs never completes within the test's 90 seconds
-test.skip("a run's view redacts its answer once per held key set: a second view reads nothing again", { timeout: 90_000 }, async (t) => {
+test("a run's view redacts its answer once per held key set: a second view reads nothing again", { timeout: 90_000 }, async (t) => {
   withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("long-sk"))).status, 201);
