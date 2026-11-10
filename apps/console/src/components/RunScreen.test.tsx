@@ -323,6 +323,9 @@ describe("the run page's Screen tab, for a browser", () => {
     expect(panel).toBeTruthy();
     expect(panel.querySelector("[data-browser-actions]")).toBeNull();
     expect(panel.querySelector("button")).toBeNull();
+    // The served hold doesn't follow a take in the browser's viewer: the header doesn't say who drives.
+    expect(panel.querySelector("header")!.textContent).not.toMatch(/drives|You drive/);
+    expect(panel.querySelector("header")!.textContent).toContain("take over in the view below");
   });
 
   // Only a viewer on this page's own origin, under this run's own path, is framed: anything else says so in words, with

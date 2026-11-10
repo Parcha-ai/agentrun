@@ -118,7 +118,9 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-2.5">
         <Icon className="size-4 text-muted-foreground" aria-hidden />
         <span className="caps text-[12px] font-semibold">{live ? "Live" : NAMES[kind]}</span>
-        <span className="flex-1 font-mono text-[12px] text-muted-foreground">{live ? `${DRIVES[live.hold]} · ${kind}` : ""}</span>
+        {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
+            which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
+        <span className="flex-1 font-mono text-[12px] text-muted-foreground">{live ? (kind === "browser" ? "browser · take over in the view below" : `${DRIVES[live.hold]} · ${kind}`) : ""}</span>
         {controls && (controls.hold === "person"
           ? <Button size="sm" variant="solid" disabled={busy} onClick={() => void act(onHand)}>Hand back</Button>
           : <Button size="sm" variant="solid" disabled={busy || controls.hold === "pending"} onClick={() => void act(onTake)}>{controls.hold === "pending" ? "Taking over" : "Take over"}</Button>)}
