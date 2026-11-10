@@ -106,7 +106,7 @@ test.skip("a working run's cap raised is kept and named on the run, and its live
   }
   const raised = await raise(api, run_id, { max_cost_usd: 11 });
   assert.deepEqual([raised.status, raised.body.resumed, raised.body.message_id], [200, false, undefined], JSON.stringify(raised.body));
-  assert.match(raised.body.note, /^The run's process keeps the \$10 cap it was opened with; the \$11 cap holds from its next process\.$/);
+  assert.equal(raised.body.note, "The $11 cap holds from the run's next step; a step already under way keeps the $10 cap it was admitted at.");
   assert.equal((await view(api, run_id)).cost.cap_usd, 11);
   assert.equal((await api("POST", `/runs/${run_id}/cancel`)).status, 202);
 });
