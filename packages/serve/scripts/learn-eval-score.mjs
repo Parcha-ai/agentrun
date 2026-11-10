@@ -8,10 +8,16 @@ export const pattern = (source) => { const m = /^\(\?([a-z]+)\)/.exec(source); r
  *  the owner's OK. A proposal that holds one note can serve its siblings at once, and each counts as what it is. */
 export function fateOf(row) {
   if (!row.merged) return { served: [], held: [] };
-  const waiting = new Set((row.verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
-  const notes = row.notes ?? [];
-  return { served: notes.filter((n) => !waiting.has(n.file)), held: notes.filter((n) => waiting.has(n.file)) };
+  // Each note by its own item: kept and served, kept and held (pending), or dropped beside siblings that merged. A note
+  // with no item of its own (a verdict that gives none) merged as the whole did.
+  const items = new Map((row.verdict?.items ?? []).map((item) => [item.file, item]));
+  const notes = (row.notes ?? []).filter((n) => items.get(n.file)?.keep !== false);
+  return { served: notes.filter((n) => !items.get(n.file)?.pending), held: notes.filter((n) => items.get(n.file)?.pending) };
 }
+
+/** The run id a grade of case `caseId` is asked under: its model, repeat and grade model by index (the grade's run id
+ *  is letters, digits, dots, dashes and underscores: a model's own name holds a `/`), at most 120 characters. */
+export const gradeRunId = (caseId, model, rep, graderIndex) => `eval-${caseId}`.slice(0, 100) + `-${model}-${rep}-g${graderIndex}`;
 
 /** Row `row` of case `c` scored in `reflect` mode: `wantHit`, a pattern the case wants matched by a note where the case
  *  wants it (held for the owner's OK for a case labelled pending, served at once for any other: a lesson held helps no
@@ -56,16 +62,17 @@ export function tally(all, cases, mode) {
 }
 
 /** How grade models agree on the same proposals (rows of one mode and model, graded by several graders, each row's
- *  `grader`): each note of each case and repeat by each grader's decision, `kept`, `held` (pending) or `dropped` (a
- *  proposal that did not merge drops each of its notes). `agree`: `[notes every grader judged the same way, notes every
- *  grader judged]`; `split`: each note they did not, with each grader's decision. A row no grade reached (NOT_JUDGED) is
- *  no decision: its note is left out. */
-export function agreement(rows) {
+ *  `grader`; `requested`, every grade model asked for, by default those the rows name): each note of each case and
+ *  repeat by each grader's decision, `kept`, `held` (pending) or `dropped` (a proposal that did not merge drops each of
+ *  its notes). `agree`: `[notes every requested grader judged the same way, notes every requested grader judged]`;
+ *  `split`: each note they did not, with each grader's decision. A row no grade reached (NOT_JUDGED) is no decision, so
+ *  its note is in no count: a grade model that failed every case leaves nothing to agree on, never 100%. */
+export function agreement(rows, requested = [...new Set(rows.map((row) => row.grader))]) {
   const decisions = new Map();
-  const graders = new Set();
+  // Every grade model asked for, a failed one too: a note one of them did not judge is in no agreement count.
+  const graders = new Set(requested);
   for (const row of rows) {
     if (NOT_JUDGED.has(row.stage)) continue;
-    graders.add(row.grader);
     const { served, held } = fateOf(row);
     const decided = (file) => (held.some((n) => n.file === file) ? "held" : served.some((n) => n.file === file) ? "kept" : "dropped");
     for (const note of row.notes ?? []) {

@@ -26,7 +26,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { agreement, scored, tally } from "./learn-eval-score.mjs";
+import { agreement, gradeRunId, scored, tally } from "./learn-eval-score.mjs";
 
 const { values: opts } = parseArgs({ options: {
   out: { type: "string" }, cases: { type: "string" }, models: { type: "string", default: "default,claude" }, modes: { type: "string", default: "grade,reflect" },
@@ -130,10 +130,10 @@ function checked(c, notes) {
   return learn.checkProposal({ base: { files: ["MEMORY.md", ...seed.keys()], active: notesOf(c.active) }, changes, refuseValues: [] });
 }
 
-async function grade(c, notes, profile, tag, gradeModel) {
+async function grade(c, notes, profile, runId, gradeModel) {
   const replaced = new Set(notesOf(notes).flatMap((n) => n.supersedes));
   const judged = await judgeProposal({
-    runId: `eval-${c.id}-${tag}`.slice(0, 120), agent: { instructions: c.instructions, harness: profile.harness, model: profile.model }, env: ENV, signal: AbortSignal.timeout(240_000),
+    runId, agent: { instructions: c.instructions, harness: profile.harness, model: profile.model }, env: ENV, signal: AbortSignal.timeout(240_000),
     main: { active: notesOf(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => replaced.has(n.file)) },
     proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text), ...(gradeModel ? { gradeModel } : {}),
   });
@@ -174,7 +174,7 @@ await Promise.all(Array.from({ length: Number(opts.concurrency) }, async () => {
         else if (!check.notes.length) Object.assign(row, { merged: false, stage: "empty" });
         else {
           const kept = check.notes.map(({ file, text }) => ({ file, text }));
-          const g = await grade(c, kept, profile, `${m}-${rep}-${grader ?? "own"}`, grader);
+          const g = await grade(c, kept, profile, gradeRunId(c.id, m, rep, GRADERS.indexOf(grader)), grader);
           Object.assign(row, g, { notes: kept, usd: row.usd + g.usd });
         }
       }
@@ -203,7 +203,7 @@ if (GRADERS.length > 1 && modes.includes("grade")) {
   // The grade models side by side on the same proposals: how often they agree on each note (kept, held or dropped).
   out.push("## grade models agree", "");
   for (const m of models) {
-    const a = agreement(rows.filter((r) => r.mode === "grade" && r.model === m));
+    const a = agreement(rows.filter((r) => r.mode === "grade" && r.model === m), GRADERS.map((g) => g ?? m));
     out.push(`- ${m}: ${pct(...a.agree)} of the notes judged the same way by ${GRADERS.join(", ")}${a.split.length ? `; split on: ${a.split.map((s) => `${s.case} ${s.file} (${Object.entries(s.by).map(([g, d]) => `${g}: ${d}`).join(", ")})`).join("; ")}` : ""}`);
   }
   out.push("");

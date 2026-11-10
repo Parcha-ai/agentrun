@@ -7,7 +7,10 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { agreement } from "../scripts/learn-eval-score.mjs";
+import { join } from "node:path";
+import { agreement, fateOf, gradeRunId } from "../scripts/learn-eval-score.mjs";
+import { judgeProposal } from "../dist/grade.js";
+import { scratch, withEnv } from "./support.mjs";
 
 const run = promisify(execFile);
 const SCRIPT = new URL("../scripts/learn-eval.mjs", import.meta.url).pathname;
@@ -40,4 +43,37 @@ test("agreement: each note by each grade model's decision (kept, held, dropped);
   const a = agreement(rows);
   assert.deepEqual(a.agree, [1, 2], "keep-one agrees; refund-limit splits; planted has no decision from c");
   assert.deepEqual(a.split, [{ case: "refund-limit", file: "refund-limit.md", by: { a: "held", b: "kept", c: "held" } }]);
+});
+
+test("a grade on a named grade model whose name holds a / is judged, not refused for its run id: the real judge path, on the faux grader", async (t) => {
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: join(await scratch(t), "calls.jsonl") });
+  const env = { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: new URL("./fixtures/faux-eval.mjs", import.meta.url).pathname };
+  const c = HELD_OUT.find((one) => one.label === "keep");
+  const judge = (runId) => judgeProposal({
+    runId, agent: { instructions: c.instructions, harness: "pi" }, env, signal: AbortSignal.timeout(60_000), asked: c.transcript.filter((turn) => turn.role === "user").map((turn) => turn.text),
+    main: { active: [], superseded: [] }, proposed: c.notes, gradeModel: GRADERS[1],
+  });
+  const judged = await judge(gradeRunId(c.id, "default", 0, 1));
+  assert.ok("verdict" in judged, `judged, not ${judged.reason}: ${judged.error?.message}`);
+  // The tag the script built before named the model itself, and the grade refused its run id.
+  const before = await judge(`eval-${c.id}-default-0-${GRADERS[1]}`);
+  assert.equal(before.reason, "grade_failed", "a run id holding the model's / is refused");
+});
+
+test("agreement counts every grade model asked for: one that failed every case leaves no note judged by all, never 100% agreement", () => {
+  const row = (grader, c, merged, stage = "grader") => ({ grader, case: c, rep: 0, mode: "grade", stage, merged, notes: [{ file: `${c}.md`, text: "x" }], verdict: { items: [] } });
+  const rows = [row("a", "one", true), row("b", "one", true), row("c", "one", false, "grade_failed"), row("a", "two", false), row("b", "two", false), row("c", "two", false, "error")];
+  const a = agreement(rows, ["a", "b", "c"]);
+  assert.deepEqual(a.agree, [0, 0], "c judged nothing: no note is in the count");
+});
+
+test("fateOf reads each note's own item: a note dropped beside a sibling that merged is neither served nor held", () => {
+  const row = { merged: true, notes: [{ file: "kept.md" }, { file: "dropped.md" }, { file: "held.md" }], verdict: { items: [{ file: "kept.md", keep: true }, { file: "dropped.md", keep: false }, { file: "held.md", keep: true, pending: true }] } };
+  const { served, held } = fateOf(row);
+  assert.deepEqual(served.map((n) => n.file), ["kept.md"]);
+  assert.deepEqual(held.map((n) => n.file), ["held.md"]);
+  // And agreement reads it the same way: a dropped sibling is dropped, not kept.
+  const one = (grader, items) => ({ grader, case: "mixed", rep: 0, mode: "grade", stage: "grader", merged: true, notes: [{ file: "kept.md" }, { file: "dropped.md" }], verdict: { items } });
+  const a = agreement([one("a", [{ file: "kept.md", keep: true }, { file: "dropped.md", keep: false }]), one("b", [{ file: "kept.md", keep: true }, { file: "dropped.md", keep: true }])], ["a", "b"]);
+  assert.deepEqual(a.split, [{ case: "mixed", file: "dropped.md", by: { a: "dropped", b: "kept" } }]);
 });
