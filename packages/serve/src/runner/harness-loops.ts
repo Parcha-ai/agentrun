@@ -11,6 +11,7 @@ import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
+import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { gradeModelFor, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
@@ -44,7 +45,13 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         // A grade model whose vendor this host reaches only through OpenRouter goes there as main's grade does
         // (gradeRouteOf): OpenRouter's key its one credential, priced at OpenRouter's price.
         // The grade's model, main's order (gradeModelFor): the grade model the server names, else the agent's own.
-        routeOf: (grade) => gradeRouteOf(gradeModelFor(grade), deps.env ?? process.env, (model) => deps.routeOf(model, deps.env, "default", PI_WIRES)),
+        // Its model's key from the runner's environment, else the one saved in Settings → Model keys (savedModelKeys), read
+        // at each grade, so a key saved with no restart grades the next learning run.
+        routeOf: async (grade) => {
+          const base = deps.env ?? process.env;
+          const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+          return gradeRouteOf(gradeModelFor(grade), env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
+        },
         ...(deps.log ? { log: deps.log } : {}),
       });
     }

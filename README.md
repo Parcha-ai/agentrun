@@ -1,262 +1,301 @@
 # AgentRun
 
-**AgentRun is an open platform to manage your agents.**
+**AgentRun is an open-source server for AI agents. Agents on it keep running through restarts, work on real computers,
+and learn from every run.**
 
-Create an agent, change it, and run it. Every change is a revision you can go back to, and every run names the
-revision it ran, so you can open any run of any agent and see what it did. Host it yourself with AgentRun Server, on
-your machine or your own server, or with us when hosted AgentRun opens.
+You bring the harness, the agent loop that talks to the model and calls tools: Claude Code, Codex, OpenCode or pi.
+AgentRun does everything around it. It keeps every run in one store, so a crash doesn't lose it. It gives the agent a
+computer to work on, holds it to your approvals and a spend cap, and keeps what it learned in a git folder that the
+next run starts from. Run it on your laptop with one command, in one container, or as a server with runners.
+Apache-2.0.
 
-1. **The platform.** Your agents, each one's revisions, and every run, behind one API (`/v2`) and one page. You run
-   it yourself today; hosted by us is coming. An agent runs on pi, the default, or names Claude (the Claude Agent SDK) or
-   Codex as its harness; `GET /v2/capabilities` says which of them the server runs.
-2. **[AgentRun Server](packages/serve/README.md).** The part you host: one container, `ghcr.io/parcha-ai/agentrun-server`,
-   that serves the `/v2` API and the page and keeps everything in one data directory. Apache-2.0.
-3. **[Building blocks](#building-blocks).** The open packages underneath, each usable on its own in your pi agent:
-   `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` (typed workflows and the decisions in them),
-   `@parcha/agentrun-pi` (workflows inside pi), `@parcha/pi-durable-agent` (the agent store),
-   `@parcha/pi-durable-disk` and `@parcha/pi-transport` (where an agent and its tools run),
-   and `@parcha/pi-browser` (an agent's own browser). On npm, Apache-2.0.
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun)
 
-## Start it
+## Start in three steps
 
-```text
-Ask your coding agent: "Read agentrun.ai/SKILL.md and set up AgentRun for me"
-npx @parcha/agentrun
-```
+You need Node 24.11 or newer, on macOS or Linux.
 
-Either one starts AgentRun on this machine and opens its console: your coding agent follows [the skill](docs/SKILL.md),
-or [`npx @parcha/agentrun`](packages/agentrun/README.md) does it in one command (Node 22.19+).
-One model key covers every harness: `OPENROUTER_API_KEY` gives pi, Claude Code and Codex agents each a current model.
-Save it in the console (Settings → Tool keys → Model keys), which takes effect at once, or set it where AgentRun starts.
-
-## Run it on a server
-
-1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker compose` on your own Linux machine
-   or server (Docker Engine 26 or later), with your own model key. An OpenRouter key with a credit limit caps what your
-   agents can spend.
+1. Start the server:
 
    ```sh
-   curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
-   export OPENROUTER_API_KEY=...
-   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
-   docker compose up -d
-   docker compose logs agentrun | grep Open
+   npx @parcha/agentrun
    ```
 
-   The `.env` beside `compose.yaml` keeps the socket's group for every later `docker compose` command, in any shell.
+   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
+   opens the console in your browser.
 
-   Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
-   Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
-   run's files. `compose.yaml` gives the server this host's Docker socket, and the Docker socket is root on this host:
-   whatever can reach it, the server included, can do anything on this machine. For a provider's own key, export
-   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead; any OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL`
-   and `AGENT_MODEL_API_KEY`, with its model named in `AGENT_MODEL`.
+2. In the console, set a password, then add one model key under **Settings → Model keys**. One `OPENROUTER_API_KEY`
+   gives every harness a model. An Anthropic key runs pi and Claude Code; an OpenAI key runs pi, Codex and OpenCode.
 
-2. **About $27.50 a month**: deploy it to Render in one click: a 2 GB instance (`1c-2g`, $25 a month) with a 10 GB disk ($2.50), always on, with a URL. Take no less: Claude Code and Codex install themselves on first use onto the disk, which fills 1 GB, and 512 MB is short for them. 2 GB holds 10 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
+3. Open **Templates**, apply one, and start a run. Or choose **New agent** and write your own instructions.
 
-   [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
-   then set `OPENROUTER_API_KEY` in the service's Environment (or another provider's key, or a gateway's
-   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY` with its model in `AGENT_MODEL`). Render generates the token,
-   `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
-   With a public address (`AGENTRUN_PUBLIC_URL`, or on Render its own `RENDER_EXTERNAL_URL`), or listening on any address but
-   loopback (the container), the first visit asks for a setup code. Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints
-   (`Set up this server: https://<your service>.onrender.com/setup#code=<code>`). The server's API token (AGENTRUN_TOKEN) works here too.
+Rather have your coding agent do it? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun for me`.
 
-Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
-a run may reach, and the container.
+If Docker is running on your machine, new agents get a Docker sandbox with a shell. Its image builds on first use,
+which takes a few minutes, and the console says when it's ready. Without Docker, agents still read and write files,
+but get no shell.
 
-An agent with a shell runs it in a Docker container of its own: [Sandbox in 60 seconds](packages/serve/README.md#sandbox-in-60-seconds), from a checkout on a machine with Docker (the image above cannot host one yet).
+## What you get
 
-## Building blocks
+- **Runs that survive.** Every agent, revision, run and step lives in one store. Stop the server mid-run and start it
+  again, and the run carries on. With several runners, another runner picks up a dead runner's runs once their
+  30-second lease runs out. A finished step is never run again; a write a crash cut off mid-call is marked interrupted
+  rather than retried, so you can check it.
+- **A computer for each agent.** Pick a kind: a sandbox, a Linux desktop, an Android phone or a browser. The agent gets
+  the tools for that kind and nothing else.
+- **Agents that learn.** At the end of a run the agent proposes notes, a skill or a workflow. AgentRun checks them,
+  grades them, and commits the keepers to the agent's own git folder. The next run starts from there.
+- **Workflows.** Write repeatable work as a typed workflow: tool calls, model steps and fast yes/no decisions, with an
+  agent to fall back on when a case is unclear.
+- **Approvals.** Each tool is allowed, asks you first, or is denied. A call that asks waits on the run's page until you
+  answer. "Never ask" lets an agent run unattended, and a deny set on the server still holds over it.
+- **Spend caps.** Give a run a cap and it pauses there instead of failing, and tells you the least it needs to go on.
+  A cost AgentRun can't price reads "unknown", never $0.
+- **Triggers.** Schedules, signed webhooks and GitHub pull request events start capped runs on their own.
+- **Templates.** Five ready-made agents you can apply in one screen and measure with their own eval cases.
+- **A console.** Mission Control opens first: what needs you, what failed in the last day, what's running, and what it
+  cost. Each run has a live Timeline, its files and, for a browser, a screen you can take over.
 
-The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
+**Harnesses.** An agent runs on Claude Code, Codex, OpenCode or pi. Name one in the agent's definition with
+`harness` (`claude-agent`, `codex`, `opencode` or `pi`). Approvals, caps, computers, triggers and learning work the
+same on each. Claude Code and Codex install themselves on first use; OpenCode needs its `opencode-ai` package beside
+the server, and AgentRun prints the line that installs it. `npx @parcha/agentrun server capabilities` says which
+harnesses your server runs.
 
-[Quickstart](#quickstart) · [Packages](#use-one-piece) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
+## How it fits together
 
-![Support workflow: search for an answer, check it with Jev, and return it or ask an agent to investigate. Check the investigation before returning it or escalating for review.](docs/assets/support-workflow.gif)
-
-[View the static diagram](docs/assets/support-workflow.svg) · [Run this example](#run-the-support-example)
-
-The support example below follows this workflow with scripted tools and model responses.
-
-## Quickstart
-
-The DSL defines repeatable steps, uses [Jev](https://docs.typesafe.ai/) for focused decisions, and calls an agent when the work needs investigation. Your application keeps its tools, model access, permissions and budgets.
-
-Requires Node 22.19+ and npm. In your project:
-
-```sh
-npm install @parcha/agentrun-dsl@latest
-npx @parcha/agentrun-dsl@latest demo
+```mermaid
+flowchart LR
+    you["Console · CLI · API"] --> server["Server"]
+    server --> store["One store<br/>SQLite or Postgres"]
+    runner["Runners"] -->|claim runs| store
+    runner --> hands["Hands<br/>run folder + computer"]
 ```
 
-This ticket-routing demo uses scripted decisions and needs no API key. Next, [run and change a workflow in your own app](examples/starter/README.md). To run the support workflow shown above, use the checkout below. To build workflows with your agent, [install the Pi extension](#use-it-in-pi).
+- **Server.** Serves the API at `/v2` and the console. It writes runs and commands to the store and reads it back for
+  you. It runs no agent loop itself when you start it with `--no-runner`.
+- **Store.** Agents, revisions, runs and every run's journal, in one place. SQLite in the data folder by default, or
+  Postgres with `AGENTRUN_STORE_URL`.
+- **Runners.** Each runner claims runs from the store and runs many at once. Every approval check, cap and model call happens
+  here. Add runners to scale out.
+- **Hands.** Where the agent's tools act. Each run has a run folder for its files. A sandbox mounts that folder at
+  `/workspace` and the tools run inside it; a desktop, phone or browser leaves the folder on the runner.
 
-### Run the support example
+## A first run from the terminal
 
-To run the workflow in the animation, clone the examples and build:
-
-```sh
-git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
-cd agentrun
-# With nvm: nvm install && nvm use
-npm ci --ignore-scripts
-npm run build
-npm run demo:support
-```
-
-This runs the interpreter with scripted tools, Jev answers, and agent responses. It needs no API key and sends no customer replies.
-
-The command prints a report for each case:
-
-| Request | Agent calls | Decision calls | Result |
-| --- | ---: | ---: | --- |
-| Reset a password | 0 | 1 | Return the help answer |
-| Find an invoice | 0 | 1 | Return the help answer |
-| Investigate a failed payment | 1 | 2 | Return the investigation answer |
-| Payment still unresolved | 1 | 2 | Escalate for review |
+`npx @parcha/agentrun` is also the server's CLI. Run these in a second terminal while the server is up; the CLI finds
+it and its token by itself. The script makes an agent, starts a run capped at $1, lets the agent ask you a question,
+answers it, and reads the file the agent wrote. With Docker on, the first run waits for the sandbox image.
 
 ```sh
-npm run demo:support -- payment
-npm run test:support
+# 1. Make an agent that can write files and ask you things.
+cat > agent.json <<'EOF'
+{"definition": {"id": "notes", "version": 1, "name": "Notes",
+  "instructions": "Do what you are asked, and write what you make to a file.",
+  "skills": [], "tools": ["write", "ask_person"]}}
+EOF
+npx @parcha/agentrun agents create --body @agent.json
+
+# 2. Start a capped run and wait. It stops to ask you which region (exit code 8: it waits on you).
+npx @parcha/agentrun runs start notes --max-cost-usd 1 --wait \
+  --body '{"input": {"content": "Ask me which region to cover, then write region.md about it."}}' > out.json
+
+# 3. Answer, wait for it to finish, and read what it wrote.
+run=$(node -p 'require("./out.json").run_id')
+npx @parcha/agentrun runs message "$run" --content "Europe"
+npx @parcha/agentrun runs wait "$run" > out.json
+npx @parcha/agentrun runs read-file "$run" region.md
 ```
 
-Try `npm run demo:support -- unresolved` to see an escalation. It exits with code `2`. The responses are scripted; changing a prompt does not change them.
+`runs wait` exits 0 when the run completed, 1 when it failed, and 8 when it waits on you: a question, its cap, or an
+approval. `runs timeline RUN_ID --follow` streams each step as it happens, and every run carries a `console_url` to its
+page. `npx @parcha/agentrun help` lists every command; `npx @parcha/agentrun skill install --claude` (or `--codex`)
+teaches your coding agent the CLI.
 
-[Connect live Jev and your agent](docs/support-quickstart.md), or [give these instructions to your coding agent](docs/agent-instructions.md).
+To call the server from code, the TypeScript client (`packages/client`) and the Python client (`python/`) install from
+this repository; neither is on npm or PyPI yet.
 
-## Use one piece
+## Templates
 
-Each package works on its own. [Pi](https://pi.dev) is an open-source coding agent; pi-durable is
-Pi's runtime that commits each turn and tool call to storage; chord is the plugin and service runtime pi-durable is built
-on; [Archil](https://archil.com) is a network disk you mount on any Linux host.
+Each template is one folder: the agent's instructions, its skills, its rules and its eval cases. **Templates → Apply**
+grants nothing until you tick each MCP tool yourself.
 
-| Package | What it does | What it needs | First command with no key | Status |
-| --- | --- | --- | --- | --- |
-| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx @parcha/agentrun-dsl@latest demo` | published (`@latest`) |
-| [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; a TypeSafe key or an OpenRouter key for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@latest`) |
-| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.5.0 exactly (CI tests 1.5.0); a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@latest`) |
-| [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@latest`) |
-| [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser, and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes | Pi; a provider (a local Chrome needs no key; Browserbase and Kernel need their keys); pi-durable and chord for its `./durable` entry | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@latest`) |
-| [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step | pi-durable and chord; Docker for the Docker provider; a Daytona key or a Modal client for those; a TypeSafe key, or an OpenRouter key, for Jev's placement | the "A box" example in its README (a local box, no key; a second one needs Docker) | published (`@latest`) |
-| [`@parcha/agentrun-decisions`](packages/decisions/README.md) | Fast decision models besides Jev for a workflow's decision nodes: Parallel Decisions, with probabilities and web citations, behind the DSL's provider seam | the DSL; a Parallel key | `runJudge: judgeFromProvider(parallelProvider())` | published from the next release (`@latest`) |
-| [`@parcha/agentrun-computer`](packages/computer/README.md) | The computer protocol: a small daemon in every computer (Linux amd64 and arm64, in the package) and one provisioner per vendor (Docker, Modal, Daytona); `./mount` holds the run folder's mount rule alone | Docker for the Docker provider; a Modal or Daytona key for those | `npm run conformance -w @parcha/agentrun-computer -- --provider docker` (needs Docker) | published from the next release (`@latest`) |
-| [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one file, a pack. An agent's sign-ins are saved in its home, so its next run starts signed in | pi-durable and chord; nothing else for its quickstart (a browser provider such as pi-browser makes the sign-ins) | its README's [quickstart](packages/pi-durable-agent/README.md#quickstart-no-key-no-network) | published (`@latest`) |
+| Template | What it does |
+| --- | --- |
+| `code-review` | Reviews a pull request or a diff, checks each finding against the code, and returns the findings as JSON. It sets up its own GitHub trigger |
+| `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
+| `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
+| `inbound-lead` | Researches each lead a webhook sends and scores it 0 to 100 against your ideal customer profile |
+| `release-notes` | Turns the pull requests merged since the last release into release notes, left as a draft issue for a person |
 
-A held package is built, tested and verified with the others, and its manifest says `"private": true`; it installs from
-a packed tarball, not from npm.
+`npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
+them. [Template packages](packages/serve/templates/README.md) has the folder format.
 
-## What a workflow looks like
+## Computers
 
-The [support workflow](examples/support-answer.mjs) requires answer text and a source reference. Jev must also answer `yes` with confidence of at least `0.8`. Otherwise, the workflow allows one agent attempt and checks again. If the answer still fails those checks, it escalates for review. You choose the criteria and thresholds for your task.
+An agent gets a computer with one setting. It gets the tools for that kind and nothing else, and changing the computer
+changes nothing else about the agent.
 
-These are the search and decision nodes from that workflow:
+```yaml
+computer:
+  kind: sandbox        # none, sandbox, desktop, phone or browser
+  provider: daytona    # one you connected in Settings → Computers (none takes no provider)
+```
 
-```js
+```mermaid
+flowchart LR
+    agent["Agent"] --> none["none<br/>run folder, no shell"]
+    agent --> sandbox["sandbox<br/>Docker · Daytona · Modal · E2B"]
+    agent --> desktop["desktop<br/>Docker · E2B · Orgo"]
+    agent --> phone["phone<br/>Android"]
+    agent --> browser["browser<br/>Browserbase · Kernel"]
+```
+
+| Kind | What the agent can do | Providers |
+| --- | --- | --- |
+| `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
+| `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server) |
+| `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
+| `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
+
+Every kind but `none` names its provider. An agent with no computer setting gets the Docker sandbox where the server
+has Docker, and no computer otherwise.
+
+- **Keys.** Add a vendor's key once in **Settings → Computers**. Your server seals it and shows it only as set or
+  missing; it never enters the agent's computer. **Test connection** makes one read at the vendor and starts nothing.
+- **The run's files.** By default a run's folder lives on your server and the Docker sandbox mounts it. Turn on an
+  Archil disk in Settings and the folder lives there instead, so a Daytona, Modal or E2B sandbox mounts the same folder.
+  Those three run only with an Archil disk, and with Archil on the Docker sandbox is refused.
+- **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
+  through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
+  a login or a captcha.
+- **Proof.** Each provider has a conformance suite for its kind. Run it against the vendor yourself, from a checkout
+  after `npm ci && npm run build`:
+  `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
+
+Remote computers bill through your own account with the vendor. [`@parcha/agentrun-computer`](packages/computer/README.md)
+is the protocol underneath: one small daemon in every computer and one provider per vendor.
+
+## Workflows
+
+A workflow is a JSON document of typed steps. AgentRun runs it as an agent's revision, under the agent's tool
+permissions and a cap like any run, and a trigger can start one.
+
+```json
 {
-  node: 'call', label: 'find-answer', via: 'tool',
-  tool: 'help.search', args: { request: '{request}' },
-  out: 'Candidate', as: 'answer', deadline_s: 10,
-},
-{
-  node: 'judge', label: 'check-existing-answer',
-  state: { request: '{request}', answer: '{answer}' },
-  out: 'Fit', as: 'fit',
+  "v": 2, "name": "read-site",
+  "schemas": {
+    "In":   { "type": "object", "required": ["website"], "properties": { "website": { "type": "string" } } },
+    "Page": { "type": "object", "required": ["ok"], "properties": { "ok": { "type": "boolean" } } }
+  },
+  "input":  { "schemaId": "In" },
+  "output": { "schemaId": "Page", "path": "home" },
+  "root": { "node": "chain", "steps": [
+    { "node": "call", "label": "Read the home page", "via": "tool", "tool": "web_fetch",
+      "args": { "url": "{website}" }, "out": "Page", "as": "home", "deadline_s": 60 }
+  ] }
 }
 ```
 
-`Candidate` and `Fit` refer to schemas in the workflow. `Fit` defines the question and its `yes`, `no`, and `uncertain` criteria. Code reads the decision and its confidence to choose the next step. [Read the complete definition, including the agent and review path](examples/support-answer.mjs).
+Steps can call tools, run a model, ask a fast typed question (yes or no, pick one, a score, each with its
+confidence), branch on the answer, map over a list in parallel, loop a bounded number of times, call other workflows,
+or hand the hard case to an agent. Save one as an agent's `workflow` field; `npx @parcha/agentrun workflows validate`
+checks it first. The [workflow language](packages/dsl/README.md) also runs on its own inside your app, with a
+[TypeScript builder](docs/authoring.md).
 
-Write workflows as JSON or use the [TypeScript builder and Zod contracts](docs/authoring.md). The builder infers input and output types. The interpreter checks intermediate state paths at runtime. Workflows can call other workflows, map work in parallel, and run bounded loops.
+## Learning
 
-## Connect your application
+Turn it on with `"learning": true` in an agent's definition.
 
-Install the core and Jev adapter in your application with `npm install @parcha/agentrun-dsl@latest @parcha/agentrun-jev@latest`. Then:
+```mermaid
+flowchart LR
+    start["Run starts from<br/>the agent's main"] --> work["Run does the job"]
+    work --> propose["Last turn proposes<br/>notes, a skill, a workflow"]
+    propose --> check["Code checks,<br/>then one grader"]
+    check -->|kept| commit["Commit to main"]
+    commit --> start
+```
 
-1. **Supply adapters.** Connect tools through `runEffect`, your existing agent through `runNode`, and Jev decisions through `createJevRunner()` as `runJudge`.
-2. **Define and test the workflow.** Write its schemas, steps, thresholds, and review path. Start with fixtures, then evaluate real decisions on labeled cases from your task.
-3. **Give your agent a workflow tool.** Register a function that calls `runWorkflow` as one of your agent's tools. Handle the workflow's output, escalation, and errors.
+Each agent has a learning folder: plain git with one branch, `main`. A run reads the index of active notes in its
+instructions and gets the learned skills beside its own. When the run ends, it gets one more turn to say what it would
+keep. Code checks the proposal first (no secrets, no files outside the folder, size limits). Then one grader judges
+what it says, and AgentRun commits what passes. A risky rule waits for your OK.
 
-The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need a TypeSafe key or an OpenRouter key: `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), or `OPENROUTER_API_KEY`, which the Pi extension uses for Jev through OpenRouter when `TYPESAFE_API_KEY` is not set. Either is separate from your coding-agent login. Workflows without Jev decisions need neither. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
+- **Notes** are short markdown files, one fact each, in Claude Code's memory format.
+- **Skills** are how to do a job again, and only a run that finished the job can write one.
+- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions.
 
-## Use it in Pi
+The agent's **Learning** tab shows every note, skill and workflow and the log of changes, and each run shows which
+notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire` and the note's ETag. Git keeps the
+history, so a retired note can come back.
 
-With [Pi installed](packages/pi/README.md#install) (1.5.0 exactly; CI tests 1.5.0), run these commands in your project:
+## Security
+
+Every saved secret (model and tool keys, MCP credentials, sign-ins, webhook signing secrets) is sealed under one key,
+`AGENTRUN_SEAL_KEY`; keep it, because losing it loses what it sealed. Secrets are write-only: the console shows each one
+as set or missing, and only the console can paste, replace or remove one (your signed-in session, or the launcher's console on
+loopback when accounts are off). A key set where the server starts wins over a pasted one. The API token can't write
+a secret or approve a tool call. A run gets only the keys its own model and tools need, and nothing a run learns
+can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
+
+## Deploy it
+
+**Render.** The button above deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the
+published image (no build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a
+month for the instance and $2.50 for the disk, at Render's prices when this was written. In Render's form, paste
+`OPENROUTER_API_KEY`. We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.
+When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
+
+**Docker Compose: a server and two runners.** On a Linux machine with Docker:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@latest -l
-pi --offline
+git clone https://github.com/Parcha-ai/agentrun && cd agentrun/deploy
+printf 'AGENTRUN_SEAL_KEY=%s\n' "$(openssl rand -base64 32)" > .env && chmod 600 .env
+echo 'OPENROUTER_API_KEY=...' >> .env
+docker compose up -d --build
+docker compose logs server     # the console's link, the first visit's setup code and, the first time, the token
 ```
 
-`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active, so start it with `pi --tools read,grep,find,ls,agentrun` to give workflows the read-only tools. [Pi setup](packages/pi/README.md#install) lists the details.
+The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
+A server in a container has no Docker sandbox yet, so agents there get file tools and `web_fetch` but no shell; for a
+sandbox, run the server on the host, or use a Daytona or E2B computer with workspaces on Archil.
 
-- `/agentrun demo` loads the scripted research example; `/agentrun run` repeats it without model calls.
-- `/agentrun demo live` uses your configured Pi model and Jev.
-- `/agentrun status` checks setup; `/agentrun` shows the graph; `/agentrun stop` requests cancellation.
+**Runners on Postgres.** Set `AGENTRUN_STORE_URL` to a `postgres://` URL on the server and every runner (the compose
+file's `pg` profile runs one), start the server with `--no-runner`, and start each runner from the same image with
+`runner --data /data --name <name>`. Give every process the same `AGENTRUN_SEAL_KEY`. Runners still share the `/data`
+volume in this release.
 
-Once Pi has model access, ask it to build a workflow:
+[Deploying AgentRun](deploy/README.md) covers runners, health checks and upgrades.
 
-```text
-/agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report gaps with file references.
-```
+## Docs
 
-Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload` if you install into an open Pi session. Use `/agentrun save <name>` and `/agentrun load <name>` for project-local definition revisions. Saves contain neither run input nor execution permission. [Pi setup and limits](packages/pi/README.md).
+- [AgentRun Server](packages/serve/README.md): the API, models, tools, MCP servers, triggers, spend caps, learning and
+  safety, in full
+- [Quickstart on agentrun.ai](https://agentrun.ai/docs/quickstart) and the [docs](https://agentrun.ai/docs)
+- [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
+- [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
+- [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)
 
-## More examples
+## Coming next
 
-| Example | What it demonstrates |
-| --- | --- |
-| [Support answers](docs/support-quickstart.md) | Search, Jev checks, optional investigation, review fallback |
-| [Research a decision](examples/typed-research.ts) | Nested workflows, parallel research, evidence selection, report writing |
-| [Rank a list](examples/rank-candidates.mjs) | A reusable workflow: Jev scores, code sorts and applies quotas, duplicates are dropped, long lists split themselves |
-| [Standalone TypeScript starter](examples/starter/README.md) | Install the packages in your own app; search and screen evidence |
+- A computer chosen per call, not only per agent
+- First-party computers
+- iPhone, macOS and Windows computers
+- Watching and taking over a desktop or phone run, as a browser run does today
+- Composio as a tool catalog
+- Harnesses over the Agent Client Protocol
+- A Slack trigger and a Parallel monitor trigger
 
-<a id="run-it"></a>
+## License and thanks
 
-### Research demo
+Apache-2.0. Copyright 2026 Parcha Labs, Inc. Built by [Grep.ai](https://grep.ai).
 
-From the built checkout, run a scripted research workflow: "Should our team move its docs from a wiki into the code repository?"
-
-```sh
-npm run demo
-npm run eval:research
-```
-
-It plans subquestions, researches them in parallel, screens evidence, and writes a report. The evaluation checks six labeled cases with scripted responses. [Connect real Jev and Pi models](docs/live-research.md).
-
-## Packages, status, and contributing
-
-| Package | Responsibility |
-| --- | --- |
-| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect, and execute workflows |
-| [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
-| [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
-| [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run pi-durable agents on a network disk (Archil): one owner per run, a fence, and a supervisor |
-| [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser (a local Chrome, Browserbase or Kernel), and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes |
-| [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step; a strict config, and a conformance suite a vendor can run |
-| [`@parcha/agentrun-decisions`](packages/decisions/README.md) | Parallel Decisions as a `DecisionProvider` for the DSL's decision nodes |
-| [`@parcha/agentrun-computer`](packages/computer/README.md) | The computer protocol: a daemon in every computer and one provisioner per vendor; `@parcha/agentrun-computer/mount` is the run folder's mount rule, which loads no provider |
-| [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in |
-| [`@parcha/agentrun-kernel`](packages/run-adapters/README.md) | The seam for agent harnesses other than Pi, which the Claude Agent and Codex harnesses run on: `createHarnessRunner` runs a DSL node on a harness adapter, durable in AgentRun's own store |
-| [`@parcha/agentrun-harness-claude`](packages/run-adapters-claude-agent/README.md) | The Claude Agent SDK as a harness: a DSL node runs on the Claude Agent CLI with the host's tools as its only tools, its model behind a per-session proxy |
-| [`@parcha/agentrun-harness-codex`](packages/run-adapters-codex/README.md) | Codex as a harness: a DSL node runs on Codex's app-server with the host's tools as its only tools, its model behind a per-session proxy |
-
-Every published package is at one version under npm's `latest` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#contracts-and-limits).
-
-Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps in a workflow document that you can inspect, rerun, or call from an agent. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
-
-For development setup and checks, see [Contributing](CONTRIBUTING.md). [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
-
-Code and documentation use [Apache-2.0](LICENSE). Copyright 2026 Parcha Labs, Inc. Dependencies retain their own licenses. Built by [Grep.ai](https://grep.ai).
-
-## Acknowledgements
-
-AgentRun builds on these projects. Each keeps its own license.
-
-- [Pi](https://github.com/earendil-works/pi) by Earendil Works and Mario Zechner (MIT): `@earendil-works/pi-ai`, `pi-agent-core`, `pi-coding-agent`, `pi-tui`, `pi-durable`, `chord` and `pi-codemode`, the agent loop and the durable runtime every package here runs on.
-- [Stagehand](https://github.com/browserbase/stagehand) by Browserbase (MIT): browser automation in `@parcha/pi-browser`, which also vendors part of Stagehand's facade (see [its NOTICE](packages/pi-browser/NOTICE)).
-- The [Browserbase Node SDK](https://github.com/browserbase/sdk-node) (Apache-2.0): Browserbase sessions in `@parcha/pi-browser`.
-- The [TypeSafe JavaScript SDK](https://github.com/typesafe-ai/typesafe-sdk-js) (MIT): Jev's typed decisions in `@parcha/agentrun-jev`.
-- Archil's [disk SDK](https://github.com/archil-data/archil-sdk) (MIT): the network disk under `@parcha/pi-durable-disk`.
-- [TypeBox](https://github.com/sinclairzx81/typebox), [Zod](https://github.com/colinhacks/zod), [undici](https://github.com/nodejs/undici), [node-html-parser](https://github.com/taoqf/node-fast-html-parser), [node-html-markdown](https://github.com/crosstype/node-html-markdown) and [htmlparser2](https://github.com/fb55/htmlparser2), all MIT.
-- [vercel-labs/durable-harness](https://github.com/vercel-labs/durable-harness) (Apache-2.0): AgentRun's durable harnesses build on its ideas and code. What `@parcha/agentrun-kernel` and `@parcha/agentrun-harness-claude` copy is listed in each package's `vendor/durable-harness/UPSTREAM.json` and credited in its NOTICE ([adapters](packages/run-adapters/NOTICE), [Claude Agent](packages/run-adapters-claude-agent/NOTICE)).
+AgentRun builds on [pi](https://github.com/earendil-works/pi) by Earendil Works (MIT), the agent loop and durable
+runtime under it; [Stagehand](https://github.com/browserbase/stagehand) and the
+[Browserbase Node SDK](https://github.com/browserbase/sdk-node); the
+[TypeSafe JavaScript SDK](https://github.com/typesafe-ai/typesafe-sdk-js); Archil's
+[disk SDK](https://github.com/archil-data/archil-sdk); and
+[vercel-labs/durable-harness](https://github.com/vercel-labs/durable-harness) (Apache-2.0), whose ideas and code the
+durable harnesses build on. Each keeps its own license; each package's NOTICE lists what it carries.
