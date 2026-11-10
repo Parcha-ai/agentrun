@@ -3,8 +3,10 @@
 // taken in a loop (its loop would park it again on the same budget and leave the cancel untaken, and the run be claimed
 // again at every poll). And with nothing to wake it, a parked run is never claimed again.
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
+import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { capRun, SONNET, sleep, specCap, STEADY } from "./adapter-pi-cap-support.mjs";
 
 const { sendCommand } = await import("../dist/runner/commands.js");
@@ -52,3 +54,21 @@ for (const [kind, summary] of [["cancel", "cancelled"], ["stop", "stopped by a p
     assert.equal((await server.runs.get("run-1")).epoch, ended.epoch, "and it is never claimed again");
   });
 }
+
+test("a cancel of a run parked at its cap ends it with what its end-of-run step keeps of a cut run (its learning's drop), in the end's commit", async (t) => {
+  // The step is told the run was cut (`cut`), and asks nothing: the rows it returns ride in the end commit.
+  const cuts = [];
+  const step = async (input) => (input.cut ? (cuts.push(input.cut), { also: [{ table: "channel_told", row: { channel: "learning:test", marker: `cut:${input.cut}` } }] }) : undefined);
+  const specOf = (sent) => {
+    const base = piAdapterSpec({ script: [{ say: "never sent" }], tools: {}, hooks: { beforeIntent: async () => {}, beforeResult: async () => {} }, agentId: "agent-1" }, { fetch: scriptedOrigin([{ say: "never sent" }], sent) });
+    return async (claim, run) => ({ ...(await base(claim, run)), endOfRun: step });
+  };
+  const run = await capRun(t, { specOf, cap: specCap(CAP), runCap: ({ capUsd: () => CAP, modelOf: () => SONNET }) });
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  await sendCommand(run.server, "run-1", { kind: "cancel", body: {} });
+  await until(async () => (await run.server.runs.get("run-1")).state === "stopped", "the cancel ended the run");
+  assert.deepEqual(cuts, ["stopped"], "the step was told the run was cut, once");
+  const db = new DatabaseSync(join(run.dir, "store.sqlite"), { readOnly: true });
+  t.after(() => db.close());
+  assert.deepEqual(db.prepare("SELECT marker FROM channel_told WHERE run_id = 'run-1'").all().map((row) => row.marker), ["cut:stopped"], "its rows are with the end");
+});

@@ -634,16 +634,14 @@ export function startRunner(options: RunnerOptions): Runner {
       // taking a dead runner's runs over, is one transaction, not 300.
       const sentAt = clock.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
-      // A claim only ends its run (endRetried), with no loop, when a stop or cancel row waits untaken and either that row
-      // has tries (it failed to apply before: a refused stopped end, released running, or a failed resume's store.retry,
-      // released parked) or the run was parked. A parked run has no turn in flight, so its stop is its end; given a loop
-      // instead, a run parked at its cap would park again on the same budget, its stop still untaken, and be claimed
-      // again at every poll (#2204). One read of those claims' rows, made only when the batch has a released run.
+      // A run whose untaken stop row has tries failed to apply that stop before: its claim only ends it (endRetried). Either
+      // source of tries counts: a refused stopped end (endRefused, released running) or a failed resume (resumeFailed's
+      // store.retry, released parked). One read of those claims' rows, made only when the batch has a released run.
       const released = claims.filter((claim) => claim.from === "running" || claim.from === "parked");
       const rows = released.length ? await store.commandsOf(released.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
         const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
-        if (stop && (stop.tries > 0 || claim.from === "parked") && !closed && !killed && !runs.has(claim.runId)) {
+        if (stop && stop.tries > 0 && !closed && !killed && !runs.has(claim.runId)) {
           const ending = endRetried(claim, stop);
           endings.add(ending);
           void ending.finally(() => endings.delete(ending));
