@@ -4,7 +4,7 @@
 // page from its own copy under LIVE_CSP, and pipes the viewer's WebSocket to the run's loopback port only from its own
 // origin with the owner's session; once the runner drops it, none, and the old link opens nothing. The token is in the
 // owner's browser answer alone: no other API answer, no file under the data directory (the store's journal and command
-// rows among its tables), no plaintext browser_viewers column.
+// rows among its tables), no plaintext computer_viewers column.
 //
 // The runner does not bind the browser tool yet (E2r3), so the run's viewer is a stand-in here: a loopback viewer (port 0)
 // shaped as pi-browser's own (its page at /v/<id>, its WebSocket at /v/<id>/ws), put into the store with putLiveViewer
@@ -164,15 +164,17 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(w.viewer.upgrades.length, 1, "no new socket reached the run's port");
 });
 
-test("a runner-path run's viewer token is in the owner's browser answer alone: in no other API answer, no file under the data directory, no journal or command row, no plaintext browser_viewers column", { timeout: 120_000 }, async (t) => {
+test("a runner-path run's viewer token is in the owner's browser answer alone: in no other API answer (its timeline among them), no file under the data directory, no journal or command row, no plaintext computer_viewers column", { timeout: 120_000 }, async (t) => {
   const w = await watched(t);
   const answer = await browserOf(w, { cookie: w.cookie });
   assert.ok(answer.text.includes(w.token), "the owner's browser answer holds it");
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Go on." })).status < 500, true, "a command row for the run");
-  for (const path of [`/runs/${w.runId}`, "/runs", "/agents/watch/runs", `/runs/${w.runId}/files`, "/agents/watch/home/files", "/capabilities", "/stats", `/runs/${w.runId}/browser`]) {
+  for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs", "/agents/watch/runs", `/runs/${w.runId}/files`, "/agents/watch/home/files", "/capabilities", "/stats", `/runs/${w.runId}/browser`]) {
     const res = await w.server.api("GET", path);
     const text = JSON.stringify(res.body);
     assert.ok(!text.includes(w.token) && !text.includes(w.id), `${path} (${res.status}) holds no token and no viewer id`);
+    // An answer, not a refusal: a 4xx or 5xx would hold no token trivially. (/runs/{id}/browser is the token's caller, refused.)
+    if (path !== `/runs/${w.runId}/browser`) assert.ok(res.status < 400, `${path} answered (${res.status}): ${text.slice(0, 200)}`);
   }
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/archive`)).status, 200);
   assert.ok(!JSON.stringify((await w.server.api("GET", `/runs/${w.runId}`)).body).includes(w.token), "archived, the same");
@@ -180,16 +182,14 @@ test("a runner-path run's viewer token is in the owner's browser answer alone: i
   const db = new DatabaseSync(join(w.server.data, STORE_FILE), { readOnly: true, timeout: 5_000 });
   let rows;
   try {
-    rows = db.prepare("SELECT * FROM browser_viewers").all();
+    rows = db.prepare("SELECT * FROM computer_viewers").all();
   } finally {
     db.close();
   }
   assert.equal(rows.length, 1);
-  assert.ok(rows.every((row) => Object.values(row).every((value) => !(value instanceof Uint8Array ? Buffer.from(value).includes(w.token) : String(value).includes(w.token)))), "no browser_viewers column holds it in plaintext");
+  assert.ok(rows.every((row) => Object.values(row).every((value) => !(value instanceof Uint8Array ? Buffer.from(value).includes(w.token) : String(value).includes(w.token)))), "no computer_viewers column holds it in plaintext");
   assert.ok(!JSON.stringify(await w.store.commands(w.runId, 0)).includes(w.token), "no command row");
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.token)).map(([path]) => path), [], "no file under the data directory (the store's journal and command tables among them)");
 });
-
-test.todo("a runner-path run's timeline (GET /runs/{id}/timeline) holds no viewer token and no viewer id: waits on E2c's timeline over the store (server.ts timeline() is runReadsTodo, its rejection unawaited at the getRunTimeline route)");
 
 test.todo("the runner's own browser tool opens a session on a runner-path run and hands its viewer over by itself (a real frame through the proxy), and its release takes it back: waits on E2r3: the runner binds the browser tool");
