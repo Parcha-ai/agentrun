@@ -16,7 +16,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, EGRESS_IMAGE, sweep } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { EGRESS_IMAGE, sweep } from "../../dist/index.js";
 import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";

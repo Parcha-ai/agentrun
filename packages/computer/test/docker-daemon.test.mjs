@@ -12,7 +12,7 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test, { after } from "node:test";
 import { daemonCopy, defaultDaemonCache } from "../dist/daemon-copy.js";
-import { DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
 import { COPY_NAME, DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };

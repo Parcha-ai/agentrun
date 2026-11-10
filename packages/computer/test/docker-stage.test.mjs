@@ -11,7 +11,7 @@ import { after } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
 
 const run = promisify(execFile);
 const STAGE = fileURLToPath(new URL("../dist/docker/stage.js", import.meta.url));

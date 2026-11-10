@@ -5,7 +5,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DockerProvider, EGRESS_IMAGE, sweep } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { EGRESS_IMAGE, sweep } from "../dist/index.js";
 import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];

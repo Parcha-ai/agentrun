@@ -7,10 +7,16 @@ npm install @parcha/agentrun-computer@latest
 ```
 
 ```ts
-import { DockerProvider, providerModule } from "@parcha/agentrun-computer";
+import { providerFor, providerModule } from "@parcha/agentrun-computer";
+// One provider's class, from its own subpath: the package root loads no provider.
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 // The mount rule alone: loads no provider, no vendor SDK and no conformance code.
 import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agentrun-computer/mount";
 ```
+
+The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
+id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
+`/modal`, `/e2b`, `/orgo`, `/phone-harness`, `/browserbase`, `/kernel`). The root still exports each provider's types.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
 vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
@@ -627,7 +633,7 @@ fixtures of every evasion it catches.
 ## Docker
 
 ```ts
-import { DockerProvider } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
@@ -814,7 +820,8 @@ computer has the folder at one path, `/workspace` (`WORKSPACE`). `HOME` stays wh
 Docker): `/workspace` is only the mount.
 
 ```ts
-import { DockerProvider, WORKSPACE } from "@parcha/agentrun-computer";
+import { WORKSPACE } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
@@ -925,7 +932,7 @@ The provider owns the image its computers start from and makes it ready in its o
 no other process to wait on: Docker's own tag is the shared state.
 
 ```ts
-import { DockerProvider } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
@@ -1070,7 +1077,8 @@ in a long-lived service), with Docker's CLI on its PATH. A computer stops at its
 its stopped container may stay up to one interval longer.
 
 ```ts
-import { DockerProvider, sweep } from "@parcha/agentrun-computer";
+import { sweep } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }));
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
@@ -1104,7 +1112,8 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
   the computer through the provider's own exec, and a deleted computer holds no mount.
 
 ```ts
-import { DockerProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
@@ -1129,7 +1138,7 @@ sandbox, and the Daytona sweep wait through it too.
 
 ```ts
 import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
-import { ModalProvider } from "@parcha/agentrun-computer";
+import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
 	sdk: new ModalClient(),
@@ -1375,7 +1384,7 @@ named by any call.
 ## Daytona
 
 ```ts
-import { DaytonaProvider } from "@parcha/agentrun-computer";
+import { DaytonaProvider } from "@parcha/agentrun-computer/daytona";
 
 const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
 const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" });

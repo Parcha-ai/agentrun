@@ -23,7 +23,10 @@ export {
 	type WatchOptions,
 	watchScreen,
 } from "./screen-watch.js";
-export { type DockerDesktopOptions, type DockerEgressOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
+// The provider classes are not loaded from here: each loads by its id through the registry (providerFor), or from its
+// own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /orgo, /phone-harness, /browserbase, /kernel).
+// Their types are here, erased at runtime.
+export type { DockerDesktopOptions, DockerEgressOptions, DockerProvider, DockerProviderOptions } from "./docker.js";
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
@@ -42,18 +45,18 @@ export {
 	recipeTag,
 } from "./docker/image.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
-export { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
-export {
+export type { DaytonaProvider, DaytonaProviderOptions, DaytonaTimeouts, WebSocketFactory, WebSocketLike } from "./daytona.js";
+export type {
 	ModalProvider,
-	type ModalApp,
-	type ModalByteSink,
-	type ModalCreateParams,
-	type ModalImage,
-	type ModalProcess,
-	type ModalProviderOptions,
-	type ModalSandbox,
-	type ModalSdk,
-	type ModalTimeouts,
+	ModalApp,
+	ModalByteSink,
+	ModalCreateParams,
+	ModalImage,
+	ModalProcess,
+	ModalProviderOptions,
+	ModalSandbox,
+	ModalSdk,
+	ModalTimeouts,
 } from "./modal.js";
 export {
 	ARCHIL_HELPER,
@@ -93,18 +96,15 @@ export {
 	type RestReply,
 	type UrlStore,
 } from "./browser.js";
-export {
-	BROWSERBASE_API_URL,
-	BROWSERBASE_MAX_LIFETIME_MS,
-	type BrowserbaseApi,
-	type BrowserbaseDebug,
+export type {
+	BrowserbaseApi,
+	BrowserbaseDebug,
 	BrowserbaseProvider,
-	type BrowserbaseProviderOptions,
-	type BrowserbaseSession,
-	type BrowserbaseSessionSettings,
-	browserbaseRest,
+	BrowserbaseProviderOptions,
+	BrowserbaseSession,
+	BrowserbaseSessionSettings,
 } from "./browserbase.js";
-export { KERNEL_API_URL, KERNEL_MAX_LIFETIME_MS, type KernelBrowserSettings, KernelProvider, type KernelProviderOptions, type KernelRequest, kernelRest } from "./kernel.js";
+export type { KernelBrowserSettings, KernelProvider, KernelProviderOptions, KernelRequest } from "./kernel.js";
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
 export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
@@ -128,6 +128,7 @@ export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorP
 export {
 	BROWSERBASE,
 	DAYTONA,
+	DAYTONA_DEFAULT_SNAPSHOT,
 	DESCRIPTORS,
 	DOCKER,
 	E2B,

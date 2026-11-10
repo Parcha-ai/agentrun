@@ -26,6 +26,38 @@
       "types": "./dist/mount.d.ts",
       "default": "./dist/mount.js"
     },
+    "./docker": {
+      "types": "./dist/docker.d.ts",
+      "default": "./dist/docker.js"
+    },
+    "./daytona": {
+      "types": "./dist/daytona.d.ts",
+      "default": "./dist/daytona.js"
+    },
+    "./modal": {
+      "types": "./dist/modal.d.ts",
+      "default": "./dist/modal.js"
+    },
+    "./e2b": {
+      "types": "./dist/e2b.d.ts",
+      "default": "./dist/e2b.js"
+    },
+    "./orgo": {
+      "types": "./dist/orgo.d.ts",
+      "default": "./dist/orgo.js"
+    },
+    "./phone-harness": {
+      "types": "./dist/phone-harness.d.ts",
+      "default": "./dist/phone-harness.js"
+    },
+    "./browserbase": {
+      "types": "./dist/browserbase.d.ts",
+      "default": "./dist/browserbase.js"
+    },
+    "./kernel": {
+      "types": "./dist/kernel.d.ts",
+      "default": "./dist/kernel.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

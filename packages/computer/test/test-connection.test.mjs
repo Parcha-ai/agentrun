@@ -2,7 +2,8 @@
 // a key the vendor refused is unauthorized; the message never carries the key. Fakes only: no vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DaytonaProvider, ModalProvider } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ModalProvider } from "../dist/modal.js";
 import { E2BProvider } from "../dist/e2b.js";
 import { fakeDaytona, KEY as DAYTONA_KEY, API } from "./fake-daytona.mjs";
 import { container, fakeDocker } from "./fake-docker.mjs";

@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, ensureImage, RECIPE_LABEL, recipeHash, recipeTag } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { ensureImage, RECIPE_LABEL, recipeHash, recipeTag } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const INDEX = new URL("../../dist/index.js", import.meta.url).href;
