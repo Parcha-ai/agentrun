@@ -28,6 +28,7 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { noCallId } = await import("../dist/mcp-gateway.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 
 const KEY = randomBytes(32);
@@ -40,8 +41,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** A CLI stand-in with its own MCP client (Claude Code's call-id key): its session's proxy mounts the session's MCP, and
- *  its one turn calls `add` there over HTTP, then says what the door answered. `seen` keeps what it was handed. */
-function mcpCli(seen) {
+ *  its one turn calls `add` there over HTTP, then says what the door answered. `seen` keeps what it was handed. `callId`:
+ *  the id its call carries under that key; null, a call with none. */
+function mcpCli(seen, callId = CALL_ID) {
   const client = { callIdMeta: "claudecode/toolUseId" };
   return {
     id: "stand-in-cli",
@@ -78,7 +80,7 @@ function mcpCli(seen) {
             const response = await fetch(`${proxy.url}/mcp/fake`, {
               method: "POST",
               headers: { authorization: `Bearer ${proxy.key}`, "content-type": "application/json", accept: "application/json" },
-              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, _meta: { [client.callIdMeta]: CALL_ID } } }),
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, ...(callId === null ? {} : { _meta: { [client.callIdMeta]: callId } }) } }),
             });
             const body = await response.json();
             seen.answer = body.result;
@@ -102,7 +104,7 @@ function mcpCli(seen) {
   };
 }
 
-async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, callId } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -126,7 +128,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
   const loop = createAdapterLoop(async (claim, run) => {
     const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants, harness: run.harness, work: () => work });
     return {
-      adapter: mcpCli(seen),
+      adapter: mcpCli(seen, callId),
       session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
       input: "Add them.",
       record: "loop",
@@ -237,6 +239,16 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
   assert.equal(row.runner, null);
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
   assert.ok(run.seen.followUps?.[0]?.endsWith("They allowed it, and it ran. Its result:\n5"), run.seen.followUps?.[0]);
+});
+
+test("C7: a door call that carries no call id is refused in words: never asked of the gate, never sent", async (t) => {
+  const asked = [];
+  const { row, seen, fake, entries } = await cliRun(t, { callId: null, gateOf: async () => (call) => (asked.push(call.tool), permissionOf(call.tool, { "mcp:fake/add": { permission: "allow" } })) });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(seen.answer, { content: [{ type: "text", text: noCallId("mcp:fake/add") }], isError: true });
+  assert.deepEqual(asked.filter((tool) => tool === "mcp:fake/add"), [], "the gate was never asked");
+  assert.deepEqual(fake.log.filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
+  assert.equal(entries.filter((entry) => entry.kind === KINDS.callStart).length, 0, "no call on the run's record");
 });
 
 test("C6: a run that grants no MCP tool hands its CLI no MCP server, and the server sees nothing", async (t) => {

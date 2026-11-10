@@ -269,6 +269,10 @@ test("R8: a server whose URL changed since the run was pinned refuses each call 
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(lastResult(run.sent), "The MCP server fake's address changed since this run started; nothing was sent. Start a new run to use it at its new address.");
   assert.equal(toolCalls(run.fake).length + toolCalls(moved).length, 0, "nothing sent to either address");
+  // Not even a connection's handshake: no initialize or server/discover (nor any other request) reached either address.
+  const handshakes = (log) => log.filter((entry) => entry.method === "initialize" || entry.method === "server/discover").length;
+  assert.deepEqual([handshakes(run.fake.log), handshakes(moved.log)], [0, 0], "no initialize or server/discover to either address");
+  assert.deepEqual([run.fake.log.length, moved.log.length], [0, 0], "no request of any kind to either address");
 });
 
 test("R9: a priced MCP call the run's cap has no room for is refused unsent and parks the run on a raise", async (t) => {

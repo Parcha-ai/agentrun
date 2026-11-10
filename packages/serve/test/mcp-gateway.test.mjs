@@ -304,9 +304,11 @@ test("a call to a server that never answers ends at the call's deadline: an erro
   const { fake, gateway, cancelled } = await setup(t, { commit: store().commit, bounds: { callMs: 500 } });
   fake.tools.hang = { description: "Never answers.", input: { type: "object", properties: {} }, run: () => new Promise(() => {}) };
   // The call's own signal never aborts: only its deadline can end it.
+  const started = Date.now();
   const answer = await gateway.call("fake", "hang", {}, { signal: signal(), callId: "c1" });
   assert.equal(answer.isError, true);
   assert.match(textOf(answer), /The MCP server fake failed/);
+  assert.ok(Date.now() - started < 5_000, `ended at its bound, ${Date.now() - started} ms`);
   for (let i = 0; !cancelled() && !fake.log.some((entry) => entry.method === "closed" && entry.closed === "hang"); i++) {
     assert.ok(i < 100, `the server is told the call is over: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
