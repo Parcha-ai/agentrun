@@ -126,8 +126,9 @@ test("a box this server does not enable names the setting that enables it: in ca
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const said = `This agent's place is sandbox on docker, and this server cannot run it there: ${ENABLE_DOCKER}.`;
-  assert.deepEqual(made.body.warnings, [{ field: "definition.place", reason: "not_set_up_here", message: said }]);
+  // A place is its computer setting's view: a Docker sandbox is refused in the Docker box's own reason, its fix.
+  const said = `This agent's computer is a Docker sandbox, and this server cannot run it: ${ENABLE_DOCKER}.`;
+  assert.deepEqual(made.body.warnings, [{ field: "definition.computer", reason: "not_set_up_here", message: said }]);
   const run = await api("POST", "/agents/docked/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code, run.body.error.message, run.body.error.details.box], [409, "agent_not_runnable", said, "docker"]);
 });
@@ -149,7 +150,7 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); ${VM} is unavailable (${VM_TOO}); daytona is unavailable (${DAYTONA_TOO})`);
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
-  const said = `This agent's place is sandbox on docker, and this server cannot run it there: ${DAEMON}.`;
+  const said = `This agent's computer is a Docker sandbox, and this server cannot run it: ${DAEMON}.`;
   assert.equal(made.body.warnings[0].message, said);
   const run = await api("POST", "/agents/docked/runs", { input: { content: "hi" } });
   assert.equal(run.body.error.message, said);
