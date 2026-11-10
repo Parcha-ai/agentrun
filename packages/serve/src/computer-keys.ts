@@ -1,63 +1,32 @@
-// Settings → Computers' keys, serve side: a provider's saved keys, by the names the computer package's kind registry
-// declares for it (kinds.ts PROVIDERS), as that provider's create() options, and Settings' "test connection" over them
-// (the registry's TestConnection: one account-level read that never makes a computer), its coded errors in plain words.
+// Settings → Computers' keys, serve side: a provider's saved keys, by the names its descriptor declares (the computer
+// package's PROVIDERS, derived from each provider's descriptor), as that provider's create() options, and Settings' "test
+// connection" over them (the registry's TestConnection: one account-level read that never makes a computer), its coded
+// errors in plain words.
 //
-// The map from a key's name to the option it fills is serve's, and lives here: E2B_API_KEY is E2B's apiKey, the Modal
-// token pair is the Modal client's tokenId and tokenSecret, and so on. A name a provider does not declare is never passed
-// on; an empty optional key is left out; a required one not saved refuses in words naming what to save, before anything
-// is made. The provider modules themselves (each one's create()) are passed in, as the rest of the computer package is
-// until the cutover makes it serve's dependency: a provider with no module here answers that its test is not available.
-// No key is ever in an answer: each value is scrubbed from the provider's words, and the words this module adds name keys
-// only by their names.
+// Serve knows no vendor here: each key's name and the option it fills, each setting that is no key (its name in the
+// server's settings, its option and its default), and each provider's label all come from the descriptor. A name a
+// provider does not declare is never passed on; an empty optional key is left out; a required one not saved refuses in
+// words naming what to save, before anything is made. The provider modules themselves (each one's create()) are passed
+// in: a provider with no module here answers that its test is not available. No key is ever in an answer: each value is
+// scrubbed from the provider's words, and the words this module adds name keys only by their names.
+import { PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
 
-/** One key a provider takes: its name in the kind registry, the create() option it fills, and whether it is needed. */
+/** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
 export interface ProviderKey {
   readonly name: string;
   readonly option: string;
   readonly required: boolean;
 }
 
-/** Each provider's keys, by the registry's names, and the option each fills. Docker takes none (its host is local). */
-export const PROVIDER_KEYS: Readonly<Record<string, readonly ProviderKey[]>> = {
-  docker: [],
-  daytona: [
-    { name: "DAYTONA_API_KEY", option: "apiKey", required: true },
-    { name: "DAYTONA_API_URL", option: "apiUrl", required: false },
-    { name: "DAYTONA_TARGET", option: "target", required: false },
-  ],
-  modal: [
-    { name: "MODAL_TOKEN_ID", option: "tokenId", required: true },
-    { name: "MODAL_TOKEN_SECRET", option: "tokenSecret", required: true },
-  ],
-  e2b: [{ name: "E2B_API_KEY", option: "apiKey", required: true }],
-  orgo: [{ name: "ORGO_API_KEY", option: "apiKey", required: true }],
-  "phone-harness": [{ name: "PHONE_HARNESS_API_KEY", option: "apiKey", required: true }],
-  browserbase: [
-    { name: "BROWSERBASE_API_KEY", option: "apiKey", required: true },
-    { name: "BROWSERBASE_PROJECT_ID", option: "projectId", required: true },
-  ],
-  kernel: [{ name: "KERNEL_API_KEY", option: "apiKey", required: true }],
-};
-
-/** Each provider's name in words (the registry's labels). */
-const LABELS: Readonly<Record<string, string>> = {
-  docker: "Docker",
-  daytona: "Daytona",
-  modal: "Modal",
-  e2b: "E2B",
-  orgo: "Orgo",
-  "phone-harness": "Phone harness",
-  browserbase: "Browserbase",
-  kernel: "Kernel",
-};
-
-/** The Modal app a server's computers live in when its settings name none (serve's box app until now). */
-export const DEFAULT_MODAL_APP = "agentrun";
-
-/** Settings that are no key but go to a provider's options: the Modal app. */
-export interface ProviderSettings {
-  readonly modalApp?: string;
+/** A setting that is no key but fills a create() option: its name in the server's settings, and its default. */
+export interface ProviderSetting {
+  readonly name: string;
+  readonly option: string;
+  readonly default?: string;
 }
+
+/** The server's settings that are no key, by their names in the descriptors (modalApp): what fills each setting. */
+export type ProviderSettings = Readonly<Record<string, string | undefined>>;
 
 /** An answer in the registry's shape: a value, or an error with its code and words. */
 export type KeyResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } };
@@ -73,24 +42,40 @@ export interface TestableProvider {
 /** A provider module's create(), by provider id: the computer package's, or a test's stand-in. */
 export type ProviderFactories = Readonly<Partial<Record<string, (options: Record<string, string>) => TestableProvider | Promise<TestableProvider>>>>;
 
-/** The table the map reads: each provider's keys and its name in words. Serve's own (KEY_TABLE), or --faux's. */
+/** The table the map reads: each provider's keys, settings and name in words, by id. Serve's own (KEY_TABLE, the
+ *  computer package's descriptors), or --faux's (keyTableOf its entries). */
 export interface KeyTable {
   readonly keys: Readonly<Record<string, readonly ProviderKey[]>>;
   readonly labels: Readonly<Record<string, string>>;
+  readonly settings?: Readonly<Record<string, readonly ProviderSetting[]>>;
 }
-export const KEY_TABLE: KeyTable = { keys: PROVIDER_KEYS, labels: LABELS };
+
+/** The key table of `entries` (the kind registry's PROVIDERS, each from its descriptor). */
+export function keyTableOf(entries: readonly Pick<ProviderEntry, "id" | "label" | "keys" | "settings">[]): KeyTable {
+  return {
+    keys: Object.fromEntries(entries.map((entry) => [entry.id, entry.keys.map(({ name, option, required }) => ({ name, option, required }))])),
+    labels: Object.fromEntries(entries.map((entry) => [entry.id, entry.label])),
+    settings: Object.fromEntries(entries.map((entry) => [entry.id, (entry.settings ?? []).map(({ name, option, default: fallback }) => ({ name, option, ...(fallback === undefined ? {} : { default: fallback }) }))])),
+  };
+}
+
+/** Serve's table: every provider the computer package declares. */
+export const KEY_TABLE: KeyTable = keyTableOf(PROVIDERS);
 
 const has = (record: object, key: string): boolean => Object.prototype.hasOwnProperty.call(record, key);
 const labelOf = (providerId: string, table: KeyTable): string => (has(table.labels, providerId) ? table.labels[providerId]! : providerId);
 const refused = (code: string, message: string): { ok: false; error: { code: string; message: string } } => ({ ok: false, error: { code, message } });
 
-/** Provider `providerId`'s create() options from its saved keys (by the registry's names) and the server's settings. */
+/**
+ * Provider `providerId`'s create() options from its saved keys (by its descriptor's names) and the server's settings
+ * (each of its descriptor's settings, by name, else its default). A provider the table does not list takes no keys and
+ * no settings: it is not refused here, and whether it can be made is its maker's to say.
+ */
 export function providerOptions(providerId: string, keys: Readonly<Record<string, string>>, settings: ProviderSettings = {}, table: KeyTable = KEY_TABLE): OptionsAnswer {
-  if (!has(table.keys, providerId)) return refused("unsupported", `${providerId} is not a computer provider: ${Object.keys(table.keys).join(", ")}`);
   const label = labelOf(providerId, table);
   const options: Record<string, string> = {};
   const missing: string[] = [];
-  for (const key of table.keys[providerId]!) {
+  for (const key of has(table.keys, providerId) ? table.keys[providerId]! : []) {
     const value = has(keys, key.name) ? keys[key.name] : undefined;
     if (typeof value === "string" && value.trim() !== "") options[key.option] = value;
     else if (key.required) missing.push(key.name);
@@ -98,7 +83,11 @@ export function providerOptions(providerId: string, keys: Readonly<Record<string
   if (missing.length > 0) {
     return refused("missing_key", `${label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers (PUT /v2/computers/${providerId}/keys)`);
   }
-  if (providerId === "modal") options.app = settings.modalApp?.trim() || DEFAULT_MODAL_APP;
+  for (const setting of table.settings && has(table.settings, providerId) ? table.settings[providerId]! : []) {
+    const given = has(settings, setting.name) ? settings[setting.name]?.trim() : undefined;
+    const value = given || setting.default;
+    if (value !== undefined && value !== "") options[setting.option] = value;
+  }
   return { ok: true, options };
 }
 
@@ -131,12 +120,8 @@ function wordsFor(code: string, providerId: string, said: string, table: KeyTabl
       return `${label}'s settings are not valid.${vendor}`;
     case "unsupported":
       return `${label} can't be tested here.${vendor}`;
-    case "docker":
-    case "daytona":
-    case "modal":
-    case "e2b":
-    case "orgo":
-    case "phone":
+    // The one code for a vendor's own error (ComputerErrorCode "vendor"), whatever the vendor.
+    case "vendor":
       return `${label} answered with an error.${vendor}`;
     default:
       return `The test of ${label} failed.${vendor}`;

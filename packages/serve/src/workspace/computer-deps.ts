@@ -101,22 +101,24 @@ export interface ComputerDepsOptions {
   readonly faux?: FauxComputers;
 }
 
-/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
- *  owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox the package's recipe; any other provider's: its registry
- *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
- *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
- *  sandbox's egress list: a sandbox with none, or "none", has no network; a browser, desktop or phone with none has its
- *  provider's own ("open"); an explicit list or "none" applies to any kind, narrowed to "none" for a provider that makes
- *  no other (networkOf). No key and no environment. */
+/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (a provider that
+ *  prepares its own image, its descriptor's prepareImage: the owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox
+ *  the package's recipe, which its prepareImage() builds; any other provider's: its descriptor's defaultImage for the
+ *  kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in words, a prepared desktop's saying
+ *  it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the
+ *  run's release), and its network. box_allow is a sandbox's egress list: a sandbox with none, or "none", has no network;
+ *  a browser, desktop or phone with none has its provider's own ("open"); an explicit list or "none" applies to any kind,
+ *  narrowed to "none" for a provider that makes no other (networkOf). No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
-    if (entry.id === "docker" && named !== undefined) return named;
-    // Docker's sandbox: the package's own recipe, which serve builds (the registry gives Docker no default).
-    if (entry.id === "docker" && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
+    if (entry.prepareImage && named !== undefined) return named;
+    // A sandbox whose provider prepares its image: the package's own recipe, which its prepareImage() builds (the
+    // descriptor gives it no default).
+    if (entry.prepareImage && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
     const image = entry.defaultImage?.[kind];
     if (image !== undefined) return image;
-    if (entry.id === "docker" && kind === "desktop") throw refused("A Docker desktop needs an image with an X server; set one for desktops.");
+    if (entry.prepareImage && kind === "desktop") throw refused(`A ${entry.label} desktop needs an image with an X server; set one for desktops.`);
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
   return (entry, kind, run) => ({
@@ -169,32 +171,39 @@ export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">)
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
   const kinds = claimKinds(options);
-  // The Docker provider is given its image's source, which it makes ready itself (its image(): built from the recipe
-  // when Docker lacks it, or pulled by name): the owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the
-  // recipe's bare tag, which no registry has.
+  // A provider that prepares its own image (its descriptor's prepareImage) is given that image's source, which its
+  // prepareImage() makes ready (built from the recipe when the engine lacks it, or pulled by name): the owner's
+  // AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the recipe's bare tag, which no registry has.
   const named = envValue(env, DOCKER_IMAGE_ENV);
-  const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
+  const preparedImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
   // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES), checked once here.
   const namedAddresses = dockerHostAddressesOf(env);
   // Where this process's Docker has the data, read once, when a Docker provider is first built.
   let paths: Promise<DockerPaths> | undefined;
-  /** The Docker provider's options beside its image: for a server in a container of its Docker's, the named volume that
-   *  holds its data and the daemon copy's place under it (dockerVolumeOf), and the Docker host's own addresses for its
-   *  egress proxy, the union of the read through the socket (`hostAddresses`) and the operator's; on a host, the
-   *  operator's alone (the provider reads its own interfaces). With none, none are given, and the provider refuses an
-   *  allow-list where it isn't on the Docker host, in its words. The read is made only for a claim whose run's computer
-   *  has an allow-list (`boxAllow`, the claim's own launch's box_allow, a list): a run launched under a list keeps it
-   *  across a restart, whatever this process's AGENTRUN_BOX_ALLOW says now; one with none, or no claim, reads nothing.
-   *  The read itself is once per process (`hostAddresses`). */
-  const dockerOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
+  /** A local provider's host options (its descriptor's `local`: its computers run on this machine's container engine):
+   *  for a server in a container of that engine's, the named volume that holds its data and the daemon copy's place
+   *  under it (dockerVolumeOf), and the host's own addresses for its egress proxy, the union of the read through the
+   *  socket (`hostAddresses`) and the operator's; on a host, the operator's alone (the provider reads its own
+   *  interfaces). With none, none are given, and the provider refuses an allow-list where it isn't on the host, in its
+   *  words. The read is made only for a claim whose run's computer has an allow-list (`boxAllow`, the claim's own
+   *  launch's box_allow, a list): a run launched under a list keeps it across a restart, whatever this process's
+   *  AGENTRUN_BOX_ALLOW says now; one with none, or no claim, reads nothing. The read itself is once per process
+   *  (`hostAddresses`). */
+  const localHostOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
     const volume = dockerVolumeOf(where);
     const read = volume && Array.isArray(boxAllow) && options.hostAddresses ? await options.hostAddresses() : undefined;
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
-    return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+    return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+  };
+  /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: the image source
+   *  for one that prepares its image, the host options for a local one. */
+  const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
+    const entry = kinds.PROVIDERS.find((one) => one.id === id);
+    return { ...(entry?.prepareImage ? { image: preparedImage } : {}), ...(entry?.local ? await localHostOptions(boxAllow) : {}) };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : given) });
+  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

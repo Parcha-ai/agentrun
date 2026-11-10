@@ -1,8 +1,9 @@
-// The provider makers computerForClaim is handed at the claim (its `providers`): each registry id built by the computer
-// package's providerFor from the options its saved keys fill (computer-keys.ts providerOptions, by the registry's key
-// names), and nothing else. The phone provider, which keeps no labels of its own, is given the store's computer ledger.
-// No key reaches a provider any other way, and nothing here reads the environment.
-import { type ComputerProvider, providerFor, providerIds } from "@parcha/agentrun-computer";
+// The provider makers computerForClaim is handed at the claim (its `providers`): each provider the computer package
+// declares, built by its providerFor from the options its saved keys fill (computer-keys.ts providerOptions, by its
+// descriptor's key names), and nothing else. A provider whose descriptor declares a ledger (its sessions carry no labels
+// of their own) is given the store's computer ledger, as the option its descriptor names. No key reaches a provider any
+// other way, and nothing here reads the environment or names a vendor.
+import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor } from "@parcha/agentrun-computer";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { ProviderExtras, ProviderMakers } from "./computer-for-claim.js";
 
@@ -17,13 +18,14 @@ export function computerProviderFactories(makers: ProviderMakers, ledgerOf: (id:
   return Object.fromEntries(Object.entries(makers).map(([id, make]) => [id, (options: Record<string, string>) => make!(options, { ledger: ledgerOf(id) as never })])) as ProviderFactories;
 }
 
-/** Every provider the computer package holds, each made through `load` (providerFor) from its options. */
-export function computerProviderMakers({ load = providerFor as unknown as ProviderLoad }: { readonly load?: ProviderLoad } = {}): ProviderMakers {
+/** Every provider in `entries` (the computer package's PROVIDERS, each from its descriptor), made through `load`
+ *  (providerFor) from its options, plus the server's ledger as the option its descriptor names, when it declares one. */
+export function computerProviderMakers({ load = providerFor as unknown as ProviderLoad, entries = PROVIDERS }: { readonly load?: ProviderLoad; readonly entries?: readonly Pick<ProviderEntry, "id" | "ledger">[] } = {}): ProviderMakers {
   return Object.fromEntries(
-    providerIds.map((id) => [
+    entries.map(({ id, ledger }) => [
       id,
       (options: Record<string, string>, extras: ProviderExtras) =>
-        load(id, { ...options, ...(id === "phone-harness" ? { ledger: extras.ledger } : {}) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
+        load(id, { ...options, ...(ledger === undefined ? {} : { [ledger.option]: extras.ledger }) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
     ]),
   ) as ProviderMakers;
 }

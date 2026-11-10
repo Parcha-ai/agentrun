@@ -24,7 +24,7 @@ export {
 export { ARCHIL_API_KEY_ENV, archilApiKey, type ArchilKeyOptions } from "./archil-key.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
-export { type LedgerEntry, type PhoneLedger, type PhoneLedgerEntry, phoneLedger, type ProviderLedger, storeLedger } from "./computer-ledger.js";
+export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools, withKindTools } from "./run-tools.js";
