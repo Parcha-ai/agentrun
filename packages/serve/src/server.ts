@@ -89,7 +89,7 @@ import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
-import { bootSealKey } from "./seal-key.js";
+import { bootSealKey, withSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
@@ -731,7 +731,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
-      // Always sealed: the server starts with its seal key (seal-key.ts ensureSealKey), so nothing is kept in the clear.
+      // Always sealed: the server starts with its seal key (seal-key.ts bootSealKey), so nothing is kept in the clear.
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
@@ -781,9 +781,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
-  // No start without a seal key (seal-key.ts): the one handed over, else the one kept under the config home, made at the
-  // first start with only its path printed. Every secret here is kept under it; there is no keeping one in the clear.
-  const seal = bootSealKey();
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -807,14 +804,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates, sealKey: seal.key }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[]; sealKey: Buffer }, stops: Array<() => Promise<void>>): Promise<Serve> {
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
   const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
@@ -851,9 +848,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
   const store = await openStore({ dataDir: data, role: "server" });
   stops.push(() => store.close());
+  // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
+  // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
+  // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
+  // there is no keeping one in the clear.
+  const seal = await bootSealKey(store, data);
+  stops.push(async () => seal.release());
+  // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
+  // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
+  const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
-  const toolKeys = toolKeysOverStore(store, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  const toolKeys = toolKeysOverStore(store, own(withSecrets(base, "own")), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
   await toolKeys.load();
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
@@ -869,7 +875,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
-  const mcpServers = mcpServersOverStore(store, withSecrets(base, "own"), VERSION);
+  const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
@@ -905,7 +911,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
   // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
   // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
-  let env = withSecrets(base, "all", storedKeys);
+  let env = own(withSecrets(base, "all", storedKeys));
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
@@ -935,7 +941,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), so a key change needs no cache invalidation here.
-    env = withSecrets(base, "all", storedKeys);
+    env = own(withSecrets(base, "all", storedKeys));
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
@@ -1053,7 +1059,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
-  const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  const sealKey = seal.key;
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1068,7 +1074,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
   let computerRoutes: ComputerRoutes | undefined;
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
-    store, sealKey: checked.sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
+    store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
@@ -1089,8 +1095,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
   const computerReady = async (setting: { kind: string; provider?: string }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, checked.sealKey, withSecrets(process.env, "own")), dockerAnswers);
-  const archil = createArchilRoutes({ store, sealKey: checked.sealKey, env: process.env });
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers);
+  const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const run = await store.runs.get(runId);
@@ -1229,7 +1235,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
   // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1244,7 +1250,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId) } : {}),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -1256,7 +1262,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) }, forStore, runId, context),
+    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) }, forStore, runId, context),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -1381,7 +1387,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
@@ -2625,7 +2631,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const kept = await keptBrowserOf(store, run.id);
         const view = await computerView({
           viewer: async () => {
-            if (sealKey === undefined) return undefined;
             if (family === "browser") {
               const link = await liveViewerLink(store, sealKey, run.id);
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
@@ -3057,10 +3062,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     await needRun(runId);
     // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim; liveViewerFor picks
-    // a named viewer's handover or the run's open one). None for a run no runner holds; with no seal key this server serves
-    // no live view. A /computer/live path reaches a viewer of every kind (the link GET /computer gives, a browser's among
+    // a named viewer's handover or the run's open one). None for a run no runner holds. A /computer/live path reaches a viewer of every kind (the link GET /computer gives, a browser's among
     // them), a /browser/live path a browser's alone (familyReaches).
-    const handover = sealKey ? await liveViewerFor(store, sealKey, runId, rest) : undefined;
+    const handover = await liveViewerFor(store, sealKey, runId, rest);
     if (handover === undefined || !familyReaches(family, handover)) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
     await serveViewerFile(req, res, rest);
   }
@@ -3153,9 +3157,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void (async () => {
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
-      // runner holds; with no seal key no live view is served. A /computer/live socket reaches a viewer of every kind, a
+      // runner holds. A /computer/live socket reaches a viewer of every kind, a
       // /browser/live socket a browser's alone (familyReaches), as the page does.
-      const viewerHandover = run && sealKey ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
+      const viewerHandover = run ? await liveViewerById(store, sealKey, run.id, viewing[3]!.slice(3, -3)) : undefined;
       const handover = viewerHandover !== undefined && familyReaches(viewing[2] as LiveFamily, viewerHandover) ? viewerHandover : undefined;
       if (!handover) return deny("404 Not Found");
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
@@ -3335,6 +3339,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
+    seal.release();
   }
   return {
     url,

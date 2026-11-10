@@ -6,6 +6,7 @@
 // the store fences a write by its run's epoch and live lease, but a claim lost for its renews is lost before its lease
 // runs out, and the old runner's ticker must not write past it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +57,8 @@ test("a run on the runner process writes its live row while its tool runs: the t
       },
     };
   };
-  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-a", createLoop });
+  // The server's seal key handed over: a runner never makes one (seal-key.ts), and this store had no server start to.
+  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-a", createLoop, env: { ...process.env, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } });
   let closed = false;
   t.after(async () => {
     release();
