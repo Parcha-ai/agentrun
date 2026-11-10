@@ -2165,8 +2165,20 @@ token as the Bearer): anyone who reaches the port could otherwise set the passwo
 session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
 **Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
 cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
-this one too. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
-new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
+this one too.
+
+Sign-in tries are limited, and never for good. Each address (an IPv6 one by its /64) has ten tries in 15 minutes; past
+them each next try waits a second after the last, twice that the time after, never more than a minute. The whole server
+takes 100 wrong passwords in 15 minutes; past them every try, from any address, waits the same way after the last wrong
+one. A refused try is a 429 that says how long (`retry-after`, `retry_after_ms`). The limit counts up to 10,000 addresses
+at once; a new one past that is held by the server's budget only, and no address counted is ever dropped to make room.
+Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
+`AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
+`uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
+that is not itself a trusted proxy). Unset, that header is never read. `render.yaml` sets it to `uniquelocal`, the private
+ranges Render's proxy reaches a service from.
+
+Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
 /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
 browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
