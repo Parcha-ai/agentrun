@@ -73,7 +73,7 @@ test("4. a run's # Learned section keeps a note's local address, as its .learnin
 test("5. a run's learning problems hold no loopback address", () => {
   const learning = {
     state: "dropped", reason: "checks", detail: null, at: "2026-11-10T00:00:00.000Z",
-    problems: [{ rule: "note", path: "http://localhost:8080.md", detail: "It calls http://127.0.0.1:43123/v1 first, or localhost:9000." }],
+    problems: [{ rule: "note", path: "http://localhost:8080.md", detail: "It calls http://127.0.0.1:43123/v1 first, or localhost:9000 when it is down." }],
   };
   const body = runLearningBody({ id: "run-1", learning, seed: null, settled: true }, secretsShown([]), []);
   const problems = JSON.stringify(body.problems);
