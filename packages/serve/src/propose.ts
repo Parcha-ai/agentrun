@@ -119,12 +119,19 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   const exampled = files.filter(({ file }) => examples.has(file)).map(({ file }): Change => ({ path: file.replace(/workflow\.json$/, "README.md"), status: "added", mode: "100644", bytes: Buffer.from(examples.get(file)!) }));
   const leaky = unstorable(exampled, input.refuse);
   if (leaky.length) return { state: "dropped", reason: "checker", problems: leaky };
-  // Each draft dry-run on its example, else on a synthesized input (learn/skills.ts draftDryRun): every model and tool
-  // answer synthesized, nothing sent, paid or run outside this process.
-  const dryRuns: Record<string, DraftDryRun> = {};
-  if (dsl) for (const { file, text } of files) if (file.endsWith("/workflow.json")) dryRuns[file] = await draftDryRun(dsl, text, examples.get(file));
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
+  const dryRuns: Record<string, DraftDryRun> = {};
   const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
+  // The static checks first, every one (validateWorkflow with executeCode: false, draftProblems' refusal of code nodes,
+  // caps, secrets): a draft they refuse is never dry-run, nor is any when they refuse the answer whole. Then each draft
+  // left is dry-run on its example, else on a synthesized input (learn/skills.ts draftDryRun): every model and tool
+  // answer synthesized, nothing sent, paid or run, and no code it holds run in this process.
+  if (dsl) {
+    const statics = check(changes).problems;
+    const whole = statics.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined);
+    const refused = new Set(statics.flatMap((problem) => (problem.path === undefined ? [] : [itemOf(problem.path)])));
+    if (!whole) for (const { file, text } of files) if (file.endsWith("/workflow.json") && !refused.has(itemOf(file))) dryRuns[file] = await draftDryRun(dsl, text, examples.get(file));
+  }
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
   // and the rest is checked again; a problem that names no item, or one that refuses the whole (WHOLE), drops it all,
   // as does a rest the checks still refuse.

@@ -170,8 +170,9 @@ export function draftFiles(name: string, block: string): { json: string; readme:
   return { json: front.lf.slice(front.end + "\n---\n".length), readme: readmeOf(name, description), ...(example ? { example } : {}) };
 }
 
-/** How a draft's dry run went (draftDryRun): `passed`, every step ran on synthetic values; `not_run`, a check could not
- *  run (`detail` says which), so it is no proof; `failed`, `detail` says where. */
+/** How a draft's dry run went (draftDryRun): `passed`, the path its one input took ran on synthetic values (not every
+ *  branch or body); `not_run`, a check could not run (`detail` says which), so it is no proof; `failed`, `detail` says
+ *  where. */
 export type DraftDryRun = { readonly status: "passed" | "not_run" | "failed"; readonly detail?: string };
 
 /** The words a draft that failed its dry run is left out with, before why: a re-ask reads them (reflect-hook.ts). */
@@ -179,11 +180,20 @@ export const DRY_RUN_FAILED = "its dry run failed";
 /** The most synthetic steps a draft's dry run takes before it stops, as not run. */
 const DRY_RUN_STEPS = 2_000;
 
+/** The code runner a dry run hands every code node to: it refuses each. Given a runner, the DSL validates with
+ *  executeCode: false (a code node's expression is parsed, never evaluated or probed) and never compiles or calls a code
+ *  body in this process; with none, it evaluates every code node's expression and runs its body here, at validation and
+ *  at run time. A learned draft holds no code node (draftProblems refuses it before any dry run): this holds even when
+ *  one is handed here anyway. */
+const refuseCode = async (node: { readonly label: string }): Promise<never> => {
+  throw new Error(`the code node "${node.label}" is never run: a learned draft holds no code node`);
+};
+
 /** A draft's workflow.json `json` dry-run by the workflow DSL (dryRunWorkflow) on `example` (its block's `example:`
  *  line, one JSON object), else on an input synthesized from its input schema. Every model, Jev and tool-call answer is
- *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and a learned draft
- *  holds no code node (draftProblems), so none runs. It checks the wiring at run time (the state each step reads, its
- *  output's path and schema), never the answers. */
+ *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and no code it holds
+ *  runs in this process (refuseCode). Only a draft the static checks pass is dry-run (propose.ts). It checks the wiring
+ *  at run time (the state each step reads, its output's path and schema), never the answers. */
 export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow }, json: string, example?: string): Promise<DraftDryRun> {
   let doc: unknown;
   let input: Record<string, unknown> | undefined;
@@ -204,7 +214,7 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
   }
   let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
   try {
-    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS });
+    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode });
   } catch (error) {
     return { status: "failed", detail: `${DRY_RUN_FAILED}: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
   }

@@ -140,15 +140,16 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       }
     } else {
       // A workflow draft the checks left out because its dry run failed is asked for again once, in the same turn and
-      // within its deadline, saying which draft and why: the second answer stands only when the checks keep it, else the
-      // first answer's, that draft left out, stands. Never a third time (a turn asks again once, for either reason).
+      // within its deadline, saying which draft and why: the second answer stands only when the checks keep it and no
+      // draft in it still fails its dry run, else the first answer's, that draft left out, stands (a repair that failed
+      // never costs a note the first answer kept). Never a third time (a turn asks again once, for either reason).
       const dry = dryRunFailure(checked);
       const left = deadlineMs - (now() - started);
       const again = dry && left > 0 ? await input.ask(reflectDryRun(dry.path, dry.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
       if (again && "ended" in again) {
         const second = turnOf(again.answer);
         const kept = await checkOf(second);
-        if (kept?.state === "proposed") {
+        if (kept?.state === "proposed" && !dryRunFailure(kept)) {
           turn = second;
           checked = kept;
         }

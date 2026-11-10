@@ -178,3 +178,20 @@ test("a workflow draft that fails its dry run is asked for again once, saying wh
   assert.deepEqual(kept.proposal.proposal.dryRuns, { "workflows/answer/workflow.json": { status: "passed" } });
   assert.ok(!JSON.stringify(kept.proposal.proposal.files).includes("six times seven"), "the example is in no file");
 });
+
+test("a re-ask whose answer keeps a note but still holds the broken draft does not replace the first: the first answer's note stands", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  });
+  // The second answer drops the first's good note for another, and repeats the draft its dry run failed.
+  const other = "---\nname: Log the request\ndescription: Log every request\ntype: reference\n---\nLog each request before it is sent.\n";
+  const partial = `\`\`\`note log-requests.md\n${other}\`\`\`\n\n${draftBlock("other")}`;
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: partial }] });
+  const row = await w.ended();
+  const turn = await w.turnOf(row);
+  assert.equal(turn.users.length, 3, `one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 0], JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.proposal.notes.map(({ file }) => file), ["retry-slowly.md"], "the first answer's note, not the failed repair's");
+});

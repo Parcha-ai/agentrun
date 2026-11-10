@@ -103,8 +103,54 @@ test("an example holding a held secret refuses the whole answer, as any text the
 test("the grader is told each draft's dry run under it: passed, or not run and why", () => {
   const files = [{ file: "workflows/answer/workflow.json", text: JSON.stringify(GOOD("answer")) }, { file: "workflows/answer/README.md", text: "---\nname: answer\ndescription: Answers\n---\n" }];
   const passed = gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [], files, dryRuns: { "workflows/answer/workflow.json": { status: "passed" } } });
-  assert.match(passed, /Its dry run passed: every step ran on synthetic values/);
+  assert.match(passed, /Its dry run passed on the supplied or synthesized input with synthetic model and tool answers \(no model or tool was called\)\. Only the exercised path was checked; skipped bodies and other branches remain unchecked\./);
   const notRun = gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [], files, dryRuns: { "workflows/answer/workflow.json": { status: "not_run", detail: "Could not synthesize a valid input object." } } });
   assert.match(notRun, /Its dry run did not run: Could not synthesize a valid input object\. It has never been exercised\./);
   assert.doesNotMatch(gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [], files }), /dry run/, "none given, none said");
+});
+
+// A hostile draft's code never runs in the host: not while it is checked, not in its dry run. Its code node escapes the
+// DSL's shadowed globals (the Function constructor through a prototype) to leave a marker: once as the expression is
+// compiled (its factory), once as its body runs. The static checks refuse it first, so it is never dry-run; and a dry run
+// handed one anyway (draftDryRun alone) hands every code node to a runner that refuses it.
+const MARKER = "__learnDryRunMarker";
+const marking = (where) => `({}).constructor.constructor("globalThis.${MARKER} = (globalThis.${MARKER} || []).concat('${where}')")()`;
+const CODE = `(${marking("factory")}, (s) => { ${marking("body")}; return { answer: { answer: 42 } }; })`;
+const coded = (name) => ({ v: 2, name, schemas, input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps: [{ node: "code", label: "mark", code: CODE }] } });
+/** The same code node one level down, in a composed workflow node's child. */
+const nested = (name) => ({ v: 2, name, schemas, input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps: [{ node: "workflow", label: "inner", input: { question: "{question}" }, out: "Answer", as: "answer", workflow: coded(`${name}-inner`) }] } });
+
+test("the marker: a code node's expression and body leave it when the DSL runs them in this process", () => {
+  delete globalThis[MARKER];
+  const fn = dsl.compileTransform(CODE);
+  fn({});
+  assert.deepEqual(globalThis[MARKER], ["factory", "body"], "the escape works, so its absence below means nothing ran");
+  // Both drafts are valid workflows (checked without running code), so only the code node keeps them out.
+  for (const flow of [coded("coded"), nested("nested")]) assert.equal(dsl.validateWorkflow(flow, { executeCode: false }).ok, true, JSON.stringify(dsl.validateWorkflow(flow, { executeCode: false }).errors));
+  delete globalThis[MARKER];
+});
+
+test("a draft holding a code node is refused statically and never dry-run: none of its code runs in the host", async (t) => {
+  for (const flow of [coded("coded"), nested("nested")]) {
+    delete globalThis[MARKER];
+    const { result, proposal } = await proposed(t, [noteBlock, block(flow.name, flow, JSON.stringify({ question: "q" }))].join("\n\n"));
+    assert.equal(globalThis[MARKER], undefined, `${flow.name}: its code ran in the host: ${JSON.stringify(globalThis[MARKER])}`);
+    assert.deepEqual([result.state, result.notes, result.workflows], ["proposed", 1, 0], JSON.stringify(result));
+    const left = (result.left ?? []).filter(({ path }) => path === `workflows/${flow.name}/workflow.json`);
+    assert.ok(left.some(({ rule }) => rule === "executable_node"), `${flow.name}: refused for its code node: ${JSON.stringify(result.left)}`);
+    assert.ok(!left.some(({ detail }) => detail.startsWith(DRY_RUN_FAILED)), `${flow.name}: never dry-run: ${JSON.stringify(left)}`);
+    assert.equal(proposal?.dryRuns?.[`workflows/${flow.name}/workflow.json`], undefined);
+  }
+  delete globalThis[MARKER];
+});
+
+test("a dry run handed a draft with a code node anyway runs none of its code: the node goes to a runner that refuses it", async () => {
+  for (const flow of [coded("coded"), nested("nested")]) {
+    delete globalThis[MARKER];
+    const dry = await skills.draftDryRun(dsl, JSON.stringify(flow), JSON.stringify({ question: "q" }));
+    assert.equal(globalThis[MARKER], undefined, `${flow.name}: its code ran in the host: ${JSON.stringify(globalThis[MARKER])}`);
+    assert.equal(dry.status, "failed", JSON.stringify(dry));
+    assert.match(dry.detail, /code/, dry.detail);
+  }
+  delete globalThis[MARKER];
 });

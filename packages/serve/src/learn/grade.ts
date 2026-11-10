@@ -266,12 +266,13 @@ export function gradePrompt(input: GradeInput): string {
 
 /** The most of a dry run's detail the grader's prompt holds. */
 const DRY_RUN_DETAIL = 300;
-/** What the grader is told of draft `file`'s dry run, under its fence: it ran every step on synthetic values (checking
- *  the wiring, not the answers), or it could not run and why. Nothing for a file with none. */
+/** What the grader is told of draft `file`'s dry run, under its fence: it passed on one input, on synthetic values
+ *  (the path it took checked, not every branch or body, and never the answers), or it could not run and why. Nothing
+ *  for a file with none. */
 function dryRunLine(file: string, dryRuns: GradeInput["dryRuns"]): string[] {
   const dry = dryRuns?.[file];
   if (!dry) return [];
-  if (dry.status === "passed") return [`Its dry run passed: every step ran on synthetic values (no model or tool was called), so its wiring holds; that says nothing of its answers.`, ""];
+  if (dry.status === "passed") return [`Its dry run passed on the supplied or synthesized input with synthetic model and tool answers (no model or tool was called). Only the exercised path was checked; skipped bodies and other branches remain unchecked. This says nothing of its answers.`, ""];
   const why = String(dry.detail ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, DRY_RUN_DETAIL).trim().replace(/\.+$/, "");
   return [`Its dry run did not run: ${why || "a check could not run"}. It has never been exercised.`, ""];
 }
