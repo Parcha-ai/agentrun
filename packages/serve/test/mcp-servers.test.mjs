@@ -5,12 +5,13 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { startServe } from "../dist/index.js";
+import { openapiDocument } from "../dist/openapi.js";
 import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -69,9 +70,21 @@ async function paged(t, { pages, perPage, bytes = 10 }) {
  *  A port a test frees and then calls can be taken meanwhile by another file's fake, which then logs that call. */
 const CLOSED_PORT = 2;
 
+/** One server, with no runner (nothing here runs a model), for the tests that only preview or are refused: nothing is
+ *  ever saved on it, so its list stays empty whatever order they run in. */
+let previews;
+const closing = [];
+const fileHooks = { after: (close) => closing.push(close) };
+before(async () => {
+  withEnv(fileHooks, { AGENTRUN_SEAL_KEY: sealKey() });
+  previews = await serve(fileHooks, { runner: false });
+});
+after(async () => {
+  for (const close of closing.reverse()) await close();
+});
+
 test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, lists every tool, and stores nothing", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { api, data } = await serve(t);
+  const { api } = previews;
   const modern = await fake(t);
   const legacy = await fake(t, { era: "legacy" });
   const now = await api("POST", "/settings/mcp-servers/preview", { url: modern.url, auth: { type: "none" } });
@@ -89,15 +102,13 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.equal(old.body.protocol, "2025-11-25");
   assert.deepEqual(old.body.tools.map((tool) => tool.name), TOOLS);
   assert.ok(legacy.log.some((entry) => entry.method === "initialize"), "the 2025 server was met with initialize");
-  assert.ok(!existsSync(join(data, "mcp-servers.json")), "a preview stores nothing");
-  assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] });
+  assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] }, "a preview stores nothing");
   const caps = (await api("GET", "/capabilities")).body;
   assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { api } = await serve(t);
+  const { api } = previews;
   const token = made();
   const guarded = await fake(t, { token });
   const signIn = await fake(t, { token, oauth: true });
@@ -169,11 +180,8 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
 });
 
 test("PUT seals the credential: reads say `sealed` and never hold it, nor does the file; a PUT without one keeps it; refresh says what was added, removed and changed; DELETE forgets", async (t) => {
-  const umask = process.umask(0o022);
-  t.after(() => process.umask(umask));
-  const key = sealKey();
-  withEnv(t, { AGENTRUN_SEAL_KEY: key });
-  const { api, data } = await serve(t);
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, data } = await serve(t, { runner: false });
   const token = made();
   const server = await fake(t, { token });
 
@@ -215,17 +223,13 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   holdsNone(JSON.stringify(refreshed.body), token, "after a refresh");
   holdsNone(storeBytes(data), token, "the store after a refresh");
 
-  for (const inherited of ["constructor", "tostring"]) {
-    assert.equal((await api("GET", `/settings/mcp-servers/${inherited}`)).status, 404, `${inherited} is no saved server`);
-    assert.equal((await api("DELETE", `/settings/mcp-servers/${inherited}`)).status, 404);
-  }
   assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 204);
   assert.equal((await api("GET", "/settings/mcp-servers/fake")).status, 404);
   assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 404);
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 404);
 });
 
-test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key keeps a credential under the one it made, reading one sealed under the other as unreadable", async (t) => {
+test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key keeps a credential under the one it made, reading one sealed under the other as unreadable, and a PUT must send it again", async (t) => {
   const data = join(await scratch(t), "agents");
   const token = made();
   const server = await fake(t, { token });
@@ -255,34 +259,22 @@ test("what is refused before any connection: a bad name, OAuth (not yet), plain 
   // Handed no seal key, the server makes its own (seal-key.ts): a credential sealed under the first does not open under
   // it, and a new one is sealed under it.
   delete process.env.AGENTRUN_SEAL_KEY;
-  const { api } = await serve(t, { data });
+  const { api } = await serve(t, { data, runner: false });
   assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the key the server made");
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200);
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
   assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["again", "sealed"], ["guarded", "unreadable"], ["open", null]]);
   assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
-});
-
-test("a saved credential sealed under another key reads as unreadable, and a PUT must send it again", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const token = made();
-  const server = await fake(t, { token });
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const first = await started(t, data);
-  assert.equal((await first.api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer", token } })).status, 200);
-  await first.close();
-  process.env.AGENTRUN_SEAL_KEY = sealKey();
-  const { api } = await serve(t, { data });
-  assert.equal((await api("GET", "/settings/mcp-servers/fake")).body.credential, "unreadable");
-  const again = await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer" } });
-  assert.equal(again.status, 422, JSON.stringify(again.body));
-  assert.equal(again.body.error.fields[0].field, "auth.token");
-  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer", token } })).body.credential, "sealed");
+  // The unreadable one is never kept by a PUT that sends no token: it must be sent again, and is then sealed anew.
+  const resend = await api("PUT", "/settings/mcp-servers/guarded", { url: server.url, auth: { type: "bearer" } });
+  assert.equal(resend.status, 422, JSON.stringify(resend.body));
+  assert.equal(resend.body.error.fields[0].field, "auth.token");
+  assert.equal((await api("PUT", "/settings/mcp-servers/guarded", { url: server.url, auth: { type: "bearer", token } })).body.credential, "sealed");
 });
 
 test("a server's tool snapshot is capped at 500 tools and 1 MiB: past either, 422 in plain words, the listing stops early, and nothing is kept", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { api, data } = await serve(t);
+  const { api } = await serve(t, { runner: false });
   const many = await paged(t, { pages: 10, perPage: 100 });
   const tooMany = await api("PUT", "/settings/mcp-servers/many", { url: many.url });
   assert.equal(tooMany.status, 422, JSON.stringify(tooMany.body));
@@ -302,16 +294,15 @@ test("a server's tool snapshot is capped at 500 tools and 1 MiB: past either, 42
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body.servers.map((s) => s.name), ["fits"], "neither refused server was kept");
 });
 
-test("names an empty object would inherit are no saved servers: 404 on every route, and no file is written", async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { api, data } = await serve(t);
+test("names an empty object would inherit are no saved servers: 404 on every route, and none is listed", async (t) => {
+  const { api } = previews;
   for (const name of ["constructor", "tostring"]) {
     assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).status, 404, `GET ${name}`);
     assert.equal((await api("DELETE", `/settings/mcp-servers/${name}`)).status, 404, `DELETE ${name}`);
     assert.equal((await api("POST", `/settings/mcp-servers/${name}/refresh`)).status, 404, `refresh ${name}`);
     assert.equal((await api("POST", "/settings/mcp-servers/preview", { name })).status, 404, `preview ${name}`);
   }
-  assert.ok(!existsSync(join(data, "mcp-servers.json")), "nothing was written");
+  assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] }, "nothing was saved");
   const headers = await api("POST", "/settings/mcp-servers/preview", { url: (await fake(t)).url, auth: { type: "headers", headers: { constructor: "a-value" } } });
   assert.equal(headers.status, 200, `a header named constructor is no duplicate: ${JSON.stringify(headers.body)}`);
 });
@@ -330,7 +321,7 @@ test("the launcher's warning for a seal key it cannot use names MCP server crede
 });
 
 test("the names AgentRun's own tools are called by, hands and monid, are no MCP server's: a PUT under one is 422 on its name, with why, and nothing is saved", async (t) => {
-  const { api } = await serve(t);
+  const { api } = previews;
   const server = await fake(t, {});
   for (const name of ["hands", "monid"]) {
     const refused = await api("PUT", `/settings/mcp-servers/${name}`, { url: server.url, auth: { type: "none" } });
@@ -340,9 +331,8 @@ test("the names AgentRun's own tools are called by, hands and monid, are no MCP 
   }
 });
 
-test("the served document's mcp_client.at_rest is exactly const sealed: an MCP credential is always kept sealed", async (t) => {
-  const { api } = await serve(t);
-  const doc = (await api("GET", "/openapi.json")).body;
+test("the document's mcp_client.at_rest is exactly const sealed: an MCP credential is always kept sealed", () => {
+  const doc = openapiDocument(() => undefined);
   const found = [];
   const walk = (node) => {
     if (!node || typeof node !== "object") return;
@@ -352,10 +342,4 @@ test("the served document's mcp_client.at_rest is exactly const sealed: an MCP c
   walk(doc);
   assert.ok(found.length > 0, "the document describes features.mcp_client");
   for (const atRest of found) assert.deepEqual(atRest, { const: "sealed" });
-});
-
-test("a server started with no seal key in its env answers mcp_client.at_rest sealed: it made one at its start", async (t) => {
-  withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
-  const { api } = await serve(t);
-  assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
 });

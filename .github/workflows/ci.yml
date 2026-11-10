@@ -20,10 +20,11 @@ env:
   npm_config_fetch_retry_maxtimeout: '120000'
 
 # A new push to a pull request replaces its running checks. Merge-queue candidates and main keep every run: each head
-# needs its own verdict.
+# needs its own verdict. So does the cutover branch's pull request: many lanes land on it in turn, and each push keeps
+# its own run (grouped by its commit, never cancelled), so every head gets a complete result.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name }}-${{ github.head_ref == 'untangle/cutover' && github.sha || (github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'untangle/cutover' }}
 
 jobs:
   build:
