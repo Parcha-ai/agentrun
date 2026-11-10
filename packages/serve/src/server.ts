@@ -130,7 +130,7 @@ import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
+import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
@@ -2646,6 +2646,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
         const hold = await computerHoldOf(store, run.id);
         const kept = await keptBrowserOf(store, run.id);
+        // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
+        // none with its kind, never off as if the agent had none (#2170).
+        const viewed = family === "computer" ? await runViewedKind(store, run.id) : undefined;
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
@@ -2654,7 +2657,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             }
             return computerViewerLink(store, sealKey, run.id);
           },
-          computer: () => computerOf(kept, env, family),
+          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
           hold: () => hold,
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
