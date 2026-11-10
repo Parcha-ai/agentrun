@@ -54,6 +54,15 @@ test("through the API: a computer saved shows with its place, a place saved show
   const imaged = await api("POST", "/agents", agent("win", { computer: { kind: "desktop", provider: "orgo", image: "windows" } }));
   assert.equal(imaged.status, 201, JSON.stringify(imaged.body));
   assert.deepEqual((await api("GET", "/agents/win")).body.definition.computer, { kind: "desktop", provider: "orgo", image: "windows" });
+  // An image Orgo does not offer saves, and its run is refused at its start in words naming the ones it does.
+  const beos = await api("POST", "/agents", agent("beos", { computer: { kind: "desktop", provider: "orgo", image: "beos" } }));
+  assert.equal(beos.status, 201, JSON.stringify(beos.body));
+  const warned = (beos.body.warnings ?? []).find((one) => one.field === "definition.computer");
+  assert.match(warned?.message ?? "", /^Orgo has no desktop image "beos"\. It offers the desktop images linux, windows, macos/, JSON.stringify(beos.body));
+  const run = await api("POST", "/agents/beos/runs", { input: { content: "Open Notepad." } });
+  assert.equal(run.status, 409, JSON.stringify(run.body));
+  const field = run.body.error.fields.find((one) => one.field === "definition.computer");
+  assert.match(field?.message ?? "", /^Orgo has no desktop image "beos"\. It offers the desktop images linux, windows, macos: pick one/, JSON.stringify(run.body));
   const moved = await api("PUT", "/agents/desk/definition", agent("desk", { version: 3, place: { mode: "runner" } }));
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.deepEqual([moved.body.definition.computer, moved.body.definition.place], [{ kind: "none" }, { mode: "runner" }]);
