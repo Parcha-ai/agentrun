@@ -72,7 +72,7 @@ async function consolidate({ store, data, onFolder }, consolidator, { drop = [],
     asks.push(prompt);
     return { text: prompt.startsWith("You keep an agent's learned notes") ? consolidator(prompt) : graderAnswer(prompt, drop), usd: 0.01, tokens: { input: 10, cache_read: 0, cache_write: 0, output: 5 } };
   };
-  const loop = learningLoopFactory({ store, data, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = learningLoopFactory({ refuse: async () => [], store, data, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const end = await loop.start(claim);
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
   const snapshot = await onFolder((ws) => readSnapshot(ws));
@@ -192,7 +192,7 @@ test("the 5th merge past the serve budget queues one consolidation run, as no li
     const claim = await w.store.claim(runId, "runner-a", { leaseMs: 60_000 });
     await w.store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "proposed", proposal: { notes: [{ file, text: big(file) }] } } } }, { table: "learning_run", row: { id: `${runId}-learning` } }] });
     const learningClaim = await w.store.claim(`${runId}-learning`, "runner-b", { leaseMs: 60_000 });
-    const loop = learningLoopFactory({ store: w.store, data: w.data, ask: async ({ prompt }) => ({ text: graderAnswer(prompt), usd: 0 }) })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
+    const loop = learningLoopFactory({ refuse: async () => [], store: w.store, data: w.data, ask: async ({ prompt }) => ({ text: graderAnswer(prompt), usd: 0 }) })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
     return loop.start(learningClaim);
   };
   assert.deepEqual(await learn("run-5", "long-5.md"), { state: "ended" });

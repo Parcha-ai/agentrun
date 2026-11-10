@@ -122,7 +122,7 @@ async function refileRun(t, { existing, skill, race = {}, notes: runNotes = [NOT
   const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
   const answer = given ?? verdictOf([{ file: NOTE.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report, whatever the job" }]);
   // `race`: notes another run merges while this one is graded, after its read of main and before its merge.
-  const loop = learningLoopFactory({ store, data, ask: async () => (await land(race), { text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = learningLoopFactory({ refuse: async () => [], store, data, ask: async () => (await land(race), { text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const end = await loop.start(claim);
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
   const words = entries.find((entry) => entry.kind === KINDS.learningMerged || entry.kind === KINDS.learningDropped)?.data.detail;

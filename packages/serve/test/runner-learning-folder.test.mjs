@@ -49,7 +49,7 @@ async function learn(store, data, proposal, graded) {
   const kept = { state: "proposed", notes: [], skills: [], workflows: [], proposal, detail: "Proposed." };
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
-  const factory = learningLoopFactory({ store, data, ask: async () => ({ text: graded, usd: 0.01 }) });
+  const factory = learningLoopFactory({ refuse: async () => [], store, data, ask: async () => ({ text: graded, usd: 0.01 }) });
   const end = await factory({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
   return { end, entries };

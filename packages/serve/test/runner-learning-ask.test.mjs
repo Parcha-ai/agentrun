@@ -75,7 +75,7 @@ async function learnedUnder(t, capUsd) {
     beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => GRADER }),
   });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
-  const loop = learningLoopFactory({ store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = learningLoopFactory({ refuse: async () => [], store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const end = await loop.start(claim);
   return { end, sent, store };
 }

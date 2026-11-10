@@ -36,7 +36,7 @@ export interface LearningDispatchDeps {
   /** For tests: the grade's bound, as a signal. Default: GRADE_TIMEOUT_MS from the ask. */
   readonly gradeBound?: () => AbortSignal;
   /** Every value a consolidation must never keep (the server's sealed secrets and the runner's), read at each one. */
-  readonly refuse?: () => Promise<readonly string[]>;
+  readonly refuse: () => Promise<readonly string[]>;
 }
 
 const objectOf = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
@@ -88,7 +88,7 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       const bound = deps.gradeBound ? deps.gradeBound() : AbortSignal.timeout(GRADE_TIMEOUT_MS);
       return bookedAsk(route)(request, AbortSignal.any([signal, bound]), run);
     };
-    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}), ...(deps.refuse ? { refuse: deps.refuse } : {}) })(loopDeps);
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}), refuse: deps.refuse })(loopDeps);
     return {
       start: (claim) => {
         claimed = claim.runId;

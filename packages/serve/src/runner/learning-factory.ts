@@ -31,9 +31,8 @@ export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now
   readonly data: string;
   /** Where the folder's script says what it did (learningWorkspace's log). */
   readonly log?: (line: string) => void;
-  /** Every value a consolidation's answer must never keep (the server's sealed secrets and the runner's). None: only the
-   *  checks' secret shapes. */
-  readonly refuse?: () => Promise<readonly string[]>;
+  /** Every value a consolidation's answer must never keep (the server's sealed secrets and the runner's), read at each. */
+  readonly refuse: () => Promise<readonly string[]>;
 }
 
 /** A consolidation run's id: one per merge that made it due (the merge's run, which a replayed end queues once). */
@@ -64,55 +63,60 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
     readMain: async (ws, proposal) => (await readMain(ws as Workspace, { notes: proposal.notes })) as GradeMain | { readonly problems: readonly Problem[] },
     commit: async (ws, change) => (await learningCommit(ws as Workspace, change as LearningChange)) as LearningCommitResult,
     mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
-    // A consolidation run (learn/consolidate.ts): its launch names its agent and the pairs out of step; its own row, the
-    // agent's revision as it was queued, gives the instructions and the tools a draft may name.
-    consolidationOf: async (learningRunId) => {
-      const launch = objectOf((await store.runs.launch(learningRunId)).body);
-      const job = objectOf(objectOf(launch.input).consolidate);
-      if (typeof job.agentId !== "string") return undefined;
-      const run = await store.runs.get(learningRunId);
-      const body = run ? objectOf((await store.agents.revision(run.revisionId))?.body) : {};
-      const pairs = (Array.isArray(job.pairs) ? job.pairs : []).flatMap((pair) => {
-        const { skill, workflow, changed } = objectOf(pair);
-        return typeof skill === "string" && typeof workflow === "string" && (changed === "skill" || changed === "workflow") ? [{ skill, workflow, changed: changed as "skill" | "workflow" }] : [];
-      });
-      return {
-        agentId: job.agentId, pairs,
-        ...(typeof body.instructions === "string" ? { instructions: body.instructions } : {}),
-        ...(Array.isArray(body.tools) ? { tools: body.tools.filter((tool): tool is string => typeof tool === "string") } : {}),
-      };
-    },
-    consolidationMain: (ws) => consolidationMain(ws as Workspace),
-    // Each note's runs, from the one store, as the agent's learning view counts them.
-    noteRuns: async (agentId) => (await agentLearningOverStore(store as never, agentId)).notes,
-    // The checks a run's end-of-run answer gets (propose.ts proposeRun), against main as the seed, in a directory of the
-    // step's own, as the runner's learning end runs them.
-    checkAnswer: async (ws, { seed, answer, tools }) => {
-      const runDir = await mkdtemp(join(tmpdir(), "agentrun-consolidate-"));
-      try {
-        const refuse = deps.refuse ? await deps.refuse() : [];
-        const proposed = await proposeRun({ folder: ws as Workspace, runDir, seed, turn: { answer, asked: [] } as never, refuse, outcome: "completed", ...(tools ? { tools } : {}) });
-        if (proposed.state !== "proposed") return { state: "dropped", reason: proposed.reason, ...("detail" in proposed && proposed.detail ? { detail: proposed.detail } : {}), ...("problems" in proposed && proposed.problems ? { problems: proposed.problems } : {}) } as CheckedAnswer;
-        const proposal = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8")) as KeptProposal;
-        return { state: "proposed", proposal, ...(proposed.left?.length ? { left: proposed.left } : {}) };
-      } finally {
-        await rm(runDir, { recursive: true, force: true });
-      }
-    },
-    // After a run's merge: a consolidation is queued when due (learn/consolidate.ts consolidationDue): at every
-    // CONSOLIDATE_MERGES-th merge since the last consolidation's commit while the active notes are past the budget, or a
-    // skill and its draft the merge put out of step. Its id is the merge's run's (a replayed end queues it once).
-    afterMerge: async (ws, { agentId, runId, files }) => {
-      const state = await consolidationState(ws as Workspace, isConsolidationRun);
-      const pairs = driftedPairs(state, files);
-      const due = consolidationDue({ mergesSince: state.mergesSince, activeBytes: state.activeBytes, drifted: pairs.length, queued: false });
-      if (!due) return;
-      const source = await store.runs.get(runId);
-      if (!source) return;
-      const id = consolidationRunId(runId);
-      if (await store.runs.get(id)) return;
-      await store.runs.create({ id, agentId, revisionId: source.revisionId }, { body: consolidationLaunchOf(agentId, pairs) });
-      deps.log?.(`learning: a consolidation of ${agentId}'s learning is queued (${due}) as ${id}`);
+    consolidation: {
+      // A consolidation run (learn/consolidate.ts): its launch names its agent and the pairs out of step; its own row, the
+      // agent's revision as it was queued, gives the instructions and the tools a draft may name.
+      of: async (learningRunId) => {
+        const launch = objectOf((await store.runs.launch(learningRunId)).body);
+        const job = objectOf(objectOf(launch.input).consolidate);
+        if (typeof job.agentId !== "string") return undefined;
+        const run = await store.runs.get(learningRunId);
+        const body = run ? objectOf((await store.agents.revision(run.revisionId))?.body) : {};
+        // Its launch is consolidationLaunchOf's, whole: a pair it would not write is refused, never read past.
+        if (!Array.isArray(job.pairs)) throw new TypeError(`run ${learningRunId}: its consolidation launch names no pairs`);
+        const pairs = job.pairs.map((pair) => {
+          const { skill, workflow, changed } = objectOf(pair);
+          if (typeof skill !== "string" || typeof workflow !== "string" || (changed !== "skill" && changed !== "workflow")) throw new TypeError(`run ${learningRunId}: a pair in its consolidation launch is not a skill, a workflow and which changed`);
+          return { skill, workflow, changed: changed as "skill" | "workflow" };
+        });
+        return {
+          agentId: job.agentId, pairs,
+          ...(typeof body.instructions === "string" ? { instructions: body.instructions } : {}),
+          ...(Array.isArray(body.tools) ? { tools: body.tools.filter((tool): tool is string => typeof tool === "string") } : {}),
+        };
+      },
+      main: (ws) => consolidationMain(ws as Workspace),
+      // Each note's runs, from the one store, as the agent's learning view counts them.
+      noteRuns: async (agentId) => (await agentLearningOverStore(store as never, agentId)).notes,
+      // The checks a run's end-of-run answer gets (propose.ts proposeRun), against main as the seed, in a directory of the
+      // step's own, as the runner's learning end runs them.
+      checkAnswer: async (ws, { seed, answer, tools }) => {
+        const runDir = await mkdtemp(join(tmpdir(), "agentrun-consolidate-"));
+        try {
+          const refuse = await deps.refuse();
+          const proposed = await proposeRun({ folder: ws as Workspace, runDir, seed, turn: { answer, asked: [] } as never, refuse, outcome: "completed", ...(tools ? { tools } : {}) });
+          if (proposed.state !== "proposed") return { state: "dropped", reason: proposed.reason, ...("detail" in proposed && proposed.detail ? { detail: proposed.detail } : {}), ...("problems" in proposed && proposed.problems ? { problems: proposed.problems } : {}) } as CheckedAnswer;
+          const proposal = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8")) as KeptProposal;
+          return { state: "proposed", proposal, ...(proposed.left?.length ? { left: proposed.left } : {}) };
+        } finally {
+          await rm(runDir, { recursive: true, force: true });
+        }
+      },
+      // After a run's merge: a consolidation is queued when due (learn/consolidate.ts consolidationDue): at every
+      // CONSOLIDATE_MERGES-th merge since the last consolidation's commit while the active notes are past the budget, or a
+      // skill and its draft the merge put out of step. Its id is the merge's run's (a replayed end queues it once).
+      afterMerge: async (ws, { agentId, runId, files }) => {
+        const state = await consolidationState(ws as Workspace, isConsolidationRun);
+        const pairs = driftedPairs(state, files);
+        const due = consolidationDue({ mergesSince: state.mergesSince, activeBytes: state.activeBytes, drifted: pairs.length, queued: false });
+        if (!due) return;
+        const source = await store.runs.get(runId);
+        if (!source) return;
+        const id = consolidationRunId(runId);
+        if (await store.runs.get(id)) return;
+        await store.runs.create({ id, agentId, revisionId: source.revisionId }, { body: consolidationLaunchOf(agentId, pairs) });
+        deps.log?.(`learning: a consolidation of ${agentId}'s learning is queued (${due}) as ${id}`);
+      },
     },
     ...(deps.now ? { now: deps.now } : {}),
   });

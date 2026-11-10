@@ -65,7 +65,7 @@ async function ended(t, model) {
 /** learn-1 claimed and run by the dispatch's loop. */
 async function runLearning(store, dir, deps) {
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
-  const loop = learningLoopOf({ store, data: dir, ...deps })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = learningLoopOf({ store, data: dir, refuse: async () => [], ...deps })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   return loop.start(claim);
 }
 

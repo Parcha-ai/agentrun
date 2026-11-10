@@ -89,7 +89,7 @@ async function world(t, { handed, mark, leaky = LEAKY, stored }) {
   const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), signIns, ...(stored ? { stored } : {}) });
   const createLoop = (deps) => {
     const job = createAdapterLoop(spec)({ ...deps, endOfRun });
-    const learn = learningLoopFactory({ store, data: dir, ask: async () => ({ text: KEEP, usd: 0 }) })(deps);
+    const learn = learningLoopFactory({ refuse: async () => [], store, data: dir, ask: async () => ({ text: KEEP, usd: 0 }) })(deps);
     return {
       start: (claim) => (claim.runId === "run-1" ? job.start(claim) : learn.start(claim)),
       command: (row) => job.command(row),

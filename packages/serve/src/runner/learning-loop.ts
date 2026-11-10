@@ -106,19 +106,25 @@ export interface LearningLoopDeps {
   mainTexts?(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
-  /** A consolidation run (learn/consolidate.ts): its agent, the agent's instructions and tools, and the pairs a merge put
-   *  out of step, from its launch; undefined for a run that grades another run's learning. */
-  consolidationOf?(learningRunId: string): Promise<Consolidation | undefined>;
+  /** Consolidation (learn/consolidate.ts), all of it or none: a loop without it never runs one and never queues one. */
+  consolidation?: ConsolidationDeps;
+}
+
+/** What a learning loop consolidates with: each part required, so none is ever half there. */
+export interface ConsolidationDeps {
+  /** A consolidation run: its agent, the agent's instructions and tools, and the pairs a merge put out of step, from its
+   *  launch; undefined for a run that grades another run's learning. */
+  of(learningRunId: string): Promise<Consolidation | undefined>;
   /** What a consolidation reads of main (learn/commit.ts consolidationMain): undefined when the folder has none. */
-  consolidationMain?(ws: unknown): Promise<ConsolidationMain | undefined>;
-  /** Each note's runs given it and that read it (the learning view's `runs`), for the rank. None: every note ranks 0. */
-  noteRuns?(agentId: string): Promise<ReadonlyMap<string, { readonly given: number; readonly read: number }>>;
+  main(ws: unknown): Promise<ConsolidationMain | undefined>;
+  /** Each note's runs given it and that read it (the learning view's `runs`), for the rank. */
+  noteRuns(agentId: string): Promise<ReadonlyMap<string, { readonly given: number; readonly read: number }>>;
   /** The checks over a consolidation's answer, against main as `seed` (propose.ts proposeRun, as a run's end-of-run turn
    *  is checked): the proposal kept, or why nothing is. */
-  checkAnswer?(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools?: readonly string[] }): Promise<CheckedAnswer>;
+  checkAnswer(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools?: readonly string[] }): Promise<CheckedAnswer>;
   /** After a merge of a run's learning: whether a consolidation is due for its agent (learn/consolidate.ts
    *  consolidationDue), and queue it. Never fails the merge. */
-  afterMerge?(ws: unknown, merged: { readonly agentId: string; readonly runId: string; readonly files: readonly string[] }): Promise<void>;
+  afterMerge(ws: unknown, merged: { readonly agentId: string; readonly runId: string; readonly files: readonly string[] }): Promise<void>;
 }
 
 /** A consolidation run's own facts, from its launch. */
@@ -426,7 +432,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const detail = mergedWords(settled.merging, settled.verdict, checked);
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
             // Whether the agent's learning is due a consolidation now (never a fault of this merge).
-            if (afterwards && learning.afterMerge) await learning.afterMerge(ws, { agentId: source.agentId, runId: source.runId, files: result.files }).catch(() => {});
+            if (afterwards && learning.consolidation) await learning.consolidation.afterMerge(ws, { agentId: source.agentId, runId: source.runId, files: result.files }).catch(() => {});
             return { state: "ended" };
           }
           if (result.reason === "conflict") {
@@ -448,7 +454,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
          *  they say (ranked by their runs' evidence), the pairs out of step read whole, one ask on the grade model for the
          *  replacements, the usual checks, the hold to its clusters, then the usual grade and merge. Nothing to consolidate
          *  is no ask. Its proposal is journaled before its grade, so a resumed run never asks again. */
-        const consolidateOn = async (ws: unknown, job: Consolidation): Promise<LoopEnd> => {
+        const consolidateOn = async (ws: unknown, job: Consolidation, consolidating: ConsolidationDeps): Promise<LoopEnd> => {
           const who = { runId: claim.runId, agentId: job.agentId, ...(job.instructions ? { instructions: job.instructions } : {}) };
           const entries = await journalEntries(journal, context);
           rooted = entries.length > 0;
@@ -460,9 +466,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             return { state: "ended" };
           };
           if (!made) {
-            const main = learning.consolidationMain ? await learning.consolidationMain(ws) : undefined;
+            const main = await consolidating.main(ws);
             if (!main) return nothing(said.empty);
-            const runs = learning.noteRuns ? await learning.noteRuns(job.agentId).catch(() => new Map<string, { given: number; read: number }>()) : new Map<string, { given: number; read: number }>();
+            const runs = await consolidating.noteRuns(job.agentId);
             const texts = new Map(main.notes.map(({ file, text }) => [file, text]));
             const notes = main.notes.flatMap(({ file, text }) => {
               const note = parseNoteFile(file, text);
@@ -493,7 +499,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               return { state: "ended" };
             }
             spend = answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd;
-            const checked = learning.checkAnswer ? await learning.checkAnswer(ws, { seed: main.seed, answer: typeof answer.text === "string" ? answer.text : "", ...(job.tools ? { tools: job.tools } : {}) }) : ({ state: "dropped", reason: "empty" } as const);
+            const checked = await consolidating.checkAnswer(ws, { seed: main.seed, answer: typeof answer.text === "string" ? answer.text : "", ...(job.tools ? { tools: job.tools } : {}) });
             if (checked.state !== "proposed") return nothing(checked.reason === "empty" ? said.empty : (checked.detail ?? said.empty), checked.problems);
             // Held to what it was asked (the code check behind the grader's question): each note supersedes only notes of
             // one cluster, and a skill or a draft is one of a pair out of step. A cluster note no kept note supersedes stays.
@@ -513,11 +519,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           return settle(ws, who, made.proposal, made.left, false);
         };
 
-        const consolidation = learning.consolidationOf ? await learning.consolidationOf(claim.runId) : undefined;
-        if (consolidation) {
+        const consolidating = learning.consolidation;
+        const consolidation = consolidating ? await consolidating.of(claim.runId) : undefined;
+        if (consolidating && consolidation) {
           const folder = learning.folder(consolidation.agentId);
           try {
-            return await consolidateOn(folder.workspace, consolidation);
+            return await consolidateOn(folder.workspace, consolidation, consolidating);
           } finally {
             await folder.end().catch(() => {});
           }
