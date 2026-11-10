@@ -12,6 +12,8 @@ import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { runnerSecrets } from "./redact.js";
+import { storeSecrets } from "./store-secrets.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { gradeModelFor, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
@@ -40,6 +42,8 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
+        // What a consolidation must never keep: every secret the server keeps sealed, and the runner's own.
+        refuse: async () => runnerSecrets(deps.env ?? process.env, await storeSecrets(deps.store, deps.sealKey, deps.data)),
         // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
         // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
         // A grade model whose vendor this host reaches only through OpenRouter goes there as main's grade does

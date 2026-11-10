@@ -57,6 +57,13 @@ export const GRADE_RUBRIC = [
   "Of the rest, a risky item is pending, whether the user asked for it or the run worked it out: kept, and not used",
   "until the user approves it. Keep every other item. A skill that is a standing rule for every reply is re-filed: its",
   "decision is note, and it is kept as a note of its own, pending when risky.",
+  // LS-05/LS-09 shared: consolidation (one block; edit it with tl-learning).
+  "",
+  "Consolidation: a new note that supersedes several active notes replaces them. Keep it only when it keeps every rule",
+  "of the notes it supersedes (their whole text is above) and adds none of its own; drop it as Contradicts when it",
+  "loses or changes a rule, and the notes it would replace stay. A skill and its workflow draft given together must",
+  "describe the same steps; drop both when they differ.",
+  // end LS-05/LS-09 shared
 ].join("\n");
 
 /** A note's file and its whole text. */

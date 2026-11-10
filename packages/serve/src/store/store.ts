@@ -545,7 +545,8 @@ export interface Runs {
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. */
+   *  false: not); its agent's archive is read apart. A built-in learning run (its launch's harness is "learning") is never
+   *  listed. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;

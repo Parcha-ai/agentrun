@@ -4,7 +4,7 @@
 // (replacementProblems). The consolidation run writes its replacements through the usual supersede path, the checks and
 // the grader; these decide what it is asked to consolidate and hold it to its cluster.
 import { wordsOf } from "./relevance.js";
-import type { Problem } from "./check.js";
+import { CAPS, type Problem } from "./check.js";
 import { SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
 /** A consolidation is due after this many learning merges since the last one, once the active notes are past
@@ -16,6 +16,9 @@ export const CONSOLIDATE_BUDGET = 8000;
 export const CLUSTERS = 6;
 /** The most notes in one cluster. */
 export const CLUSTER_NOTES = 6;
+/** The most notes one consolidation supersedes: the checks' cap on what a merge supersedes (CAPS.supersedes), which
+ *  bounds the grader's prompt (each superseded note is read whole). The clusters past it wait for the next one. */
+export const CONSOLIDATE_SUPERSEDES = CAPS.supersedes;
 /** How alike two notes' words must be (TF-IDF cosine, 0 to 1) to say one rule. */
 export const CLUSTER_SIMILARITY = 0.3;
 
@@ -25,7 +28,11 @@ export type ClusterNote = { readonly file: string; readonly name: string; readon
 /** A word as clustering compares it: a plural or an -ing form is its stem ("invoices", "reconciling"). */
 const stem = (word: string): string => (word.length > 5 && word.endsWith("ing") ? word.slice(0, -3) : word.length > 3 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word);
 
-/** Each note's TF-IDF vector over `notes` as its own corpus: its name, description and body. */
+/** The fewest notes the IDF reads as its corpus: an agent with few notes would weigh a word all of them share as
+ *  nothing, so notes of one rule would never look alike; past it, the agent's notes are the corpus. */
+const CORPUS_FLOOR = 20;
+
+/** Each note's TF-IDF vector over `notes` as its own corpus (at least CORPUS_FLOOR): its name, description and body. */
 function vectors(notes: readonly ClusterNote[]): Map<string, number>[] {
   const bags = notes.map(({ name, description, body }) => wordsOf(`${name} ${description} ${body}`).map(stem));
   const df = new Map<string, number>();
@@ -34,7 +41,7 @@ function vectors(notes: readonly ClusterNote[]): Map<string, number>[] {
     const tf = new Map<string, number>();
     for (const word of bag) tf.set(word, (tf.get(word) ?? 0) + 1);
     const vector = new Map<string, number>();
-    for (const [word, count] of tf) vector.set(word, count * Math.log(1 + notes.length / df.get(word)!));
+    for (const [word, count] of tf) vector.set(word, count * Math.log(1 + Math.max(notes.length, CORPUS_FLOOR) / df.get(word)!));
     return vector;
   });
 }
@@ -72,6 +79,19 @@ export function clustersOf<T extends ClusterNote>(notes: readonly T[], rank: (no
   return clusters;
 }
 
+/** The clusters one consolidation asks for, best first, while their notes together fit CONSOLIDATE_SUPERSEDES: a
+ *  cluster that would pass it is left for the next consolidation (a smaller one after it may still fit). */
+export function clustersWithin<T>(clusters: readonly (readonly T[])[], cap: number = CONSOLIDATE_SUPERSEDES): T[][] {
+  const out: T[][] = [];
+  let total = 0;
+  for (const cluster of clusters) {
+    if (total + cluster.length > cap) continue;
+    out.push([...cluster]);
+    total += cluster.length;
+  }
+  return out;
+}
+
 /** A skill and a workflow draft of one job that a merge put out of step: it changed one (`changed`) and not the other. */
 export type DriftedPair = { readonly skill: string; readonly workflow: string; readonly changed: "skill" | "workflow" };
 
@@ -91,13 +111,13 @@ export function driftedPairs(learned: { readonly skills: readonly { readonly nam
   return out;
 }
 
-/** Why a consolidation is due after a merge, or undefined: `drift` when a pair drifted, `growth` after
- *  CONSOLIDATE_MERGES merges since the last consolidation with the active notes past CONSOLIDATE_BUDGET. Never while
- *  one is queued for the agent. */
+/** Why a consolidation is due after a merge, or undefined: `drift` when a pair drifted, `growth` at every
+ *  CONSOLIDATE_MERGES-th merge since the last consolidation (5, 10, …: one that merged nothing is asked again only 5
+ *  merges later, never at each merge) with the active notes past CONSOLIDATE_BUDGET. Never while one is queued. */
 export function consolidationDue(state: { readonly mergesSince: number; readonly activeBytes: number; readonly drifted: number; readonly queued: boolean }): "drift" | "growth" | undefined {
   if (state.queued) return undefined;
   if (state.drifted > 0) return "drift";
-  return state.mergesSince >= CONSOLIDATE_MERGES && state.activeBytes > CONSOLIDATE_BUDGET ? "growth" : undefined;
+  return state.mergesSince > 0 && state.mergesSince % CONSOLIDATE_MERGES === 0 && state.activeBytes > CONSOLIDATE_BUDGET ? "growth" : undefined;
 }
 
 /** A note's evidence: read·3 + min(given, 10)·0.1, from the runs that opened it and that were given it (the learning
@@ -128,4 +148,64 @@ export function replacementProblems(cluster: readonly string[], replacements: re
     else for (const name of supersedes) covered.add(name);
   }
   return { problems, stayActive: cluster.filter((file) => !covered.has(file)) };
+}
+
+/** A cluster as the consolidation's prompt shows it: each note whole, best evidence first, with its counts. */
+export type PromptCluster = readonly { readonly file: string; readonly text: string; readonly read: number; readonly given: number }[];
+/** A drifted pair as the prompt shows it: the skill's SKILL.md, the draft's workflow.json and README, and which side
+ *  changed last. */
+export type PromptPair = { readonly skill: { readonly name: string; readonly text: string }; readonly workflow: { readonly name: string; readonly json: string; readonly readme: string }; readonly changed: "skill" | "workflow" };
+
+/** The one ask that writes a consolidation, on the grade model: for each cluster, one note that replaces its notes
+ *  (front matter `supersedes:` naming each one it replaces, every rule of theirs kept, none added), and for each drifted
+ *  pair, the skill and the draft brought back in step, whole, under their names. In the end-of-run turn's format
+ *  (learn/reflect.ts parseReflection), so the usual checks read it. */
+export function consolidatePrompt(input: { readonly instructions?: string; readonly clusters: readonly PromptCluster[]; readonly pairs: readonly PromptPair[] }): string {
+  const fence = (lang: string, name: string, text: string) => `\`\`\`\`${lang} ${name}\n${text.endsWith("\n") ? text : `${text}\n`}\`\`\`\``;
+  return [
+    "You keep an agent's learned notes, skills and workflow drafts in order. Some of its notes say the same rule in more than one note, and some of its skills and workflow drafts for one job have drifted apart.",
+    ...(input.instructions ? ["", "The agent's standing instructions, for what its job is:", "", input.instructions.slice(0, 16_000)] : []),
+    ...input.clusters.flatMap((cluster, i) => [
+      "",
+      `## Cluster ${i + 1}: notes that may say one rule (best evidence first: read = runs that opened it, given = runs that were given it)`,
+      ...cluster.map(({ file, text, read, given }) => `\n### ${file} (read ${read}, given ${given})\n\n${text.trim()}`),
+    ]),
+    ...input.pairs.flatMap(({ skill, workflow, changed }) => [
+      "",
+      `## A skill and its workflow draft out of step: the ${changed} changed last`,
+      "",
+      fence("skill", skill.name, skill.text),
+      "",
+      fence("workflow", workflow.name, `${workflow.readme.trim()}\n${workflow.json.trim()}`),
+    ]),
+    "",
+    "## What to answer",
+    "",
+    "For each cluster whose notes say one rule, write ONE note that replaces them: a new file name, front matter with `name`, `description`, `type` and `supersedes: [<each file it replaces>]`, then the rule. Keep every rule the notes it replaces hold, in the wording of the note with the best evidence; add no rule of your own. Supersede only notes of that cluster. A note that says a different rule stays as it is: leave it out of `supersedes`. A cluster whose notes say different rules gets no note.",
+    "Open each note with ```note <file> and close it with ```.",
+    "For each skill and draft out of step, give both again whole, under their names, so they describe the same steps: the one that changed last is the one to follow. Open each with four backticks (````skill <name>, ````workflow <name>) and close it with four.",
+    "Answer with the blocks alone. If nothing should change, answer with no block.",
+  ].join("\n");
+}
+
+/** A consolidation's proposal held to what it was asked (the code check behind the grader): each note supersedes only
+ *  notes of one cluster (replacementProblems), and a skill or a draft is one of a drifted pair. What fails is left out
+ *  with its problem; a cluster note no kept note supersedes stays active. */
+export function heldToClusters<N extends { readonly file: string; readonly supersedes: readonly string[] }>(notes: readonly N[], files: readonly { readonly file: string }[], clusters: readonly (readonly string[])[], pairs: readonly { readonly skill: string; readonly workflow: string }[]): { notes: N[]; files: string[]; problems: Problem[]; stayActive: string[] } {
+  const problems: Problem[] = [];
+  const kept: N[] = [];
+  for (const note of notes) {
+    const cluster = clusters.find((members) => note.supersedes.some((name) => members.includes(name))) ?? [];
+    const checked = replacementProblems(cluster, [note]);
+    if (checked.problems.length) problems.push(...checked.problems);
+    else kept.push(note);
+  }
+  const allowed = new Set(pairs.flatMap(({ skill, workflow }) => [`${SKILLS_DIR}/${skill}/`, `${WORKFLOWS_DIR}/${workflow}/`]));
+  const keptFiles: string[] = [];
+  for (const { file } of files) {
+    if ([...allowed].some((prefix) => file.startsWith(prefix))) keptFiles.push(file);
+    else problems.push({ rule: "consolidate", path: file, detail: "a consolidation changes only a skill and its workflow draft that drifted apart" });
+  }
+  const covered = new Set(kept.flatMap((note) => note.supersedes));
+  return { notes: kept, files: keptFiles, problems, stayActive: clusters.flat().filter((file) => !covered.has(file)) };
 }

@@ -23,6 +23,8 @@ import { learnedPlace } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
 import { notKept, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
+import { clustersOf, clustersWithin, consolidatePrompt, heldToClusters, rankOf } from "../learn/consolidate.js";
+import type { ConsolidationMain } from "../learn/commit.js";
 import { KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
 
@@ -104,7 +106,28 @@ export interface LearningLoopDeps {
   mainTexts?(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
+  /** A consolidation run (learn/consolidate.ts): its agent, the agent's instructions and tools, and the pairs a merge put
+   *  out of step, from its launch; undefined for a run that grades another run's learning. */
+  consolidationOf?(learningRunId: string): Promise<Consolidation | undefined>;
+  /** What a consolidation reads of main (learn/commit.ts consolidationMain): undefined when the folder has none. */
+  consolidationMain?(ws: unknown): Promise<ConsolidationMain | undefined>;
+  /** Each note's runs given it and that read it (the learning view's `runs`), for the rank. None: every note ranks 0. */
+  noteRuns?(agentId: string): Promise<ReadonlyMap<string, { readonly given: number; readonly read: number }>>;
+  /** The checks over a consolidation's answer, against main as `seed` (propose.ts proposeRun, as a run's end-of-run turn
+   *  is checked): the proposal kept, or why nothing is. */
+  checkAnswer?(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools?: readonly string[] }): Promise<CheckedAnswer>;
+  /** After a merge of a run's learning: whether a consolidation is due for its agent (learn/consolidate.ts
+   *  consolidationDue), and queue it. Never fails the merge. */
+  afterMerge?(ws: unknown, merged: { readonly agentId: string; readonly runId: string; readonly files: readonly string[] }): Promise<void>;
 }
+
+/** A consolidation run's own facts, from its launch. */
+export type Consolidation = { readonly agentId: string; readonly instructions?: string; readonly tools?: readonly string[]; readonly pairs: readonly { readonly skill: string; readonly workflow: string; readonly changed: "skill" | "workflow" }[] };
+/** What the checks kept of a consolidation's answer, or why nothing. */
+export type CheckedAnswer = { readonly state: "proposed"; readonly proposal: KeptProposal; readonly left?: readonly Problem[] } | { readonly state: "dropped"; readonly reason: string; readonly detail?: string; readonly problems?: readonly Problem[] };
+/** A consolidation's journal entry (journal-kinds.ts learningConsolidation): its proposal held to its clusters, what the
+ *  checks and the hold left out, the notes that stay active, and what its ask spent. */
+type ConsolidationData = { readonly proposal: KeptProposal; readonly left: readonly Problem[]; readonly stayActive: readonly string[]; readonly usd: number | null };
 
 const ROOT = ROOT_CONVERSATION_ID;
 
@@ -274,12 +297,15 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
         let rooted = false;
         /** One entry on the root, committed; `end` stages the run's state with it (keyed to this entry, its effect), and
          *  `take` the stop row it applies. */
+        /** A consolidation run's spend so far (its ask's and its grade's), kept as its cost at its end; undefined for a run
+         *  that grades another run's learning (its grade's spend is its learning end's). */
+        let spend: number | null | undefined;
         const append = async (kind: string, data: unknown, end?: "ended" | "failed" | "stopped" | "parked", take?: number) => {
           const writes: StorageWrite[] = [];
           if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } } as StorageWrite);
           const id = await journal.mintId();
           writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } } as StorageWrite);
-          if (end) journal.stage({ run: { state: end }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
+          if (end) journal.stage({ run: { state: end, ...(spend !== undefined && (end === "ended" || end === "failed") ? { costUsd: spend } : {}) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
           const result = await journal.commit([writes], () => {}, context);
           if (result.stored === 0) throw result.refused;
           rooted = true;
@@ -292,29 +318,11 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           return { state: "stopped" };
         };
 
-        const source = await learning.sourceOf(claim.runId);
-        if (!source) {
-          await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
-          return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
-        }
-        const kept = await learning.proposal(source.runId);
-        if (!kept) {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
-          return { state: "ended" };
-        }
-        // The row as the end-of-run hook keeps it: its state and words, the kept Proposal inside (a drop queues no learning
-        // run, so a row that isn't proposed is read as nothing to grade).
-        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal; readonly left?: readonly Problem[] } | null;
-        if (row?.state !== "proposed" || !row.proposal) {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
-          return { state: "ended" };
-        }
-        const proposal = row.proposal;
-        // What the checks left out of the proposal (propose.ts Proposed `left`), said with the merge.
-        const checked = Array.isArray(row.left) ? row.left : [];
-
-        /** The grade and the merge, on the agent's learning folder `ws`. */
-        const onFolder = async (ws: unknown): Promise<LoopEnd> => {
+        /** The grade and the merge of `proposal` on the agent's learning folder `ws`, as the learning of `who` (its Run-Id on
+         *  the merge, its `source` in the journal): a run's kept proposal, or a consolidation's own. `checked` is what the
+         *  checks left out, said with the merge. After a run's merge, `afterwards` asks whether a consolidation is due. */
+        const settle = async (ws: unknown, who: { readonly runId: string; readonly agentId: string; readonly instructions?: string }, proposal: KeptProposal, checked: readonly Problem[], afterwards: boolean): Promise<LoopEnd> => {
+          const source = who;
           const entries = await journalEntries(journal, context);
           rooted = entries.length > 0;
           const unavailable = entries.filter((entry) => entry.kind === KINDS.learningUnavailable).length;
@@ -369,12 +377,14 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             } catch (error) {
               const end = await halted();
               if (end) return end;
+              if (spend !== undefined) spend = null;
               await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
               void error;
               return { state: "ended" };
             }
             if (settledItems.length) verdict = { ...verdict, items: [...verdict.items, ...settledItems] };
             graded = { source: source.runId, verdict, usd, tokens, graded: main.graded };
+            if (spend !== undefined) spend = spend === null || usd === null ? null : spend + usd;
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.
             await deps.flush();
@@ -415,6 +425,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             }
             const detail = mergedWords(settled.merging, settled.verdict, checked);
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
+            // Whether the agent's learning is due a consolidation now (never a fault of this merge).
+            if (afterwards && learning.afterMerge) await learning.afterMerge(ws, { agentId: source.agentId, runId: source.runId, files: result.files }).catch(() => {});
             return { state: "ended" };
           }
           if (result.reason === "conflict") {
@@ -432,11 +444,111 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           return { state: "parked", wakeAt: now() + wait };
         };
 
+        /** A consolidation run (learn/consolidate.ts) on the agent's learning folder `ws`: its active notes clustered by what
+         *  they say (ranked by their runs' evidence), the pairs out of step read whole, one ask on the grade model for the
+         *  replacements, the usual checks, the hold to its clusters, then the usual grade and merge. Nothing to consolidate
+         *  is no ask. Its proposal is journaled before its grade, so a resumed run never asks again. */
+        const consolidateOn = async (ws: unknown, job: Consolidation): Promise<LoopEnd> => {
+          const who = { runId: claim.runId, agentId: job.agentId, ...(job.instructions ? { instructions: job.instructions } : {}) };
+          const entries = await journalEntries(journal, context);
+          rooted = entries.length > 0;
+          let made = entries.find((entry) => entry.kind === KINDS.learningConsolidation)?.data as ConsolidationData | undefined;
+          const graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
+          spend = made ? (made.usd === null || (graded && graded.usd === null) ? null : made.usd + (graded?.usd ?? 0)) : 0;
+          const nothing = async (detail: string, problems?: readonly Problem[]): Promise<LoopEnd> => {
+            await append(KINDS.learningDropped, { source: who.runId, reason: problems?.length ? "checker" : "empty", detail: problems?.length ? said.checker(problems as never) : detail, ...(problems?.length ? { problems } : {}) } satisfies DroppedData, "ended");
+            return { state: "ended" };
+          };
+          if (!made) {
+            const main = learning.consolidationMain ? await learning.consolidationMain(ws) : undefined;
+            if (!main) return nothing(said.empty);
+            const runs = learning.noteRuns ? await learning.noteRuns(job.agentId).catch(() => new Map<string, { given: number; read: number }>()) : new Map<string, { given: number; read: number }>();
+            const texts = new Map(main.notes.map(({ file, text }) => [file, text]));
+            const notes = main.notes.flatMap(({ file, text }) => {
+              const note = parseNoteFile(file, text);
+              return Array.isArray(note) ? [] : [note];
+            });
+            const counts = (file: string) => runs.get(file) ?? { given: 0, read: 0 };
+            // The clusters, best first, while what they would supersede fits one merge (the checks' cap).
+            const clusters = clustersWithin(clustersOf(notes, (note) => rankOf(counts(note.file))));
+            const pairs = job.pairs.flatMap((pair) => {
+              const skill = main.skills.find(({ name }) => name === pair.skill);
+              const workflow = main.workflows.find(({ name }) => name === pair.workflow);
+              return skill && workflow ? [{ skill, workflow, changed: pair.changed }] : [];
+            });
+            if (!clusters.length && !pairs.length) return nothing(said.empty);
+            const prompt = consolidatePrompt({
+              ...(job.instructions ? { instructions: job.instructions } : {}),
+              clusters: clusters.map((cluster) => cluster.map((note) => ({ file: note.file, text: texts.get(note.file)!, ...counts(note.file) }))),
+              pairs,
+            });
+            let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
+            try {
+              answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS)]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+            } catch {
+              const end = await halted();
+              if (end) return end;
+              spend = null;
+              await append(KINDS.learningDropped, { source: who.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: null, tokens: null } satisfies DroppedData, "ended");
+              return { state: "ended" };
+            }
+            spend = answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd;
+            const checked = learning.checkAnswer ? await learning.checkAnswer(ws, { seed: main.seed, answer: typeof answer.text === "string" ? answer.text : "", ...(job.tools ? { tools: job.tools } : {}) }) : ({ state: "dropped", reason: "empty" } as const);
+            if (checked.state !== "proposed") return nothing(checked.reason === "empty" ? said.empty : (checked.detail ?? said.empty), checked.problems);
+            // Held to what it was asked (the code check behind the grader's question): each note supersedes only notes of
+            // one cluster, and a skill or a draft is one of a pair out of step. A cluster note no kept note supersedes stays.
+            const replacements = checked.proposal.notes.flatMap(({ file, text }) => {
+              const note = parseNoteFile(file, text);
+              return Array.isArray(note) ? [] : [{ file, text, supersedes: note.supersedes }];
+            });
+            const held = heldToClusters(replacements, checked.proposal.files ?? [], clusters.map((cluster) => cluster.map(({ file }) => file)), pairs.map(({ skill, workflow }) => ({ skill: skill.name, workflow: workflow.name })));
+            const keptFiles = new Set(held.files);
+            const proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: main.seed };
+            const left = [...(checked.left ?? []), ...held.problems];
+            if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
+            made = { proposal, left, stayActive: held.stayActive, usd: spend };
+            await append(KINDS.learningConsolidation, made);
+            await deps.flush();
+          }
+          return settle(ws, who, made.proposal, made.left, false);
+        };
+
+        const consolidation = learning.consolidationOf ? await learning.consolidationOf(claim.runId) : undefined;
+        if (consolidation) {
+          const folder = learning.folder(consolidation.agentId);
+          try {
+            return await consolidateOn(folder.workspace, consolidation);
+          } finally {
+            await folder.end().catch(() => {});
+          }
+        }
+
+        const source = await learning.sourceOf(claim.runId);
+        if (!source) {
+          await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
+          return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
+        }
+        const kept = await learning.proposal(source.runId);
+        if (!kept) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
+          return { state: "ended" };
+        }
+        // The row as the end-of-run hook keeps it: its state and words, the kept Proposal inside (a drop queues no learning
+        // run, so a row that isn't proposed is read as nothing to grade).
+        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal; readonly left?: readonly Problem[] } | null;
+        if (row?.state !== "proposed" || !row.proposal) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
+          return { state: "ended" };
+        }
+        const proposal = row.proposal;
+        // What the checks left out of the proposal (propose.ts Proposed `left`), said with the merge.
+        const checked = Array.isArray(row.left) ? row.left : [];
+
         // The folder is ended once the run is done with it, whichever way it goes out. Its end only sweeps what an exec
         // left behind (on Archil, the spill), after the run's own end is committed: a failed sweep changes no end.
         const folder = learning.folder(source.agentId);
         try {
-          return await onFolder(folder.workspace);
+          return await settle(folder.workspace, source, proposal, checked, true);
         } finally {
           await folder.end().catch(() => {});
         }

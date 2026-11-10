@@ -54,10 +54,12 @@ test("a skill and its workflow draft drift apart when a merge changes one and no
   assert.deepEqual(driftedPairs({ skills, workflows }, ["workflows/lonely/workflow.json", "notes.md"]), [], "no partner, no pair");
 });
 
-test("a consolidation is due after 5 merges past the serve budget, or on a drifted pair; never while one is queued", () => {
+test("a consolidation is due at every 5th merge past the serve budget (one that merged nothing is asked again 5 merges later), or on a drifted pair; never while one is queued", () => {
   const base = { mergesSince: 5, activeBytes: 9000, drifted: 0, queued: false };
   assert.equal(consolidationDue(base), "growth");
   assert.equal(consolidationDue({ ...base, mergesSince: 4 }), undefined, "too few merges");
+  assert.equal(consolidationDue({ ...base, mergesSince: 6 }), undefined, "not at each merge after the 5th");
+  assert.equal(consolidationDue({ ...base, mergesSince: 10 }), "growth", "again 5 merges later");
   assert.equal(consolidationDue({ ...base, activeBytes: 8000 }), undefined, "within the budget");
   assert.equal(consolidationDue({ ...base, mergesSince: 0, activeBytes: 0, drifted: 1 }), "drift");
   assert.equal(consolidationDue({ ...base, drifted: 1, queued: true }), undefined, "one at a time");
@@ -82,4 +84,12 @@ test("the code check behind the grader: a replacement supersedes only its cluste
   assert.deepEqual(outside.problems.map((p) => [p.rule, p.path]), [["consolidate", "invoice-reconcile.md"]], "it supersedes a note outside its cluster");
   const none = replacementProblems(cluster, [{ ...merged, supersedes: [] }]);
   assert.deepEqual(none.problems.map((p) => p.rule), ["consolidate"], "a replacement that supersedes nothing is no consolidation");
+});
+
+test("one consolidation asks for the clusters, best first, while what they supersede fits one merge (the checks' cap of 8): the rest wait", () => {
+  const { clustersWithin, CONSOLIDATE_SUPERSEDES } = consolidate;
+  assert.equal(CONSOLIDATE_SUPERSEDES, 8);
+  const of = (n, tag) => Array.from({ length: n }, (_, i) => `${tag}${i}`);
+  assert.deepEqual(clustersWithin([of(4, "a"), of(4, "b"), of(4, "c")]).map((c) => c[0]), ["a0", "b0"]);
+  assert.deepEqual(clustersWithin([of(6, "a"), of(4, "b"), of(2, "c")]).map((c) => c[0]), ["a0", "c0"], "a smaller one after may still fit");
 });
