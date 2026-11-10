@@ -883,10 +883,15 @@ await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, networ
 
 - `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
   has it mounted, an absolute path. Without the option, nothing changes: every path is bound as it is.
-- With it, the daemon's copy and the run's folder are mounted as the volume's subpaths, never binds of this process's
-  paths and never the volume's root: `--mount type=volume,src=<name>,dst=/opt/agentrun/computerd,volume-subpath=<copy
-  below root>,volume-nocopy,readonly`, and `--mount type=volume,src=<name>,dst=/workspace,volume-subpath=<folder below
-  root>,volume-nocopy`. `volume-nocopy`: Docker never copies the image's files at the destination into the volume.
+- With it, the daemon and the run's folder are mounted as the volume's subpaths, never binds of this process's paths
+  and never the volume's root, and every subpath is a directory (Docker mounts a directory subpath on every engine that
+  has `volume-subpath`; nothing leans on a file). The daemon is staged in `daemonCache` as `daemon-<sha256>/`, holding
+  `computerd` (0755) and an empty `egress/`, written in a temporary directory and renamed into place, reused when the
+  same; that directory is mounted read-only at `/opt/agentrun`, so the daemon is `/opt/agentrun/computerd` as on every
+  computer and an allowlist's egress volume has its mount point. `--mount type=volume,src=<name>,dst=/opt/agentrun,
+  volume-subpath=<daemon dir below root>,volume-nocopy,readonly`, and `--mount type=volume,src=<name>,dst=/workspace,
+  volume-subpath=<folder below root>,volume-nocopy`. `volume-nocopy`: Docker never copies the image's files at the
+  destination into the volume.
 - `daemonCache` must be at or below `root`; the provider throws in words when it is made with one that is not. A run
   folder must be below `root`; `check` and `create` refuse one that is not, or the root itself, in words, before any
   `docker run`.
@@ -902,9 +907,9 @@ await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, networ
   not have either. With the option, `create` stages those four files below the volume's root first, as it stages the
   daemon: in `daemonCache`, in `egress-<sha256 of the files>/` (`docker/` holding the three modules, `package.json`
   beside it; 0755 directories, 0644 files), written in a temporary directory and renamed into place, and reused when
-  one with the same bytes and modes is there (one that differs is written again). The proxy then mounts
-  `egress-<sha>/docker` and `egress-<sha>/package.json` as the volume's subpaths, read-only, and the read-back holds it
-  to them. The egress volume is a named volume of its own, as before. In a container the provider still needs
+  one with the same bytes and modes is there (one that differs is written again). The proxy then mounts that one
+  directory, the layout it runs from, whole at `/code` as the volume's subpath, read-only, and the read-back holds it to
+  it. The egress volume is a named volume of its own, as before. In a container the provider still needs
   `egress.hostAddresses` for an allowlist (see the egress proxy).
 
 ### The image: `ensureImage`

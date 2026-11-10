@@ -42,6 +42,8 @@ const PROXY_VOLUME = "/egress";
 const PROXY_SOCKET = `${PROXY_VOLUME}/egress.sock`;
 const PROXY_CODE = "/code/docker";
 const PROXY_PACKAGE = "/code/package.json";
+/** With the provider's volume option, the staged tree (src/docker/stage.ts) mounted whole: docker/ and package.json. */
+const PROXY_ROOT = "/code";
 const PROXY_MAIN = `${PROXY_CODE}/egress-main.js`;
 /** The files the proxy container runs, in dist/docker. */
 export const CODE_FILES = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
@@ -55,9 +57,9 @@ export const egressNameOf = (name: string): string => `${name}-egress`;
 export interface EgressCode {
 	dir: string;
 	packageJson: string;
-	/** With the provider's volume option: the code is staged below the volume's root (src/docker/egress-copy.ts) and the
-	 *  proxy mounts it as the volume's subpaths, `dir` and `packageJson` below the root; undefined each when unknown. */
-	volume?: { name: string; dir?: string; packageJson?: string };
+	/** With the provider's volume option: the code is staged below the volume's root in one tree (src/docker/stage.ts),
+	 *  `root` its subpath (undefined when unknown), which the proxy mounts whole at /code. */
+	volume?: { name: string; root?: string };
 }
 
 /** This package's own build: the directory this file is in, and the package's package.json. */
@@ -196,10 +198,9 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	if (code.volume === undefined) {
 		args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
 	} else {
-		// With the provider's volume option, the staged copy's subpaths: the Docker daemon has none of this process's paths.
-		const { name, dir = "", packageJson = "" } = code.volume;
-		const subpath = (path: string, dst: string) => `type=volume,src=${name},dst=${dst},volume-subpath=${path},volume-nocopy,readonly`;
-		args.push("--mount", subpath(dir, PROXY_CODE), "--mount", subpath(packageJson, PROXY_PACKAGE));
+		// With the provider's volume option, the staged tree, one directory, as the volume's subpath: the Docker daemon has
+		// none of this process's paths.
+		args.push("--mount", `type=volume,src=${code.volume.name},dst=${PROXY_ROOT},volume-subpath=${code.volume.root ?? ""},volume-nocopy,readonly`);
 	}
 	// Create pulled the image before it made the volume, so this run never pulls: the sweep's grace holds.
 	args.push("--pull", "never");
@@ -274,21 +275,24 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	for (const field of ["Binds", "VolumesFrom", "Devices", "PidMode", "UsernsMode"]) if (!blank(host[field])) return other(`has ${field} ${show(host[field])}`);
 	if (config.User !== owner.user) return other(`runs as ${show(config.User).replaceAll('"', "")}, not the computer's ${show(owner.user).replaceAll('"', "")}`);
 	const mounts = proxy.Mounts ?? [];
-	// The code: binds of `code`'s paths, or, with the provider's volume option, the volume's subpaths (checked below in
-	// HostConfig.Mounts, which records them; Mounts shows the volume by name).
+	// The code: binds of `code`'s paths, or, with the provider's volume option, the staged tree at /code, the volume's
+	// subpath (checked below in HostConfig.Mounts, which records it; Mounts shows the volume by name).
 	const shared = code?.volume;
-	const codeAt = (destination: string, source: string | undefined) =>
-		shared === undefined ? { Type: "bind", Destination: destination, RW: false, ...(source === undefined ? {} : { Source: source }) } : { Type: "volume", Name: shared.name, Destination: destination, RW: false };
-	const want = [{ Type: "volume", Name: named, Destination: PROXY_VOLUME, RW: true }, codeAt(PROXY_CODE, code?.dir), codeAt(PROXY_PACKAGE, code?.packageJson)];
+	const codeMounts =
+		shared === undefined
+			? [
+					{ Type: "bind", Destination: PROXY_CODE, RW: false, ...(code ? { Source: code.dir } : {}) },
+					{ Type: "bind", Destination: PROXY_PACKAGE, RW: false, ...(code ? { Source: code.packageJson } : {}) },
+				]
+			: [{ Type: "volume", Name: shared.name, Destination: PROXY_ROOT, RW: false }];
+	const want = [{ Type: "volume", Name: named, Destination: PROXY_VOLUME, RW: true }, ...codeMounts];
 	const fits = mounts.length === want.length && want.every((wanted) => mounts.some((mount) => Object.entries(wanted).every(([key, value]) => (mount as Record<string, unknown>)[key] === value)));
 	if (!fits) return other(`has mounts ${show(mounts.map((m) => `${m.Type} ${m.Name ?? m.Source} at ${m.Destination}${m.RW ? "" : " read-only"}`))}, not its volume read-write at ${PROXY_VOLUME} and its code read-only`);
 	if (shared !== undefined) {
-		for (const [destination, subpath] of [[PROXY_CODE, shared.dir], [PROXY_PACKAGE, shared.packageJson]] as const) {
-			const asked = (host.Mounts ?? []).filter((mount) => mount.Target === destination);
-			const options = asked[0]?.VolumeOptions as { Subpath?: unknown } | undefined;
-			const right = asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === shared.name && asked[0].ReadOnly === true && (subpath === undefined ? typeof options?.Subpath === "string" && options.Subpath !== "" : options?.Subpath === subpath);
-			if (!right) return other(`mounts ${show(asked)} at ${destination}, not the staged code's subpath ${show(subpath)} of the volume ${shared.name}, read-only`);
-		}
+		const asked = (host.Mounts ?? []).filter((mount) => mount.Target === PROXY_ROOT);
+		const subpath = (asked[0]?.VolumeOptions as { Subpath?: unknown } | undefined)?.Subpath;
+		const right = asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === shared.name && asked[0].ReadOnly === true && (shared.root === undefined ? typeof subpath === "string" && subpath !== "" : subpath === shared.root);
+		if (!right) return other(`mounts ${show(asked)} at ${PROXY_ROOT}, not the staged code's subpath ${show(shared.root)} of the volume ${shared.name}, read-only`);
 	}
 	const entrypoint = config.Entrypoint;
 	if (!Array.isArray(entrypoint) || entrypoint.length !== 1 || entrypoint[0] !== "node") return other(`has the entrypoint ${show(entrypoint)}, not node`);

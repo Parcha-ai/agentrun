@@ -9,7 +9,7 @@ import { after } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DockerProvider, VOLUME_SUBPATH_ENGINE } from "../dist/index.js";
-import { COPY_NAME, fakeDocker, valuesOf } from "./fake-docker.mjs";
+import { DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
 /** The egress proxy's code as this package builds it. */
 const BUILT = fileURLToPath(new URL("../dist/docker", import.meta.url));
@@ -36,17 +36,34 @@ function layout() {
 /** The fake docker with the volume option over `layout`'s root, the volume's files there. */
 const withVolume = ({ root, daemonCache, volume }, more = {}) => fakeDocker({ daemonCache, volume, volumeRoots: { [NAME]: root }, ...more });
 
+/** The daemon's staged directory below the root, as create made it: cache/daemon-<sha256>, the only one there. */
+function daemonSubpath({ root }) {
+	const made = readdirSync(join(root, "cache")).filter((entry) => /^daemon-[0-9a-f]{64}$/.test(entry));
+	assert.equal(made.length, 1, JSON.stringify(made));
+	return `cache/${made[0]}`;
+}
+
+/** The daemon's mount: its staged directory, whole, read-only at /opt/agentrun. */
+const daemonMount = (paths) => `type=volume,src=${NAME},dst=/opt/agentrun,volume-subpath=${daemonSubpath(paths)},volume-nocopy,readonly`;
+
 test("compose: create mounts the daemon's copy and the run's folder as the volume's subpaths, never a bind of this process's paths", async () => {
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
 	const made = await provider.create({ ...SPEC, mount: { kind: "bind", path: paths.work } });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const mounts = valuesOf(runOf(calls()), "--mount");
-	assert.deepEqual(mounts, [
-		`type=volume,src=${NAME},dst=/opt/agentrun/computerd,volume-subpath=cache/${COPY_NAME},volume-nocopy,readonly`,
-		`type=volume,src=${NAME},dst=/workspace,volume-subpath=disk/agents/a1/runs/r1/work,volume-nocopy`,
-	]);
+	assert.deepEqual(mounts, [daemonMount(paths), `type=volume,src=${NAME},dst=/workspace,volume-subpath=disk/agents/a1/runs/r1/work,volume-nocopy`]);
 	assert.ok(!calls().some((args) => args.some((arg) => typeof arg === "string" && arg.startsWith("type=bind"))), "no bind of a path only this process's container has");
+	// A directory, mounted whole at /opt/agentrun: its computerd (0755, the daemon's bytes) is the entrypoint, and its
+	// empty egress/ is where an allowlist's egress volume goes.
+	const runArgs = runOf(calls());
+	assert.equal(runArgs[runArgs.indexOf("--entrypoint") + 1], "/opt/agentrun/computerd");
+	const tree = join(paths.root, daemonSubpath(paths));
+	assert.equal(statSync(tree).mode & 0o777, 0o755);
+	assert.equal(statSync(join(tree, "computerd")).mode & 0o777, 0o755);
+	assert.equal(readFileSync(join(tree, "computerd"), "utf8"), DAEMON_BYTES);
+	assert.ok(statSync(join(tree, "egress")).isDirectory());
+	assert.equal(statSync(join(tree, "egress")).mode & 0o777, 0o755);
 	// The drift check at create passed, and the read-back is the run's folder as create was given it.
 	const attached = await provider.attach({ id: made.value.name });
 	assert.equal(attached.ok, true, JSON.stringify(attached));
@@ -60,7 +77,7 @@ test("compose: a computer with no run folder mounts only the daemon's copy from 
 	const { provider, calls } = withVolume(paths);
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, JSON.stringify(made));
-	assert.deepEqual(valuesOf(runOf(calls()), "--mount"), [`type=volume,src=${NAME},dst=/opt/agentrun/computerd,volume-subpath=cache/${COPY_NAME},volume-nocopy,readonly`]);
+	assert.deepEqual(valuesOf(runOf(calls()), "--mount"), [daemonMount(paths)]);
 	assert.equal((await provider.attach({ id: made.value.name })).ok, true);
 });
 
@@ -130,10 +147,11 @@ test("compose: an allowlist's proxy mounts its code from a copy staged below the
 	const made = await provider.create({ ...SPEC, network: { allow: ["pypi.org"] }, mount: { kind: "bind", path: paths.work } });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.ok(!calls().some((args) => args.some((arg) => typeof arg === "string" && arg.startsWith("type=bind"))), "no bind of a path only this process's container has");
-	const [code, packageJson] = valuesOf(proxyRunOf(calls()), "--mount").slice(1);
-	const staged = /^type=volume,src=agentrun_agentrun-data,dst=\/code\/docker,volume-subpath=(cache\/egress-[0-9a-f]{64})\/docker,volume-nocopy,readonly$/.exec(code);
-	assert.ok(staged, code);
-	assert.equal(packageJson, `type=volume,src=${NAME},dst=/code/package.json,volume-subpath=${staged[1]}/package.json,volume-nocopy,readonly`);
+	// One directory, mounted whole at /code: docker/ with the modules, package.json beside it, as the proxy runs them.
+	const codeMounts = valuesOf(proxyRunOf(calls()), "--mount").slice(1);
+	assert.equal(codeMounts.length, 1, JSON.stringify(codeMounts));
+	const staged = /^type=volume,src=agentrun_agentrun-data,dst=\/code,volume-subpath=(cache\/egress-[0-9a-f]{64}),volume-nocopy,readonly$/.exec(codeMounts[0]);
+	assert.ok(staged, codeMounts[0]);
 	// The copy: the three modules and package.json, 0755 directories and 0644 files, with the build's bytes.
 	const at = join(paths.root, staged[1]);
 	for (const [path, mode] of [[at, 0o755], [join(at, "docker"), 0o755], [join(at, "package.json"), 0o644], ...CODE_FILES.map((file) => [join(at, "docker", file), 0o644])]) {
@@ -156,7 +174,7 @@ test("compose: the staged code is reused when it holds the same bytes, and writt
 	const { provider, calls } = withVolume(paths);
 	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
 	assert.equal((await provider.create(spec)).ok, true);
-	const subpathOf = (all) => /volume-subpath=([^,]+)\/docker,/.exec(valuesOf(proxyRunOf(all), "--mount")[1])[1];
+	const subpathOf = (all) => /volume-subpath=([^,]+),/.exec(valuesOf(proxyRunOf(all), "--mount")[1])[1];
 	const first = subpathOf(calls());
 	const at = join(paths.root, first);
 	const before = statSync(join(at, "docker", CODE_FILES[0]));
@@ -188,6 +206,6 @@ test("compose: a subpath the volume does not have fails create in Docker's words
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "docker");
-	assert.match(made.error.message, /cannot access path cache\/computerd-[0-9a-f]{64} of volume agentrun_agentrun-data/);
+	assert.match(made.error.message, /cannot access path cache\/daemon-[0-9a-f]{64} of volume agentrun_agentrun-data/);
 	assert.deepEqual(names(), []);
 });

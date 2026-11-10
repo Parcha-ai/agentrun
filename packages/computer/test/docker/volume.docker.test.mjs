@@ -56,11 +56,13 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 		ref = made.value;
 		const [inspected] = JSON.parse(docker("inspect", ref.name));
 		const asked = inspected.HostConfig.Mounts.map((mount) => [mount.Type, mount.Source, mount.Target, mount.VolumeOptions?.Subpath, mount.ReadOnly === true]);
+		// Both are directories: the daemon's staged one at /opt/agentrun (its computerd the entrypoint), the run's folder.
 		assert.deepEqual(asked, [
-			["volume", name, "/opt/agentrun/computerd", asked[0][3], true],
+			["volume", name, "/opt/agentrun", asked[0][3], true],
 			["volume", name, "/workspace", "disk/runs/r1/work", false],
 		]);
-		assert.match(asked[0][3], /^cache\/computerd-[0-9a-f]{64}$/);
+		assert.match(asked[0][3], /^cache\/daemon-[0-9a-f]{64}$/);
+		assert.deepEqual(inspected.Config.Entrypoint, ["/opt/agentrun/computerd"]);
 		assert.ok(!inspected.Mounts.some((mount) => mount.Type === "bind"), JSON.stringify(inspected.Mounts));
 	});
 
@@ -92,12 +94,14 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 		try {
 			const [proxy] = JSON.parse(docker("inspect", `${made.value.name}-egress`));
 			assert.equal(proxy.State.Running, true);
-			const code = proxy.HostConfig.Mounts.filter((mount) => mount.Target.startsWith("/code/")).map((mount) => [mount.Type, mount.Source, mount.VolumeOptions?.Subpath, mount.ReadOnly === true]);
-			assert.equal(code.length, 2, JSON.stringify(proxy.HostConfig.Mounts));
-			for (const [type, source, subpath, readonly] of code) {
-				assert.deepEqual([type, source, readonly], ["volume", name, true]);
-				assert.match(subpath, /^cache\/egress-[0-9a-f]{64}\/(docker|package\.json)$/);
-			}
+			// The code is one staged directory, mounted whole at /code: docker/ and package.json, as the proxy runs them.
+			const code = proxy.HostConfig.Mounts.filter((mount) => mount.Target.startsWith("/code")).map((mount) => [mount.Type, mount.Source, mount.Target, mount.VolumeOptions?.Subpath, mount.ReadOnly === true]);
+			assert.equal(code.length, 1, JSON.stringify(proxy.HostConfig.Mounts));
+			assert.deepEqual(code[0].slice(0, 3).concat(code[0][4]), ["volume", name, "/code", true]);
+			assert.match(code[0][3], /^cache\/egress-[0-9a-f]{64}$/);
+			// The computer's egress volume is at /opt/agentrun/egress, inside the daemon's read-only directory.
+			const [computer] = JSON.parse(docker("inspect", made.value.name));
+			assert.ok(computer.Mounts.some((mount) => mount.Type === "volume" && mount.Destination === "/opt/agentrun/egress"), JSON.stringify(computer.Mounts));
 			assert.ok(!proxy.Mounts.some((mount) => mount.Type === "bind"), JSON.stringify(proxy.Mounts));
 			assert.deepEqual(await provider.network(made.value), { ok: true, value: { allow: ["example.com"] } });
 		} finally {

@@ -12,6 +12,7 @@ import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./
 import {
 	COMPUTER_LABEL,
 	CPU_PERIOD_US,
+	DAEMON_DIR_IN_COMPUTER,
 	DAEMON_IN_COMPUTER,
 	DEADLINE_LABEL,
 	DEFAULT_CPUS,
@@ -53,7 +54,7 @@ import {
 	policyWords,
 	RELAY_FLAG,
 } from "./docker/egress.js";
-import { egressStage, egressStaged } from "./docker/egress-copy.js";
+import { daemonStage, egressStage, egressStaged } from "./docker/stage.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
@@ -246,7 +247,7 @@ export class DockerProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #daemonPath: string;
 	readonly #daemonCache: string;
-	/** The volume option: the daemon's copy and a run folder are its subpaths (src/docker/volume.ts). */
+	/** The volume option: the daemon's staged directory and a run folder are its subpaths (src/docker/volume.ts). */
 	readonly #volume: DockerVolume | undefined;
 	readonly #docker: string;
 	readonly #user: string;
@@ -263,7 +264,7 @@ export class DockerProvider implements ComputerProvider {
 
 	/**
 	 * Where the egress proxy's code is, as the proxy mounts it: this package's build, or, with the volume option, its
-	 * staged copy below the volume's root (src/docker/egress-copy.ts), read without writing for a read-back. A copy whose
+	 * staged copy below the volume's root (src/docker/stage.ts), read without writing for a read-back. A copy whose
 	 * place cannot be read (the build is gone) is the volume's subpaths, unnamed, which the read-back holds by kind alone.
 	 */
 	get #code(): EgressCode {
@@ -407,7 +408,9 @@ export class DockerProvider implements ComputerProvider {
 		const daemon = this.#daemon();
 		if (!daemon.ok) return daemon;
 		// How the daemon's copy and the run's folder are mounted, known before anything is made.
-		const daemonMount = this.#mountOf(daemon.value, DAEMON_IN_COMPUTER, true);
+		// With the volume option the daemon's staged directory is mounted at /opt/agentrun, its computerd at
+		// DAEMON_IN_COMPUTER as on every computer.
+		const daemonMount = this.#mountOf(daemon.value, this.#volume === undefined ? DAEMON_IN_COMPUTER : DAEMON_DIR_IN_COMPUTER, true);
 		if (!daemonMount.ok) return daemonMount;
 		const folder = bound === undefined ? undefined : this.#mountOf(bound, WORKSPACE, false);
 		if (folder !== undefined && !folder.ok) return folder;
@@ -645,11 +648,22 @@ export class DockerProvider implements ComputerProvider {
 	 * this user may change it. Always the copy, even of a 0755 daemon, so create and attach have one path to compare.
 	 */
 	#daemon(): Result<string> {
-		const copied = daemonCopy(this.#daemonPath, this.#daemonCache);
-		if (copied.ok && MOUNT_UNSAFE.test(copied.value)) {
-			return fail("invalid", `the daemon's copy ${copied.value} has a comma, a double quote or a line break in its path, which a Docker mount cannot hold: give the provider another daemonCache`);
+		// With the volume option, a directory below the volume's root holding computerd (stage.ts), mounted whole at
+		// /opt/agentrun: Docker mounts a volume's subpath that is a directory, and nothing leans on a file.
+		let path: string;
+		if (this.#volume === undefined) {
+			const copied = daemonCopy(this.#daemonPath, this.#daemonCache);
+			if (!copied.ok) return copied;
+			path = copied.value;
+		} else {
+			const staged = daemonStage(this.#daemonPath, this.#daemonCache, this.#volume);
+			if (!staged.ok) return staged;
+			path = staged.value.path;
 		}
-		return copied;
+		if (MOUNT_UNSAFE.test(path)) {
+			return fail("invalid", `the daemon's copy ${path} has a comma, a double quote or a line break in its path, which a Docker mount cannot hold: give the provider another daemonCache`);
+		}
+		return ok(path);
 	}
 
 	/**

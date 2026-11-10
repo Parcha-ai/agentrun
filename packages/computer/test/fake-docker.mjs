@@ -47,7 +47,7 @@ export function report({
 	const hostBinds = [...binds.map((b) => ({ Type: "bind", Source: b.src, Target: b.dst, ...(b.readonly ? { ReadOnly: true } : {}) })), ...volumes.map(volumeHost)];
 	const mountBinds = [...binds.map((b) => ({ Type: "bind", Source: b.src, Destination: b.dst, Mode: "", RW: !b.readonly, Propagation: "rprivate" })), ...volumes.map(volumePoint)];
 	// The daemon: a bind of daemonPath, or, from a provider with the volume option, daemonVolume ({ src, subpath }).
-	const daemonAt = daemonVolume === undefined ? undefined : { src: daemonVolume.src, dst: "/opt/agentrun/computerd", readonly: true, subpath: daemonVolume.subpath, nocopy: true };
+	const daemonAt = daemonVolume === undefined ? undefined : { src: daemonVolume.src, dst: daemonVolume.dst ?? "/opt/agentrun", readonly: true, subpath: daemonVolume.subpath, nocopy: true };
 	const daemonHost = daemonAt === undefined ? { Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true } : volumeHost(daemonAt);
 	const daemonPoint = daemonAt === undefined ? { Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" } : volumePoint(daemonAt);
 	const [uid, gid] = user.split(":");
@@ -297,7 +297,7 @@ switch (args[0]) {
 		// not bind what it was asked to.
 		const binds = config.binds === "drop" ? [] : more.filter((m) => m.type === "bind").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, ...config.binds }));
 		const volumes = more.filter((m) => m.type === "volume").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m }));
-		const daemonVolume = mount.type === "volume" ? { src: mount.src, subpath: mount["volume-subpath"] } : undefined;
+		const daemonVolume = mount.type === "volume" ? { src: mount.src, subpath: mount["volume-subpath"], dst: mount.dst } : undefined;
 		const network = flags["--network"][0];
 		const memory = flags["--memory"] ? Number.parseInt(flags["--memory"][0], 10) * 1024 * 1024 : 0;
 		const swap = flags["--memory-swap"] ? Number.parseInt(flags["--memory-swap"][0], 10) * 1024 * 1024 : 0;

@@ -9,6 +9,9 @@ import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
 export const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
+/** With the Docker provider's volume option, where the daemon's staged directory is mounted read-only: its computerd is
+ *  DAEMON_IN_COMPUTER (src/docker/stage.ts). */
+export const DAEMON_DIR_IN_COMPUTER = "/opt/agentrun";
 export const COMPUTER_LABEL = "agentrun.computer";
 export const DEADLINE_LABEL = "agentrun.computer.deadline";
 /** Serve's box sizes, when the spec names none. */
@@ -419,7 +422,9 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	// the egress volume read-only for an allowlist.
 	// With the provider's volume option the daemon and the folder are the volume's subpaths (mountAsked).
 	const shared = expected.volume;
-	const daemonAsked = mountAsked(expected.daemonPath, DAEMON_IN_COMPUTER, true, shared);
+	// The daemon's file is bound at DAEMON_IN_COMPUTER; with the volume option its staged directory is at /opt/agentrun.
+	const daemonAt = shared === undefined ? DAEMON_IN_COMPUTER : DAEMON_DIR_IN_COMPUTER;
+	const daemonAsked = mountAsked(expected.daemonPath, daemonAt, true, shared);
 	const folderAsked = bound === undefined ? undefined : mountAsked(bound, WORKSPACE, false, shared);
 	if (daemonAsked === undefined) found.push(`daemon mount: ${expected.daemonPath} is not below the volume root ${shared?.root}, so create never mounts it`);
 	if (bound !== undefined && folderAsked === undefined) found.push(`workspace mount: ${bound} is not below the volume root ${shared?.root}, so create never mounts it`);
@@ -462,7 +467,7 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	}
 
 	const mounts = inspected?.Mounts ?? [];
-	const daemon = mounts.filter((mount) => mount.Destination === DAEMON_IN_COMPUTER);
+	const daemon = mounts.filter((mount) => mount.Destination === daemonAt);
 	const [only] = daemon;
 	// A bind shows its source; the volume's subpath shows as the volume (its subpath is HostConfig.Mounts', checked above).
 	const fits = (mount: InspectMount | undefined, path: string, rw: boolean) =>
@@ -471,7 +476,7 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 		(shared === undefined ? mount.Type === "bind" && mount.Source === path && ["", "rprivate", undefined].includes(mount.Propagation) : mount.Type === "volume" && mount.Name === shared.name);
 	const how = (path: string, rw: boolean, at: string) => `declared ${path} ${shared === undefined ? "bound" : `mounted from the volume ${shared.name}`} ${rw ? "read-write" : "read-only"} at ${at}`;
 	if (daemon.length !== 1 || !fits(only, expected.daemonPath, false)) {
-		found.push(`daemon mount: ${how(expected.daemonPath, false, DAEMON_IN_COMPUTER)}, read back ${show(daemon)}`);
+		found.push(`daemon mount: ${how(expected.daemonPath, false, daemonAt)}, read back ${show(daemon)}`);
 	}
 	if (bound !== undefined) {
 		const workspace = mounts.filter((mount) => mount.Destination === WORKSPACE);
@@ -483,7 +488,7 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	// The egress volume itself, its name, type and mode, is the network's read-back above.
 	const declared = ["the daemon's", ...(bound === undefined ? [] : ["the run folder's"]), ...(allowed ? ["the egress volume's"] : [])].join(" and ");
 	for (const mount of mounts) {
-		if (mount.Destination === DAEMON_IN_COMPUTER || (bound !== undefined && mount.Destination === WORKSPACE) || (allowed && mount.Destination === EGRESS_MOUNT)) continue;
+		if (mount.Destination === daemonAt || (bound !== undefined && mount.Destination === WORKSPACE) || (allowed && mount.Destination === EGRESS_MOUNT)) continue;
 		found.push(`${mount.Type ?? "unknown"} mount: none declared but ${declared}, read back ${show(mount)}`);
 	}
 	if (!sameList(config.Entrypoint, [DAEMON_IN_COMPUTER])) mismatch("Entrypoint", [DAEMON_IN_COMPUTER], config.Entrypoint);
