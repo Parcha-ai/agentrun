@@ -138,7 +138,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
@@ -1091,6 +1091,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const computerReady = async (setting: { kind: string; provider?: string }) =>
     computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, checked.sealKey, withSecrets(process.env, "own")), dockerAnswers);
   const archil = createArchilRoutes({ store, sealKey: checked.sealKey, env: process.env });
+  // Where a run's shell is, read before anything starts by the claim's own rule (runShellOf) on the registry the claim
+  // reads (workspace/computer-deps.ts: the computer package's, under --faux too) and this server's folder mode now.
+  const claimKinds = { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as Parameters<typeof runShellOf>[2];
+  const folderMode = folderModeOf(store);
+  const modeNow = async (): Promise<1 | 2> => ((await folderMode()) === "disk" ? 2 : 1);
+  /** Where a run of `revision` has its shell: its computer setting as the claim reads it (computer-for-claim.ts
+   *  settingOf), its computer, else its place, else the place its run would resolve to (fallbackPlace). */
+  const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
+    const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
+    const setting = body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
+    return runShellOf(setting, await modeNow(), claimKinds);
+  };
+  /** A tool capabilities show available after all: as it was, with no reason. */
+  const withoutReason = <T extends { reason?: string }>({ reason, ...tool }: T): Omit<T, "reason"> & { available: true } => ({ ...tool, available: true }) as Omit<T, "reason"> & { available: true };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const run = await store.runs.get(runId);
@@ -2332,7 +2346,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
       // Archil on or off, or saving a key, changes them.
       const answer = forCaller(caps, byOwnerSession(req));
-      return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
+      // bash where no box can run it: in Mode 2 a run with no computer has bash on Archil's exec (runShellOf: "local"),
+      // read now, since turning Archil on or off changes it; the background tools still need a box.
+      const noBox = noBoxReason(boxOffers);
+      const archilBash = noBox !== undefined && runShellOf({ kind: "none" }, await modeNow(), claimKinds) === "local";
+      const tools = archilBash ? answer.tools.map((tool) => (tool.name === "bash" && tool.reason === noBox ? withoutReason(tool) : tool)) : answer.tools;
+      return send(res, 200, { ...answer, tools, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -2462,7 +2481,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
-        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision as unknown as Revision), caps.tools.map((tool) => tool.name)) : [];
+        // A tool of bash's family the agent's computer gives no shell for reads unavailable (runShellOf).
+        const revision = entry.revision as unknown as Revision | undefined;
+        const tools = revision ? agentTools(env, settings.get(), await toolingOf(revision), caps.tools.map((tool) => tool.name), await shellOfRevision(revision)) : [];
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
