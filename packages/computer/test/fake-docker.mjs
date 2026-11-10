@@ -113,7 +113,10 @@ export function proxyReport({
 			NetworkMode: network, CapDrop: capDrop, CapAdd: null, Privileged: privileged, SecurityOpt: securityOpt, ReadonlyRootfs: readonlyRootfs, PortBindings: {}, PublishAllPorts: false,
 			Binds: null, VolumesFrom: null, Devices: [], PidMode: "", UsernsMode: "", IpcMode: ipc, CgroupnsMode: cgroupns, RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
 			Memory: memory, MemorySwap: swap, PidsLimit: pids, LogConfig: logConfig, CpuPeriod: period, CpuQuota: quota, Ulimits: ulimits,
-			Mounts: mounts.map((m) => ({ Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}) })),
+			Mounts: mounts.map((m) => ({
+				Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}),
+				...(m.subpath !== undefined || m.nocopy ? { VolumeOptions: { ...(m.nocopy ? { NoCopy: true } : {}), ...(m.subpath !== undefined ? { Subpath: m.subpath } : {}) } } : {}),
+			})),
 		},
 		Mounts: mounts.map((m) =>
 			m.type === "volume"
@@ -257,6 +260,14 @@ switch (args[0]) {
 			if (flags["--pull"]?.[0] === "never") { process.stderr.write("docker: Error response from daemon: No such image: " + args[i] + "\\n"); process.exit(125); }
 			saveImages([...present, args[i]]);
 		}
+		// A volume's subpath must be there, as Docker requires: config.volumeRoots names where each volume's files are.
+		for (const m of parsed) {
+			const root = m.type === "volume" && m["volume-subpath"] !== undefined ? config.volumeRoots[m.src] : undefined;
+			if (root !== undefined && !existsSync(root + "/" + m["volume-subpath"])) {
+				process.stderr.write("docker: Error response from daemon: cannot access path " + m["volume-subpath"] + " of volume " + m.src + "\\n");
+				process.exit(125);
+			}
+		}
 		if (flags["--entrypoint"]?.[0] === "node") {
 			// An egress proxy: config.egress says whether it says it is ready, never does, or ends at once.
 			const ends = config.egress === "exits";
@@ -269,7 +280,7 @@ switch (args[0]) {
 			const made = proxyReport({
 				id: createHash("sha256").update(name).digest("hex"), name, image: args[i], labels, entrypoint: ["node"], cmd, user: flags["--user"]?.[0] ?? "",
 				running: !ends, exitCode: ends ? 2 : 0, network: flags["--network"]?.[0] ?? "default", capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], readonlyRootfs: "--read-only" in flags,
-				mounts: parsed.map((m) => ({ type: m.type, src: m.src, dst: m.dst, readonly: "readonly" in m })),
+				mounts: parsed.map((m) => ({ type: m.type, src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m })),
 				memory: Number.parseInt(flags["--memory"]?.[0] ?? "0", 10) * 1024 * 1024, swap: Number.parseInt(flags["--memory-swap"]?.[0] ?? "0", 10) * 1024 * 1024,
 				pids: Number(flags["--pids-limit"]?.[0] ?? 0), ipc: flags["--ipc"]?.[0] ?? "", cgroupns: flags["--cgroupns"]?.[0] ?? "",
 				logConfig: { Type: flags["--log-driver"]?.[0] ?? "json-file", Config: Object.fromEntries((flags["--log-opt"] ?? []).map((o) => [o.slice(0, o.indexOf("=")), o.slice(o.indexOf("=") + 1)])) },
@@ -286,14 +297,6 @@ switch (args[0]) {
 		// not bind what it was asked to.
 		const binds = config.binds === "drop" ? [] : more.filter((m) => m.type === "bind").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, ...config.binds }));
 		const volumes = more.filter((m) => m.type === "volume").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m }));
-		// A volume's subpath must be there, as Docker requires: config.volumeRoots names where each volume's files are.
-		for (const m of parsed) {
-			const root = m.type === "volume" && m["volume-subpath"] !== undefined ? config.volumeRoots[m.src] : undefined;
-			if (root !== undefined && !existsSync(root + "/" + m["volume-subpath"])) {
-				process.stderr.write("docker: Error response from daemon: cannot access path " + m["volume-subpath"] + " of volume " + m.src + "\\n");
-				process.exit(125);
-			}
-		}
 		const daemonVolume = mount.type === "volume" ? { src: mount.src, subpath: mount["volume-subpath"] } : undefined;
 		const network = flags["--network"][0];
 		const memory = flags["--memory"] ? Number.parseInt(flags["--memory"][0], 10) * 1024 * 1024 : 0;

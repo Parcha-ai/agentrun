@@ -53,6 +53,7 @@ import {
 	policyWords,
 	RELAY_FLAG,
 } from "./docker/egress.js";
+import { egressStage, egressStaged } from "./docker/egress-copy.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
@@ -255,8 +256,23 @@ export class DockerProvider implements ComputerProvider {
 	/** Why this provider's own interfaces are not the Docker host's, in words, or none: read once, for the first allowlist
 	 *  with no egress.hostAddresses (#elsewhere). */
 	#elsewhere: string | null | undefined;
-	/** Where the egress proxy's code is: this package's own build. */
-	readonly #code: EgressCode = egressCode();
+	/** Where the egress proxy's code is built: this package's own build. */
+	readonly #built: EgressCode = egressCode();
+	/** With the volume option: the built code's staged copy below the volume's root, once create has staged it. */
+	#staged: EgressCode | undefined;
+
+	/**
+	 * Where the egress proxy's code is, as the proxy mounts it: this package's build, or, with the volume option, its
+	 * staged copy below the volume's root (src/docker/egress-copy.ts), read without writing for a read-back. A copy whose
+	 * place cannot be read (the build is gone) is the volume's subpaths, unnamed, which the read-back holds by kind alone.
+	 */
+	get #code(): EgressCode {
+		const volume = this.#volume;
+		if (volume === undefined) return this.#built;
+		if (this.#staged !== undefined) return this.#staged;
+		const found = egressStaged(this.#built, this.#daemonCache, volume);
+		return found.ok ? found.value : { ...this.#built, volume: { name: volume.name } };
+	}
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
@@ -328,16 +344,12 @@ export class DockerProvider implements ComputerProvider {
 		return [...this.#checkSpec(spec), ...remapped, ...allowed, ...this.#volumeRefusals(spec, host), ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
-	/** With the volume option: a run folder not below the volume's root, an allowlist (its proxy's code is bound from this
-	 *  package's build, a path the Docker daemon does not have either), and, once the host is read, an engine that cannot
-	 *  mount a volume's subpath. */
+	/** With the volume option: a run folder not below the volume's root, and, once the host is read, an engine that
+	 *  cannot mount a volume's subpath. */
 	#volumeRefusals(spec: ComputerSpec, host: DockerHost | undefined): Refusal[] {
 		const volume = this.#volume;
 		if (volume === undefined) return [];
 		const refusals: Refusal[] = [];
-		if (isAllow(spec?.network)) {
-			refusals.push({ field: "network", message: `an allowlist is not taken with the provider's volume option yet: its egress proxy's code is bound from this package's build, which the Docker daemon does not have; ask for "none" or "open"` });
-		}
 		const path = spec?.mount?.kind === "bind" ? spec.mount.path : undefined;
 		if (typeof path === "string" && subpathOf(volume, path) === undefined) refusals.push({ field: "mount", message: outsideWords(volume, path, "mount.path") });
 		if (host !== undefined && (host.engine === undefined || host.engine < VOLUME_SUBPATH_ENGINE)) {
@@ -403,6 +415,13 @@ export class DockerProvider implements ComputerProvider {
 		// An allowlist: the list as the proxy reads it, and the proxy's code, built.
 		const allow = typeof spec.network === "object" ? (allowOf(spec.network.allow) as { list: string[] }).list : undefined;
 		if (allow !== undefined) {
+			// With the volume option, the code is staged below the volume's root, where the Docker daemon can mount it from:
+			// the copy (0755 directories, 0644 files) is what the computer's user must read.
+			if (this.#volume !== undefined) {
+				const staged = egressStage(this.#built, this.#daemonCache, this.#volume);
+				if (!staged.ok) return staged;
+				this.#staged = staged.value;
+			}
 			const unbuilt = egressCodeProblem(this.#code, user);
 			if (unbuilt !== undefined) return fail("not_found", unbuilt);
 		}

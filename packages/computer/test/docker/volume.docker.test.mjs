@@ -2,7 +2,8 @@
 // server in a container keeps its files on, its files in a directory of this machine (a local volume bound there), which
 // is the provider's volume root. The daemon's copy and the run's folder are mounted into the computer as that volume's
 // subpaths: the daemon runs from it, a file the computer writes in /workspace is in the run's folder, and the inspect
-// holds volume mounts with their subpaths, no bind. Needs `npm run build` and `npm run build:daemon` first, Docker Engine
+// holds volume mounts with their subpaths, no bind; an allowlist's egress proxy runs from its code staged below the root,
+// mounted the same way. Needs `npm run build` and `npm run build:daemon` first, Docker Engine
 // 26 or later (skipped in words on an older one), and the image pulled. The computer and the volume are removed in the
 // after hook, pass or fail.
 import assert from "node:assert/strict";
@@ -83,6 +84,25 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 		assert.deepEqual(attached.value.spec.mount, { kind: "bind", path: work });
 		const listed = await provider.list({ "agentrun.test": "volume" });
 		assert.deepEqual(listed.ok && listed.value.map((info) => info.mount), [{ kind: "bind", path: work }]);
+	});
+
+	it("an allowlist's egress proxy runs from its code staged below the volume's root, mounted by subpath: create waits for its ready line", async () => {
+		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: { allow: ["example.com"] }, labels: { "agentrun.test": "volume-allow" } });
+		assert.equal(made.ok, true, JSON.stringify(made));
+		try {
+			const [proxy] = JSON.parse(docker("inspect", `${made.value.name}-egress`));
+			assert.equal(proxy.State.Running, true);
+			const code = proxy.HostConfig.Mounts.filter((mount) => mount.Target.startsWith("/code/")).map((mount) => [mount.Type, mount.Source, mount.VolumeOptions?.Subpath, mount.ReadOnly === true]);
+			assert.equal(code.length, 2, JSON.stringify(proxy.HostConfig.Mounts));
+			for (const [type, source, subpath, readonly] of code) {
+				assert.deepEqual([type, source, readonly], ["volume", name, true]);
+				assert.match(subpath, /^cache\/egress-[0-9a-f]{64}\/(docker|package\.json)$/);
+			}
+			assert.ok(!proxy.Mounts.some((mount) => mount.Type === "bind"), JSON.stringify(proxy.Mounts));
+			assert.deepEqual(await provider.network(made.value), { ok: true, value: { allow: ["example.com"] } });
+		} finally {
+			assert.deepEqual(await provider.release(made.value, "delete"), { ok: true, value: undefined });
+		}
 	});
 
 	it("release(delete) removes the computer and leaves the volume's files", async () => {

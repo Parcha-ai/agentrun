@@ -897,9 +897,15 @@ await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, networ
   `root` that `create` was given, `{ kind: "bind", path }`. The drift check holds the daemon's and the folder's mounts to
   the volume, its subpaths, read-only and read-write, and no bind.
 - The run folder is still checked for the computer's user as above: the provider reads it at its own path.
-- **No allowlist with the option, yet.** The egress proxy's code is bound from this package's build, a path the Docker
-  daemon does not have either, so `check` refuses a network allowlist on a provider with the `volume` option, in words,
-  before anything is made. `none` and `open` are as before.
+- **An allowlist's proxy too.** The egress proxy's code (`dist/docker/egress-main.js`, `egress-proxy.js`,
+  `egress-table.js` and the package's `package.json`) is bound from this package's build, a path the Docker daemon does
+  not have either. With the option, `create` stages those four files below the volume's root first, as it stages the
+  daemon: in `daemonCache`, in `egress-<sha256 of the files>/` (`docker/` holding the three modules, `package.json`
+  beside it; 0755 directories, 0644 files), written in a temporary directory and renamed into place, and reused when
+  one with the same bytes and modes is there (one that differs is written again). The proxy then mounts
+  `egress-<sha>/docker` and `egress-<sha>/package.json` as the volume's subpaths, read-only, and the read-back holds it
+  to them. The egress volume is a named volume of its own, as before. In a container the provider still needs
+  `egress.hostAddresses` for an allowlist (see the egress proxy).
 
 ### The image: `ensureImage`
 
