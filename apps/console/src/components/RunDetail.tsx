@@ -84,7 +84,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
-  const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
+  const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
+  // A Graph tab that went away (the graph's read was refused) leaves the run's default tab open, never a blank view.
+  const tab = picked === "graph" && !graphView ? defaultTab : picked;
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
