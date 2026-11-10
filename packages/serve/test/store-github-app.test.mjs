@@ -214,3 +214,32 @@ test("an App disconnected or replaced while a run holds its token stops it at th
   tokens.release();
   await until(() => github.revoked.length === before + 1);
 });
+
+test("an App disconnected between two calls of one claim refuses the second call in words before anything is sent, with no mint in between, and the token the first call used is revoked", async (t) => {
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const fake = await startFakeMcp({ token: (authorization) => authorization === "Bearer not-a-secret-ghs-token" });
+  t.after(() => fake.close());
+  const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
+  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const githubApp = await githubAppAccess(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { api: github.api });
+  const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp, githubMcpOrigin: new URL(fake.url).origin });
+  t.after(() => step.release());
+  const work = mkdtempSync(join(tmpdir(), "github-app-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const gateway = mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true, beforeCall: step.beforeCall });
+  const call = () => gateway.call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  assert.deepEqual(await call(), { content: [{ type: "text", text: "2" }] }, "the first call, with the App's token");
+  const sentBefore = fake.log.filter((entry) => entry.method === "tools/call").length;
+  await store.triggerSettings.removeScope("github", "server");
+  const refused = await call();
+  assert.equal(refused.isError, true, JSON.stringify(refused));
+  assert.equal(refused.content[0].text, `The MCP server gh's credential can't be used right now: ${GITHUB_UNUSABLE.disconnected}.`);
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, sentBefore, "nothing sent");
+  assert.deepEqual(github.asked.filter((a) => a.method === "POST").map((a) => a.url), ["/app/installations/777/access_tokens"], "no mint in between");
+  for (let i = 0; i < 1000 && !github.revoked.length; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(github.revoked, ["not-a-secret-ghs-token"], "the token the first call used, revoked");
+});

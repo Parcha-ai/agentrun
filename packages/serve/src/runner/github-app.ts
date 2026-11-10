@@ -63,6 +63,11 @@ export async function githubAppAccess(
       if (minted.ok) hold?.([minted.token]);
       return minted;
     },
+    // Before each call: the App as the store holds it now, the same id and key, or the run's token stops.
+    same: async () => {
+      const still = await appOf(store, sealKey);
+      return Boolean(still && still.appId === app.appId && still.pem === app.pem);
+    },
     // An installation token revokes itself (DELETE /installation/token, the token its own credential): no App needed.
     revoke: async (token) => void (await githubCall(api, "/installation/token", { method: "DELETE", jwt: token }).catch(() => undefined)),
   };
