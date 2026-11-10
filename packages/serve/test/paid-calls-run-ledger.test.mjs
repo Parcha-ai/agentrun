@@ -37,13 +37,19 @@ test("monid.run on the run's one ledger books what monid reported, and a later c
   near((await claimOn(store)).spentUsd(), 0.003, "the next claim");
 });
 
-test("browser time on the run's one ledger, as main bills it: each call one paid request held at its expected charge and settled at its charge, the release one more settled at its top-up; a claim lost after call 2 still counts calls 1 and 2 and holds call 3", async () => {
-  const tx = { appendEntry: async () => {} };
-  const charge = (usd, seconds, final = false) => ({ state: "priced", usd, seconds, tag: "s1", conversationId: 1, provider: "browserbase", at: new Date(T0).toISOString(), final });
-  /** A run's browser on the ledger over `store`: Browserbase at $0.12 an hour, its 60 s minimum, a 180 s idle window. */
-  const browserOn = async (store) => browserSpend("browserbase", { usdPerHour: 0.12, minimumS: 60 }, 180, async () => {}, () => {}, { paid: await claimOn(store) });
+test("browser time on the run's one ledger, as main bills it: each call one paid request held at its expected charge and settled at its charge, the release one more settled at its top-up; a claim lost after call 2 still counts calls 1 and 2 and holds call 3 and the session's reserve", async () => {
+  const charge = (usd, seconds, final = false) => ({ state: "priced", usd, seconds, tag: "s1", conversationId: 1, provider: "browserbase", at: new Date().toISOString(), final });
+  /** A run's browser on the ledger over `store`: Browserbase at $0.12 an hour, its 60 s minimum, a 180 s idle window. Its
+   *  `tx`: a charge's commit, which lands at once and is published to the browser's watch, as the claim's Harness does
+   *  (a charge is booked on the ledger once its commit is in). */
+  const browserOn = async (store) => {
+    const spend = browserSpend("browserbase", { usdPerHour: 0.12, minimumS: 60 }, 180, async () => {}, () => {}, { paid: await claimOn(store) });
+    let listener;
+    spend.watch({ observeCommits: (given) => void (listener = given), closed: new Promise(() => {}) });
+    return Object.assign(spend, { tx: { appendEntry: async (_conversation, value) => listener.advance({ changes: [{ type: "entry", value }] }) } });
+  };
   /** A browser call charged `usd` for its `seconds`, under call `callId`; `never`: it is still under way when the claim is lost. */
-  const call = (spend, callId, usd, seconds, never = false) => spend.capped({ name: "browser_read", execute: async () => (never ? new Promise(() => {}) : (await spend.onCharge(charge(usd, seconds), tx, { callId }), { content: [{ type: "text", text: "read" }] })) }).execute({}, { callId, conversationId: 1, commit: async () => {} }, {});
+  const call = (spend, callId, usd, seconds, never = false) => spend.capped({ name: "browser_read", execute: async () => (never ? new Promise(() => {}) : (await spend.onCharge(charge(usd, seconds), spend.tx, { callId }), { content: [{ type: "text", text: "read" }] })) }).execute({}, { callId, conversationId: 1, commit: async () => {} }, {});
 
   // A three-call session and its release: main's total, each call at its charge and the release at its top-up to the minute.
   const whole = memorySessionStore();
@@ -51,7 +57,7 @@ test("browser time on the run's one ledger, as main bills it: each call one paid
   await call(spend, "c1", 0.0003, 9);
   await call(spend, "c2", 0.0002, 6);
   await call(spend, "c3", 0.0001, 3);
-  await spend.onCharge(charge(0.0014, 42, true), tx);
+  await spend.onCharge(charge(0.0014, 42, true), spend.tx);
   await spend.ledgerIdle?.();
   near((await claimOn(whole)).spentUsd(), 0.0003 + 0.0002 + 0.0001 + 0.0014, "the session's total, read by the next claim");
 
@@ -65,7 +71,8 @@ test("browser time on the run's one ledger, as main bills it: each call one paid
   void call(lost, "c3", 0, 0, true);
   await new Promise((resolve) => setTimeout(resolve, 50));
   const hold = Math.ceil(Math.round(2 * lost.stretch * 1e12) / 1e6) / 1e6;
-  near((await claimOn(cut)).spentUsd(), 0.0003 + 0.0002 + hold, "the next claim");
+  // And the session's reserve, held from its first charge until its release is booked (owed: never refused).
+  near((await claimOn(cut)).spentUsd(), 0.0003 + 0.0002 + hold + lost.stretch, "the next claim");
 });
 
 // The run view puts a paid request's charge under the tool call it ran in (main's "Tool cost: <server> charged $…" and

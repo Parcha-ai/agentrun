@@ -71,13 +71,15 @@ function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];
   // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
-  const named = new Map<number, { tool: string; call?: string; chargedBy?: string }>();
+  // Its tool: the one the request names (`tool`: a browser step's "browser", which the renderer folds into its call's row
+  // with its session `tag`, as main's browser charge), else its paid name.
+  const named = new Map<number, { tool: string; call?: string; chargedBy?: string; tag?: string }>();
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
-    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string };
-    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}) });
+    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string; tool?: string; tag?: string };
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}), ...(typeof d.tag === "string" && d.tag ? { tag: d.tag } : {}) });
   }
-  const charges: { tool: string; call?: string; chargedBy?: string; usd: number | null }[] = [];
+  const charges: { turn: number; tool: string; call?: string; chargedBy?: string; tag?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { turn?: number; usd?: number | null; givenBack?: boolean };
@@ -86,7 +88,7 @@ function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // that ran is a charge at what it charged, $0 included (main's TOOL_COST of usd 0, a Parallel 4xx); one whose charge
     // is unknown (null) is a charge of an unknown amount (main's TOOL_COST with no usd).
     if (!req || d.givenBack === true) continue;
-    charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
+    charges.push({ ...req, turn: d.turn as number, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
   }
   if (!charges.length) return [...entries];
   const out = [...entries];
@@ -95,8 +97,8 @@ function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // MCP server, a browser vendor).
     const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
-    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
-    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
+    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.tag ? { tag: charge.tag } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}#${charge.turn}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }
   return out;

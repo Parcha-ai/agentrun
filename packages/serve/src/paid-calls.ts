@@ -91,7 +91,7 @@ const pauseOn = async (error: unknown, pause: Ledger["pause"] = ledgers.getStore
 export type PaidBooking = {
   /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
    *  browser vendor), named on its runner.request. */
-  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string }): Promise<unknown>;
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true }): Promise<unknown>;
   /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };
@@ -221,10 +221,10 @@ export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.pai
  *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). One refused
  *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
  *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
-export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string; by: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
+export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
   const id = `${call}#${(paidSeq += 1)}`;
   try {
-    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call, chargedBy: fee.by });
+    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call, chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}) });
   } catch (error) {
     await pauseOn(error, pause);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };
