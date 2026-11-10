@@ -39,6 +39,8 @@ const ROWS = [
   { name: "bare ids, the revision's openai/gpt-6-luna", ids: "bare", model: "openai/gpt-6-luna", host: "team-default", sent: "gpt-6-luna" },
   { name: "whole ids, the host's gpt-6-luna", ids: undefined, model: undefined, host: "gpt-6-luna", sent: "gpt-6-luna" },
   { name: "bare ids, the host's openai/gpt-6-luna", ids: "bare", model: undefined, host: "openai/gpt-6-luna", sent: "openai/gpt-6-luna" },
+  // A bare id that keeps a slash after its provider (OpenRouter's vendor/model): only the provider is cut, once.
+  { name: "bare ids, the revision's openrouter/openai/gpt-6-sol", ids: "bare", model: "openrouter/openai/gpt-6-sol", host: "team-default", sent: "openai/gpt-6-sol" },
   // No price set: the catalog prices it, as the provider the revision names lists it (OpenAI's entry has tiers past 272k
   // input tokens; the highest of the others has none), so a bare id priced without that provider is priced wrong.
   { name: "bare ids, the revision's openai/gpt-5.5 at the catalog's price", ids: "bare", model: "openai/gpt-5.5", host: "team-default", sent: "gpt-5.5", catalog: true },
