@@ -130,6 +130,10 @@ export type ToolHost = {
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
    *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
   redact?: (text: string) => string;
+  /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
+   *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
+   *  folder at `where.work`. */
+  workspace?: Workspace;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */

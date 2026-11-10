@@ -171,7 +171,7 @@ lines. Then:
 
   ```sh
   node --test --test-reporter=tap test/harness-run.test.mjs test/cap-unknown.test.mjs \
-    test/claude-run.test.mjs test/codex-run.test.mjs test/recovery.test.mjs
+    test/claude-run.test.mjs test/codex-run.test.mjs
   ```
 
   The checks below name these files without `.test.mjs`.

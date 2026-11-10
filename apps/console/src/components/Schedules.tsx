@@ -5,6 +5,8 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
+import { agentsByName } from "@/lib/agents";
+import { Picker } from "@/components/ui/picker";
 import { type Client, ClientError } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
@@ -370,7 +372,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   // The instants the hints say: the ones the save sends (a time left alone keeps the instant it was read with).
   const atInstant = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
   const startInstant = draft.startAt ? instantKept(draft.startAt, draft.read?.startAt) : null;
-  const live = (agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId);
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId));
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Cron" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
@@ -395,9 +397,8 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
                 <span className="flex gap-2">
                   <input name="every" inputMode="decimal" className={INPUT} value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="5" />
-                  <select name="everyUnit" aria-label="Unit" className="h-10 border bg-background px-2 font-mono text-[13px]" value={draft.everyUnit} onChange={(e) => set("everyUnit")(e.target.value as Draft["everyUnit"])}>
-                    <option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours">hours</option>
-                  </select>
+                  <Picker name="everyUnit" label="Unit" className="w-32 shrink-0" value={draft.everyUnit} onChange={(v) => set("everyUnit")(v as Draft["everyUnit"])}
+                    options={(["seconds", "minutes", "hours"] as const).map((u) => ({ value: u, label: u }))} />
                 </span>
               </Field>
             )}
@@ -412,11 +413,10 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
           {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
-            <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
-            {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
-            {draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) && <option value={draft.agentId}>{draft.agentId}</option>}
-          </select>
+          <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+            options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+              ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
+              ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
         </Field>
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
@@ -530,7 +530,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       </div>
     );
   }
-  const live = (agents ?? []).filter((a) => !a.archived_at);
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at));
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
       {back}
@@ -551,10 +551,9 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           {issues["source.signature"] && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
-            <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
-            {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
-          </select>
+          <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+            options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+              ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
@@ -635,7 +634,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       </div>
     );
   }
-  const live = (agents ?? []).filter((a) => !a.archived_at);
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at));
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
       {back}{title}
@@ -659,10 +658,9 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           {issues["source.accept"] && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue="source.accept">{issues["source.accept"]}</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
-            <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
-            {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
-          </select>
+          <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+            options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+              ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}

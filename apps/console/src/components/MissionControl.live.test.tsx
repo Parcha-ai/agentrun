@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { rangeFrom } from "@/lib/mission";
+import { pick } from "@/test/picker";
 
 // The page asks GET /v2/stats for the range picked (30 days first), and again for another range or one agent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -54,8 +55,8 @@ describe("Mission Control's range, against the server", () => {
     await act(async () => { radio("all").click(); });
     await wait(() => asked.length === 3);
     expect(asked[2]).toBe("");
-    const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
-    await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const select = host.querySelector("button[aria-haspopup=listbox][aria-label='Agent']") as HTMLButtonElement;
+    await pick(select, "calc");
     await wait(() => asked.length === 4);
     expect(asked[3]).toBe("?agent=calc");
   });

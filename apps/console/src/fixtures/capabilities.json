@@ -21,17 +21,23 @@
     "harnesses": [
       {
         "id": "pi",
-        "available": true
+        "available": true,
+        "steer": true,
+        "default_model": "faux/faux-1"
       },
       {
         "id": "claude-agent",
         "available": false,
-        "reason": "This server does not run claude-agent yet."
+        "steer": false,
+        "reason": "claude-agent needs ANTHROPIC_API_KEY.",
+        "default_model": null
       },
       {
         "id": "codex",
         "available": false,
-        "reason": "This server does not run codex yet."
+        "steer": false,
+        "reason": "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.",
+        "default_model": null
       }
     ],
     "models": {

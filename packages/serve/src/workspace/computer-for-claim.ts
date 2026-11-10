@@ -19,7 +19,7 @@ import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, resolveComputer } from "./resolve-computer.js";
+import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
@@ -38,9 +38,13 @@ export interface ClaimLaunch {
   readonly boxAllow?: readonly string[] | "none";
 }
 
-/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach. */
+/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach; and what the
+ *  provider declares it makes (its capabilities()): its networks and its longest lifetime. Absent, the spec asks as the
+ *  run allows. */
 export interface ComputerRun {
   readonly boxAllow?: readonly string[] | "none";
+  readonly networks?: readonly ("none" | "open" | "allow")[];
+  readonly maxLifetimeMs?: number;
 }
 
 /** A provider module's create(), by provider id: its options from the saved keys, and the store's ledger for a provider
@@ -216,15 +220,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
   let madeBy: ProviderEntry | undefined;
   const side: ClaimSide = {
-    async keysOf(provider) {
-      const entry = deps.kinds.PROVIDERS.find((one) => one.id === provider);
-      const keys: Record<string, string> = {};
-      for (const key of entry?.keys ?? []) {
-        const value = deps.keyOf ? await deps.keyOf(key.name) : deps.sealKey ? await getSealedKey(store, deps.sealKey, key.name) : undefined;
-        if (value !== undefined) keys[key.name] = value;
-      }
-      return keys;
-    },
+    keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
     async launch(entry, { kind, keys, mount, signal }) {
       if (deps.launch) {
@@ -239,7 +235,14 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
       if (!options.ok) throw new Error(options.error.message);
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
-      const run: ComputerRun = launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow };
+      // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
+      // (computer-deps.ts computerSpecOf).
+      const { network: networks, maxLifetimeMs } = provider.capabilities();
+      const run: ComputerRun = {
+        ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
+        ...(networks ? { networks } : {}),
+        ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
+      };
       // A provider that makes its own image ready (Docker's image(): its recipe built when Docker lacks it, an image by name
       // pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no registry, so a
       // run of it unbuilt would be refused.

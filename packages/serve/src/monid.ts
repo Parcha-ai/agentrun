@@ -283,7 +283,9 @@ export const monidTool = (kind: Kind): ToolEntry => ({
   needs: [MONID_KEY_ENV],
   nodes: false,
   bind: async (host) => {
-    const tool = monidRegistration(kind, host.env, () => localWorkspace(host.where.work));
+    // An answer too long for the model is filed in the run's own Workspace (in Mode 2, on the run's disk, where its read
+    // looks), else in the local folder the run works in.
+    const tool = monidRegistration(kind, host.env, () => host.workspace ?? localWorkspace(host.where.work));
     const extension = defineExtension({ name: `monid-${kind}`, tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
