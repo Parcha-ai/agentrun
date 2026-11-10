@@ -4,7 +4,7 @@ Give this file to your coding agent. Use the actual AgentRun interpreter and Jev
 
 ## Read first
 
-- [README and quickstart](../README.md#quickstart)
+- [Workflow language and quickstart](../packages/dsl/README.md)
 - [Support workflow](../examples/support-answer.mjs)
 - [Live support integration](support-quickstart.md)
 - [Host integration contract](host-integration.md)
