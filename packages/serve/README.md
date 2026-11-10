@@ -2682,6 +2682,9 @@ session (spent before any process could hold it). A session whose release is nev
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
 last charges booked before its process exits.
 
+A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
+AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
+
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:
 

@@ -1,7 +1,9 @@
 // A run's host phase rows from its spec (AdapterRun.phase): a step of the host's own that the run's timeline shows as one
 // `phase` row (pi-durable-agent's HOST_PHASE, "such as a box waiting for its image"). A spec says a phase while it is
-// built, before the adapter loop makes the run's root conversation (the claim's computer waiting on its image): the row is
-// queued and written once the root is made, exactly once. One said after the root exists is written at once.
+// built, before the session opens (the claim's computer waiting on its image): the phase makes the run's root then, so the
+// row is on the timeline a person reads WHILE the step runs, exactly once, and the spec's own writes for the root
+// (onConversation) still land once. A step that fails after it keeps its row, and the run's end on that root reads the
+// failure. One said after the root exists is written at once.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +12,8 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { emptyState, translate } from "../dist/live/translate.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
@@ -22,9 +25,11 @@ const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pol
 after(closeOpenSessions);
 const BEFORE = "Preparing the computer's image: building it (python, git, curl, node, npm, rg)…";
 const AFTER = "A step of the host's, said once the root exists.";
+/** An entry the spec's onConversation writes in each conversation it is handed (a tool host's, as the browser's config). */
+const MARK = "test.root-mark";
 
-/** The HOST_PHASE rows on run-1's root, in order (none when it has no root). Read without making anything. */
-async function phaseRows(store) {
+/** run-1's root entries of `kinds`, in order (none when it has no root). Read without making anything. */
+async function rootEntries(store, kinds) {
   const row = await store.runs.get("run-1");
   const harness = await Harness.open(store.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), { models: createModels(), registry: createRegistry(), onReport: () => {} }, BACKGROUND_CONTEXT);
   try {
@@ -33,7 +38,7 @@ async function phaseRows(store) {
     const out = [];
     for (let cursor; ; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, BACKGROUND_CONTEXT);
-      for (const entry of page.items) if (entry.kind === HOST_PHASE) out.push(entry.data);
+      for (const entry of page.items) if (kinds.includes(entry.kind)) out.push(entry);
       if (page.next === undefined) break;
       cursor = page.next;
     }
@@ -42,20 +47,71 @@ async function phaseRows(store) {
     await harness.close(BACKGROUND_CONTEXT).catch(() => {});
   }
 }
+const phaseRows = async (store) => (await rootEntries(store, [HOST_PHASE])).map((entry) => entry.data);
 
-test("a phase the spec says while it is built (before the root) is one phase row on the root, written once it is made; one said after is written at once", async (t) => {
+/** run-1's timeline as a person's live view shows it: every stored commit through the live translate, its events through
+ *  the timeline's reducer, as the console reads them. Read-only, so it reads while the runner holds the run. */
+async function liveRows(store) {
+  const row = await store.runs.get("run-1");
+  const journal = store.journal({ runId: "run-1", runner: "test-live-reader", epoch: row.epoch, until: 0, from: row.state });
+  const state = emptyState();
+  const reducer = timelineReducer();
+  for (let from = 0; ; ) {
+    const page = await journal.commitsAfter(from, 500, BACKGROUND_CONTEXT);
+    for (const commit of page.commits) reducer.apply(translate(state, commit));
+    if (page.next === undefined) break;
+    from = page.next;
+  }
+  return reducer.rows();
+}
+
+/** `check()` truthy within `ms`, or a failure that names what never came. */
+async function until(what, check, ms = 30_000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const got = await check();
+    if (got) return got;
+    if (Date.now() > deadline) throw new Error(`${what}: not within ${ms} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** A server and runner stores over one temp dir, run-1 queued; the runner (started by the case) closed after. */
+async function world(t) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-loop-phase-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  let runner;
+  const w = { server, store, runner: undefined };
   t.after(async () => {
-    await runner?.close().catch(() => {});
+    await w.runner?.close().catch(() => {});
     await store.close().catch(() => {});
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Phases" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  return w;
+}
+
+const finished = (server) =>
+  until("run-1 ends and is released", async () => {
+    const row = await server.runs.get("run-1");
+    return ["ended", "stopped", "failed"].includes(row.state) && row.runner === null && row;
+  });
+
+/** The spec's own lifecycle with one onConversation write: MARK on each conversation it is handed. */
+const marked = (base) => ({
+  ...base,
+  lifecycle: {
+    onConversation: [...(base.lifecycle?.onConversation ?? []), async (tx, conversationId) => void (await tx.appendEntry(conversationId, { kind: MARK, data: { conversationId } }))],
+    beforeResume: base.lifecycle?.beforeResume ?? [],
+    beforeRelease: base.lifecycle?.beforeRelease ?? [],
+    ...(base.lifecycle?.personWait ? { personWait: base.lifecycle.personWait } : {}),
+  },
+});
+
+test("a phase the spec says while it is built (before the root) is one phase row on the root; one said after is written at once", async (t) => {
+  const w = await world(t);
   // A host tool that says a phase while the run runs: the root exists by then.
   const said = { name: "said", replaySafe: true, ask: false, run: async () => "said" };
   const spec = piAdapterSpec({ script: [{ call: "said" }, { say: "done" }], tools: { said }, hooks: quiet });
@@ -68,17 +124,56 @@ test("a phase the spec says while it is built (before the root) is one phase row
     const tools = base.session.tools.map((tool) => (tool.name === "said" ? { ...tool, call: async () => (run.phase?.(AFTER), { text: "said" }) } : tool));
     return { ...base, agentId: "agent-1", session: { ...base.session, tools } };
   });
-  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    const row = await server.runs.get("run-1");
-    if (row.state === "ended" && row.runner === null) break;
-    if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  w.runner = startRunner({ store: w.store, createLoop: loop, name: "runner-a", ...TIMING });
+  assert.equal((await finished(w.server)).state, "ended");
   assert.deepEqual(before, ["function"], "the loop hands the spec a phase");
-  const rows = await phaseRows(server);
+  const rows = await phaseRows(w.server);
   assert.deepEqual(rows.map((one) => one.summary), [BEFORE, AFTER], `one row each, the one said before the root first: ${JSON.stringify(rows)}`);
   for (const one of rows) assert.equal(typeof one.at, "number", "each at the time it was said");
   assert.ok(rows[0].at <= rows[1].at);
+});
+
+test("a long step after its phase (an image build): the row is on the person's timeline WHILE the step runs, once; the spec's own root write lands once and the run goes on", async (t) => {
+  const w = await world(t);
+  const spec = piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet });
+  // The build, held by the case: the spec waits on it, as computerForClaim waits on Docker's image build.
+  let finishBuild;
+  const build = new Promise((resolve) => (finishBuild = resolve));
+  let building = false;
+  const loop = createAdapterLoop(async (claim, run) => {
+    run.phase?.(BEFORE);
+    building = true;
+    await build;
+    building = false;
+    return marked({ ...(await spec(claim, run)), agentId: "agent-1" });
+  });
+  w.runner = startRunner({ store: w.store, createLoop: loop, name: "runner-a", ...TIMING });
+  const shown = await until("the phase row on the live timeline while the build runs", async () => (await liveRows(w.server)).filter((row) => row.kind === "phase" && row.summary === BEFORE));
+  assert.equal(building, true, "read while the build still runs");
+  assert.equal(shown.length, 1, "one row");
+  finishBuild();
+  assert.equal((await finished(w.server)).state, "ended", "the run goes on once the image is ready, onto the root the phase made");
+  assert.deepEqual((await phaseRows(w.server)).map((one) => one.summary), [BEFORE], "still exactly one row");
+  const marks = await rootEntries(w.server, [MARK]);
+  assert.equal(marks.length, 1, `the spec's onConversation wrote the root once, though the phase made it before the spec was known: ${JSON.stringify(marks)}`);
+});
+
+test("a step that fails after its phase (a failed image build) keeps its row, and the run's end on that root says why", async (t) => {
+  const w = await world(t);
+  const FAILED = "the image build failed: step 3 of the recipe exited 1";
+  const loop = createAdapterLoop(async (_claim, run) => {
+    run.phase?.(BEFORE);
+    // The row is written before the build fails (the claim waits on the build, the row shows meanwhile).
+    await until("the phase row is on the live timeline", async () => (await liveRows(w.server)).some((one) => one.kind === "phase" && one.summary === BEFORE), 10_000);
+    throw new Error(FAILED);
+  });
+  w.runner = startRunner({ store: w.store, createLoop: loop, name: "runner-a", ...TIMING });
+  const row = await finished(w.server);
+  assert.equal(row.state, "failed");
+  assert.match(row.summary ?? "", /the image build failed/, `the row says why: ${JSON.stringify(row)}`);
+  assert.deepEqual((await phaseRows(w.server)).map((one) => one.summary), [BEFORE], "the failed build keeps its row");
+  const rows = await liveRows(w.server);
+  const at = rows.findIndex((one) => one.kind === "phase" && one.summary === BEFORE);
+  assert.ok(at >= 0, `the person's timeline keeps the phase row: ${JSON.stringify(rows)}`);
+  assert.ok(JSON.stringify(rows.slice(at + 1)).includes("the image build failed"), `the failure reads after it: ${JSON.stringify(rows)}`);
 });
