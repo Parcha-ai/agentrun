@@ -98,8 +98,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
     };
     // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
-    // new to learn: it is not asked (no model request), and looking back cost nothing. Its words are the server's own.
-    if (input.outcome === "completed" && deps.nothingNew && (await deps.nothingNew(input.runId).catch(() => false))) return looked({ also: [droppedRow(null, "empty", said.onlyWorkflow)] });
+    // new to learn: it is not asked (no model request), and looking back cost nothing, $0 whether or not the job's own
+    // cost is known. Its words are the server's own.
+    if (input.outcome === "completed" && deps.nothingNew && (await deps.nothingNew(input.runId).catch(() => false))) {
+      return { also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 })] };
+    }
     // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
     // nothing, never over a shorter one.
     const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "unreadable" as const) : [];
