@@ -17,6 +17,7 @@ import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
+import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
@@ -51,6 +52,10 @@ export const END_RETRY_AT_CAP = 11;
 export interface RunnerOptions {
   store: RunnerStore;
   createLoop: LoopFactory;
+  /** The runs' live view (live-ticker.ts): each loop's held state written to the store once a tick, by this runner's one
+   *  ticker, until close() has let every loop end. On by default where the store has a live view; its options (the tick),
+   *  or false for a test that wraps its loops in a ticker of its own or wants none. */
+  live?: false | LiveTickerOptions;
   /** This runner's name in the runs it claims (runs.runner). Default: host, pid and a random part. */
   name?: string;
   /** Most runs held at once. */
@@ -183,6 +188,11 @@ export function startRunner(options: RunnerOptions): Runner {
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
   }
+  // The runs' live view: every loop this runner makes reports its run's held state to the one ticker, which writes it
+  // once a tick and is closed at the end of close(), after the drain and the loops' stop.
+  const { live = {} } = options;
+  const ticker = live !== false && store.live ? withLiveTicker({ live: store.live }, createLoop, live) : undefined;
+  const loopsOf: LoopFactory = ticker?.createLoop ?? createLoop;
   const emit = (event: RunnerEvent) => {
     try {
       // An error's text is cut of every secret the runner holds before anyone hears it.
@@ -583,7 +593,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     // Set below, once held is made: the loop's end commit lands only after start(), well after.
     let ending: () => void = () => {};
-    const loop = createLoop({
+    const loop = loopsOf({
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -724,11 +734,16 @@ export function startRunner(options: RunnerOptions): Runner {
       clearTimeout(timeout);
       for (const held of runs.values()) held.fence.lost = true;
       stopTimers();
+      // The live view's last tick, once every loop has ended or been given up: a draining run kept its live view to the
+      // end of its loop.
+      await ticker?.close();
     },
     kill() {
       killed = true;
       closed = true;
       stopTimers();
+      // A crash writes nothing more: the live view's ticker stops at once, beside a new holder of its runs.
+      ticker?.stop();
     },
   };
 }

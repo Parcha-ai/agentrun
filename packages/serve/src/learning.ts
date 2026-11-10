@@ -496,15 +496,16 @@ export async function readSeed(cwd: string, repo: string, sha: string): Promise<
 
 /** What the learning folder's read at a commit gives a run's seed (the folder's script's read op, through the agent's
  *  learning Workspace): each file of its index, its active notes and its active skills, by its path from the folder's
- *  root, and each skill it left out whole and why (`refused`, always there: a skill holding a tracked link); or why it
- *  has none: the folder cannot answer now (`unavailable`), or the commit is no longer there (`gone`). */
+ *  root, each skill it left out whole and why (`refused`, always there: a skill holding a tracked link), and every entry
+ *  at the commit's top whatever its status (`held`: the index, every note, the skills' and workflows' folders); or why
+ *  it has none: the folder cannot answer now (`unavailable`), or the commit is no longer there (`gone`). */
 export type SeedRead =
-  | { ok: true; files: readonly { path: string; text: string }[]; refused: readonly { skill: string; why: string }[] }
+  | { ok: true; files: readonly { path: string; text: string }[]; refused: readonly { skill: string; why: string }[]; held: readonly string[] }
   | { ok: false; why: "unavailable" | "gone" };
 /** The read at `commit` (null: the folder has no main yet, an empty read). */
 export type SeedReader = (commit: string | null) => Promise<SeedRead>;
-/** What a seed can't tell from its read alone, as the folder's snapshot keeps it: every note file on main, whatever its
- *  status, with its place in main's log (0 the newest), and each skill's place by its name. */
+/** What a seed can't tell from its read alone, as the folder's snapshot keeps it: each note file's place in main's log
+ *  (0 the newest) and each skill's by its name. Order alone: what main holds is the read's (`held`). */
 export type SeedOrder = { readonly notes: readonly { file: string; order: number }[]; readonly skills?: readonly { name: string; order: number }[] };
 
 /** A run's seed from the folder's read at `commit` (`read`): its index, its notes the one changed last first, its
@@ -536,7 +537,9 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
   const skillAt = new Map((order?.skills ?? []).map(({ name, order: at }) => [name, at]));
   const by = (at: Map<string, number>) => (a: string, b: string) => (at.get(a) ?? Number.POSITIVE_INFINITY) - (at.get(b) ?? Number.POSITIVE_INFINITY) || (a < b ? -1 : a > b ? 1 : 0);
   seed.recent = Object.keys(seed.notes).sort(by(noteAt));
-  seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...noteAt.keys(), ...(skills.size ? [SKILLS_DIR] : [])])];
+  // Every entry at the seed's top, as main holds it (the read's `held`, a pending, superseded or retired note's file
+  // among them, so servedIndex leaves its line out of a run's index), beside what the read gave.
+  seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...got.held, ...(skills.size ? [SKILLS_DIR] : [])])];
   seed.skills = [...skills.keys()].sort(by(skillAt)).map((name) => {
     const files = skills.get(name)!;
     // What the run is given, counted as given: a SKILL.md as servedSkill writes it (its name and description alone, each
@@ -567,7 +570,7 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
  *  bodies when the commit is main's (learn/seed-check.ts readSeed). No git in this process. */
 export const readerOf = (ws: Workspace): SeedReader => async (commit) => {
   const got = await readFolderSeed(ws, commit);
-  return got.ok ? { ok: true, files: got.files, refused: got.refused } : { ok: false, why: got.reason };
+  return got.ok ? { ok: true, files: got.files, refused: got.refused, held: got.held } : { ok: false, why: got.reason };
 };
 /** The places a seed can't read from its files alone, from the folder's snapshot: each note's and each skill's. */
 const orderOf = (snapshot: Snapshot | undefined): SeedOrder | undefined =>

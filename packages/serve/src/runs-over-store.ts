@@ -12,7 +12,7 @@
 import { randomBytes } from "node:crypto";
 import type { Revision } from "@parcha/pi-durable-agent";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
-import type { AgentEntry } from "./agents-store.js";
+import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
@@ -22,7 +22,7 @@ import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -349,17 +349,87 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
- *  before a run started, in the same order and words (the body's fields, the revision it pins, the input against its schema,
- *  the cap rules, the plane this host resolves, whether the revision can run here), then an INSERT — a queued run and its
- *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
- *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
- *  one-run-per-key), so a retry never starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: given }: StartOptions = {}): Promise<RunRow> {
+ *  before a run started (prepareLaunch), then an INSERT — a queued run and its launch body in one transaction
+ *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
+ *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
+ *  starts a second. */
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title }: StartOptions = {}): Promise<RunRow> {
+  const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
+  const runId = (deps.newRunId ?? uuidv7)();
+  try {
+    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+  } catch (error) {
+    // Only another writer of the store got here first under the same origin key: its run is the one asked for.
+    if (origin && error instanceof StoreConstraint) {
+      const existing = await store.runOfOrigin(origin.key);
+      const row = existing && (await store.runs.get(existing.runId));
+      if (row) return row;
+    }
+    throw error;
+  }
+}
+
+/** An agent given inline (POST /runs): its reference in its source with the version, its name and description, and the
+ *  revision its checked definition makes (agents-store makeRevision), not yet stored. */
+export interface InlineAgent {
+  readonly external: ExternalRef & { readonly version: string };
+  readonly name: string;
+  readonly description: string | null;
+  readonly revision: NewRevision & { readonly note?: string };
+}
+
+/** Starts a run of an agent given inline, as POST /agents/{id}/runs starts a run of a stored one: the same checks over the
+ *  revision the definition makes (prepareLaunch), then ONE transaction (store.runs.createInline) that writes the agent on
+ *  its reference's first run and the revision on its version's first run, or reads them, then the run and its launch. The
+ *  agent already mapped to the reference is the run's (its id, its learning), so a run of a later version learns from the
+ *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
+ *  `origin`, a key that already started a run gets that run, as startRun's. */
+export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin }: { origin?: RunOrigin } = {}): Promise<RunRow> {
+  const { external, revision } = inline;
+  const ref = externalKey(external);
+  const mapped = await store.agents.byExternal(ref);
+  const entry: AgentEntry = (mapped && (await getAgent(store, mapped.id))) || {
+    agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+    revision: null, version: 0, revisions: 0, sizes: new Map(),
+  };
+  // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
+  // one across.
+  const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
+  const runId = (deps.newRunId ?? uuidv7)();
+  try {
+    return await store.runs.createInline({
+      agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
+      revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
+      run: { id: runId, ...(origin ? { origin } : {}) },
+      launch: { body: launchBody(launch) },
+    });
+  } catch (error) {
+    if (error instanceof ExternalBodyConflict) {
+      const { source, kind, id, version } = external;
+      throw new ApiError("external_body_conflict", `${source} ${kind} ${id} version ${version} already ran here with a different definition. A version's definition never changes here: publish a new version and run that.`, { details: { external: { source, kind, id, version } } });
+    }
+    if (origin && error instanceof StoreConstraint) {
+      const existing = await store.runOfOrigin(origin.key);
+      const row = existing && (await store.runs.get(existing.runId));
+      if (row) return row;
+    }
+    throw error;
+  }
+}
+
+/** A run's launch from its create body, with every check the old start made before a run started, in the same order and
+ *  words: the body's fields, the revision it pins, the input against its schema, the cap rules, the plane this host
+ *  resolves, whether the revision can run here; then its title, plane, model and learning start. Nothing is written: the
+ *  caller INSERTs the run with it (startRun; an inline agent's run, which writes its agent and revision in the same
+ *  transaction). `revision`: the revision the run starts on, given (an inline agent's, not yet stored), in place of the
+ *  one the body pins or the agent's current (deps.pinnedOf). */
+export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Json, { trigger, capped = false, from, title: given, revision: onRevision }: Omit<StartOptions, "origin"> & { readonly revision?: Revision } = {}): Promise<{ launch: RunLaunch; revision: Revision }> {
+  const pinnedOf = onRevision ? async () => ({ revision: onRevision, version: entry.version }) : () => deps.pinnedOf(entry, body);
   const issues = deps.runBodyIssues(body);
   if (issues.length) {
     // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
     // malformed or names no revision gets the refusal alone, no hint.
-    const on = issues.some((issue) => issue.field === "revision") ? undefined : await deps.pinnedOf(entry, body);
+    const on = issues.some((issue) => issue.field === "revision") ? undefined : await pinnedOf();
     throw deps.told(invalid(on ? await deps.explainRun(issues, body, on.revision) : issues));
   }
   if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
@@ -367,7 +437,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // copy into the run's work/inputs/ at its claim.
   const fileIds = Array.isArray(body.file_ids) ? (body.file_ids as string[]) : [];
   if (fileIds.length) await deps.readyFiles(fileIds);
-  const pinned = await deps.pinnedOf(entry, body);
+  const pinned = await pinnedOf();
   if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
   const { revision } = pinned;
   const rbody = revision.body as StartBody;
@@ -416,18 +486,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
   };
-  const runId = (deps.newRunId ?? uuidv7)();
-  try {
-    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
-  } catch (error) {
-    // Only another writer of the store got here first under the same origin key: its run is the one asked for.
-    if (origin && error instanceof StoreConstraint) {
-      const existing = await store.runOfOrigin(origin.key);
-      const row = existing && (await store.runs.get(existing.runId));
-      if (row) return row;
-    }
-    throw error;
-  }
+  return { launch, revision };
 }
 
 /** For tests and the switch: the issue list an input refusal carries. */
