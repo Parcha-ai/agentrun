@@ -576,6 +576,12 @@ const SECRET_META = { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET
 const SECRET_ITEM = (nameDescription: string) => closed({ name: { type: "string", description: nameDescription }, ...SECRET_META });
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
 const COMPUTER_KIND = { enum: ["none", "sandbox", "desktop", "phone", "browser"] };
+/** A computer choice's shell (computers.ts ShellChoice): where its runs have their shell, in this server's folder mode. */
+const CHOICE_SHELL = { enum: ["computer", "local", "none"], description: "Where a run of this choice has its shell, in this server's folder mode: `computer`, in the computer, which mounts the run's folder (bash and the background tools); `local`, no computer mounts it and the folder is on the owner's disk, so bash runs in a fresh container there (bash only); `none`, no computer mounts it and the folder is on this server's own disk, so the run has no shell (the file tools only)." };
+/** The host tools a choice gives, by name: the kernel registry's list for its shell. */
+const CHOICE_HOST_TOOLS = { type: "array", items: { type: "string" }, description: "Exactly the host tools a run of this choice gets, by name: the file tools always, bash with a shell (`computer` or `local`), the five background tools on a computer." };
+/** What a choice leaves out of the shell, in words. */
+const CHOICE_SHELL_NOTE = { type: "string", description: "What this choice leaves out of the shell, in plain words; absent when its shell is `computer`. A save that names a tool it leaves out is refused in the same words." };
 /** A provider in Settings → Computers (computers.ts ProviderView). */
 const COMPUTER_PROVIDER = closedWith({
   id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
@@ -584,8 +590,11 @@ const COMPUTER_PROVIDER = closedWith({
   secrets: { type: "array", items: SECRET_ITEM("\"computer:<provider>:<KEY>\": KEY is the name PUT /computers/{provider}/keys takes, and the environment variable that sets it."), description: "Each key the provider declares, as its SecretMeta: never a value." },
   required: { type: "array", items: { type: "string" }, description: "The names of the secrets the provider needs; any other may stay unset." },
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
+  shell: CHOICE_SHELL,
+  host_tools: CHOICE_HOST_TOOLS,
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+  shell_note: CHOICE_SHELL_NOTE,
 });
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
@@ -597,7 +606,12 @@ const COMPUTERS_VIEW = closed({
       groups: { type: "array", items: { type: "string" }, description: "The capability groups the kind needs, then those it brings when a provider declares them." },
       tools: { type: "array", items: { type: "string" }, description: "The model's tools the kind brings, by name." },
       providers: { type: "array", items: COMPUTER_PROVIDER, description: "The providers that serve the kind." },
-    }, { why: { type: "string", description: "Why it is not offered." } }),
+    }, {
+      why: { type: "string", description: "Why it is not offered." },
+      shell: { ...CHOICE_SHELL, description: `Kind none only (the one "no computer" choice; another kind's is each provider's). ${CHOICE_SHELL.description}` },
+      host_tools: { ...CHOICE_HOST_TOOLS, description: `Kind none only. ${CHOICE_HOST_TOOLS.description}` },
+      shell_note: { ...CHOICE_SHELL_NOTE, description: `Kind none only. ${CHOICE_SHELL_NOTE.description}` },
+    }),
   },
 });
 /** POST /computers/{provider}/test's and POST /workspace/archil/test's answer. */

@@ -12,6 +12,8 @@ import { createComputerRoutes, folderModeOf, KeysRefused } from "../dist/compute
 import { getSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
+import { hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { hostToolsOf, SHELL_NOTES } from "../dist/workspace/resolve-computer.js";
 
 /** A key's changed_at: the store's clock when it was saved. */
 const CHANGED = new Date(T0).toISOString();
@@ -54,11 +56,11 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.deepEqual(kindOf(view, "desktop").groups, ["screen", "input.pointer", "input.keys", "exec", "files", "processes", "apps", "stream"], "required, then optional");
   assert.deepEqual(kindOf(view, "desktop").tools, ["screenshot", "computer_input"], "the kind's tools, from the kernel registry");
   assert.deepEqual(kindOf(view, "sandbox").providers.map((one) => one.id), ["docker", "daytona", "modal", "e2b"], "the providers whose capabilities serve the kind");
-  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true });
+  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, shell: "computer", host_tools: hostToolsOf("computer") });
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none });
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
@@ -197,4 +199,27 @@ test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "docker" }), undefined);
+});
+
+test("each choice says where its runs have their shell, the host tools that gives (the kernel registry's own list) and what it leaves out: no computer in each mode, a sandbox, and a desktop whose provider does not mount", async (t) => {
+  const names = (shell) => hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name);
+  assert.deepEqual([names("none"), names("local"), names("computer")], [["read", "write", "edit"], ["read", "write", "edit", "bash"], ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]]);
+  const choice = (one) => ({ shell: one.shell, host_tools: one.host_tools, shell_note: one.shell_note });
+  // Mode 1: the run folders are this server's own.
+  const local = await (await setup(t)).routes.view();
+  assert.deepEqual(choice(kindOf(local, "none")), { shell: "none", host_tools: names("none"), shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." });
+  assert.deepEqual(choice(providerOf(local, "sandbox", "docker")), { shell: "computer", host_tools: names("computer"), shell_note: undefined });
+  assert.deepEqual(choice(providerOf(local, "desktop", "e2b")), { shell: "none", host_tools: names("none"), shell_note: SHELL_NOTES.none }, "E2B's desktop does not bind this server's folder");
+  assert.deepEqual(choice(providerOf(local, "desktop", "docker")), { shell: "computer", host_tools: names("computer"), shell_note: undefined }, "Docker's desktop binds it");
+  // Mode 2: the run folders are on the owner's disk.
+  const disk = await (await setup(t, { mode: "disk", kinds: ARCHIL_KINDS })).routes.view();
+  assert.deepEqual(choice(kindOf(disk, "none")), { shell: "local", host_tools: names("local"), shell_note: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer." });
+  assert.deepEqual(choice(providerOf(disk, "sandbox", "daytona")), { shell: "computer", host_tools: names("computer"), shell_note: undefined });
+  assert.deepEqual(choice(providerOf(disk, "desktop", "orgo")), { shell: "local", host_tools: names("local"), shell_note: SHELL_NOTES.local }, "Orgo's desktop does not mount the disk");
+  assert.deepEqual(choice(providerOf(disk, "desktop", "e2b")), { shell: "computer", host_tools: names("computer"), shell_note: undefined }, "E2B's desktop mounts it");
+  for (const view of [local, disk]) {
+    for (const kind of view.kinds) {
+      for (const one of kind.kind === "none" ? [kind] : kind.providers) assert.deepEqual(one.host_tools, names(one.shell), `${kind.kind} ${one.id ?? ""}`);
+    }
+  }
 });

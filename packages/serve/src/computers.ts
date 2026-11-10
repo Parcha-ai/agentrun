@@ -15,6 +15,7 @@ import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
+import { type ShellPlace, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -78,8 +79,12 @@ export interface ComputerRoutesOptions {
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
  *  its keys as SecretMeta under `secrets`, each named "computer:<provider>:<KEY>", and `required`, the names of the ones
  *  it needs. */
-export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string };
-export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string } & ShellChoice;
+/** A choice's shell (workspace runShellOf, in this server's mode), the host tools it gives (the kernel registry's
+ *  hostToolDefs for that shell) and what it leaves out in words (absent on a computer that mounts the folder). */
+export type ShellChoice = { shell: ShellPlace; host_tools: string[]; shell_note?: string };
+/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). */
+export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 
 /** Why a key save is refused, before anything is saved: a name the provider does not declare, or a value that is not text. */
@@ -125,6 +130,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
   async function view(): Promise<{ kinds: KindView[] }> {
     const mode = await modeNow();
+    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds as never);
     // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
     // of its key's name.
     const slots = kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
@@ -137,11 +143,11 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
-        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers };
+        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
     };
   }

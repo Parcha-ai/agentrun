@@ -224,7 +224,7 @@ test("bash is a 422 on an agent whose place is the runner; a new agent that name
   const { api } = await boxed(t);
   const made = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"], place: { mode: "runner" } } });
   assert.deepEqual([made.status, made.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
-  assert.match(made.body.error.fields[0].message, /bash runs only in a box/);
+  assert.match(made.body.error.fields[0].message, /^bash: No computer on this server: the agent gets the file tools only, no shell\. .*give it a sandbox computer/);
   const given = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"] } });
   assert.deepEqual([given.status, given.body.definition.place, given.body.definition.tools], [201, SANDBOX, ["read", "bash"]], JSON.stringify(given.body));
   const flow = await api("POST", "/agents", flowAgent("flow", undefined, { place: SANDBOX }));

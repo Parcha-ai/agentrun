@@ -21,7 +21,8 @@ import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
 import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
 import type { McpTool } from "@parcha/agentrun-kernel";
-import { NEEDS_A_COMPUTER, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import { SHELL_NOTES } from "./workspace/resolve-computer.js";
 
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
@@ -62,6 +63,9 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
   }
   return { model: chosen.model };
 }
+
+/** `text` with its first letter capitalized. */
+const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
@@ -115,10 +119,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const box = boxAvailability(boxes).find((b) => RUN_BOXES.includes(b.id) && b.available);
-    if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
+    if (box) return { field, reason: "not_an_option", message: `${tool}: ${SHELL_NOTES.none} ${capital(where)}: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
     const fresh = newAgentPlace(boxes);
     const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
-    return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell (a shell needs a sandbox computer), and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    return { field, reason: "not_an_option", message: `${tool}: ${SHELL_NOTES.none} ${capital(where)}, and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
   // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
   // pinned build): that would offer the model another tool than the one granted, so its grant is refused here, at the
@@ -165,7 +169,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       // On the runner (no place, or the runner), the shell is where the claim puts it (`shell`): none, so no bash family;
       // Archil's exec, so bash alone; or a computer that mounts the run's folder, so all of them.
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && shell === "none") out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
-      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && shell === "local" && tool !== "bash") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool}: ${NEEDS_A_COMPUTER} This agent's runs have bash on Archil's exec, one command at a time.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && shell === "local" && tool !== "bash") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool}: ${SHELL_NOTES.local}`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Another harness gets the host tools only (host-tools.ts: the file tools, web_fetch, web_search and
