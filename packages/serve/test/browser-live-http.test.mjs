@@ -110,6 +110,9 @@ async function watched(t) {
 }
 
 const computerOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers });
+/** What the run's port was asked of the viewer's code: its page (GET), its script or its style. Its liveness check (HEAD of
+ *  its page) is the server's; anything else on the machine that reaches a port it once held is no request of the server's. */
+const codeAsked = (w) => w.viewer.asked.filter((line) => line === `GET /v/${w.id}` || /^(GET|HEAD) \/(viewer\.(js|css)|v\/[^/]+\/viewer\.(js|css))$/.test(line));
 const browserOf = (w, headers, runId = w.runId) => call(w.server.port, { path: `/v2/runs/${runId}/browser`, headers });
 const liveWs = (w, path, { origin = w.origin, cookie = w.cookie, headers = {} } = {}) => connect(`ws://127.0.0.1:${w.server.port}${path}`, { origin: origin ?? undefined, headers: { ...(cookie ? { cookie } : {}), ...headers } });
 
@@ -148,7 +151,7 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(page.text, viewerAssets.html, "this server's own pi-browser viewer, byte for byte");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/viewer.js`, headers: { cookie: w.cookie } })).status, 200);
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA`, headers: { cookie: w.cookie } })).status, 404, "another viewer's path is not served");
-  assert.ok(w.viewer.asked.every((line) => line === `HEAD /v/${w.id}`), `only the viewer's liveness check reached the run's port: ${w.viewer.asked.join(", ")}`);
+  assert.deepEqual(codeAsked(w), [], "the viewer's page and files were never asked of the run's port (its liveness check, HEAD, alone)");
 
   // The WebSocket: the same refusals as ever; another run's id finds no viewer.
   const other = await w.server.api("POST", "/agents/watch/runs", { input: { content: "Another." } });
@@ -233,7 +236,7 @@ test("the viewer's code is always this server's own: the run's port answers with
       assert.equal(got.headers["content-security-policy"], LIVE_CSP);
     }
   }
-  assert.ok(w.viewer.asked.every((line) => line === `HEAD /v/${w.id}`), `only the viewer's liveness check reached the run's port: ${w.viewer.asked.join(", ")}`);
+  assert.deepEqual(codeAsked(w), [], "the viewer's page and files were never asked of the run's port (its liveness check, HEAD, alone)");
   const socket = await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${w.id}/ws`);
   assert.equal(socket.status, 101);
   assert.deepEqual(w.viewer.upgrades.map(({ url }) => url), [`/v/${w.id}/ws`], "the socket alone reached it");

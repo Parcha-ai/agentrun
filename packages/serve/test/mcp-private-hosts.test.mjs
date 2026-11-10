@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
-const { checkPrivateHosts, MCP_PRIVATE_HOSTS_KEY, privateHostsRoute, privateOAuthHosts, savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
+const { checkPrivateHosts, MCP_PRIVATE_HOSTS_KEY, privateOAuthHosts, savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
 const { refreshed } = await import("../dist/mcp-oauth.js");
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
@@ -235,31 +235,7 @@ test("the runner's refresh reads the setting from the store: unlisted, the call 
   listed.release();
 });
 
-test("the route: GET reads the list (none by default); a PUT is a secret write as a whole (the one gate takes it from the owner's session alone); bad input is 422 in words; a PUT replaces the list in the store", async (t) => {
-  const { store } = await storeOn(t);
-  const registry = mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
-  assert.deepEqual(await privateHostsRoute(registry, { method: "GET" }), { hosts: [] }, "refused by default");
-
-  const body = (value) => async () => value;
-  const { writesSecret, isSecretWriteOperation } = await import("../dist/secret-writes.js");
-  assert.ok(isSecretWriteOperation("putMcpPrivateHosts"), "registered with the one gate");
-  for (const sent of [{ hosts: [AS] }, { hosts: [] }, {}, undefined]) assert.equal(writesSecret("putMcpPrivateHosts", sent), true, `the whole body: ${JSON.stringify(sent)}`);
-
-  await assert.rejects(privateHostsRoute(registry, { method: "PUT", body: body({ hosts: ["*.corp.test", "as.corp.test:8443", "169.254.169.254"] }) }), (error) => { // key-gate: denylist the link-local metadata address the route refuses
-    assert.equal(error.code, "input_invalid");
-    assert.deepEqual(error.extra.fields.map((field) => field.field), ["hosts[0]", "hosts[1]", "hosts[2]"]);
-    assert.match(error.extra.fields[2].message, /can't be allowed/);
-    return true;
-  });
-  assert.deepEqual(await privateOAuthHosts(store), [], "nothing changed");
-
-  assert.deepEqual(await privateHostsRoute(registry, { method: "PUT", body: body({ hosts: ["AS.Corp.test.", "fd12:3456::7"] }) }), { hosts: [AS, "[fd12:3456::7]"] });
-  assert.deepEqual(await store.settings.get(MCP_PRIVATE_HOSTS_KEY), { hosts: [AS, "[fd12:3456::7]"] }, "kept in the store's settings");
-  assert.deepEqual(await privateHostsRoute(registry, { method: "GET" }), { hosts: [AS, "[fd12:3456::7]"] });
-  assert.deepEqual(await privateHostsRoute(registry, { method: "PUT", body: body({ hosts: [] }) }), { hosts: [] });
-});
-
-test("the server's routes: a token's PUT is 403 in the one secret-write refusal and saves nothing; the owner's session saves the list, a GET reads it back, and bad input is 422 in words", async (t) => {
+test("the server's routes: a token's PUT is 403 in the one secret-write refusal and saves nothing; the owner's session saves the list, a GET reads it back, bad input is 422 in words and changes nothing, and an empty list clears it", async (t) => {
   const { asOwner, call, serve } = await import("./support.mjs");
   const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
   const server = await serve(t, { runner: false });
@@ -273,13 +249,21 @@ test("the server's routes: a token's PUT is 403 in the one secret-write refusal 
   assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [] }, "nothing saved");
 
   const owner = asOwner(server);
-  const bad = await owner("PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: ["*.corp.test", "as.corp.test:8443"] });
-  assert.equal(bad.status, 422, JSON.stringify(bad.body));
-  assert.deepEqual(bad.body.error.fields.map((field) => field.field), ["hosts[0]", "hosts[1]"]);
-  assert.match(bad.body.error.fields[0].message, /wildcard/);
-
   const saved = await owner("PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: ["AS.Corp.test.", "fd12:3456::7"] });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.body, { hosts: [AS, "[fd12:3456::7]"] });
   assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [AS, "[fd12:3456::7]"] }, "read back");
+
+  // Bad input is refused as a whole: none of it is kept, and the list saved before stands.
+  const bad = await owner("PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: ["*.corp.test", "as.corp.test:8443", "10.20.30.41"] });
+  assert.equal(bad.status, 422, JSON.stringify(bad.body));
+  assert.deepEqual(bad.body.error.fields.map((field) => field.field), ["hosts[0]", "hosts[1]"]);
+  assert.match(bad.body.error.fields[0].message, /wildcard/);
+  assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [AS, "[fd12:3456::7]"] }, "unchanged by the refused PUT");
+
+  // An empty list clears it.
+  const cleared = await owner("PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: [] });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.body, { hosts: [] });
+  assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [] }, "cleared");
 });

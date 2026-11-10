@@ -30,6 +30,7 @@ test("the shape: pasted is console, a sign-in is sign-in, none is unset; never a
   assert.deepEqual((await r.get("gh")).auth, { type: "headers", headers: ["x-api-key"] }, "the header names stay");
   assert.deepEqual((await r.get("lin")).secret, { name: "mcp:lin", set: true, source: "sign-in", changed_at: iso(T0) });
   assert.deepEqual((await r.get("pub")).secret, { name: "mcp:pub", set: false, source: null, changed_at: null });
+  assert.deepEqual([(await r.get("pub")).credential, (await r.get("pub")).auth], [null, { type: "none" }], "none: no credential and no header names");
   assert.ok(!JSON.stringify(await r.list()).includes(TOKEN), "no value anywhere in a read");
 });
 
