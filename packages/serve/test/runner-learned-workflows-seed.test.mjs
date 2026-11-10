@@ -3,7 +3,9 @@
 // the run's directory, which no runner writes. On both spec builders: pi's (adapterRunSpecFromLaunch) and the CLI
 // harnesses' (cliRunSpecFromLaunch: claude-agent, codex). The learned_workflow tool names each ACTIVE learned workflow,
 // as main's start chose them (learning.ts chooseWorkflows): never one pending its owner's OK, never a retired one, never
-// one holding a key saved on the server (left out, in one line of the run's log). A run with no learning start lists none.
+// one holding a key saved on the server (left out, in one line of the run's log). As on main (app.ts), the tool is the
+// run's whenever its agent learned a workflow: a revision never names learned_workflow among its tools, so it is never
+// asked to. A run with no learning start lists none, nor does a run of a workflow revision (kind "workflow").
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +30,8 @@ const SEAL_KEY = Buffer.alloc(32, 7);
 const STAND_IN = new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url).pathname;
 /** A key saved on the server, plainly a test value, never a real one. */
 const SAVED = { name: "SOME_SERVICE_KEY", value: "saved-value-for-the-cut-0002" };
-const GRANTED = ["read", LEARNED_WORKFLOW_TOOL];
+/** The revision's tools, as a real agent's revision names them: never learned_workflow. */
+const GRANTED = ["read"];
 /** One active workflow the run gets, and three it never does: pending its owner's OK, retired, holding a saved key. */
 const FLOWS = [
   { name: "answer", description: "Answers a question as a number", workflow: answerFlow() },
@@ -55,10 +58,12 @@ function listsAnswerOnly(spec) {
   assert.deepEqual(tool.inputSchema?.properties?.name?.enum, ["answer"], "the tool runs answer alone");
 }
 
-/** pi's spec for a learning run whose seed holds FLOWS (`seed`: "landed", or "none": no learning start). */
-async function piSpec(t, { seed = "landed" } = {}) {
+/** pi's spec for a learning run whose seed holds FLOWS (`seed`: "landed", or "none": no learning start), of a revision of
+ *  `kind`. */
+async function piSpec(t, { seed = "landed", kind } = {}) {
   const launch = {};
   return specFor(t, {
+    ...(kind ? { kind } : {}),
     body: { learning: true, tools: GRANTED },
     keys: { [SAVED.name]: SAVED.value },
     launch,
@@ -121,6 +126,10 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal(said[0].includes(SAVED.value), false);
   });
 }
+
+test("a run of a workflow revision (kind workflow) lists no learned workflow, though its agent learned one", async (t) => {
+  assert.equal(learnedOf((await piSpec(t, { kind: "workflow" })).spec), undefined);
+});
 
 test("a run with no learning start lists no learned workflow, on pi and on a CLI harness", async (t) => {
   assert.equal(learnedOf((await piSpec(t, { seed: "none" })).spec), undefined);

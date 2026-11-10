@@ -416,7 +416,7 @@ test("a token given with no expiry is taken to last an hour: a launch after that
 });
 
 
-test("a stop aborts a refresh waiting on its authorization server: it returns within its bound, writes nothing, refuses writes after, and the next start asks for a sign-in again", { timeout: 60_000 }, async (t) => {
+test("a stop while a refresh waits on its authorization server drops the claim's credentials at once, writes nothing, holds the refresh lease to its end, and the next start asks for a sign-in again", { timeout: 60_000 }, async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key });
   // Ported to the runner's claim step over the server's own store (the switch). A refresh once sent is never cut short
@@ -439,15 +439,15 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
   const launch = launchOn(t, server, key, { signal: stop.signal, bounds });
   assert.equal((await reached).form.grant_type, "refresh_token", "the refresh reached the authorization server");
   const { step, when } = await launch;
-  const at = Date.now();
   stop.abort();
   assert.deepEqual({ ...step.credentials }, {}, "the stopped claim holds nothing at once, and its gateway can send nothing after");
-  // The refresh on the wire is awaited within its own bound and then let go: its lease is released, nothing kept.
-  await when(async () => (await store.mcp.server("docs")).refreshHolder === null);
-  assert.ok(Date.now() - at < bounds.requestMs * bounds.tries + 1_000, `the refresh let go in ${Date.now() - at} ms, within its bound`);
+  // The refresh on the wire may have spent the refresh token, so its lease is held to its end: no claim sends that token
+  // again meanwhile. Nothing is kept.
+  assert.notEqual((await store.mcp.server("docs")).refreshHolder, null, "the lease is held");
   assert.ok((await sealedNow()).equals(before), "nothing written: the token set is as it was");
 
-  // The next start refreshes with the refresh token it kept, which the authorization server spent: a sign-in again.
+  // Once the held lease runs out, the next start refreshes with the refresh token it kept, which the authorization server
+  // spent: a sign-in again.
   const { step: next } = await launchOn(t, server, key);
   await when(() => next.credentials.docs?.unopened !== undefined);
   assert.equal(next.credentials.docs.unopened, "its sign-in expired or was revoked: sign in again in Settings → MCP servers");
@@ -777,9 +777,11 @@ for (const down of ["503", "timeout"]) {
     assert.equal(said, "The tool said: The MCP server docs's credential can't be used right now: the sign-in server didn't answer; try again.");
     assert.doesNotMatch(said, /update it|sign in again/);
     assert.equal(calls(), 0, "nothing was sent with the expired token");
-    assert.equal(tries(), 2, "the refresh was tried twice");
+    // Its request left: sent once, never again with the same refresh token (a provider may revoke the grant on its reuse).
+    assert.equal(tries(), 1, "the refresh was sent once");
     assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed", "the sign-in stands: no one is asked to sign in again");
-    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs.
+    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs (after no
+    // answer, once the lease the silent refresh held has ended).
     as.heal();
     assert.equal(await run(), "The tool said: 5");
     assert.equal(calls(), 1);

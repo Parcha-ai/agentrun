@@ -7,7 +7,7 @@ import type { SettingsSpec } from "./sealed-settings.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
-/** A source as triggers.json keeps it: its kind, the adapter's id, and the adapter's own fields. */
+/** A source as the store keeps it: its kind, the adapter's id, and the adapter's own fields. */
 export type Source = { kind: string } & Json;
 
 /** The times of a source that fires on a clock, made once for one reading of it (a cron line is parsed once). */
@@ -48,7 +48,7 @@ export type TriggerAdapter = {
   /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
    *  field under `source`. Undefined when it does not read. */
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
-  /** Whether a source triggers.json keeps is whole, of its type. */
+  /** Whether a source the store keeps is whole, of its type. */
   wellFormed(source: Json): boolean;
   /** The zone its times are read in, for its runs' provenance line. Default UTC. */
   zone?(source: Source): string;

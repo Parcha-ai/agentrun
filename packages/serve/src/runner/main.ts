@@ -61,7 +61,7 @@ export class RunnerRefused extends Error {
 /** The store, opened as a runner, its kind and its schema version: refused when its schema is one this build does not
  *  know, or not set up yet. The one place the runner opens its store (store/open.ts: Postgres when AGENTRUN_STORE_URL
  *  names one, else SQLite in the data directory). */
-async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, warn: (message: string) => void, url: string | undefined): Promise<{ store: Store; kind: string; schema: number }> {
+export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, warn: (message: string) => void, url: string | undefined): Promise<{ store: Store; kind: string; schema: number }> {
   // The store module owns where the store is (design: only the store adapter knows a file or a schema). The URL is this
   // process's secret (as the launcher handed it over), unless a test hands one.
   const target = url === undefined ? storeTarget(dataDir, env) : storeTarget(dataDir, env, url);

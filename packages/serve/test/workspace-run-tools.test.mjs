@@ -1,8 +1,9 @@
-// A run's tools bound to its Workspace (serve/src/workspace/run-tools.ts runHands): with no computer the shell is the
-// run's folder ("local"), named by its own path, 600 s at most (295 s on Archil's exec, Mode 2); with a computer it is
-// "computer", the folder at /workspace, the Workspace attached through the mount check given. bash's TMPDIR and its
-// full outputs are in the run's folder, readable with read, and the run's end sweeps them; nothing of this server's
-// environment reaches a command.
+// A run's tools bound to its Workspace (serve/src/workspace/run-tools.ts runHands): with no computer in Mode 1 there is
+// no shell ("none": the run's folder is one of this server's own, so no bash executor at all), the folder named by its
+// own path and the file tools confined to it; in Mode 2 with none the shell is Archil's exec ("local", 295 s at most);
+// with a computer it is "computer", the folder at /workspace, the Workspace attached through the mount check given.
+// bash's TMPDIR and its full outputs are in the run's folder, readable with read, and the run's end sweeps them; nothing
+// of this server's environment reaches a command. The claim-time shell agrees with runShellOf's, read off the setting.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { answerText } from "../dist/workspace/executors.js";
-import { runHands, TMP_DIR } from "../dist/workspace/run-tools.js";
+import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { realProcesses } from "./workspace-fake-processes.mjs";
 
@@ -26,29 +27,25 @@ function scratch() {
   return root;
 }
 
-test("no computer: the shell is the run's folder, named by its own path; TMPDIR and full outputs are in it, read opens one, the end sweeps both", async () => {
+test("no computer in Mode 1: no shell, so no bash executor; the folder goes by its own path; read opens a file in it and refuses one of the server's outside it", async () => {
   const root = scratch();
   writeFileSync(join(root, "a.txt"), "hello\n");
-  process.env.AGENTRUN_RUN_TOOLS_SENTINEL = "a server secret";
-  try {
-    const run = await runHands(localWorkspace(root), undefined, { mode: 1, context: ctx });
-    assert.deepEqual([run.shell, run.maxExecS, run.cwd, run.hands.maxExecS], ["local", 600, root, 600]);
-    const env = answerText(await run.executors.bash({ command: "echo \"[$AGENTRUN_RUN_TOOLS_SENTINEL]\" \"$TMPDIR\" \"$HOME\"; mktemp" }, {}));
-    const [line, made] = env.split("\n");
-    assert.equal(line, `[] ${root}/${TMP_DIR} ${root}`);
-    assert.ok(made.startsWith(`${root}/${TMP_DIR}/`), `mktemp makes its file in the run's TMPDIR: ${made}`);
-    assert.equal(answerText(await run.executors.read({ path: "a.txt" }, {})), "hello\n");
-    assert.equal(answerText(await run.executors.read({ path: join(root, "a.txt") }, {})), "hello\n");
-    const long = answerText(await run.executors.bash({ command: "seq 1 5000" }, {}));
-    const full = long.match(/Full output: (\S+)$/)?.[1];
-    assert.ok(full?.startsWith(`${root}/.agentrun/output/`), long.slice(-200));
-    assert.match(answerText(await run.executors.read({ path: full, offset: 5000 }, {})), /^5000\n/, "read opens a full output");
-    await run.sweep();
-    assert.deepEqual(readdirSync(join(root, ".agentrun")), [], "the end swept the outputs and TMPDIR");
-    assert.ok(existsSync(join(root, "a.txt")));
-  } finally {
-    delete process.env.AGENTRUN_RUN_TOOLS_SENTINEL;
+  // A file of the server's data beside the run's folder: what a host shell, or an unconfined file tool, would read.
+  const token = join(root, "..", ".token");
+  writeFileSync(token, "fake-test-key");
+  const run = await runHands(localWorkspace(root), undefined, { mode: 1, context: ctx });
+  assert.deepEqual([run.shell, run.maxExecS, run.cwd], ["none", 600, root]);
+  assert.equal(run.executors.bash, undefined, "no bash executor: nothing can run a command on this server");
+  assert.equal(answerText(await run.executors.read({ path: "a.txt" }, {})), "hello\n");
+  assert.equal(answerText(await run.executors.read({ path: join(root, "a.txt") }, {})), "hello\n");
+  for (const path of [token, "../.token"]) {
+    const refused = await run.executors.read({ path }, {});
+    assert.ok(refused.isError === true || refused.error !== undefined, `${path} is refused: ${JSON.stringify(refused)}`);
+    assert.ok(!answerText(refused).includes("fake-test-key"), "and nothing of it is read");
   }
+  await run.sweep();
+  assert.deepEqual(readdirSync(join(root, ".agentrun")), [], "the end swept TMPDIR");
+  assert.ok(existsSync(join(root, "a.txt")));
 });
 
 test("Mode 2 with no computer: a command runs 295 s at most (Archil's exec)", async () => {
@@ -71,12 +68,14 @@ test("Mode 2 with no computer never asks the folder's mount: on Archil that mint
   assert.equal(run.cwd, "/workspace", "on Archil the folder has no path of this machine: it goes by the computer's name");
 });
 
-test("a computer: the Workspace attached through the mount check given; the folder is /workspace (its path here an alias); bash and read go through the computer", async () => {
+test("a computer: the Workspace attached through the mount check given; the folder is /workspace (its path here an alias); bash and read go through the computer, with none of this server's environment; a full output is read back", async (t) => {
   const root = scratch();
   writeFileSync(join(root, "a.txt"), "hello\n");
   const computer = realProcesses(fakeComputer(root), root);
   const checks = [];
   const check = { readBackOf: (spec) => (checks.push(spec), readBackOf(spec)) };
+  process.env.AGENTRUN_RUN_TOOLS_SENTINEL = "a server value";
+  t.after(() => { delete process.env.AGENTRUN_RUN_TOOLS_SENTINEL; });
   const run = await runHands(localWorkspace(root), { kind: "sandbox", computer, check }, { mode: 1, context: ctx });
   assert.deepEqual([run.shell, run.maxExecS, run.cwd], ["computer", 600, "/workspace"]);
   assert.deepEqual(checks, [{ kind: "bind", path: root }], "attach ran the check given");
@@ -88,6 +87,11 @@ test("a computer: the Workspace attached through the mount check given; the fold
   const said = answerText(await run.executors.bash({ command: "echo \"$TMPDIR\"; cat a.txt" }, {}));
   assert.equal(said, "/workspace/.agentrun/tmp\nhello\n");
   assert.ok(computer.methods().includes("process.start"), "bash ran in the computer");
+  assert.equal(answerText(await run.executors.bash({ command: "echo \"[$AGENTRUN_RUN_TOOLS_SENTINEL]\"" }, {})), "[]\n", "nothing of this server's environment");
+  const long = answerText(await run.executors.bash({ command: "seq 1 5000" }, {}));
+  const full = long.match(/Full output: (\S+)$/)?.[1];
+  assert.ok(full?.startsWith("/workspace/.agentrun/output/"), long.slice(-200));
+  assert.match(answerText(await run.executors.read({ path: full, offset: 5000 }, {})), /^5000\n/, "read opens a full output");
   await run.sweep();
   assert.deepEqual(readdirSync(join(root, ".agentrun")), []);
 });
