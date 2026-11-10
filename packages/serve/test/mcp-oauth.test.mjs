@@ -17,7 +17,7 @@ import { mcpClaim } from "../dist/runner/mcp-claim.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, clientOwnerSession, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { storeOn as newStore } from "./store-helpers.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
@@ -104,6 +104,14 @@ async function launchOn(t, { api, data }, key, { server = "docs", now, bounds, s
   const step = await mcpClaim({ store: watched, claim, grants: [`mcp:${server}/add`], sealKey: key ? Buffer.from(key, "base64") : undefined, signal: signal ?? new AbortController().signal, ...(now ? { now } : {}), ...(bounds ? { bounds } : {}) });
   t.after(() => step.release());
   return { step, entry: step.credentials[server], store, when };
+}
+
+/** The owner's session as the console's page at `origin` sends a write (a sign-in's start is the owner's alone): its
+ *  cookie (under its https name on an https origin), that origin, JSON. */
+async function pageAt(server, origin) {
+  const { cookie } = await clientOwnerSession(server);
+  const port = new URL(server.baseUrl).port;
+  return { cookie: origin.startsWith("https:") ? cookie.replace(`agentrun-${port}-session=`, "__Host-agentrun-session=") : cookie, origin, "content-type": "application/json" };
 }
 
 /** An authorization server and an MCP server that takes only its access tokens. */
@@ -262,6 +270,43 @@ test("a pre-registered client: its id and secret are used, no registration is ma
   holdsNone(JSON.stringify(after.body), [secret], "a read");
 });
 
+test("a kept client goes only to the authorization server it was registered at: the same one reuses it, another one gets a client registered anew", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const first = await startFakeOAuth();
+  const second = await startFakeOAuth();
+  let at = first;
+  const mcp = await startFakeMcp({ token: (header) => first.accepts(header) || second.accepts(header), oauth: () => at.issuer });
+  t.after(() => Promise.all([first.close(), second.close(), mcp.close()]));
+  const registrations = (as) => as.log.filter((entry) => entry.path === "/register").length;
+  const clientOf = (started) => new URL(started.body.authorization_url).searchParams.get("client_id");
+
+  const signedIn = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(signedIn.status, 200, JSON.stringify(signedIn.body));
+  assert.equal((await approve(signedIn)).status, 302);
+  const kept = clientOf(signedIn);
+  assert.equal(registrations(first), 1);
+
+  // The same authorization server: the kept client, no registration.
+  const same = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.equal(clientOf(same), kept, "the kept client is reused at its own authorization server");
+  assert.equal(registrations(first), 1, "no registration");
+  assert.equal((await approve(same)).status, 302);
+
+  // The MCP server (same origin) now names another authorization server: the owner's client registers there anew, and
+  // the kept one's id never goes to it.
+  at = second;
+  const moved = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(new URL(moved.body.authorization_url).origin, second.issuer, "the sign-in goes to the new authorization server");
+  assert.equal(registrations(second), 1, "a client registered at the new authorization server");
+  assert.notEqual(clientOf(moved), kept, "the kept client is not sent to another authorization server");
+  assert.ok(!second.log.some((entry) => JSON.stringify(entry).includes(kept)), "the new authorization server never hears the kept client's id");
+  assert.equal((await approve(moved)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.oauth.client_id, clientOf(moved));
+});
+
 test("CIMD only on a public https address: the client id is this server's metadata document, which it serves", async (t) => {
   const key = sealKey();
   const { as, mcp } = await fakes(t, { cimd: true });
@@ -416,7 +461,7 @@ test("a token given with no expiry is taken to last an hour: a launch after that
 });
 
 
-test("a stop aborts a refresh waiting on its authorization server: it returns within its bound, writes nothing, refuses writes after, and the next start asks for a sign-in again", { timeout: 60_000 }, async (t) => {
+test("a stop while a refresh waits on its authorization server drops the claim's credentials at once, writes nothing, holds the refresh lease to its end, and the next start asks for a sign-in again", { timeout: 60_000 }, async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key });
   // Ported to the runner's claim step over the server's own store (the switch). A refresh once sent is never cut short
@@ -439,15 +484,15 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
   const launch = launchOn(t, server, key, { signal: stop.signal, bounds });
   assert.equal((await reached).form.grant_type, "refresh_token", "the refresh reached the authorization server");
   const { step, when } = await launch;
-  const at = Date.now();
   stop.abort();
   assert.deepEqual({ ...step.credentials }, {}, "the stopped claim holds nothing at once, and its gateway can send nothing after");
-  // The refresh on the wire is awaited within its own bound and then let go: its lease is released, nothing kept.
-  await when(async () => (await store.mcp.server("docs")).refreshHolder === null);
-  assert.ok(Date.now() - at < bounds.requestMs * bounds.tries + 1_000, `the refresh let go in ${Date.now() - at} ms, within its bound`);
+  // The refresh on the wire may have spent the refresh token, so its lease is held to its end: no claim sends that token
+  // again meanwhile. Nothing is kept.
+  assert.notEqual((await store.mcp.server("docs")).refreshHolder, null, "the lease is held");
   assert.ok((await sealedNow()).equals(before), "nothing written: the token set is as it was");
 
-  // The next start refreshes with the refresh token it kept, which the authorization server spent: a sign-in again.
+  // Once the held lease runs out, the next start refreshes with the refresh token it kept, which the authorization server
+  // spent: a sign-in again.
   const { step: next } = await launchOn(t, server, key);
   await when(() => next.credentials.docs?.unopened !== undefined);
   assert.equal(next.credentials.docs.unopened, "its sign-in expired or was revoked: sign in again in Settings → MCP servers");
@@ -568,10 +613,12 @@ test("two tabs signing in at once each keep their own cookie, and both finish; a
 
 test("a sign-in starts on the address the authorization server sends the browser back to: from localhost it answers where to open the console", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { api, url: base, token } = await serve(t);
+  const server = await serve(t);
+  const { api, url: base } = server;
   const { mcp } = await fakes(t);
   const port = new URL(base).port;
-  const viaLocalhost = await fetch(`http://localhost:${port}/v2/settings/mcp-servers/docs/oauth/start`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ url: mcp.url }) });
+  // The owner's session, as the page at http://localhost:<port> sends it (a sign-in's start is the owner's alone).
+  const viaLocalhost = await fetch(`http://localhost:${port}/v2/settings/mcp-servers/docs/oauth/start`, { method: "POST", headers: await pageAt(server, `http://localhost:${port}`), body: JSON.stringify({ url: mcp.url }) });
   assert.equal(viaLocalhost.status, 409);
   const said = (await viaLocalhost.json()).error;
   assert.equal(said.code, "wrong_origin");
@@ -777,9 +824,11 @@ for (const down of ["503", "timeout"]) {
     assert.equal(said, "The tool said: The MCP server docs's credential can't be used right now: the sign-in server didn't answer; try again.");
     assert.doesNotMatch(said, /update it|sign in again/);
     assert.equal(calls(), 0, "nothing was sent with the expired token");
-    assert.equal(tries(), 2, "the refresh was tried twice");
+    // Its request left: sent once, never again with the same refresh token (a provider may revoke the grant on its reuse).
+    assert.equal(tries(), 1, "the refresh was sent once");
     assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed", "the sign-in stands: no one is asked to sign in again");
-    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs.
+    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs (after no
+    // answer, once the lease the silent refresh held has ended).
     as.heal();
     assert.equal(await run(), "The tool said: 5");
     assert.equal(calls(), 1);
@@ -884,10 +933,13 @@ test("with a LOOPBACK public address (a local https proxy in front of the listen
 
 test("a server started with a public address refuses a loopback MCP server's authorization server that names the port it listens on", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const { baseUrl, token } = await serve(t, { publicUrl: "https://agents.example.test" });
-  // As a browser at the public address reaches it, through its proxy: the sign-in starts only there.
+  const server = await serve(t, { publicUrl: "https://agents.example.test" });
+  const { baseUrl } = server;
+  // As a browser at the public address reaches it, through its proxy, with the owner's session: the sign-in starts only
+  // there.
+  const page = await pageAt(server, "https://agents.example.test");
   const start = (body) => new Promise((resolve, reject) => {
-    const req = request(`${baseUrl}/settings/mcp-servers/loop/oauth/start`, { method: "POST", agent: false, headers: { host: "agents.example.test", "x-forwarded-proto": "https", "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) } }, (res) => {
+    const req = request(`${baseUrl}/settings/mcp-servers/loop/oauth/start`, { method: "POST", agent: false, headers: { host: "agents.example.test", "x-forwarded-proto": "https", ...page } }, (res) => {
       let text = "";
       res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text || "null") }));
     });

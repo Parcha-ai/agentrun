@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFi
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
+import proxyaddr from "proxy-addr";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -50,6 +51,7 @@ import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
@@ -63,7 +65,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -86,7 +88,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
-import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
+import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
@@ -192,8 +194,14 @@ export type ServeOptions = {
   /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
    *  the offer has its numbers by the time the page opens (the CLI sets it). */
   countSessions?: boolean;
-  /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
+  /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is counted by
+   *  the server's failure budget only. */
   signInAddresses?: number;
+  /** The proxies in front of this server (AGENTRUN_TRUSTED_PROXIES): addresses, CIDR ranges, or `loopback`, `linklocal`,
+   *  `uniquelocal`. A request from one of them is counted by the sign-in limit under the client address its
+   *  X-Forwarded-For names (the nearest one not itself a trusted proxy). None by default: the header is never read, and
+   *  every request counts under the address it came from. */
+  trustedProxies?: readonly string[];
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -1283,6 +1291,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
   const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // Who a sign-in comes from, for its limit: the socket's peer, or, from a trusted proxy only, the client it forwards for.
+  const trusted = (() => {
+    if (!options.trustedProxies?.length) return undefined;
+    try { return proxyaddr.compile([...options.trustedProxies]); } catch (error) { throw new Error(`trustedProxies: ${(error as Error).message}`); }
+  })();
+  const clientOf = (req: IncomingMessage) => (trusted ? proxyaddr(req, trusted) : req.socket.remoteAddress) ?? "unknown";
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
@@ -2198,12 +2212,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "/auth/sign-in": {
         fromPage(req);
-        const allowed = me.allow(req.socket.remoteAddress ?? "unknown");
-        if (allowed === "full") authFailed("/v2/auth/sign-in", "sign_in_table_full");
-        if (allowed !== "ok") throw new ApiError("rate_limited", "too many sign-ins; try again later", { retry_after_ms: 900_000 }, { "retry-after": "900" });
+        // The body first: the limit's place is taken only for the password's check, so a body sent slowly holds nothing
+        // of the limit (the request's own timeout bounds it, as on any route).
         const { password } = await passwordIn(req, ["password"], false);
         if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
-        if (!(await me.check(password))) {
+        // Never refused for good (owner.ts SignInLimit): a try past the limit is told how long to wait, a minute at most.
+        const allowed = me.signIns.allow(clientOf(req));
+        if (!allowed.ok) {
+          const seconds = Math.ceil(allowed.retryAfterMs / 1000);
+          throw new ApiError("rate_limited", `too many sign-ins ${allowed.by === "address" ? "from this address" : "on this server"}; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
+        }
+        if (allowed.untracked) authFailed("/v2/auth/sign-in", "sign_in_table_full");
+        // The try holds its place in the server's count while the password is checked: a wrong one is charged.
+        let wrong = false;
+        try {
+          wrong = !(await me.check(password));
+        } finally {
+          allowed.done(wrong);
+        }
+        if (wrong) {
           authFailed("/v2/auth/sign-in", "wrong_password");
           throw new ApiError("unauthenticated", "that is not the password");
         }
@@ -2227,7 +2254,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
       case "/auth/session": {
-        // Before the owner's password is set: whether setup takes the printed code (a server at a public address), so
+        // Before the owner's password is set: whether setup takes the printed code (a server at a public address, or on a non-loopback listener), so
         // the page asks for it when opened with no link. Never the code itself.
         const set = me.hasPassword();
         // secrets_writable: whether this browser may save a secret (secret-writes.ts mayWriteSecrets, the dispatch check's
@@ -2353,7 +2380,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return void res.writeHead(302, { location, "cache-control": "no-store", ...(bound ? { "set-cookie": stateCookie(req.socket.localPort, bound, overHttps(req), 0, INSTALLED_PATH) } : {}) }).end();
     }
     if (found.name === "getHealth") {
-      const health = await healthOf(data, minFreeBytes);
+      // The store this server opened (SQLite or Postgres), never a second open of the data directory's file.
+      const health = await healthOf(store, data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
     }
     // Approving a note the grader held for its owner's OK (a risky rule a run's user asked for) takes the owner's
@@ -2388,12 +2416,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
+    // What a stored predicate read to let the request through (SecretRequest.seen): the operation's write is refused if
+    // that changed before it lands, so a write allowed against one stored credential never lands over another.
+    let secretSeen: unknown;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
-      if (writesSecret(found.name, body)) {
+      // A segment that is not valid percent-encoding is taken as it came: the request goes on to the token's own check.
+      const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => {
+        try {
+          return part === undefined ? "" : decodeURIComponent(part);
+        } catch {
+          return part;
+        }
+      });
+      const checked: SecretRequest = { params, store };
+      if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
       }
+      secretSeen = checked.seen;
     }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
@@ -2810,7 +2851,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
-        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal);
+        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return send(res, 200, saved);
       }
@@ -2857,7 +2898,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "putMcpPrivateHosts":
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
-        await mcpServers.remove(id);
+        await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":
@@ -3184,11 +3225,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since
    *  is not read again, and a new wait comes with a new claim, so a new epoch. */
   const readWaits = new Map<string, string>();
+  /** When each held wait (a run waiting on its person with its claim held) was last read again. */
+  const heldReadAt = new Map<string, number>();
+  const HELD_WAIT_REREAD_MS = 1_000;
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
   /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
    *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
   const tellWait = async (row: RunRow): Promise<void> => {
-    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
+    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
     if (readWaits.get(row.id) === seen) return;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
@@ -3208,8 +3252,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const state of ["queued", "running", "parked"] as const) {
       for (const row of await store.runs.list({ state })) {
         open.add(row.id);
-        // A run waits on its person once its runner has let it go: parked, or running with no runner.
-        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
+        // A run waits on its person once its runner has let it go: parked, or running with no runner. Or held in its claim
+        // waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its browser hand-over,
+        // tools.ts), which its row's summary says (HELD_WAITS); a new ask sets it anew, so each is read and told once.
+        const waitsInClaim = row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
+        // A held run's next ask in the same claim reads the same row as its last (state, epoch, runner, summary), and the
+        // answer between may come and go within one read: so a held wait is read again now and then (HELD_WAIT_REREAD_MS),
+        // and told once per ask all the same, since each ask's notice is keyed to its own last row (webhooks.ts emit).
+        if (waitsInClaim && Date.now() - (heldReadAt.get(row.id) ?? 0) >= HELD_WAIT_REREAD_MS) {
+          heldReadAt.set(row.id, Date.now());
+          readWaits.delete(row.id);
+        }
+        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
       }
     }
     const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
@@ -3222,6 +3276,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         continue;
       }
       readWaits.delete(id);
+      heldReadAt.delete(id);
       if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
       if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
     }

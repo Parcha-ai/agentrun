@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+An MCP server stays signed in: an owner's save or tools refresh keeps a runner's rotated token, and a token refresh never re-sends a spent refresh token.
+An owner's tools refresh, or a save with no new credential, now leaves the stored credential, its token's end and any refresh lease as they are, by a compare-and-set on the credential the owner read; a run that keeps changing it meanwhile gets the change applied again onto the fresh row, and after three tries it is refused in words ("... credential kept changing while this save was made ...; nothing was saved. Try again."). A token refresh is sent once per refresh lease: a try's own time bounds a request only until it is dialled, and once sent it is awaited within the refresh call's deadline and never sent again, so a provider that rotates refresh tokens and revokes a grant on their reuse never sees a spent one twice. It is tried again only when it provably never left (a refused or unmade connection, or an address check out of time). A refresh that left and got no answer holds the lease to its end, and the next claim refreshes after it; an error answer that granted nothing (a 5xx) lets the lease go at once.

@@ -262,6 +262,20 @@ test("a Daytona or an E2B sandbox under the server's default box_allow asks for 
   }
 });
 
+// A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]) is
+// open whatever the run allows, and never refused for the server's list: this server's allow-list can't reach it.
+test("a cloud phone under the server's default box_allow, or none, runs on the vendor's own network, and its provider's check takes the spec", async () => {
+  const spec = computerSpecOf({});
+  const provider = await providerFor("phone-harness", { apiKey: "fake-test-key" });
+  const { network: networks, maxLifetimeMs } = provider.capabilities();
+  for (const boxAllow of [[...DEFAULT_BOX_ALLOW], "none", undefined]) {
+    const asked = spec(entryOf("phone-harness"), "phone", { ...(boxAllow === undefined ? {} : { boxAllow }), networks, maxLifetimeMs });
+    assert.equal(asked.network, "open", `box_allow ${JSON.stringify(boxAllow)}`);
+    assert.deepEqual(provider.check(asked), [], `the phone's check takes the spec under box_allow ${JSON.stringify(boxAllow)}`);
+  }
+  assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
+});
+
 // The computer's spec by kind (computerSpecOf): box_allow is a sandbox's egress list, so a sandbox with none (or "none")
 // has no network; a browser, a desktop or a phone with none has its provider's own network ("open": a browser or a
 // vendor desktop with no network is a broken kind); an explicit list applies to any kind. Each provider's image for a
