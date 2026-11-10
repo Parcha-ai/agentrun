@@ -295,6 +295,26 @@ test("a run parked at its cap reads input_required with the budget pending card"
   assert.equal(moment.terminal, false);
 });
 
+test("a run raised from its pause shows the raised cap in its cost.cap_usd, never its launch's; the next raise is checked against it", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.05, cap_mode: "expected" } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] };
+  // Parked at $0.05, then raised to $1: the loop's raise entry answers the pause (adapter-loop takeRaises).
+  const budget = budgetEntry(await journal.mintId(), { cap_usd: 0.05 });
+  const raise = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.raise", data: { capUsd: 1, takes: [1], pause: String(budget.id) } };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: budget }, { type: "entry", value: raise }], context);
+  await store.release(claim);
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.equal(view.cost.cap_usd, 1, `the raised cap, not the launch's $0.05: ${JSON.stringify(view.cost)}`);
+  assert.equal(view.pending, null, "the raise answered the pause");
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.maxCostUsd, 1, "a later raise is checked against the raised cap");
+});
+
 test("a workflow run parked at its cap reads input_required with the budget pending card", async (t) => {
   const { store } = await storeOn(t);
   await agent(store, { kind: "workflow" });

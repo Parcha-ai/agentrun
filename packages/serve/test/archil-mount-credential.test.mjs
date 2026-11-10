@@ -88,3 +88,30 @@ test("a control plane that is not https is refused, except on this machine's loo
   await assert.rejects(mintMountToken({ disk: DISK, region: "aws-us-east-1", key: () => KEY, baseUrl: "http://control.example.com" }, { nickname: "n", ttlMs: 1000 }), /must be https/);
   await assert.rejects(mintMountToken({ disk: DISK, region: "nowhere-1", key: () => KEY }, { nickname: "n", ttlMs: 1000 }), /no control plane for region "nowhere-1"/);
 });
+
+test("the run's users removed by name: one remove that fails (a network blip) leaves none after it standing, and the error names the one that failed", async (t) => {
+  let first = true;
+  const { fake, options } = await control(t, {
+    existing: [
+      { identifier: "a", nickname: "agentrun:run-1:1" },
+      { identifier: "b", nickname: "agentrun:run-1:2" },
+      { identifier: "c", nickname: "agentrun:run-1:3" },
+      { identifier: "d", nickname: "agentrun:run-1:4" },
+      { identifier: "e", nickname: "agentrun:run-2:1" },
+    ],
+    // The first remove is refused, as a blip would; every other one goes through.
+    answer: ({ method }) => {
+      if (method !== "DELETE" || !first) return undefined;
+      first = false;
+      return { status: 503, body: { error: "the control plane is busy" } };
+    },
+  });
+  const { removeRunMountTokens } = await import("../dist/workspace/archil-mount-credential.js");
+  await assert.rejects(removeRunMountTokens(options, "run-1", 3), (error) => {
+    assert.match(error.message, /run run-1's token users a \(.*\) were not removed; 2 others were/);
+    assert.ok(!error.message.includes(KEY), "the key is in no error");
+    return true;
+  });
+  assert.deepEqual([...fake.users.keys()].sort(), ["a", "d", "e"], "b and c removed after a's failed; the later epoch's and another run's stay");
+  assert.equal(fake.requests.filter((one) => one.method === "DELETE").length, 3, "each of the three tried once");
+});

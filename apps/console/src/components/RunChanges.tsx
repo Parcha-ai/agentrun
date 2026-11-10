@@ -1,5 +1,6 @@
 import { ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { type DiffLine, learnedBy, type LearningDiff, type NoteChange, noteChanges } from "@/lib/learning";
 import { problem } from "@/lib/problem";
 import { cn } from "@/lib/utils";
@@ -31,12 +32,12 @@ export function RunChanges({ got, retry }: { got: Read; retry: () => void }) {
   const p = got.state === "failed" ? problem(got.error, "what it changed") : null;
   return (
     <section className="border" aria-label="What it changed">
-      <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">What it changed</h2>
-      {got.state === "reading" && <p className="px-4 py-3 text-[13px] text-muted-foreground" role="status">Reading what it changed…</p>}
+      <h2 className="caps border-b px-4 py-3 text-small font-semibold">What it changed</h2>
+      {got.state === "reading" && <p className="px-4 py-3 text-body text-muted-foreground" role="status">Reading what it changed…</p>}
       {p && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-[13px]" role="alert">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-body" role="alert">
           <span className="min-w-0 flex-1">Couldn't read what it changed: {p.why.charAt(0).toLowerCase() + p.why.slice(1)}</span>
-          <button type="button" onClick={retry} className="caps border px-3 py-1.5 text-[12px] hover:bg-accent">Try again</button>
+          <Button type="button" onClick={retry} size="sm">Try again</Button>
         </div>
       )}
       {got.state === "read" && <ul className="divide-y">{got.changes.map((c) => <li key={c.file}><Change change={c} /></li>)}</ul>}
@@ -50,13 +51,13 @@ function Change({ change: c }: { change: NoteChange }) {
     <>
       <button type="button" className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-accent/40" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span className="min-w-0 flex-1">
-          <span className="block break-words text-[14px]" data-said>{c.said}</span>
-          <span className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">{c.file}</span>
+          <span className="block break-words text-lead" data-said>{c.said}</span>
+          <span className="mt-0.5 block break-all font-mono text-label text-muted-foreground">{c.file}</span>
         </span>
         <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />
       </button>
       {open && (c.withheld
-        ? <p className="px-4 pb-3 text-[13px] text-muted-foreground">{c.withheld}</p>
+        ? <p className="px-4 pb-3 text-body text-muted-foreground">{c.withheld}</p>
         : (
           <div className="grid grid-cols-1 gap-3 px-4 pb-4 md:grid-cols-2">
             <Side name="before" lines={c.before} none="Not there before." />
@@ -72,9 +73,9 @@ function Change({ change: c }: { change: NoteChange }) {
 function Side({ name, lines, none }: { name: "before" | "after"; lines: DiffLine[] | null; none: string }) {
   return (
     <div className="min-w-0 border" data-side={name}>
-      <p className="caps border-b px-3 py-2 text-[11px] text-muted-foreground">{name === "before" ? "Before" : "After"}</p>
-      {lines === null ? <p className="px-3 py-2 text-[13px] text-muted-foreground">{none}</p> : (
-        <pre className="max-h-80 overflow-auto py-2 font-mono text-[12px] leading-[1.7]">
+      <p className="caps border-b px-3 py-2 text-label text-muted-foreground">{name === "before" ? "Before" : "After"}</p>
+      {lines === null ? <p className="px-3 py-2 text-body text-muted-foreground">{none}</p> : (
+        <pre className="max-h-80 overflow-auto py-2 font-mono text-small leading-[1.7]">
           {lines.map((l, i) => (
             <span key={i} className={cn("flex min-h-[1.7em] px-3", l.mark === "added" && "bg-primary/10", l.mark === "removed" && "bg-destructive/10")}>
               <span aria-hidden className="w-4 shrink-0 select-none text-muted-foreground">{l.mark === "added" ? "+" : l.mark === "removed" ? "−" : ""}</span>

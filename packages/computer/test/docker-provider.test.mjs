@@ -518,7 +518,7 @@ test("the host's enforcement is read once per provider, and a docker info that f
 	assert.equal((await provider.create(SPEC)).ok, true);
 	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "run", "inspect", "exec"]);
 	const host = await provider.host();
-	assert.deepEqual(host, { ok: true, value: { arch: "amd64", apparmor: false, selinux: false, problems: [] } });
+	assert.deepEqual(host, { ok: true, value: { arch: "amd64", apparmor: false, selinux: false, problems: [], engine: 29 } }, "the engine's major version from docker info's ServerVersion");
 	const broken = new DockerProvider({ daemonPath, docker: join(tmpdir(), "no-such-docker-cli") });
 	const first = await broken.host();
 	assert.equal(first.ok, false);

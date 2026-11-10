@@ -1,6 +1,7 @@
 import { CornerDownLeft } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/field";
 import type { MessageMode } from "@/lib/runState";
 
 // Each of serve's message modes (the contract's table for POST /v2/runs/{id}/messages) in plain words: what the box is
@@ -29,12 +30,12 @@ export function Composer({ mode, onSend, sending: sendingProp, sent, purpose }: 
     if (ok !== false) setText("");
   };
   return (
-    <form className="border bg-card" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-      <textarea id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={words.placeholder}
+    <form className="border bg-card focus-within:border-foreground" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      <Textarea bare id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={words.placeholder}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-        className="block w-full resize-none bg-transparent px-4 pt-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
+        className="block w-full resize-none px-4 pt-3" />
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
-        <span className="min-w-0 text-[11px] text-muted-foreground">
+        <span className="min-w-0 text-label text-muted-foreground">
           <label htmlFor="composer" className="font-semibold text-foreground">{words.label}</label> · {sent ? "Sent. It appears on the timeline when the run takes it." : words.does}
         </span>
         <Button type="submit" size="sm" disabled={!text.trim() || !onSend || sending}>
