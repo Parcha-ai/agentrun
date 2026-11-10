@@ -47,6 +47,7 @@ import type { ComputerSetting } from "../computer-setting.js";
 import { imageWaitWords } from "../workspace/computer-deps.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { mcpServersOf } from "../tool-gate.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
@@ -266,7 +267,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
   // store at each decide, and the turn's origin read through the run's Workspace (Mode 2: on the run's disk) — adapterRunGate
   // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, mcpServersOf(granted));
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer), beside the learned_workflow tool when the
   // claim's seed lay chose learned workflows (seedLaid.workflows, as the pi spec lists them). A CLI harness's session has

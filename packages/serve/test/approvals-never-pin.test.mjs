@@ -6,11 +6,9 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, call, follow, serve, withEnv } from "./support.mjs";
+import { agent, follow, serve, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-const PHRASE = "the owner signs in with this phrase";
-const json = { "content-type": "application/json" };
 const SEND = "mcp:fake/send_message";
 const REFUSAL = /mcp:fake\/send_message may only be called with channel_id = C0123: its destination is fixed by this server's settings\. It was not run: nothing was sent and nothing was charged\./;
 
@@ -27,8 +25,7 @@ test("under approvals never, a call not as the server pinned it is refused, neve
   };
   const { api } = server;
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
-  const origin = `http://127.0.0.1:${server.port}`;
-  assert.equal((await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PHRASE } })).status, 201);
+  // The test support set the owner up already (accounts on: a person could answer, so an ask would park).
   // The server pins the send to one channel and sets no permission: an MCP tool asks by default.
   assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0123" } } })).status, 200);
   const made = await api("POST", "/agents", agent("unattended", { tools: [SEND], approvals: "never" }));
