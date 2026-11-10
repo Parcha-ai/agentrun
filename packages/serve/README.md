@@ -2236,8 +2236,12 @@ at once; a new one past that is held by the server's budget only, and no address
 Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
 `AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
 `uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
-that is not itself a trusted proxy). Unset, that header is never read. `render.yaml` sets it to `uniquelocal`, the private
-ranges Render's proxy reaches a service from.
+that is not itself a trusted proxy). Unset, that header is never read. The first sign-in a start sees carry
+`X-Forwarded-For` from an address it doesn't trust is logged once, with that address (`event=forwarded_untrusted
+peer=<address>`): behind a proxy, that is the proxy's address, the one to set. `render.yaml` leaves it unset, as Render
+publishes no address for its proxy: after a deploy, sign in once, read the `forwarded_untrusted` line in the service's
+Logs, and set `AGENTRUN_TRUSTED_PROXIES` to that address (or its range, when Render's proxy reaches the service from
+more than one).
 
 Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node

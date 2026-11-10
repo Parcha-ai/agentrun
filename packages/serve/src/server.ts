@@ -1319,7 +1319,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!options.trustedProxies?.length) return undefined;
     try { return proxyaddr.compile([...options.trustedProxies]); } catch (error) { throw new Error(`trustedProxies: ${(error as Error).message}`); }
   })();
-  const clientOf = (req: IncomingMessage) => (trusted ? proxyaddr(req, trusted) : req.socket.remoteAddress) ?? "unknown";
+  // A sign-in that carries X-Forwarded-For from an address not trusted as a proxy is said once a start, with that address
+  // (`event=forwarded_untrusted peer=<it>`): behind a proxy that publishes no address (Render's), it is the one to name in
+  // AGENTRUN_TRUSTED_PROXIES. Once: a client forging the header can't fill the log.
+  let forwardedSaid = false;
+  const clientOf = (req: IncomingMessage) => {
+    const peer = req.socket.remoteAddress ?? "unknown";
+    if (!forwardedSaid && req.headers["x-forwarded-for"] !== undefined && !(trusted?.(peer, 0) ?? false)) {
+      forwardedSaid = true;
+      log?.(logLine("forwarded_untrusted", { peer }));
+    }
+    return (trusted ? proxyaddr(req, trusted) : peer) ?? "unknown";
+  };
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */

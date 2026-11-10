@@ -208,6 +208,22 @@ test("a sign-in body sent slowly holds nothing of the limit: eleven left unfinis
   assert.equal((await signIn(server, PASSWORD)).status, 200, "the unfinished bodies took none of this address's tries");
 });
 
+test("an X-Forwarded-For from an address not trusted as a proxy is logged once a start, with that address; from a trusted one, not at all; and render.yaml trusts none", async (t) => {
+  const tried = async (options) => {
+    const lines = [];
+    const server = await owned(t, { ...options, log: (line) => lines.push(line) });
+    for (const client of [CLIENT, OTHER]) await signIn(server, "not the password", { ...page(server), "x-forwarded-for": client });
+    return lines.filter((line) => / event=forwarded_untrusted /.test(line));
+  };
+  const none = await tried({});
+  assert.equal(none.length, 1, `once a start, with no proxy trusted: ${none.join("\n")}`);
+  assert.match(none[0], / event=forwarded_untrusted peer=(::ffff:)?127\.0\.0\.1$/); // key-gate: loopback, the test's own connection
+  assert.equal((await tried({ trustedProxies: [`${CLIENT}/32`] })).length, 1, "a proxy trusted that is not the peer: still said");
+  assert.deepEqual(await tried({ trustedProxies: ["loopback"] }), [], "from a trusted proxy: nothing to say");
+  const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
+  assert.doesNotMatch(render, /key: AGENTRUN_TRUSTED_PROXIES/, "Render publishes no proxy address: render.yaml trusts none");
+});
+
 test("the trusted proxies must parse: a start with one that does not is refused, naming the option", async (t) => {
   await assert.rejects(serve(t, { accounts: true, openSetup: true, trustedProxies: ["not-an-address"] }), /trustedProxies: .*not-an-address/);
 });
