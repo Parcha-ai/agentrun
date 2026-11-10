@@ -237,22 +237,48 @@ export function makeRevision(definition: Json, files: Record<string, string>, no
   return note !== undefined ? { ...revision, note } : revision;
 }
 
+/** The writes that move an agent's current revision (an edit's commit, a set-current), one at a time per agent and store:
+ *  the server is the store's one writer (the owner lock), so a write held here sees no other move between its read of the
+ *  current revision and its own write. */
+const moving = new WeakMap<object, Map<string, Promise<unknown>>>();
+function oneMoveAtATime<T>(store: AgentsStore, agentId: string, act: () => Promise<T>): Promise<T> {
+  let byAgent = moving.get(store.agents);
+  if (!byAgent) moving.set(store.agents, (byAgent = new Map()));
+  const before = byAgent.get(agentId) ?? Promise.resolve();
+  const mine = before.then(act, act);
+  const settled = mine.then(() => undefined, () => undefined);
+  byAgent.set(agentId, settled);
+  void settled.then(() => {
+    if (byAgent.get(agentId) === settled) byAgent.delete(agentId);
+  });
+  return mine;
+}
+
+/** How many times an edit with no If-Match is built again on a current revision that moved while it was checked. */
+const EDIT_TRIES = 5;
+
 /** An edit: a new revision of the agent, made current. Without `skills` the current revision's skill files carry over. An
  *  edit that is the current revision writes nothing, so a PUT sent twice makes one revision. The agent keeps its id, name
  *  and description from its creation. `ifCurrent` (from If-Match) is the current revision the caller read, null for none;
- *  it is checked against the agent's current revision (one server per store writes agents). `check` may refuse the revision
- *  before a write. `contract`: an edit that always makes a new revision, even one equal to the current. */
+ *  it is checked against the agent's current revision when the edit is read and again when it is written. `check` may
+ *  refuse the revision before a write; it runs outside the write, so another request may move the current revision
+ *  meanwhile: an edit with If-Match is then precondition_failed, and one without is built and checked again on the new
+ *  current revision, so what it leaves out (skill files, harness, place, learning, cap) is never carried over from a
+ *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current. */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
   { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {},
 ): Promise<AgentEntry> {
-  const entry = (await getAgent(store, read.agent.id)) ?? read;
+  const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
+  const held = (entry: AgentEntry): AgentEntry => {
+    if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) throw stale();
+    return entry;
+  };
+  let entry = (await getAgent(store, read.agent.id)) ?? read;
   refuseExternal(entry.agent);
-  if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) {
-    throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
-  }
+  held(entry);
   const { agent } = entry;
   const kept = [
     ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -261,8 +287,31 @@ export async function commitAgent(
       .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
   ];
   if (kept.length) throw invalid(kept);
-  // What an edit leaves out keeps the agent's current revision's: its skill files, harness, place, learning switch and
-  // default cap. Absent here is unchanged, not the default.
+  for (let tries = 1; ; tries++) {
+    if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
+    const revision = editOn(entry, definition, skills, note);
+    await check?.(revision);
+    const base = entry.revision?.id ?? null;
+    const written = await oneMoveAtATime(store, agent.id, async (): Promise<AgentEntry | "moved"> => {
+      const now = held((await getAgent(store, agent.id)) ?? entry);
+      if ((now.revision?.id ?? null) !== base) return "moved";
+      if (!contract && now.revision && sameRevision(now.revision, revision)) {
+        checkVersion(definition, now.version);
+        return now;
+      }
+      checkVersion(definition, now.revisions + 1);
+      await store.agents.addRevision({ agentId: agent.id, ...revision }).catch(storeError);
+      return (await getAgent(store, agent.id))!;
+    });
+    if (written !== "moved") return written;
+    // Moved while it was checked: with If-Match that is stale (held throws it on the read again); without, built again.
+    if (tries >= EDIT_TRIES) throw new ApiError("precondition_failed", "the agent's current revision kept moving while this edit was checked: read the agent again");
+  }
+}
+
+/** The revision an edit makes on `entry`'s current one: what the edit leaves out keeps the current revision's, its skill
+ *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. */
+function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined): NewRevision & { note?: string } {
   const current = entry.revision;
   const currentBody = (current?.body ?? {}) as Partial<AgenticBody & WorkflowBody>;
   let files = skills;
@@ -279,21 +328,13 @@ export async function commitAgent(
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
     : {};
-  const revision = makeRevision({ ...definition, ...carried }, files, note);
-  await check?.(revision);
-  if (!contract && current && sameRevision(current, revision)) {
-    checkVersion(definition, entry.version);
-    return entry;
-  }
-  checkVersion(definition, entry.revisions + 1);
-  await store.agents.addRevision({ agentId: agent.id, ...revision }).catch(storeError);
-  return (await getAgent(store, agent.id))!;
+  return makeRevision({ ...definition, ...carried }, files, note);
 }
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
 export async function setCurrentRevision(store: AgentsStore, entry: AgentEntry, revisionId: string): Promise<AgentEntry> {
   refuseExternal(entry.agent);
-  await store.agents.setCurrent(entry.agent.id, revisionId).catch((error) => {
+  await oneMoveAtATime(store, entry.agent.id, () => store.agents.setCurrent(entry.agent.id, revisionId)).catch((error) => {
     if (error instanceof StoreConstraint) throw new ApiError("not_found", "that revision is not a revision of that agent");
     throw error;
   });
