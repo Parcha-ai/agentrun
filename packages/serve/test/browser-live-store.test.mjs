@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { dropLiveViewer, liveViewer, liveViewerById, computerViewerLink, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, viewerLink } from "../dist/browser-live.js";
+import { dropLiveViewer, familyReaches, liveViewer, liveViewerById, computerViewerLink, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, viewerLink } from "../dist/browser-live.js";
 import { aadOf, sealColumn, sealedAt } from "../dist/store/seal.js";
 import { fakeLiveViewersStore } from "./live-viewers-support.mjs";
 
@@ -215,6 +215,12 @@ test("the readers take any computer kind's row of the run: a desktop row put at 
   assert.deepEqual(await liveViewerById(store, KEY, RUN, desktop.id), read(desktop, 2_000, "desktop"));
   assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${desktop.id}`))?.kind, "desktop");
   assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, desktop.id, "the newest, whatever its kind");
+  // The computer family's address reaches every kind, the browser's among them (the link GET /computer gives); the
+  // browser's own address a browser's alone.
+  assert.equal(familyReaches("computer", read(desktop, 2_000, "desktop")), true);
+  assert.equal(familyReaches("computer", read(browser, 1_000)), true, "a browser's viewer under /computer/live");
+  assert.equal(familyReaches("browser", read(browser, 1_000)), true);
+  assert.equal(familyReaches("browser", read(desktop, 2_000, "desktop")), false, "a desktop's viewer is never under /browser/live");
   // A token sealed under another kind's AAD does not open: a row's kind is bound to its seal.
   const moved = handover("cmp-phone-1");
   await store.liveViewers.put(claim, { kind: "phone", tag: moved.tag, port: moved.port, id: moved.id, sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "desktop", moved.tag), moved.token) });
