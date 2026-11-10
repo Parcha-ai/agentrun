@@ -17,6 +17,7 @@ import { after, test } from "node:test";
 import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
+import { DEFAULT_BOX_ALLOW } from "../dist/run-box.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerDepsFrom, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -172,13 +173,14 @@ test("the composer builds a working claim on the faux box: a faux desktop is a k
   assert.equal(faux.viewPage(page), undefined, "its release ended it");
 });
 
-/** A sandbox provider stand-in: create records its spec; its computer binds the run's folder (the read-back it gives). */
-function fakeSandbox(root, record) {
+/** A sandbox provider stand-in: create records its spec; its computer binds the run's folder (the read-back it gives).
+ *  `declared`: more of its capabilities (the networks it makes, its longest lifetime). */
+function fakeSandbox(root, record, declared = {}) {
   const computer = fakeComputer(root);
   return {
     id: "fake",
     version: "0",
-    capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
+    capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000, ...declared }),
     check: () => [],
     list: async () => ({ ok: true, value: [] }),
     async create(spec) {
@@ -195,13 +197,14 @@ function fakeSandbox(root, record) {
 }
 
 /** A claim as the runner's spec builders make one (its run, epoch, revision and place), over a store that also has the
- *  run's launch row (runs.launch), as the runner's store does. `boxAllow`: the launch's box_allow. */
-async function placeClaim(place, boxAllow) {
+ *  run's launch row (runs.launch), as the runner's store does. `boxAllow`: the launch's box_allow. `declared`: more of
+ *  the provider's capabilities. */
+async function placeClaim(place, boxAllow, declared = {}) {
   const root = scratch();
   const sealKey = randomBytes(32);
   const store = { ...(await savedKeysStore(sealKey)), runs: { launch: async (runId) => ({ runId, body: { input: { content: "Go." }, title: "t", place, ...(boxAllow === undefined ? {} : { box_allow: boxAllow }) }, sealed: null, createdAt: 0 }) } };
   const record = { created: [], released: [], loaded: [] };
-  const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record));
+  const load = async (id, options) => (record.loaded.push([id, options]), fakeSandbox(root, record, declared));
   const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, kinds: KINDS, load });
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, revisionId: "rev-1", place }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
   return { answer, record };
@@ -226,6 +229,36 @@ test("for a sandbox place the composer's claim makes a Docker computer that reac
     const closed = await placeClaim({ mode: "sandbox", box: "docker" }, boxAllow);
     assert.equal(closed.record.created[0].network, "none", `box_allow ${JSON.stringify(boxAllow)}: no network`);
     await closed.answer.release();
+  }
+});
+
+test("the claim makes a computer's spec from what its provider declares: one that makes only network none, within an hour, gets none and an hour under the server's default list", async () => {
+  // The server's default box_allow (AGENTRUN_BOX_ALLOW unset) is a list; a provider declaring network ["none"] and an
+  // hour's cap, as E2B's does, is asked for none and that hour, never the list or a day it refuses at create.
+  const narrowed = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW], { network: ["none"], maxLifetimeMs: 3_600_000 });
+  assert.deepEqual([narrowed.record.created[0].network, narrowed.record.created[0].lifetimeMs], ["none", 3_600_000]);
+  await narrowed.answer.release();
+  // One that makes an allow-list (Docker's declaration) keeps the run's list and the day's bound.
+  const listed = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW], { network: ["none", "open", "allow"] });
+  assert.deepEqual([listed.record.created[0].network, listed.record.created[0].lifetimeMs], [{ allow: [...DEFAULT_BOX_ALLOW] }, 24 * 60 * 60_000]);
+  await listed.answer.release();
+});
+
+// Daytona's and E2B's own providers (the computer package's, built with a fake key; nothing is called): under the server's
+// default list, the spec the composer makes from their declared capabilities is one their own check() takes, where the
+// list it made before was refused as network open or an allow-list is ("a remote computer takes network none only").
+test("a Daytona or an E2B sandbox under the server's default box_allow asks for network none within its provider's lifetime, and its provider's check takes the spec", async () => {
+  const spec = computerSpecOf({});
+  for (const id of ["daytona", "e2b"]) {
+    const provider = await providerFor(id, { apiKey: "fake-test-key" });
+    const { network: networks, maxLifetimeMs } = provider.capabilities();
+    const asked = spec(entryOf(id), "sandbox", { boxAllow: [...DEFAULT_BOX_ALLOW], networks, maxLifetimeMs });
+    assert.equal(asked.network, "none", id);
+    assert.deepEqual(provider.check(asked), [], `${id}'s check takes the spec`);
+    const before = { ...asked, network: { allow: [...DEFAULT_BOX_ALLOW] } };
+    assert.deepEqual(provider.check(before).map((refusal) => refusal.field), ["network"], `${id} refuses the list`);
+    // An explicit none stays none; nothing is widened.
+    assert.equal(spec(entryOf(id), "sandbox", { boxAllow: "none", networks, maxLifetimeMs }).network, "none");
   }
 });
 

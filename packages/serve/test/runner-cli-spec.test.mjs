@@ -256,7 +256,7 @@ test("a CLI's install is looked up in the server's data directory (deps.data), a
   assert.ok(!failed.message.includes(join(home, ".local", "share")), `nothing under the runner's HOME/.local/share: ${failed.message}`);
 });
 
-test("a CLI's absolute path under its working directory is the run's folder: a write to <cwd>/x.txt lands as the workspace's x.txt, and a path outside both is refused", async (t) => {
+test("a CLI's absolute path under its working directory is the run's folder: a write to <cwd>/x.txt lands as the workspace's x.txt, and a path outside both is refused; with no computer in Mode 1 its granted bash is not among its tools", async (t) => {
   const { spec: built, dir, cwd } = await specOn(t, "opencode");
   const write = built.session.tools.find((tool) => tool.name === "write");
   const call = (args) => write.call(args, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
@@ -266,8 +266,10 @@ test("a CLI's absolute path under its working directory is the run's folder: a w
   const outside = await call({ path: join(dir, "elsewhere.txt"), content: "no" });
   assert.equal(outside.isError, true, "a path outside the run's folder and the CLI's cwd is refused");
   assert.equal(existsSync(join(dir, "elsewhere.txt")), false);
-  const bash = built.session.tools.find((tool) => tool.name === "bash");
-  assert.match(bash.description, /at most 600 s/, "Mode 1's bash: the local shell's ceiling");
+  // Mode 1 with no computer: the run's folder is one of this server's own, so a command there would run on the server
+  // itself. The CLI is handed no bash at all, granted or not.
+  assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => name.startsWith("bash")), [], "no bash-family tool");
+  assert.deepEqual(built.session.tools.map((tool) => tool.name).filter((name) => ["read", "write"].includes(name)).sort(), ["read", "write"], "the file tools stay");
 });
 
 test("Mode 2 (the server's Archil settings saved): the CLI still works in the run's scratch on this machine, a write to <cwd>/x.txt lands as x.txt in the run's folder on the Archil disk, and bash runs as Archil exec, at most 295 s", async (t) => {
