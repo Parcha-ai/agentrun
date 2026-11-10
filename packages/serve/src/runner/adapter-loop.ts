@@ -146,6 +146,8 @@ export interface HostLifecycle {
   readonly personWait?: readonly ((harness: Harness, callId: string, since: number) => Promise<PersonWait | undefined>)[];
 }
 
+/** The request ids of the person's messages placed as turns (loop.ts commandRequest). */
+const COMMAND_REQUEST_PREFIX = commandRequest(0).replace(/0$/, "");
 /** How a session's turn ended (AdapterSession.turnEnd). */
 type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
 
@@ -689,10 +691,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A message that may not answer a person, delivered while the session is idle after a turn that ended on its question
     // to the person (between that turn's end and the run's wait or park): refused in the waiting words, as the server
     // refuses one while the run waits; never placed, so it neither answers the question nor resumes the agent.
-    if (followUp && idle && root && endedOnTurnEndingTool((await entriesOf(theGate.journal, root.id, context)) as never) !== undefined) return { refused: "The run is waiting on a person." };
+    const askedLast = idle && root !== undefined && endedOnTurnEndingTool((await entriesOf(theGate.journal, root.id, context)) as never) !== undefined;
+    if (followUp && askedLast) return { refused: "The run is waiting on a person." };
     const steering = session.steer(text, requestId, followUp ? "followUp" : "steer", origin ? { origin } : undefined);
-    // A person's message (never a trigger's) placed so: kept, so a wait that starts next takes it as its answer.
-    if (idle && !followUp) idleSteer = { requestId, placed: steering.then(() => true, () => false) };
+    // A person's message (never a trigger's) answering the question the last turn ended on, placed so: kept, so the wait
+    // on that question, starting next, takes it as its answer. Any other idle steer is no answer to a wait.
+    if (askedLast && !followUp) idleSteer = { requestId, placed: steering.then(() => true, () => false) };
     try {
       await steering;
     } catch (error) {
@@ -1087,7 +1091,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         else if (session!.state === "open_turn") await session!.recover();
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
         // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold.
-        let turn: Promise<TurnEnd | "lapsed"> = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });
+        let turn: Promise<TurnEnd | "lapsed"> = placed ? session!.turnEnd() : idleTurnOf(harness, root);
         // Set on every way out of the loop below but parkOn's, which returns before it is read.
         let data!: EndData;
         let failedWith: string | undefined;
@@ -1362,6 +1366,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     cleared.catch(() => undefined);
     await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId, inClaim: true, answered: true } }), context);
     await cleared;
+  }
+
+  /** How the claim's turn ended when its session opened idle: a person's message the run took as a turn of its own (a
+   *  wait's answer, a reopened run's follow-up, a parked question's answer: request ids commandRequest makes) that an
+   *  earlier claim placed, whose turn this claim resumed, ends as that submission ended, never read as completed when it
+   *  failed; with none such newest, completed, as before. */
+  async function idleTurnOf(on: Harness, conversation: Conversation): Promise<TurnEnd> {
+    const page = await gate!.journal.scanSubmissions({ conversationId: conversation.id, order: "descending" }, 10, undefined, context);
+    const last = page.items.find((submission) => submission.type === "input");
+    if (!last?.requestId?.startsWith(COMMAND_REQUEST_PREFIX)) return { status: "completed" };
+    return turnOfRequest(on, conversation, last.requestId);
   }
 
   /** How the turn of the root's submission `requestId` ended (a steer of the idle session, which no session tracks). */

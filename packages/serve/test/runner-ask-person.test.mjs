@@ -51,7 +51,7 @@ const driveAsk = ({ body }) => {
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
  *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
  *  returned. */
-async function askRun(t, { tools, personWait, settled, loopOptions = {} }) {
+async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -69,7 +69,7 @@ async function askRun(t, { tools, personWait, settled, loopOptions = {} }) {
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
-  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
+  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15 }, outputCeiling: 8_192, price, fetch: (...args) => (upstream ?? globalThis.fetch)(...args) };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   const specOf = async (claim, run) => {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
@@ -324,4 +324,21 @@ test("wait in the claim: a trigger's message (answers: false) delivered between 
     return r.state === "ended" && r.runner === null && r;
   }, "the person's answer ends the run");
   assert.ok(modelCalls(gw).length > asks);
+});
+
+test("a parked question's answer whose turn fails ends the run failed, never ended: the claim that resumes it reads the answer's own submission", async (t) => {
+  let refuse = false;
+  // Once the question is asked, the provider refuses every request for good (a 400 no retry fixes).
+  const upstream = (url, init) => refuse
+    ? Promise.resolve(new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "this request is refused (a test's upstream)" } }), { status: 400, headers: { "content-type": "application/json" } }))
+    : globalThis.fetch(url, init);
+  const { row, server } = await askRun(t, { tools: ["ask_person"], upstream });
+  assert.equal(row.state, "parked");
+  refuse = true;
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  const ended = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the answer's turn ends the run");
+  assert.equal(ended.state, "failed", `its answer's turn failed, so the run did: ${JSON.stringify({ state: ended.state, summary: ended.summary })}`);
 });
