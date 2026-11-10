@@ -262,7 +262,7 @@ describe("LiveRun, a run that moves from one wait to the next", () => {
     // The person hands back; the agent asks its question. The next page: the same status and state, new rows (the
     // question's waiting row among them, as the server serves it after the call's result).
     moved = true;
-    push(page(4, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question"), { ...row(4, "waiting", "Waiting for you: Shall I go on?"), text: "Shall I go on?" } as never]));
+    push(page(4, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question"), { id: "e4", seq: 4, kind: "waiting", summary: "Waiting for you: Shall I go on?", text: "Shall I go on?", timestamp: "2026-11-10T07:35:43Z" } as never]));
     await settle();
     expect(reads()).toBeGreaterThan(before);
     // The hand-over's card is gone, and the agent's question shows where the person answers it.
