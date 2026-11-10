@@ -46,7 +46,7 @@ describe("curlFor", () => {
   it("is the request as cURL, with the token from the environment, never a value", () => {
     const c = curlFor("http://127.0.0.1:7340", "meeting-notes", { input: { content: "It's done." } }, "k1");
     expect(c).toContain("curl -X POST 'http://127.0.0.1:7340/v2/agents/meeting-notes/runs'");
-    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_TOKEN"');
+    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_API_KEY"');
     expect(c).toContain("-H 'Idempotency-Key: k1'");
     expect(c).toContain(`-d '{"input":{"content":"It'\\''s done."}}'`);
   });

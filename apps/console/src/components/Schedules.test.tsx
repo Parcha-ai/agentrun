@@ -575,3 +575,51 @@ describe("a one-time schedule that has run", () => {
     expect(t.text()).not.toContain("Done");
   });
 });
+
+// A schedule the server turned off (served `disabled`, with its reason) says so and why, not "Paused" as if a person had
+// paused it, and its page says what to do. A firing that caught up a time missed while the server was down says so.
+describe("a schedule the server turned off", () => {
+  const OFF: Trigger = { ...NIGHTLY, id: "trg_off", name: "nightly, off", enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:30:05Z", reason: "auto_paused" } };
+  const UNREADABLE: Trigger = { ...NIGHTLY, id: "trg_bad", name: "bad zone", enabled: false, next_at: null, disabled: { at: "2026-11-05T09:30:05Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } };
+
+  it("the list: Turned off with its reason, never Paused", async () => {
+    const t = await open(server({ triggers: [OFF, UNREADABLE] }).v2, {});
+    const off = t.host.querySelector('[data-trigger="trg_off"]')!;
+    expect(off.textContent).toContain("Turned off");
+    expect(off.textContent).toContain("Turned off after 5 failures in a row.");
+    expect(off.textContent).not.toContain("Paused");
+    expect(t.host.querySelector('[data-trigger="trg_bad"]')!.textContent).toContain("Turned off: its source can't be read (unknown time zone Mars/Base).");
+  });
+
+  it("its page: the reason, what to do, and Resume", async () => {
+    const t = await open(server({ triggers: [OFF] }).v2, { trigger: "trg_off" });
+    expect(t.text()).toContain("Turned off after 5 failures in a row. Resume turns it on again.");
+    expect(t.text()).not.toContain("Paused");
+    expect(t.button(/^Resume$/)).toBeDefined();
+  });
+
+  it("a source it can't read: edit its when, then Resume", async () => {
+    const t = await open(server({ triggers: [UNREADABLE] }).v2, { trigger: "trg_bad" });
+    expect(t.text()).toContain("Edit its when, then Resume.");
+  });
+
+  it("a schedule a person paused still reads Paused", async () => {
+    const t = await open(server({ triggers: [{ ...NIGHTLY, enabled: false, next_at: null }] }).v2, {});
+    expect(t.host.querySelector('[data-trigger="trg_1"]')!.textContent).toContain("Paused");
+    expect(t.text()).not.toContain("Turned off");
+  });
+
+  it("a firing that caught up a missed time says so", async () => {
+    const late = firing({ key: "fir_late", catch_up: true, run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b" });
+    const t = await open(server({ triggers: [{ ...NIGHTLY, last_firing: late }], firings: { trg_1: [late] } }).v2, { trigger: "trg_1" });
+    expect(t.text()).toContain("On schedule, caught up late");
+  });
+});
+
+// The cap field says its rule before an agent is picked: the rule depends on the agent's own default.
+describe("the cap's rule before an agent is picked", () => {
+  it("says it's required unless the agent has a default", async () => {
+    const t = await open(server().v2, { trigger: null });
+    expect(t.text()).toContain("Required unless the agent has a default cap per run.");
+  });
+});
