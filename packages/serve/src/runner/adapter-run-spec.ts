@@ -61,10 +61,12 @@ import type { Workspace } from "../workspace/workspace.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
 
-/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+/** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
+ *  and names its runner), its revision, its place and any computer choice. */
 export interface ClaimLaunch {
   readonly runId: string;
   readonly epoch: number;
+  readonly claim?: unknown;
   readonly revisionId: string;
   readonly place?: unknown;
   readonly computer?: unknown;
@@ -270,7 +272,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
