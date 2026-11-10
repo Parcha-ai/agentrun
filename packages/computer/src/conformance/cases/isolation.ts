@@ -52,6 +52,12 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	if (quiet.length > 0) t.observe(`quiet interfaces (down, no address) a program of the computer's user sees: ${quiet.join(", ")}`);
 	const raised = Array.isArray(probe.raised) ? probe.raised.map(String) : [];
 	t.assert(raised.length === 0, `a program of the computer's user brought up ${raised.join(", ")}, which no program of its own network may`);
+	// Every target's outcome, in one line of the report, before any is asserted: a passing run shows what was tried too.
+	const outcome = (target: string) => {
+		const result = probe.results?.find((one) => one.target === target);
+		return result === undefined ? "no result" : `${String(result.outcome)}${result.detail === undefined || result.detail === "" ? "" : ` (${String(result.detail)})`}`;
+	};
+	t.observe(`probe, as the computer's user: ${targets.map((target) => `${target} ${outcome(target)}`).join("; ")}`);
 	for (const target of targets) {
 		const result = probe.results?.find((one) => one.target === target);
 		const what = agent.includes(target) ? "the vendor's agent" : "the outside";

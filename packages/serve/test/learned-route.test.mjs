@@ -258,7 +258,7 @@ test.skip("R7 (guard) a call the harness's answer asks for beside learned_workfl
 test.skip("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
   const flows = [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }];
   assert.equal(learnedWorkflowDescription(flows), SAID);
-  const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
   assert.deepEqual([tool.description, tool.parameters], [SAID, SCHEMA], "pi's tool");
   const opened = join(await scratch(t), "opened.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });

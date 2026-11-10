@@ -1201,6 +1201,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     try { return proxyaddr.compile([...options.trustedProxies]); } catch (error) { throw new Error(`trustedProxies: ${(error as Error).message}`); }
   })();
   const clientOf = (req: IncomingMessage) => (trusted ? proxyaddr(req, trusted) : req.socket.remoteAddress) ?? "unknown";
+  // The owner's own sign-in (the right password) that came with X-Forwarded-For from an address not trusted as a proxy is
+  // said once a start, with that address (`event=forwarded_untrusted peer=<it>`): behind a proxy that publishes no
+  // address (Render's), the proxy that carried the owner's request, the one to name in AGENTRUN_TRUSTED_PROXIES. Only a
+  // right password says it, so a peer that can reach the server without the password can't put its own address there;
+  // once, so the log says it one time.
+  let forwardedSaid = false;
+  const sayForwarded = (req: IncomingMessage) => {
+    const peer = req.socket.remoteAddress ?? "unknown";
+    if (forwardedSaid || req.headers["x-forwarded-for"] === undefined || (trusted?.(peer, 0) ?? false)) return;
+    forwardedSaid = true;
+    log?.(logLine("forwarded_untrusted", { peer }));
+  };
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
@@ -2138,6 +2150,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           authFailed("/v2/auth/sign-in", "wrong_password");
           throw new ApiError("unauthenticated", "that is not the password");
         }
+        sayForwarded(req);
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
