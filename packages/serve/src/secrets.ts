@@ -103,25 +103,33 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
  *  whitespace aside, matches too much text by chance to be refused, and is left out. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
-  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials())];
+  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys()];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
 
-/** The secrets this process made itself for want of one it was handed: the seal key a start keeps under the config home
- *  (seal-key.ts) when none was given. Read last, after the handed and the environment's, so a given one always wins;
- *  never in the environment, so no child inherits it. */
-const made = new Map<string, string>();
+/** The seal key each open store of this process was booted with (seal-key.ts bootSealKey), by how many hold it. One at a
+ *  time: a second, different key while the first is held is refused (holdSealKey). Never read as a secret by name (each
+ *  holder passes its own key on): only listed by hostSecrets, so what a run writes is cut of it. */
+const sealKeys = new Map<string, number>();
 
-/** Holds a secret this process made (seal-key.ts' generated seal key), read by name like one it was handed. */
-export function holdMadeSecret(name: string, value: string): void {
-  if (!SECRET_NAMES.includes(name)) throw new Error(`${name} is not a secret the launcher lists`);
-  made.set(name, value);
+/** Holds `text` as this process's seal key until the returned release is called. Throws when another key is held now:
+ *  one process works under one key. */
+export function holdSealKey(text: string): () => void {
+  for (const [other, count] of sealKeys) if (other !== text && count > 0) throw new Error("this process already holds another seal key: one process opens stores under one key");
+  sealKeys.set(text, (sealKeys.get(text) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (sealKeys.get(text) ?? 1) - 1;
+    if (left > 0) sealKeys.set(text, left);
+    else sealKeys.delete(text);
+  };
 }
 
-/** A secret this process was started with: as handed over, else (no launcher) as its environment has it now, else one it
- *  made itself (holdMadeSecret). */
-const own = (name: string): string | undefined => held.get(name) ?? process.env[name] ?? made.get(name);
+/** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */
+const own = (name: string): string | undefined => held.get(name) ?? process.env[name];
 
 /** A secret this process was handed (over its pipe, or in its environment), never one it made itself: what a start asks
  *  to tell a handed seal key from none, so a second server in one process makes or reads its own and is not handed the

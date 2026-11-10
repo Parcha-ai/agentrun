@@ -19,7 +19,10 @@ import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
-const sealKey = () => randomBytes(32).toString("base64");
+/** This file's one seal key: one process holds one key at a time (seal-key.ts), and the file's shared server holds it
+ *  while each test's own servers start. */
+const FILE_KEY = randomBytes(32).toString("base64");
+const sealKey = () => FILE_KEY;
 /** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
 const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
 /** Saved server `name`'s credential in the stopped store at `data`, sealed again under another key: a row this server's key
@@ -277,7 +280,7 @@ test("what is refused before any connection: a bad name, OAuth (not yet), plain 
   delete process.env.AGENTRUN_SEAL_KEY;
   await assert.rejects(startServe({ data, port: 0 }), (error) => String(error.message).includes(SEALED_ELSEWHERE));
   assert.equal(existsSync(join(data, "seal", "seal.key")), false, "no key made over the saved credential");
-  process.env.AGENTRUN_SEAL_KEY = sealKey();
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
   await assert.rejects(startServe({ data, port: 0 }), (error) => String(error.message).includes(SEALED_ELSEWHERE));
   // A credential another key sealed, in a store under this one (copied from another server's store): unreadable.
   process.env.AGENTRUN_SEAL_KEY = key;

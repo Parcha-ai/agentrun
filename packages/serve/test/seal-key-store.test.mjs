@@ -4,8 +4,7 @@
 // every process that opens it (the server, a runner, the import) checks the key it holds against that record: a store
 // whose secrets were sealed with another key refuses to start, in words, and no key is ever made over sealed secrets. A
 // fresh store records the fingerprint at its first start. On Postgres a second machine with another key refuses the same
-// way. An install that kept its key under the config home (~/.config/agentrun/seal.key) has it moved into the data
-// directory at its next start, only when that key is the store's.
+// way. Only the server's start makes and records a key; a runner never does. One process holds one key at a time.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -34,12 +33,12 @@ async function cleanEnv(t, vars = {}) {
 }
 
 /** A start that must be refused in the words: one that starts after all is closed, then fails the test. */
-async function refuses(starting) {
+async function refuses(starting, words) {
   let started;
   try {
     started = await starting;
   } catch (error) {
-    assert.ok(refusedInWords(error), `refused in other words: ${error?.message}`);
+    assert.ok(words ? words.test(String(error?.message)) : refusedInWords(error), `refused in other words: ${error?.message}`);
     return;
   }
   await started.close();
@@ -174,29 +173,6 @@ test("the import refuses a store sealed with another key, in the same words", { 
   assert.ok(said.some((line) => line.includes(WORDS)), said.join("\n"));
 });
 
-test("an install that kept its key under the config home has it moved into the data directory when it is the store's, never when it is not", { timeout: 60_000 }, async (t) => {
-  const config = await cleanEnv(t);
-  const legacyDir = join(config, "agentrun");
-  mkdirSync(legacyDir, { mode: 0o700 });
-  chmodSync(legacyDir, 0o700);
-  const legacy = newKey();
-  writeFileSync(join(legacyDir, "seal.key"), `${legacy}\n`, { mode: 0o600 });
-  // The store an earlier build sealed under the config home's key: secrets, and no fingerprint.
-  const data = join(await scratch(t), "data");
-  mkdirSync(data, { recursive: true, mode: 0o700 });
-  await plantSecret(data, legacy);
-  await startAndStop(data);
-  assert.equal(readFileSync(keyFile(data), "utf8").trim(), legacy, "the store's key, moved into the data directory");
-  assert.equal(statSync(keyFile(data)).mode & 0o777, 0o600);
-  assert.ok(recorded(data), "and its fingerprint recorded");
-  // A config home key that is not the store's is never copied: refused, nothing made.
-  const other = join(await scratch(t), "other");
-  mkdirSync(other, { recursive: true, mode: 0o700 });
-  await plantSecret(other, newKey());
-  await refuses(startServe({ data: other, port: 0 }));
-  assert.equal(existsSync(keyFile(other)), false);
-});
-
 test("(d) Postgres: a second process with another key on the same database refuses; one with the recorded key starts", { ...postgresOnly("a shared Postgres store"), timeout: 60_000 }, async (t) => {
   await cleanEnv(t);
   const schema = await freshSchema();
@@ -205,7 +181,7 @@ test("(d) Postgres: a second process with another key on the same database refus
   const first = newKey();
   const server = await openPostgresStore({ url: PG_URL, schema });
   t.after(() => server.close());
-  await bootSealKey(server, await scratch(t), { given: first });
+  (await bootSealKey(server, await scratch(t), { given: first })).release();
   // A second machine: its own data directory, the same database, another key handed.
   const elsewhere = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
   t.after(() => elsewhere.close());
@@ -222,45 +198,55 @@ test("(d) Postgres: a second process with another key on the same database refus
   await runner.close();
 });
 
-test("an earlier build's key is moved in for a store whose only secret is kept beside it (the outbound webhook's signing secret), and a new key is never made over that secret", { timeout: 60_000 }, async (t) => {
-  const config = await cleanEnv(t);
-  const legacy = newKey();
-  // A server of the earlier build's kind: its key handed, a webhook set (its secret sealed in webhook.json, not the
-  // store), then the store's record of the key dropped, as a store that build left has none.
+test("a store whose only secret is kept beside it (the outbound webhook's signing secret, in webhook.json) and no record of its key: a start with no key refuses and makes none; with the key it opens and records it", { timeout: 60_000 }, async (t) => {
+  await cleanEnv(t);
+  const key = newKey();
   const data = join(await scratch(t), "data");
-  process.env.AGENTRUN_SEAL_KEY = legacy;
+  process.env.AGENTRUN_SEAL_KEY = key;
   const server = await startServe({ data, port: 0 });
   const { client } = await import("./support.mjs");
   assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
   await server.close();
   delete process.env.AGENTRUN_SEAL_KEY;
+  // The store's record of its key gone, and no secret in the store itself: the webhook's is the only one.
   const db = new DatabaseSync(join(data, "store.sqlite"));
   db.prepare("DELETE FROM settings WHERE key = 'seal_key'").run();
   assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no secret in the store");
   db.close();
-  // No key under the config home either: refused, nothing made over the webhook's secret.
   await refuses(startServe({ data, port: 0 }));
   assert.equal(existsSync(keyFile(data)), false, "no key is made over the webhook's secret");
-  // The earlier build's key under the config home: it opens the webhook's secret, so it is moved in.
-  mkdirSync(join(config, "agentrun"), { mode: 0o700 });
-  writeFileSync(join(config, "agentrun", "seal.key"), `${legacy}\n`, { mode: 0o600 });
+  process.env.AGENTRUN_SEAL_KEY = newKey();
+  await refuses(startServe({ data, port: 0 }));
+  assert.equal(recorded(data), undefined, "a key that does not open it is never recorded");
+  process.env.AGENTRUN_SEAL_KEY = key;
   await startAndStop(data);
-  assert.equal(readFileSync(keyFile(data), "utf8").trim(), legacy, "the webhook's key, moved into the data directory");
+  assert.ok(recorded(data), "the key that opens it is recorded");
 });
 
-test("two servers on two data directories in one process each keep their own key: what each saves opens under its own at its next start", { timeout: 120_000 }, async (t) => {
+test("a runner never makes or records a key: on a store the server has not keyed, with none handed, it refuses in words", { timeout: 60_000 }, async (t) => {
   await cleanEnv(t);
-  const { client } = await import("./support.mjs");
+  const data = join(await scratch(t), "data");
+  // The store set up as a server sets it up, with no server start: no key, no record.
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  await store.close();
+  const createLoop = () => assert.fail("no run is claimed");
+  await assert.rejects(startRunnerProcess({ dataDir: data, env: { ...process.env }, createLoop, name: "runner-first" }), (error) => /start the server on this data directory first/.test(String(error.message)));
+  assert.equal(existsSync(keyFile(data)), false, "no key made by a runner");
+  // Handed a key, it starts, and records nothing: the server's start records its key.
+  const runner = await startRunnerProcess({ dataDir: data, env: { ...process.env, AGENTRUN_SEAL_KEY: newKey() }, createLoop, name: "runner-handed" });
+  await runner.close();
+  assert.equal(recorded(data), undefined, "a runner records no key");
+});
+
+test("one process holds one seal key at a time: a server on a second data directory with another key is refused while the first is open, and starts once it closes", { timeout: 120_000 }, async (t) => {
+  await cleanEnv(t);
   const [a, b] = [join(await scratch(t), "a"), join(await scratch(t), "b")];
-  // Both boot at once, each making a key of its own in its data directory.
-  const [first, second] = await Promise.all([startServe({ data: a, port: 0 }), startServe({ data: b, port: 0 })]);
-  assert.notEqual(readFileSync(keyFile(a), "utf8"), readFileSync(keyFile(b), "utf8"), "two keys");
-  for (const [server, url] of [[first, "http://127.0.0.1:9/a"], [second, "http://127.0.0.1:9/b"]]) assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url })).status, 201);
-  await Promise.all([first.close(), second.close()]);
-  for (const data of [a, b]) {
-    const again = await startServe({ data, port: 0 });
-    const read = (await client(again.baseUrl, again.token)("GET", "/settings/webhook")).body;
-    await again.close();
-    assert.equal(read.signing, "sealed", `${data}: its webhook's secret opens under its own key: ${JSON.stringify(read)}`);
-  }
+  await startAndStop(b);
+  const first = await startServe({ data: a, port: 0 });
+  let open = true;
+  t.after(() => open && first.close());
+  await refuses(startServe({ data: b, port: 0 }), /already holds another seal key/);
+  await first.close();
+  open = false;
+  await startAndStop(b);
 });

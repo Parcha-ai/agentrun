@@ -1078,9 +1078,11 @@ export async function importCommand(
   /** The store's seal key, booted against `store` (seal-key.ts), and the environment the import reads given it, so the
    *  store's sealed reads open under it. A dry run (`write` false) makes, moves and records nothing, and a store that holds
    *  no secret and has no key is read with none. The key is cut from what is printed, as every key is. */
+  let releaseKey = (): void => undefined;
   const keyed = async (store: Store, write: boolean): Promise<void> => {
-    const seal = await bootSealKey(store, dir!, { given: handedKey, write, say: (line) => void warnings.push(line.trimEnd()) });
+    const seal = await bootSealKey(store, dir!, { given: handedKey, role: "import", write, say: (line) => void warnings.push(line.trimEnd()) });
     if (!seal) return;
+    releaseKey = seal.release;
     printed.add([seal.text]);
     // The environment the import reads, this process's own or a caller's, with the key the boot checked as its seal key.
     env = withSealKey(ownEnv ? withSecrets(process.env) : env!, seal.text);
@@ -1143,7 +1145,8 @@ export async function importCommand(
         temp,
         env: keyEnv,
         stored: keys ? keys.values() : {},
-        own: store ? await ownSecrets(store, dir!, keyEnv, say("webhook_secret")) : [],
+        // With no key (a dry run over a store that keeps no secret: seal-key.ts) there is nothing of the server's to open.
+        own: store && keyEnv[SEAL_KEY_ENV] !== undefined ? await ownSecrets(store, dir!, keyEnv, say("webhook_secret")) : [],
       };
       // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
       // keeps is.
@@ -1220,6 +1223,7 @@ export async function importCommand(
       await store.close();
     }
   } finally {
+    releaseKey();
     await flush();
   }
 }

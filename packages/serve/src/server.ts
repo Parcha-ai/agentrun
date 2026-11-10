@@ -845,6 +845,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
   // there is no keeping one in the clear.
   const seal = await bootSealKey(store, data);
+  stops.push(async () => seal.release());
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -1226,7 +1227,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
   // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1253,7 +1254,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) }, forStore, runId, context),
+    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) }, forStore, runId, context),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -3283,6 +3284,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
+    seal.release();
   }
   return {
     url,

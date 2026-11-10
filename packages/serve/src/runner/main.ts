@@ -163,11 +163,13 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const env = options.env ?? process.env;
   const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
   let runner: Runner;
+  let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   try {
     // The server's seal key, booted the one way the server boots it (seal-key.ts): the one handed over, else the one in
     // this data directory, checked against what the store records. A runner on a store whose secrets another key sealed
-    // (another machine's key on a shared Postgres, a lost key file) is refused in the server's words, and makes no key.
-    const seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], env });
+    // (another machine's key on a shared Postgres, a lost key file) is refused in the server's words; a runner never makes
+    // or records a key.
+    seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], role: "runner" });
     const name = options.name ?? runnerName();
     const made = options.createLoop ?? ofStore((opened, sealKey) => runnerLoop(opened, options.dataDir, undefined, sealKey));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
@@ -181,10 +183,12 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {
+    seal?.release();
     await store.close();
     throw error;
   }
   let closing: Promise<void> | undefined;
+  const held = seal;
   return {
     runner,
     store: { kind, schema },
@@ -192,6 +196,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       (closing ??= (async () => {
         await runner.close();
         await store.close();
+        held.release();
       })()),
   };
 }

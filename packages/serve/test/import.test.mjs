@@ -59,8 +59,7 @@ const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; han
 const ENV = { OPENAI_API_KEY: CANARY, PATH: "/usr/bin" };
 
 // The import boots its seal key the one way the server and runner do (seal-key.ts bootSealKey): handed, else the one in the
-// data directory. It looks under the config home only for an earlier build's key; a scratch one for this suite, never the
-// real ~/.config.
+// data directory. A scratch config home for this suite all the same, never the real ~/.config.
 process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "import-config-"));
 after(() => rmSync(process.env.XDG_CONFIG_HOME, { recursive: true, force: true }));
 

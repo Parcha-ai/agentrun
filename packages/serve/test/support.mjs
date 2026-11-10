@@ -24,9 +24,8 @@ import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { bootSealKey } from "../dist/seal-key.js";
 
-// Every test process has a config home of its own, never this machine's ~/.config: a server keeps its seal key in its
-// data directory (seal-key.ts), and looks under the config home only for an earlier build's key to move in, so a test
-// must never find (or move) this machine's.
+// Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
+// directories (a server keeps its seal key in its data directory, seal-key.ts).
 {
   const config = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-config-"));
   process.env.XDG_CONFIG_HOME = config;
@@ -303,15 +302,16 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
-  let sealKey;
+  let seal;
   try {
-    sealKey = (await bootSealKey(store, data)).key;
+    seal = await bootSealKey(store, data, { role: "runner" });
   } catch (error) {
     await store.close();
     throw error;
   }
   // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
   // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
+  const sealKey = seal.key;
   const computers = computerDepsFrom({ env, store, sealKey });
   let runner;
   try {
@@ -322,12 +322,14 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
       createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}) }),
     });
   } catch (error) {
+    seal.release();
     await store.close();
     throw error;
   }
   return async () => {
     await runner.close().catch(() => {});
     await store.close().catch(() => {});
+    seal.release();
   };
 }
 

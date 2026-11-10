@@ -1,33 +1,32 @@
 // The seal key every secret is kept under (tool keys, MCP credentials, sign-ins, trigger secrets: store/seal.ts). The
 // server never starts without one: AGENTRUN_SEAL_KEY as it was handed (the launcher's pipe, or the environment), else the
-// one in seal/seal.key in the data directory, beside the store, made there at the first start. It lives and dies with the
-// data (a disk, a volume): a copy of the data directory is a copy of the secrets, so it is backed up with them.
+// one in seal/seal.key in the data directory, beside the store, made there at the server's first start. There is no other
+// place a key is read from. It lives and dies with the data (a disk, a volume): a copy of the data directory is a copy of
+// the secrets, so it is backed up with them.
 //   - made as 32 random bytes in base64, 0600, in a directory of its own that is 0700, written whole beside its name and
 //     then linked to it, so two starts at once read one key, and only its path is ever printed;
 //   - a plain mkdir's directory (0755) with no key yet, this user's own, is tightened to 0700 before the key is made;
-//   - a key or a directory another user can read is refused, never changed; a linked directory is refused, never followed.
+//   - a key or a directory another user can read is refused, never changed; a linked directory, or one another user owns,
+//     is refused, never followed or written into.
 // The store records the key's fingerprint (an HMAC of a fixed label under the key: never the key, nor a hash of it alone),
 // and every process that opens the store (the server, a runner, the `import` command) checks the key it holds against it
 // (bootSealKey). A store whose secrets were sealed with another key is refused, in words, and no key is ever made over
-// sealed secrets: a lost key file is not replaced by a new one. A store with no fingerprint yet takes the key that opens
-// its sealed values (one an earlier build sealed), or any key when it holds none, and records it.
-// An earlier build kept the key under the config home (agentrun/seal.key under XDG_CONFIG_HOME, else ~/.config). With no
-// key handed and none in the data directory, that one is moved in (copied, the old file left as it was) only when it is
-// the store's own key; one that is not is never copied.
+// sealed secrets, in the store or beside it in the data directory: a lost key file is not replaced by a new one. A store
+// with no fingerprint takes a key that opens every value it keeps sealed, or any key when it keeps none. The server's
+// start makes a key and records it (and the import's, which sets a data directory up as the server does); a runner reads
+// one and checks it, and never makes or records one.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
 import { join } from "node:path";
 import { unseal } from "@parcha/pi-durable-agent";
-import type { SealedSecretRow, Store } from "./store/index.js";
+import type { Store } from "./store/index.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
-import { handedSecret, holdMadeSecret } from "./secrets.js";
+import { handedSecret, holdSealKey } from "./secrets.js";
 import { webhookSecretIn } from "./webhooks.js";
 
 /** The seal key's own directory in the data directory, and its file there. */
 export const SEAL_KEY_DIR = "seal";
 export const SEAL_KEY_FILE = "seal.key";
-/** Where an earlier build kept the key, under the config home: read only to move it into the data directory. */
-export const EARLIER_SEAL_KEY_DIR = "agentrun";
 /** The store setting that records the key's fingerprint. */
 export const SEAL_KEY_SETTING = "seal_key";
 /** The fixed label the fingerprint is an HMAC of, under the key. */
@@ -45,12 +44,11 @@ export class SealKeyNotTheStores extends SealKeyRefused {
   override name = "SealKeyNotTheStores";
 }
 
-/** The key, as bytes and as its base64 text; where it is kept (null when it was handed over); whether this start made it;
- *  where it was moved from, when this start moved an earlier build's key into the data directory. */
-export type SealKey = { readonly key: Buffer; readonly text: string; readonly path: string | null; readonly generated: boolean; readonly movedFrom?: string };
-
-/** The config home an earlier build kept its seal key under: XDG_CONFIG_HOME, else ~/.config; undefined with neither. */
-export const sealKeyHome = (env: NodeJS.ProcessEnv): string | undefined => env.XDG_CONFIG_HOME || (env.HOME ? join(env.HOME, ".config") : undefined);
+/** The key, as bytes and as its base64 text; where it is kept (null when it was handed over); whether this start made it. */
+export type SealKey = { readonly key: Buffer; readonly text: string; readonly path: string | null; readonly generated: boolean };
+/** A key a start booted: held as this process's one key (secrets.ts holdSealKey) until release(), which its holder calls
+ *  as it closes. */
+export type BootedSealKey = SealKey & { readonly release: () => void };
 
 /** Where the data directory `dataDir` keeps its seal key. */
 export const sealKeyPath = (dataDir: string): string => join(dataDir, SEAL_KEY_DIR, SEAL_KEY_FILE);
@@ -164,16 +162,24 @@ function recordedIn(value: unknown): string | null | undefined {
 }
 const sameText = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-/** What a store holds that names its key: the fingerprint it records, and, with none recorded, its sealed values and those
- *  its data directory keeps beside it (each a check of whether a key opens it). */
-type StoreSeal = { readonly fingerprint: string | null | undefined; readonly sealed: readonly SealedSecretRow[]; readonly beside: ReadonlyArray<(key: Buffer) => boolean> };
+/** What a store holds that names its key: the fingerprint it records, and, with none recorded, the values it keeps
+ *  sealed and those its data directory keeps sealed beside it (each a check of whether a key opens it). */
+type StoreSeal = { readonly fingerprint: string | null | undefined; readonly sealed: ReadonlyArray<(key: Buffer) => boolean> };
 
 /** The store slice the check reads and writes. */
 export type SealKeyStore = Pick<Store, "settings" | "sealedSecrets">;
 
+function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
+  try {
+    unseal(key, Buffer.from(sealed), aad);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The values data directory `dataDir` keeps sealed beside the store, under the same key: the outbound webhook's signing
- *  secret (webhooks.ts) and the trigger settings files an earlier build kept (sealed-settings.ts), each a check of whether
- *  a key opens it. */
+ *  secret (webhooks.ts) and any trigger settings file (sealed-settings.ts), each a check of whether a key opens it. */
 function sealedBeside(dataDir: string): Array<(key: Buffer) => boolean> {
   const checks: Array<(key: Buffer) => boolean> = [];
   if (webhookSecretIn(dataDir, {}) !== undefined) checks.push((key) => "secret" in (webhookSecretIn(dataDir, { [SEAL_KEY_ENV]: key.toString("base64") }) ?? {}));
@@ -203,59 +209,46 @@ function sealedBeside(dataDir: string): Array<(key: Buffer) => boolean> {
   return checks;
 }
 
-function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
-  try {
-    unseal(key, Buffer.from(sealed), aad);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function storeSealOf(store: SealKeyStore, dataDir: string): Promise<StoreSeal> {
   const fingerprint = recordedIn(await store.settings.get(SEAL_KEY_SETTING));
-  if (fingerprint !== undefined) return { fingerprint, sealed: [], beside: [] };
-  return { fingerprint, sealed: await store.sealedSecrets.all(), beside: sealedBeside(dataDir) };
+  if (fingerprint !== undefined) return { fingerprint, sealed: [] };
+  const rows = (await store.sealedSecrets.all()).map((row) => (key: Buffer) => opensUnder(key, row.sealed, row.aad));
+  return { fingerprint, sealed: [...rows, ...sealedBeside(dataDir)] };
 }
 
-/** Whether `key` is the store's: the one its fingerprint records; with none recorded, one that opens a value it keeps
- *  sealed, or any key for a store that keeps none. */
-function isTheStores(seal: StoreSeal, key: Buffer): boolean {
-  if (seal.fingerprint !== undefined) return seal.fingerprint !== null && sameText(seal.fingerprint, sealKeyFingerprint(key));
-  if (!holdsSecrets(seal)) return true;
-  return seal.sealed.some((row) => opensUnder(key, row.sealed, row.aad)) || seal.beside.some((opens) => opens(key));
+const holdsSecrets = (seal: StoreSeal) => seal.fingerprint !== undefined || seal.sealed.length > 0;
+
+/** Whether `key` is the store's, or why not: the one its fingerprint records; with none recorded, one that opens every
+ *  value it keeps sealed (some opening and some not is values sealed under more than one key: no key is taken over
+ *  that), or any key for a store that keeps none. */
+function notTheStoresWhy(seal: StoreSeal, key: Buffer): string | undefined {
+  if (seal.fingerprint === null) return ` (the store's record of its key, setting ${SEAL_KEY_SETTING}, does not read)`;
+  if (seal.fingerprint !== undefined) return sameText(seal.fingerprint, sealKeyFingerprint(key)) ? undefined : "";
+  const shut = seal.sealed.filter((opens) => !opens(key)).length;
+  if (shut === 0) return undefined;
+  return shut === seal.sealed.length ? "" : ` (${shut} of the ${seal.sealed.length} values it keeps sealed do not open under this key: they were sealed under more than one)`;
 }
-const holdsSecrets = (seal: StoreSeal) => seal.fingerprint !== undefined || seal.sealed.length > 0 || seal.beside.length > 0;
 
 const notTheStores = (why: string) => new SealKeyNotTheStores(`${SEALED_ELSEWHERE}. ${why}`);
-/** Why a key is not the store's, for one that records a fingerprint it cannot read: said apart from another key's. */
-const unreadRecord = (kept: StoreSeal) => (kept.fingerprint === null ? ` (the store's record of its key, setting ${SEAL_KEY_SETTING}, does not read)` : "");
 const PUT_BACK = `put the original there (mode 0600, in a 0700 directory), or hand it as ${SEAL_KEY_ENV}`;
 
-/** The earlier build's key under `configHome`, when it is there and keeps that build's rules; why not, when it is there
- *  and does not (one that does not is never read, never moved); undefined when there is none. */
-function earlierKey(configHome: string | undefined): SealKey | { readonly refused: string } | undefined {
-  if (!configHome) return undefined;
-  try {
-    return keptIn(join(configHome, EARLIER_SEAL_KEY_DIR));
-  } catch (error) {
-    return { refused: (error as Error).message };
-  }
-}
+/** Who boots the key: the server's start makes one for a store that holds no secret and records its fingerprint, and so
+ *  does the import, which sets a data directory up as the server does (never its dry run); a runner only reads one and
+ *  checks it. */
+export type SealKeyRole = "server" | "runner" | "import";
 
 export interface BootSealKeyOptions {
   /** AGENTRUN_SEAL_KEY as this process was handed it (secrets.ts handedSecret when this is not given). */
   readonly given?: string | undefined;
-  /** The environment the config home is read from, for an earlier build's key (process.env). */
-  readonly env?: NodeJS.ProcessEnv;
-  /** Told the start line when a key is made or moved (stderr by default). */
+  /** Who boots it (SealKeyRole): "server" by default. */
+  readonly role?: SealKeyRole;
+  /** Told the start line when a key is made (stderr by default). */
   readonly say?: (line: string) => void;
-  /** false: nothing is written (a dry run): no key made or moved, no fingerprint recorded. A store that holds no secret
-   *  and has no key then has none (undefined). */
+  /** false: nothing is written (a dry run). With no key, a store that holds no secret then has none (undefined). */
   readonly write?: boolean;
 }
 
-async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | undefined, configHome: string | undefined, write: boolean): Promise<SealKey | undefined> {
+async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | undefined, role: SealKeyRole, write: boolean): Promise<SealKey | undefined> {
   const kept = await storeSealOf(store, dataDir);
   const dir = join(dataDir, SEAL_KEY_DIR);
   const file = join(dir, SEAL_KEY_FILE);
@@ -263,34 +256,29 @@ async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | 
   if (given) {
     const key = sealKeyOf(given);
     if (!key) throw refused(`${SEAL_KEY_ENV} is set but is not 32 bytes in base64`);
-    if (!isTheStores(kept, key)) throw notTheStores(`The ${SEAL_KEY_ENV} handed now is not it${unreadRecord(kept)}.`);
+    const why = notTheStoresWhy(kept, key);
+    if (why !== undefined) throw notTheStores(`The ${SEAL_KEY_ENV} handed now is not it${why}.`);
     seal = { key, text: given, path: null, generated: false };
   } else {
     seal = keptIn(dir);
-    if (seal && !isTheStores(kept, seal.key)) throw notTheStores(`${file} holds another key${unreadRecord(kept)}: ${PUT_BACK}.`);
-    if (!seal && holdsSecrets(kept)) {
-      // No key here, over a store that holds secrets: never a new one. An earlier build's, under the config home, is moved
-      // in when it is the store's; one that is not is left where it is.
-      const found = earlierKey(configHome);
-      if (found && "refused" in found) throw notTheStores(`There is no key in ${file}, and the one an earlier build kept is not read: ${found.refused}`);
-      const earlier = found;
-      if (!earlier || !isTheStores(kept, earlier.key)) {
-        throw notTheStores(`There is no key in ${file}${earlier ? `, and ${earlier.path} is not it either` : ""}: ${PUT_BACK}.`);
-      }
-      if (!write) return earlier;
-      writeIn(dir, earlier.text);
-      const moved = keptIn(dir);
-      if (!moved || !isTheStores(kept, moved.key)) throw notTheStores(`${file} holds another key: ${PUT_BACK}.`);
-      seal = { ...moved, movedFrom: earlier.path! };
-    }
-    if (!seal) {
-      // A store that holds no secret: its key is made here, at its first start.
+    if (seal) {
+      const why = notTheStoresWhy(kept, seal.key);
+      if (why !== undefined) throw notTheStores(`${file} holds another key${why}: ${PUT_BACK}.`);
+    } else if (holdsSecrets(kept)) {
+      // No key here, over a store that holds secrets: never a new one.
+      throw notTheStores(`There is no key in ${file}: ${PUT_BACK}.`);
+    } else if (role === "runner") {
+      // A runner never makes a key: it reads the one the server made.
+      throw refused(`there is none in ${file}, and this store records none: start the server on this data directory first, which makes it, or hand ${SEAL_KEY_ENV}`);
+    } else {
+      // A store that holds no secret: its key is made here, at the server's first start (or the import's, which sets a data
+      // directory up as the server does when none has); a dry run makes none, and has none.
       if (!write) return undefined;
       seal = ensureSealKey(undefined, { dataDir });
     }
   }
-  if (write && kept.fingerprint === undefined) {
-    // Recorded once: the first process to record it wins, and one that loses to another key's record is refused.
+  if (write && role !== "runner" && kept.fingerprint === undefined) {
+    // Recorded once: the first server to record it wins, and one that loses to another key's record is refused.
     const fingerprint = sealKeyFingerprint(seal.key);
     const now = recordedIn(await store.settings.putIfAbsent(SEAL_KEY_SETTING, { v: 1, fingerprint }));
     if (now === undefined || now === null || !sameText(now, fingerprint)) {
@@ -306,7 +294,7 @@ async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | 
  *  secret: so what reads the key from it gets the one its start checked against its store. */
 export function withSealKey(env: NodeJS.ProcessEnv, text: string): NodeJS.ProcessEnv {
   // A copy, every property as it is (a withSecrets secret stays unenumerable, its saved-keys mark too), the key in place of
-  // whatever the process held: that one may be another data directory's, and is not configurable on `env`.
+  // whatever it held.
   const out: NodeJS.ProcessEnv = {};
   for (const name of Reflect.ownKeys(env)) if (name !== SEAL_KEY_ENV) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
   Object.defineProperty(out, SEAL_KEY_ENV, { value: text, enumerable: false, writable: false, configurable: false });
@@ -316,9 +304,7 @@ export function withSealKey(env: NodeJS.ProcessEnv, text: string): NodeJS.Proces
 /** The line a start prints about its seal key: where it is, never the key. */
 export function sealKeyLine(seal: SealKey): string {
   if (!seal.path) return `agentrun-serve: the seal key is ${SEAL_KEY_ENV}, as it was handed`;
-  const keep = "every secret saved here opens with it alone, so back it up with the data directory, and keep the two together";
-  if (seal.movedFrom) return `agentrun-serve: moved the seal key from ${seal.movedFrom} to ${seal.path} (0600), beside the store (${seal.movedFrom} is left as it was): ${keep}`;
-  return `agentrun-serve: ${seal.generated ? "made a new seal key" : "the seal key is"} at ${seal.path} (0600), beside the store: ${keep}`;
+  return `agentrun-serve: ${seal.generated ? "made a new seal key" : "the seal key is"} at ${seal.path} (0600), beside the store: every secret saved here opens with it alone, so back it up with the data directory, and keep the two together`;
 }
 
 /** A refusal in the words a start says: a key that is not the store's, or none it can use. */
@@ -328,26 +314,31 @@ function startRefusal(error: SealKeyRefused): SealKeyRefused {
 }
 
 /** The seal key every entry point boots the one way, once its store is open: the server, a runner (beside the server or
- *  its own process) and the `import` command all call this, so there is one rule, not four copies. The key handed over
- *  (AGENTRUN_SEAL_KEY), else the one in `dataDir`, checked against what `store` records of its key (refused, in words,
- *  when it is not the store's); a store that records none takes the key that opens its sealed values, or, holding none, a
- *  key made in `dataDir` at its first start, and records its fingerprint. A key kept in a file is held back as this
- *  process's own secret, so the environment it reads next (withSecrets) carries it. Throws SealKeyRefused with the start
- *  message when there is no key it can use. */
-export async function bootSealKey(store: SealKeyStore, dataDir: string, options?: BootSealKeyOptions & { readonly write?: true }): Promise<SealKey>;
-export async function bootSealKey(store: SealKeyStore, dataDir: string, options: BootSealKeyOptions): Promise<SealKey | undefined>;
-export async function bootSealKey(store: SealKeyStore, dataDir: string, options: BootSealKeyOptions = {}): Promise<SealKey | undefined> {
+ *  its own process) and the `import` command all call this, so there is one rule. The key handed over (AGENTRUN_SEAL_KEY),
+ *  else the one in `dataDir`, checked against what `store` records of its key (refused, in words, when it is not the
+ *  store's). The server's start makes a key in `dataDir` for a store that holds no secret and records its fingerprint; a
+ *  runner or the import never makes or records one. The key is held as this process's one key until release() (secrets.ts
+ *  holdSealKey: a second, different key at once is refused); its holder passes it on itself (withSealKey), and nothing
+ *  reads it from the process by name. Throws SealKeyRefused with the start message when there is no key it can use. */
+export async function bootSealKey(store: SealKeyStore, dataDir: string, options?: BootSealKeyOptions & { readonly write?: true }): Promise<BootedSealKey>;
+export async function bootSealKey(store: SealKeyStore, dataDir: string, options: BootSealKeyOptions): Promise<BootedSealKey | undefined>;
+export async function bootSealKey(store: SealKeyStore, dataDir: string, options: BootSealKeyOptions = {}): Promise<BootedSealKey | undefined> {
   const given = "given" in options ? options.given : handedSecret(SEAL_KEY_ENV);
   const say = options.say ?? ((line: string) => void process.stderr.write(line));
   let seal: SealKey | undefined;
   try {
-    seal = await sealKeyFor(store, dataDir, given, sealKeyHome(options.env ?? process.env), options.write !== false);
+    seal = await sealKeyFor(store, dataDir, given, options.role ?? "server", options.write !== false);
   } catch (error) {
     if (error instanceof SealKeyRefused) throw startRefusal(error);
     throw error;
   }
   if (!seal) return undefined;
-  if (seal.path) holdMadeSecret(SEAL_KEY_ENV, seal.text);
-  if (seal.generated || seal.movedFrom) say(`${sealKeyLine(seal)}\n`);
-  return seal;
+  let release: () => void;
+  try {
+    release = holdSealKey(seal.text);
+  } catch (error) {
+    throw new SealKeyRefused(`agentrun-serve does not start: ${(error as Error).message} (another data directory's, open in this process now)`, { cause: error });
+  }
+  if (seal.generated) say(`${sealKeyLine(seal)}\n`);
+  return { ...seal, release };
 }
