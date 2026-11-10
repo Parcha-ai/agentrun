@@ -557,7 +557,6 @@
   "packages/serve/test/spend-cap.test.mjs": 38.6,
   "packages/serve/test/stats.test.mjs": 20.4,
   "packages/serve/test/stop-position.test.mjs": 0,
-  "packages/serve/test/stop-restart.test.mjs": 48.4,
   "packages/serve/test/store-busy.test.mjs": 45.9,
   "packages/serve/test/timeline-key-words.test.mjs": 47.7,
   "packages/serve/test/timeline-live-holdback.test.mjs": 0,

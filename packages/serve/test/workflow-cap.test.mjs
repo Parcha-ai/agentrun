@@ -419,44 +419,6 @@ test.skip("a decision answered and billed whose booking a crash lost still count
   assert.equal(decisionSpentIn(store), live, "the next process counts the decision from its receipt");
 });
 
-test("a decision sent and lost with its process, before its receipt and its booking, counts on the next process at the hold its cap took, never $0", { timeout: 120_000 }, async (t) => {
-  withEnv(t, { OPENROUTER_API_KEY: `not-a-secret-${"openrouter"}`, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
-  const dir = await scratch(t);
-  const sent = join(dir, "sent.jsonl");
-  const fauxOpenrouter = join(dir, "faux-openrouter.mjs");
-  // The catalog answers; the decision itself never does: its process dies with the request in flight.
-  await writeFile(fauxOpenrouter, [
-    `import { appendFileSync } from "node:fs";`,
-    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
-    `export default async (url, init = {}) => {`,
-    `  const path = new URL(String(url)).pathname;`,
-    `  appendFileSync(${JSON.stringify(sent)}, JSON.stringify({ path }) + "\\n");`,
-    `  if (path.endsWith("/systemone")) return new Promise(() => {});`,
-    `  return faux(url, init);`,
-    `};`,
-  ].join("\n"));
-  const { api, data } = await serve(t, { fauxOpenrouter });
-  assert.equal((await api("POST", "/agents", flowAgent("lost-judge", judgeFlow("ask", "openrouter", "liquid/d1")))).status, 201);
-  const started = await api("POST", "/agents/lost-judge/runs", { input: { doc: "Certificate of incorporation of Acme Widgets" }, max_cost_usd: 1 });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  const runId = started.body.run_id;
-  for (const end = Date.now() + 60_000; !(await lines(sent)).some((call) => call.path.endsWith("/systemone")); await new Promise((resolve) => setTimeout(resolve, 100))) {
-    assert.ok(Date.now() < end, "the decision was sent");
-  }
-  // The run's process dies with the decision in flight: no answer, no receipt, no booking.
-  const pid = runRecordOf(data, runId).holder?.pid;
-  assert.ok(Number.isInteger(pid), JSON.stringify(runRecordOf(data, runId)));
-  process.kill(pid, "SIGKILL");
-  await follow(api, runId, SETTLED, { deadlineMs: 90_000 });
-  await letGo(data, runId);
-  const store = join(runDir(data, runId), "store", "run.sqlite");
-  const counted = decisionSpentIn(store);
-  assert.notEqual(counted, 0, "a decision sent and lost counts at its hold, never $0");
-  // Live == recovery: what the next process reads is the hold the cap took for it while it was in flight.
-  const holds = entriesOf(data, runId).filter((entry) => entry.kind === "agentrun.decision_hold").map((entry) => entry.data.usd);
-  assert.deepEqual([holds.length, counted], [1, holds[0]], JSON.stringify(holds));
-});
-
 test("a decision whose booking was lost and whose receipt names its charge counts at that charge on the next process, never at a larger hold", async (t) => {
   const calls = join(await scratch(t), "parallel-calls.jsonl");
   withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);

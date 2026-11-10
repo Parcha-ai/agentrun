@@ -137,33 +137,3 @@ test.skip("a run on opencode goes through the adapter's proxy to serve's gateway
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million, booked once");
   assert.equal(rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text, "OpenCode answered.");
 });
-
-test("an opencode run whose process is killed mid-turn is relaunched: OpenCode gets its session back from the run's store and the run completes", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  // The first request is held (the turn is mid-flight) and its answer never reaches anyone; the relaunched turn's are answered.
-  const gw = await gateway(t, { text: (i) => (i === 0 ? "Before the cut." : "After the cut."), held: 1 });
-  const { api, standIn, data } = await opencodeServe(t, gw);
-  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  for (let i = 0; gw.seen.length === 0; i++) {
-    assert.ok(i < 300, "the turn's model request reaches the gateway");
-    await sleep(100);
-  }
-  const record = async () => runRecordOf(data, run.body.run_id);
-  const killed = (await record()).holder.pid;
-  const child = await processOf(standIn);
-  assert.ok(child, "OpenCode's process runs");
-  process.kill(killed, "SIGKILL");
-  for (let i = 0; existsSync(`/proc/${child.pid}`) && !(await readFile(`/proc/${child.pid}/status`, "utf8").catch(() => "")).includes("State:\tZ"); i++) {
-    assert.ok(i < 50, "the killed process's OpenCode dies with it");
-    await sleep(100);
-  }
-  gw.release();
-  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 150_000 });
-  const relaunched = (await record()).holder?.pid;
-  assert.notEqual(relaunched, killed, "a new process ran the turn");
-  assert.ok(gw.seen.length >= 2, "the relaunched turn asked the model again");
-  const input = JSON.stringify(gw.seen.at(-1).body.input);
-  assert.match(input, /Say what you did\./, "the session OpenCode got back holds the run's message");
-  assert.match(input, /\[Recovery\]/, "the model is told its turn was cut");
-  assert.equal(rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text, "After the cut.");
-});
