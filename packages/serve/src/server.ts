@@ -78,6 +78,7 @@ const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is b
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
@@ -1095,15 +1096,32 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
+   *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
+   *  box, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
+   *  daemon that comes up after the start is seen); once it answers, the box's own reason stands where the start's probe
+   *  found the daemon too (Docker elsewhere, no host addresses, its image). Else the box's start-time answer (boxOffers),
+   *  with its reason, which says how to fix it. */
+  const dockerDaemon = dockerDaemonCheck({ env });
+  const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
+    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
+    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+      const daemon = await dockerDaemon();
+      if (!daemon.up || box?.available || !boxes.provider("docker")) return daemon;
+    } else if (box?.available) return { up: true };
+    return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
+  };
   let computerRoutes: ComputerRoutes | undefined;
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
+      // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        answers: dockerAnswers,
       }),
   }));
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
@@ -1111,12 +1129,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
-   *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
-   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
-  const dockerAnswers = (provider: string): true | string => {
-    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
-  };
+   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
   const computerReady = async (setting: { kind: string; provider?: string }) =>
     computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });

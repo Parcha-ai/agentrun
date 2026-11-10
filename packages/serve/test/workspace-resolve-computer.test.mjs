@@ -152,6 +152,15 @@ test("start: a computer that cannot be had fails as computer_unavailable, in the
   await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B answered 503: no capacity");
 });
 
+test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
+  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+  const failing = (daemon) => ({ keysOf: async () => ({}), answers: async () => false, daemon, launch: async () => { throw new Error("cannot ask Docker its architecture (docker version): Cannot connect to the Docker daemon"); } });
+  const start = async (side) => (await resolveComputer({ kind: "sandbox", provider: "docker" }, 1, KINDS, side)).start({ workspace: localWorkspace(scratch()), check: { readBackOf } });
+  await assert.rejects(start(failing(async () => ({ up: false, absent: true, reason: "exit 1" }))), (error) => error.code === "computer_unavailable" && error.message === NO_DOCKER);
+  await assert.rejects(start(failing(async () => ({ up: true }))), (error) => error.code === "computer_unavailable" && error.message.startsWith("Docker could not start a sandbox computer: cannot ask Docker its architecture"));
+  await assert.rejects(start(failing(undefined)), (error) => error.message.startsWith("Docker could not start a sandbox computer:"), "no daemon check: the launch's words");
+});
+
 test("runShellOf, read off the setting, is the shell runHands gives the run over the computer started, for every kind in both modes; a refused setting has none", async () => {
   // [setting, mode, where its shell is]: a computer that mounts the folder has it; with none, Mode 2 has Archil's exec
   // ("local", bash only) and Mode 1 none at all, the folder being one of this server's own.

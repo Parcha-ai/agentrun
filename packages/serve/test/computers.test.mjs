@@ -58,7 +58,7 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers" });
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
@@ -67,7 +67,7 @@ test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Moda
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
   for (const [id, needs] of [["daytona", "Daytona needs DAYTONA_API_KEY saved: save it"], ["modal", "Modal needs MODAL_TOKEN_ID and MODAL_TOKEN_SECRET saved: save them"], ["e2b", "E2B needs E2B_API_KEY saved: save it"]]) {
-    assert.equal(providerOf(view, "sandbox", id).why, `${needs} in Settings → Computers (PUT /v2/computers/${id}/keys)`, `${id} mounts the owner's disk, so only its keys are missing`);
+    assert.equal(providerOf(view, "sandbox", id).why, `${needs} in Settings → Computers`, `${id} mounts the owner's disk, so only its keys are missing`);
   }
   assert.equal(kindOf(view, "sandbox").offered, true);
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
@@ -78,7 +78,7 @@ test("Mode 2 once the remote sandboxes mount the owner's disk: Docker's sandbox 
   const { routes } = await setup(t, { mode: "disk", kinds: ARCHIL_KINDS });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
-  assert.equal(providerOf(view, "sandbox", "daytona").why, "Daytona needs DAYTONA_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/daytona/keys)");
+  assert.equal(providerOf(view, "sandbox", "daytona").why, "Daytona needs DAYTONA_API_KEY saved: save it in Settings → Computers");
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
@@ -108,7 +108,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
 
 test("a provider's test opens its saved keys, makes it with them through computer-keys, and reads its account once; failures are its plain words, with no key", async (t) => {
   const { routes, built } = await setup(t, { settings: { modalApp: "runs-app" } });
-  assert.deepEqual(await routes.test("e2b"), { ok: false, why: "E2B needs E2B_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/e2b/keys)" });
+  assert.deepEqual(await routes.test("e2b"), { ok: false, why: "E2B needs E2B_API_KEY saved: save it in Settings → Computers" });
   assert.deepEqual(built, [], "nothing made with a key missing");
   await routes.saveKeys("e2b", { E2B_API_KEY: "good-e" });
   assert.deepEqual(await routes.test("e2b"), { ok: true, detail: "e2b: 2 computers" });
@@ -172,4 +172,50 @@ test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "docker" }), undefined);
+});
+
+/** The words a person reads when no Docker daemon answers here, for a sandbox and a desktop over the fixture registry. */
+const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B or Orgo for a desktop.";
+
+test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind, and the claim refuses it in the same words", async (t) => {
+  const asked = [];
+  const answers = async (provider) => (asked.push(provider), { up: false, absent: true, reason: "docker version failed: exit 1" });
+  const { store } = await storeOn(t);
+  const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers });
+  const view = await routes.view();
+  assert.deepEqual([providerOf(view, "sandbox", "docker").ready, providerOf(view, "sandbox", "docker").why], [false, NO_DOCKER_SANDBOX]);
+  assert.deepEqual([providerOf(view, "desktop", "docker").ready, providerOf(view, "desktop", "docker").why], [false, NO_DOCKER_DESKTOP]);
+  assert.deepEqual(asked, ["docker"], "one ask per view, for the one provider that binds a folder of this machine");
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), NO_DOCKER_SANDBOX);
+  assert.deepEqual(await routes.claimOptions({ kind: "desktop", provider: "docker" }), { ok: false, error: { code: "computer_unavailable", message: NO_DOCKER_DESKTOP } });
+  // A daemon that is there but refuses this process says its own reason.
+  const denied = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers: async () => ({ up: false, absent: false, reason: "This server's process isn't in the docker group" }) });
+  assert.equal(providerOf(await denied.view(), "sandbox", "docker").why, "This server's process isn't in the docker group");
+});
+
+test("a Docker daemon that answers: Docker is ready, and the claim takes it", async (t) => {
+  const { store } = await storeOn(t);
+  const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers: async () => ({ up: true }) });
+  const view = await routes.view();
+  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true });
+  assert.equal(providerOf(view, "desktop", "docker").ready, true);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined);
+});
+
+test("no view's why holds a route: the words a person reads end at the setting, in either mode, with no key saved and no Docker", async (t) => {
+  // KINDS is the computer package's own registry, as the server serves it, so every provider's words are checked.
+  const kinds = KINDS;
+  const { store } = await storeOn(t);
+  for (const mode of ["local", "disk"]) {
+    for (const answers of [async () => ({ up: false, absent: true, reason: "no daemon" }), async () => ({ up: true })]) {
+      const view = await createComputerRoutes({ store, sealKey: randomBytes(32), kinds, factories: fakeFactories().factories, tools, mode, answers }).view();
+      const whys = view.kinds.flatMap((kind) => [kind.why, ...kind.providers.map((one) => one.why)]).filter((why) => why !== undefined);
+      assert.ok(whys.length > 0, `some provider is not ready in ${mode}`);
+      for (const why of whys) assert.ok(!why.includes("PUT ") && !why.includes("/v2/"), `a view's why holds a route (${mode}): ${why}`);
+    }
+  }
+  // The claim's refusal, for a caller, still names the route that saves the keys.
+  const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds, factories: fakeFactories().factories, tools, mode: "local" });
+  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
 });

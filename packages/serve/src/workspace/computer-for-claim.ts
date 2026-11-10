@@ -90,6 +90,8 @@ export interface ComputerForClaimDeps {
   readonly settings?: ProviderSettings;
   /** Whether a provider that binds a folder of this machine answers here now (Docker): the Mode 1 default asks it. */
   readonly answers?: (provider: string) => Promise<boolean>;
+  /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails (ClaimSide.daemon). */
+  readonly daemon?: ClaimSide["daemon"];
   /** A launch of the server's own in place of the providers' (--faux's desktop). */
   readonly launch?: ClaimSide["launch"];
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
@@ -225,6 +227,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const side: ClaimSide = {
     keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
+    ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, mount, signal }) {
       if (deps.launch) {
         const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });

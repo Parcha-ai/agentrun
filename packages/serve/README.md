@@ -721,7 +721,10 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
-refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
+daemon on this server: where none answers `docker version` (Render and most hosted services run none), Docker is not
+ready and says to use a vendor's computer; the server asks again every 30 s, so a daemon started later is seen.
+`GET /v2/computers` lists each kind,
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at

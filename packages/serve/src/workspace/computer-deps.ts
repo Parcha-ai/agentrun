@@ -19,6 +19,7 @@ import { posix } from "node:path";
 import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { DockerPaths } from "../box-paths.js";
+import { dockerDaemonCheck } from "../docker-daemon.js";
 import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
@@ -94,6 +95,9 @@ export interface ComputerDepsOptions {
   readonly hostAddresses?: () => Promise<HostRead>;
   /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default. */
   readonly answers?: ComputerForClaimDeps["answers"];
+  /** This machine's Docker daemon, asked when a Docker launch fails (docker-daemon.ts dockerDaemonCheck over `env`
+   *  unless given; none under --faux, whose launch is its own). */
+  readonly daemon?: ComputerForClaimDeps["daemon"];
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
   readonly openComputerView?: OpenComputerView;
   /** --faux's computers (faux-computers.ts), in place of the computer package's: their kind registry, key table, launch
@@ -165,6 +169,13 @@ export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">)
   return (options.faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
 }
 
+/** This machine's Docker daemon as the claim asks it once a Docker launch fails: one check per process (its answer
+ *  kept a while, docker-daemon.ts), in `env`. */
+const dockerDaemonOf = (env: KeyEnv): NonNullable<ComputerForClaimDeps["daemon"]> => {
+  const check = dockerDaemonCheck({ env: { ...env } });
+  return () => check();
+};
+
 /** computerForClaim and its process-wide deps, composed once; and Settings → Computers' factories from the same makers. */
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
@@ -204,6 +215,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     // Under --faux, its launch makes the computer, with its key table: no provider of the package is built.
     ...(faux ? { keyTable: faux.keyTable, launch: (entry, spec) => faux.launch(entry as never, spec) } : {}),
     ...(options.answers ? { answers: options.answers } : {}),
+    ...(options.daemon ? { daemon: options.daemon } : faux ? {} : { daemon: dockerDaemonOf(env) }),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
   };
   const factories = faux?.factories ?? computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id));

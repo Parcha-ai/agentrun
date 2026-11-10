@@ -19,7 +19,7 @@ import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret } fr
 /** Obvious fakes: none of these is a key anywhere. */
 const FAKE = "not-a-real-key-0123456789";
 
-const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/e2b/keys)";
+const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers";
 const PHONE_WHY = "no provider serves a phone computer";
 const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";

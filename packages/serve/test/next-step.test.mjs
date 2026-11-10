@@ -139,7 +139,7 @@ test("the setting a box names keeps the boxes AGENTRUN_BOXES already lists", asy
   assert.equal(registry.offers().find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM},daytona`);
 });
 
-test("docker enabled with no daemon answering: its reason says to start Docker or join the docker group, the 409 ends in one full stop, and the banner says no box is ready", async (t) => {
+test("docker enabled with no daemon answering: the box's reason says to start Docker or join the docker group, a Docker computer's 409 says there is no Docker here in one sentence, and the banner says no box is ready", async (t) => {
   withEnv(t, { PATH: await failingDocker(t), AGENTRUN_BOXES: "docker" });
   const server = await serve(t);
   const { api } = server;
@@ -150,7 +150,8 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); ${VM} is unavailable (${VM_TOO}); daytona is unavailable (${DAYTONA_TOO})`);
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
-  const said = `This agent's computer is a Docker sandbox, and this server cannot run it: ${DAEMON}.`;
+  // A place is its computer setting's view: a Docker computer with no daemon is refused in the words Settings → Computers says.
+  const said = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
   assert.equal(made.body.warnings[0].message, said);
   const run = await api("POST", "/agents/docked/runs", { input: { content: "hi" } });
   assert.equal(run.body.error.message, said);
