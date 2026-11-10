@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { MODAL, MODAL_DEFAULT_IMAGE } from "./descriptors/modal.js";
 import {
 	COMPUTER_LABEL,
 	DAEMON_IN_COMPUTER,
@@ -183,12 +184,12 @@ export interface ModalProviderOptions {
 }
 
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = ["archil"];
+export const MOUNT: readonly MountKind[] = MODAL.mounts;
 
-/** The machine kind and groups of its one configuration: a linux computer. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
-/** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. */
-export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
+/** The machine kind and groups of its one configuration (its descriptor's): a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = MODAL.capabilities;
+/** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. Its descriptor's. */
+export { MODAL_DEFAULT_IMAGE };
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";

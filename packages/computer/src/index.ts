@@ -110,7 +110,9 @@ export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept 
 export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export {
+	type BuiltinProviderId,
 	type ConformanceModule,
+	descriptorOf,
 	isProviderId,
 	type ProviderEnv,
 	providerFor,
@@ -121,10 +123,29 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
+export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type ProviderDescriptor } from "./descriptor.js";
+export {
+	BROWSERBASE,
+	DAYTONA,
+	DESCRIPTORS,
+	DOCKER,
+	E2B,
+	E2B_BASE_TEMPLATE,
+	E2B_DESKTOP_TEMPLATE,
+	KERNEL,
+	MODAL,
+	MODAL_DEFAULT_IMAGE,
+	ORGO,
+	ORGO_BASE_IMAGE,
+	PHONE_GROUPS,
+	PHONE_HARNESS,
+	PHONE_IMAGE,
+} from "./descriptors/index.js";
 // Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
 export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
 	type ComputerSettingKind,
+	entryOf,
 	type KindCapabilities,
 	kindOf,
 	type ProviderEntry,

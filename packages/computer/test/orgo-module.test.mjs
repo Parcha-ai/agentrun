@@ -49,7 +49,7 @@ test("the registry holds orgo, and its Settings entry: the desktop kind, the ORG
 	assert.ok(providerIds.includes("orgo"));
 	const entry = PROVIDERS.find((one) => one.id === "orgo");
 	assert.deepEqual(entry.kinds, ["desktop"], "a desktop only: an agent that wants a sandbox gets a cheaper one");
-	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", required: true }]);
+	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }]);
 	assert.deepEqual(entry.mounts, []);
 	assert.equal(entry.metered, true);
 	const orgo = await import("../dist/orgo.js");

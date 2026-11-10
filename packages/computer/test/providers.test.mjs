@@ -1,6 +1,7 @@
-// The provider registry (src/providers.ts) pins the rule that a new computer is one provider file and one registry line:
-// every provider file has its line, every line resolves to a module of the registry's shape, the conformance CLI
-// resolves every id through the registry and names each in its usage, and loading the registry loads no provider. A
+// The provider registry (src/providers.ts) pins the rule that a new computer is one provider file and its descriptor:
+// every provider file has its descriptor, the registry is derived from them, every id resolves to a module of the
+// registry's shape, the conformance CLI resolves every id through the registry and names each in its usage, and loading
+// the registry loads descriptors alone, no provider. A
 // provider is built from its options alone (create(options)), its key included: the library reads no environment, so
 // serve passes its own settings in. Only src/conformance/ (the CLI, its modules and the sweeps) reads COMPUTER_* names,
 // and scripts/check-env.mjs pins that, read by TypeScript's parser.
@@ -37,26 +38,18 @@ const sink = () => {
 	};
 };
 
-/** The registry lines in source, as written: id, and the provider file it imports. */
-function linesOf(source) {
-	// The id bare, or quoted with one kind of quote on both sides: a hyphenated id is no JavaScript name.
-	return [...source.matchAll(/^\s*(?:(["'])([a-z][a-z0-9-]*)\1|([a-z][a-z0-9]*)):\s*\(\)\s*=>\s*import\("\.\/([a-z][a-z0-9-]*)\.js"\),?$/gm)].map(([, , quoted, bare, file]) => ({ id: quoted ?? bare, file }));
+/** The provider file a built descriptor module's load() imports: the one `import("../<file>.js")` in it. */
+function loadedFile(id) {
+	const source = readFileSync(new URL(`../dist/descriptors/${id}.js`, import.meta.url), "utf8");
+	const imports = [...source.matchAll(/\bimport\("\.\.\/([a-z][a-z0-9-]*)\.js"\)/g)].map(([, file]) => file);
+	assert.equal(imports.length, 1, `descriptors/${id}.js imports one provider module, lazily`);
+	return imports[0];
 }
 
-/** Every registry line of the built registry. */
-function registryLines() {
-	return linesOf(readFileSync(new URL("../dist/providers.js", import.meta.url), "utf8"));
+/** Every static import of a built module, by specifier. */
+function staticImports(path) {
+	return [...readFileSync(new URL(path, import.meta.url), "utf8").matchAll(/^\s*(?:import|export)\s[^;(]*?\sfrom\s+"([^"]+)"/gm)].map(([, from]) => from);
 }
-
-test("a registry line is read with its id bare, or quoted when the id is no JavaScript name (phone-harness)", () => {
-	const source = ['\tdocker: () => import("./docker.js"),', '\t"phone-harness": () => import("./phone.js"),', "\t'orgo-cloud': () => import(\"./orgo.js\"),"].join("\n");
-	assert.deepEqual(linesOf(source), [
-		{ id: "docker", file: "docker" },
-		{ id: "phone-harness", file: "phone" },
-		{ id: "orgo-cloud", file: "orgo" },
-	]);
-	assert.deepEqual(linesOf('\t"phone-harness\': () => import("./phone.js"),'), [], "quotes that do not match are not a line");
-});
 
 /** Every provider file under src/: one that declares a class implementing ComputerProvider, with the id it reports. */
 function providerFiles() {
@@ -71,29 +64,34 @@ function providerFiles() {
 	return found;
 }
 
-test("the registry is one line per computer, one per provider file, each a lazy import of that file", () => {
-	// The provider files decide the ids, not a list here: a new provider is its file and its registry line, nothing else.
+test("the registry is derived from the descriptors: one per provider file, each a lazy import of that file", () => {
+	// The provider files decide the ids, not a list here: a new provider is its file and its descriptor, nothing else.
 	assert.deepEqual([...providerIds].sort(), providerFiles().map((f) => f.id).sort(), "one registry id per provider file, under the id it reports");
 	assert.deepEqual(Object.keys(providers), providerIds);
-	for (const id of providerIds) assert.equal(typeof providers[id], "function", `${id} is () => import(...)`);
-	assert.deepEqual(registryLines(), providerIds.map((id) => ({ id, file: id })), "each line is id: () => import(\"./<file>.js\")");
+	assert.deepEqual(providerIds, index.DESCRIPTORS.map((descriptor) => descriptor.id), "the registry's ids are the descriptors', in their order");
+	for (const descriptor of index.DESCRIPTORS) assert.equal(providers[descriptor.id], descriptor.load, `${descriptor.id}'s line is its descriptor's load()`);
 });
 
-test("loading the registry loads no provider and no vendor SDK: it imports nothing at load", () => {
-	const source = readFileSync(new URL("../dist/providers.js", import.meta.url), "utf8");
-	assert.doesNotMatch(source, /^\s*import\s[^(]/m, "no static import");
-	assert.doesNotMatch(source, /^\s*export\s[^\n]*\sfrom\s/m, "no re-export");
+test("loading the registry, the kind registry or a descriptor loads no provider and no vendor SDK: only descriptors, which import none", () => {
+	const descriptorFiles = readdirSync(new URL("../dist/descriptors/", import.meta.url)).filter((name) => name.endsWith(".js"));
+	assert.deepEqual(staticImports("../dist/providers.js"), ["./descriptors/index.js"], "the registry imports the descriptors alone");
+	assert.deepEqual(staticImports("../dist/kinds.js"), ["./descriptors/index.js"], "the kind registry imports the descriptors alone");
+	assert.deepEqual(staticImports("../dist/descriptor.js"), [], "the descriptor's type and check import nothing");
+	for (const name of descriptorFiles) {
+		const outside = staticImports(`../dist/descriptors/${name}`).filter((from) => from !== "../descriptor.js" && !/^\.\/[a-z0-9-]+\.js$/.test(from));
+		assert.deepEqual(outside, [], `descriptors/${name} imports the descriptor's check and other descriptors alone`);
+	}
 });
 
-test("every provider file under src/ has its registry line, under the id its provider reports", () => {
+test("every provider file under src/ has its descriptor, under the id its provider reports, whose load() imports it", () => {
 	const files = providerFiles();
 	assert.ok(files.length >= 3, `found ${files.map((f) => f.file).join(", ")}`);
-	const lines = registryLines();
 	for (const { file, id } of files) {
 		assert.ok(id, `${file}.ts declares its provider's id as readonly id = "..."`);
-		assert.deepEqual(lines.find((line) => line.file === file), { id, file }, `src/${file}.ts implements ComputerProvider: the registry needs the line ${id}: () => import("./${file}.js")`);
+		assert.ok(providerIds.includes(id), `src/${file}.ts implements ComputerProvider: it needs a descriptor in src/descriptors/ with id ${id}`);
+		assert.equal(loadedFile(id), file, `descriptors/${id}.js's load() imports ./${file}.js`);
 	}
-	assert.equal(lines.length, files.length, "and no line names a file that is not a provider");
+	assert.equal(index.DESCRIPTORS.length, files.length, "and no descriptor names a file that is not a provider");
 });
 
 /**

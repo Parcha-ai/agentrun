@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
+import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
@@ -43,13 +44,13 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
-export const MOUNT: readonly MountKind[] = [];
+export const MOUNT: readonly MountKind[] = ORGO.mounts;
 
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
 
-/** What a built provider declares, known without building one: one configuration, a Linux desktop (the registry's entry). */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "desktop", groups: [...GROUPS] }];
+/** What a built provider declares, known without building one: one configuration, a Linux desktop (its descriptor's). */
+export const CAPABILITIES: readonly KindCapabilities[] = ORGO.capabilities;
 
 /** The conformance CLI's module for Orgo: its live switch, the run's 1 h cap and the drifted twin. */
 export const conformance = () => import("./conformance/orgo.js");
@@ -118,8 +119,8 @@ const NAME_MAX = 80;
 const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?(?:-d([0-9a-z]{1,11}))?$/;
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-/** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and the default for kind desktop. */
-export const ORGO_BASE_IMAGE = "linux";
+/** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and its descriptor's default. */
+export { ORGO_BASE_IMAGE };
 const BASE = ORGO_BASE_IMAGE;
 const COMPUTER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

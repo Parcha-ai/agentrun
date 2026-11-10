@@ -4,15 +4,11 @@
 // a setting kind is computed from its capabilities alone (serves), never kept beside them: a provider that drops a
 // group stops serving the kind. The model's tools are not here: they live in the kernel's tool registry, keyed by
 // these groups.
-// The default images are values: each from the provider module that owns it. Those modules import this one for types
-// alone, so this is no import cycle.
-import { BROWSER_IMAGE } from "./browser.js";
-import { DAYTONA_DEFAULT_SNAPSHOT } from "./daytona.js";
-import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-import { MODAL_DEFAULT_IMAGE } from "./modal.js";
+// The providers Settings offers (PROVIDERS) are derived from the providers' descriptors (descriptor.ts), each declared
+// once in its descriptor module: loading this loads descriptors (data) alone, never a provider module or a vendor SDK.
+import type { DescriptorKey, DescriptorSetting, ProviderDescriptor } from "./descriptor.js";
+import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MountKind } from "./mount.js";
-import { ORGO_BASE_IMAGE } from "./orgo.js";
-import { PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities } from "./provider.js";
 import type { Result } from "./result.js";
@@ -71,126 +67,47 @@ export function kindOf(capabilities: KindCapabilities): ComputerSettingKind | un
 	return SETTING_KIND_NAMES.find((kind) => serves(capabilities, kind));
 }
 
-/** One key a provider takes in Settings: its serve-side name (Settings accepts only these), and whether it is needed. */
-export interface ProviderKey {
-	name: string;
-	required: boolean;
-}
+/** One key a provider takes in Settings: its serve-side name (Settings accepts only these), the option it fills, and whether it is needed. */
+export type ProviderKey = DescriptorKey;
 
-/** A provider as Settings shows it. */
+/** A provider as Settings shows it: its descriptor's data, and the setting kinds it serves. */
 export interface ProviderEntry {
-	/** Its id: a line of the provider registry (providers.ts) once its file lands. */
-	id: string;
-	label: string;
+	/** Its id: a line of the provider registry (providers.ts). */
+	readonly id: string;
+	readonly label: string;
 	/** Derived: the setting kinds its capabilities serve (serves), never written by hand. */
-	kinds: readonly ComputerSettingKind[];
-	/** The serve-side key names only; never a value. */
-	keys: readonly ProviderKey[];
-	/** The mount kinds its computers take; [] cannot mount the run's folder. Its module's MOUNT, once its file lands. */
-	mounts: readonly MountKind[];
+	readonly kinds: readonly ComputerSettingKind[];
+	/** The serve-side key names and the options they fill; never a value. */
+	readonly keys: readonly ProviderKey[];
+	/** Settings that are no key but go to its options. */
+	readonly settings?: readonly DescriptorSetting[];
+	/** The mount kinds its computers take; [] cannot mount the run's folder. */
+	readonly mounts: readonly MountKind[];
 	/** The vendor bills by time; prices are the vendor's page, not ours. */
-	metered: boolean;
+	readonly metered: boolean;
+	/** Its static capabilities: the machine kind and groups of each configuration it offers. */
+	readonly capabilities: readonly KindCapabilities[];
 	/**
-	 * Its static capabilities: the machine kind and groups of each configuration it offers. Its module's CAPABILITIES,
-	 * once its file lands, and each built configuration's capabilities().
+	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
+	 * default, and the caller refuses the setting in words. Docker's sandbox has none: its image is made (prepareImage).
 	 */
-	capabilities: readonly KindCapabilities[];
-	/**
-	 * The image a computer of each setting kind starts from when its setting names none, each the constant its provider
-	 * module owns. A kind with no entry has no default, and the caller refuses the setting in words. Docker's sandbox has
-	 * none: serve builds its image itself (DOCKER_RECIPE).
-	 */
-	defaultImage?: Partial<Record<ComputerSettingKind, string>>;
+	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
+	/** Its built providers make or pull their image before the first create (prepareImage()). */
+	readonly prepareImage?: boolean;
+	/** Its computers run on this machine's container engine. */
+	readonly local?: boolean;
+	/** create() takes a ledger the server keeps for it, as this option. */
+	readonly ledger?: { readonly option: string };
 }
 
-const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
-const LINUX_DESKTOP: KindCapabilities = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
-
-/** An entry with its kinds derived from its capabilities. */
-function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
-	return { ...fields, kinds: SETTING_KIND_NAMES.filter((kind) => fields.capabilities.some((one) => serves(one, kind))) };
+/** A descriptor as Settings shows it: its data, and the setting kinds its capabilities serve, derived by serves(). */
+export function entryOf(descriptor: ProviderDescriptor): ProviderEntry {
+	const { load: _load, ...data } = descriptor;
+	return { ...data, kinds: SETTING_KIND_NAMES.filter((kind) => descriptor.capabilities.some((one) => serves(one, kind))) };
 }
 
-/**
- * Every provider Settings offers, each with its provider file in the registry;
- * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts.
- */
-export const PROVIDERS: readonly ProviderEntry[] = [
-	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
-	entry({
-		id: "daytona",
-		label: "Daytona",
-		keys: [
-			{ name: "DAYTONA_API_KEY", required: true },
-			{ name: "DAYTONA_API_URL", required: false },
-			{ name: "DAYTONA_TARGET", required: false },
-		],
-		mounts: ["archil"],
-		metered: true,
-		capabilities: [SANDBOX],
-		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
-	}),
-	entry({
-		id: "modal",
-		label: "Modal",
-		keys: [
-			{ name: "MODAL_TOKEN_ID", required: true },
-			{ name: "MODAL_TOKEN_SECRET", required: true },
-		],
-		mounts: ["archil"],
-		metered: true,
-		capabilities: [SANDBOX],
-		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
-	}),
-	entry({
-		id: "e2b",
-		label: "E2B",
-		keys: [{ name: "E2B_API_KEY", required: true }],
-		mounts: ["archil"],
-		metered: true,
-		capabilities: [SANDBOX, LINUX_DESKTOP],
-		defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
-	}),
-	entry({
-		id: "orgo",
-		label: "Orgo",
-		keys: [{ name: "ORGO_API_KEY", required: true }],
-		mounts: [],
-		metered: true,
-		capabilities: [LINUX_DESKTOP],
-		defaultImage: { desktop: ORGO_BASE_IMAGE },
-	}),
-	entry({
-		id: "phone-harness",
-		label: "Phone harness",
-		keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }],
-		mounts: [],
-		metered: true,
-		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
-		defaultImage: { phone: PHONE_IMAGE },
-	}),
-	entry({
-		id: "browserbase",
-		label: "Browserbase",
-		keys: [
-			{ name: "BROWSERBASE_API_KEY", required: true },
-			{ name: "BROWSERBASE_PROJECT_ID", required: true },
-		],
-		mounts: [],
-		metered: true,
-		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
-		defaultImage: { browser: BROWSER_IMAGE },
-	}),
-	entry({
-		id: "kernel",
-		label: "Kernel",
-		keys: [{ name: "KERNEL_API_KEY", required: true }],
-		mounts: [],
-		metered: true,
-		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
-		defaultImage: { browser: BROWSER_IMAGE },
-	}),
-];
+/** Every provider Settings offers: each built-in descriptor (descriptors/index.ts), as entryOf gives it. */
+export const PROVIDERS: readonly ProviderEntry[] = DESCRIPTORS.map(entryOf);
 
 /** What testConnection is given: the provider's keys by their serve-side names, and the caller's signal. */
 export interface TestConnectionOptions {

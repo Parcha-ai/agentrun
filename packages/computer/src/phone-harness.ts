@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
+import { PHONE_GROUPS, PHONE_HARNESS, PHONE_IMAGE } from "./descriptors/phone-harness.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
@@ -52,14 +53,15 @@ import { listTested } from "./test-connection.js";
 
 /** The phone harness's API. */
 export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
-/** What a cloud Android offers through this provider, as its capabilities and hello declare them. */
-export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+/**
+ * What a cloud Android offers through this provider (PHONE_GROUPS, as its capabilities and hello declare them), and the
+ * image a phone is read back by (PHONE_IMAGE: a cloud Android has none to choose): its descriptor's.
+ */
+export { PHONE_GROUPS, PHONE_IMAGE };
 /** A phone mounts no folder. */
-export const MOUNT: readonly MountKind[] = [];
-/** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
-/** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
-export const PHONE_IMAGE = "android";
+export const MOUNT: readonly MountKind[] = PHONE_HARNESS.mounts;
+/** The one configuration it offers, as its capabilities() declare it: its descriptor's. */
+export const CAPABILITIES: readonly KindCapabilities[] = PHONE_HARNESS.capabilities;
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
