@@ -21,7 +21,6 @@ import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, Fo
 import { ApiError, invalid } from "./errors.js";
 import { currentLearning, holdsForOk, type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
-import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 import type { Workspace } from "./workspace/index.js";
 import { launchOf } from "./handed-values.js";
@@ -493,18 +492,8 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   });
 }
 
-/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
- *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
-export async function runLearning(run: Run, shown: Shown, secrets: readonly string[], data: string) {
-  // What it held for its owner's OK as it reads now (learning.ts currentLearning); its record stays as the merge wrote it.
-  const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
-  if (!learning) return null;
-  const pin = await readPin(run.dir).catch(() => undefined);
-  return runLearningBody({ id: run.id, learning, seed: pin?.seed ?? null, settled: run.settled }, shown, secrets);
-}
-
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
- *  settled: the one shape, read from a run's files (runLearning) or from the one store (store-reads/learning.ts
+ *  settled: the one shape, read from the one store (store-reads/learning.ts
  *  runLearningOverStore). */
 export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean }, shown: Shown, secrets: readonly string[]) {
   const { learning } = input;
