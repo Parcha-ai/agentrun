@@ -140,6 +140,7 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   assert.deepEqual(record.watched, [["c1", "function", true]], "the provider's watch, on the computer's ref, with the viewer's handlers and signal");
   assert.equal(typeof answer.hold, "function", "the person's hold on its ports, for runTools");
   const [hold] = view.holds;
+  assert.deepEqual(answer.held, { kind: "desktop", hold }, "the same hold, for the spec's adapter loop to journal");
   assert.equal(hold.take(), true, "a person takes the desktop");
   assert.equal(hold.state(), "person");
   // The agent's ask, open when the computer goes, is let go at once: never left to wait out its own expiry.
