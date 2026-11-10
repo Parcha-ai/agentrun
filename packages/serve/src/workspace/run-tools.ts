@@ -195,7 +195,7 @@ export function bindTools(run: RunHands, registry: RunRegistry, names: readonly 
       description: def.description,
       inputSchema: def.parameters as Record<string, unknown>,
       replay: def.replaySafe ? "safe" : "never",
-      async call(args, { callId, signal, attempt }) {
+      async call(args, { callId, signal, attempt, model, output }) {
         // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
         const refused = await options.gated?.gate.enter(name, args, callId, options.gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
         if (refused) {
@@ -205,7 +205,9 @@ export function bindTools(run: RunHands, registry: RunRegistry, names: readonly 
         }
         let given: PiAnswer;
         try {
-          given = await registry.invoke(name, args, { hands: run.hands, signal });
+          // The calling model and the call's output stream, as the session gave them: pi's read sizes an image by the
+          // model, and a running tool's output reaches the run's live view.
+          given = await registry.invoke(name, args, { hands: run.hands, signal, ...(model !== undefined ? { model } : {}), ...(output ? { output } : {}) });
         } catch (error) {
           given = { text: "", isError: true, error: (error as Error)?.message ?? String(error) };
         }
