@@ -169,7 +169,7 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
   assert.equal((await api("POST", "/agents", agent("codex-name", { harness: "codex", tools: ["mcp:fake/name"] }))).status, 201, "codex takes a bound it only strips");
 });
 
-test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
+test("a tool whose header declaration a refresh made unsendable: the saved agent keeps its pinned tool and reads the drift, and a save again is refused in words", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   fake.tools.tagged = { description: "Tagged.", input: { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" } } }, run: () => ({ content: [{ type: "text", text: "ok" }] }) };
@@ -177,9 +177,16 @@ test("a tool whose header declaration a refresh made unsendable refuses the run 
   assert.equal((await api("POST", "/agents", agent("tagged", { tools: ["mcp:fake/tagged"], tool_settings: ALLOW_FAKE }))).status, 201);
   fake.tools.tagged.input = { type: "object", properties: { region: { type: "object", "x-mcp-header": "Region" } } };
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
-  const refused = await api("POST", "/agents/tagged/runs", { input: { content: 'Call mcp__fake__tagged with {"region":{}}' } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.match(refused.body.error?.message ?? "", /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
+  // The agent's tools were pinned at its save (a sendable header): the registry's change shows on its read, and a run of
+  // it is checked against what it pinned, not against the refresh.
+  const read = (await api("GET", "/agents/tagged")).body;
+  assert.deepEqual(read.mcp_drift.map((drift) => [drift.server, drift.reason]), [["fake", "tools_changed"]], JSON.stringify(read.mcp_drift));
+  const started = await api("POST", "/agents/tagged/runs", { input: { content: "Hello." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  // A save again pins the tool as the server lists it now: refused, naming the header it cannot send, nothing sent.
+  const refused = await api("PUT", "/agents/tagged/definition", { definition: { ...read.definition, version: undefined } });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
   assert.equal(calls(fake).length, 0);
 });
 

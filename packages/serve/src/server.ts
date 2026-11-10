@@ -907,8 +907,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ? (server: string) => {
         const pinned = Object.hasOwn(pin, server) ? pin[server] : undefined;
         if (!pinned || !mcpMeta.has(server)) return mcpTools(server);
+        const now = mcpMeta.get(server)?.url;
         return pinned.tools.map((tool) => {
-          const meta = metaToolOf(pinned.url, tool.name);
+          // A meta tool by the pinned address or by the one the server has now (moved to a meta-tool provider's host).
+          const meta = metaToolOf(pinned.url, tool.name) ?? (now ? metaToolOf(now, tool.name) : undefined);
           return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
         });
       }

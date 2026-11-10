@@ -358,8 +358,11 @@ async function pinOf({ store, claim, grants, revisionPin, githubMcpOrigin = GITH
       if (named && !pinned[named.server]?.tools.some((tool) => tool.name === named.tool)) throw new McpClaimRefused(`The MCP tool ${name} is not in the tools the agent's save pinned: save the agent again to pin it. Nothing was sent.`);
     }
     for (const [server, { url, tools }] of Object.entries(pinned)) {
+      // A meta tool by the pinned address or by the address the server has now (one moved to a meta-tool provider's host
+      // since the save): either refuses the claim.
+      const now = (await store.mcp.server(server))?.url;
       for (const tool of tools) {
-        if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+        if (metaToolOf(url, tool.name) || (now && metaToolOf(now, tool.name))) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
         const declared = mcpHeaderProblem(tool.inputSchema);
         if (declared) throw new McpClaimRefused(`The MCP tool mcp:${server}/${tool.name} declares a header it cannot send: ${declared}.`);
       }
