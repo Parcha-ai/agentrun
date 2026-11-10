@@ -9,9 +9,10 @@ import { createServer } from "node:http";
 const made = (prefix) => `${prefix}-${randomBytes(16).toString("hex")}`;
 
 /** `cimd`: it says it takes client metadata documents. `clients`: pre-registered `{client_id: client_secret}`.
- *  `expiresIn`: seconds an access token lives; null, it says none. `reuseRevokes`: a spent refresh token sent again
+ *  `expiresIn`: seconds an access token lives; null, it says none. `registration: false`: no dynamic client registration
+ *  (no registration_endpoint, /register 404). `metadata: false`: no authorization server metadata at all. `reuseRevokes`: a spent refresh token sent again
  *  revokes every token it gave (reuse detection, as a provider that rotates refresh tokens may do). */
-export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600, reuseRevokes = false } = {}) {
+export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600, reuseRevokes = false, registration = true, metadata = true } = {}) {
   const log = [];
   const registered = new Map(Object.entries(clients).map(([id, secret]) => [id, { secret, redirect_uris: undefined }]));
   const codes = new Map();
@@ -40,11 +41,13 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     for (const waiter of nexts.filter((one) => one.path === url.pathname)) nexts.splice(nexts.indexOf(waiter), 1), waiter.heard(log.at(-1));
     const json = (status, body) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
     if (url.pathname === "/.well-known/oauth-authorization-server") {
+      // `metadata: false`: none published (an authorization server such as a code host's login, with fixed endpoints).
+      if (!metadata) return void res.writeHead(404).end();
       return json(200, {
         issuer: issuer(),
         authorization_endpoint: `${issuer()}/authorize`,
         token_endpoint: `${issuer()}/token`,
-        registration_endpoint: `${issuer()}/register`,
+        ...(registration ? { registration_endpoint: `${issuer()}/register` } : {}),
         revocation_endpoint: `${issuer()}/revoke`,
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
@@ -64,6 +67,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       return void res.writeHead(200).end();
     }
     if (url.pathname === "/register" && req.method === "POST") {
+      // `registration: false`: apps can't register themselves; they come with a client registered by hand.
+      if (!registration) return void res.writeHead(404).end();
       const client_id = made("client");
       registered.set(client_id, { redirect_uris: form.redirect_uris });
       return json(201, { ...form, client_id, client_id_issued_at: Math.floor(Date.now() / 1000) });

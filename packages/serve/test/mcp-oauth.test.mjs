@@ -792,7 +792,7 @@ for (const down of ["503", "timeout"]) {
 // moved: covered by test/store-mcp-claim.test.mjs#M11: with no seal key, a server's calls are refused in noSealKey's words, and no refresh is sent
 
 
-test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
+test("a sign-in whose server's name lookup outlives the request's time says it could not be reached, and why", { timeout: 120_000 }, async (t) => {
   const key = sealKey();
   // A resolver that never answers: each request's own timeout ends its lookup (an unreferenced timer, as in a server that
   // has other work: this test keeps the process up meanwhile).
@@ -802,7 +802,8 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
   const store = await storeOn(t, key, net);
   await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
-    assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
+    // The MCP server's own address is checked first (the same rule as its sign-in endpoints): its lookup never answered.
+    assert.equal(error.message, "Could not reach the MCP server at https://mcp.example.test (DNS lookup timed out).");
     return true;
   });
 });

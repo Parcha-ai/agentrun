@@ -8,7 +8,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
 import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens, StoredOAuthClientInformation } from "@modelcontextprotocol/client";
-import { ApiError } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import { localAddresses, PRIVATE_HOSTS_PAGE, privateAllowed } from "./mcp-private-hosts.js";
 
@@ -297,6 +297,13 @@ export const startedHere = (cookies: string | undefined, port: number | undefine
 };
 const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : undefined);
 /** A URL's hostname on loopback as written (localhost, 127.0.0.0/8, [::1]). */
+/** A sign-in that needs a Client ID entered by hand: its authorization server lets no app register itself. GitHub's
+ *  hosted MCP is named, since its login is GitHub's. */
+function registrationUnavailable(url: URL): ApiError {
+  const github = /(?:^|\.)github\.com$/.test(url.hostname) || url.hostname === "api.githubcopilot.com";
+  return invalid([{ field: "client_id", reason: "registration_unavailable", message: `${url.host} doesn't let apps register themselves: ${github ? "create an OAuth App on GitHub" : "create an OAuth app with that provider"} and enter its Client ID and Secret here.` }]);
+}
+
 export const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
@@ -335,6 +342,24 @@ export class McpSignIns {
     return { client_id: `${this.base}${OAUTH_CLIENT_DOCUMENT}`, ...this.clientMetadata() };
   }
 
+  /** Whether a sign-in at `url` can bring its own client, with no Client ID entered: its authorization server's metadata
+   *  names a registration endpoint (dynamic client registration), or says it takes a client metadata document and this
+   *  server can offer one. Read by the same discovery a start makes, behind the same guard; `registration: false` when it
+   *  publishes no metadata or the metadata offers neither. undefined when the discovery could not be made (refused,
+   *  unreachable, not OAuth): the start's own words say why. */
+  async registration(url: URL): Promise<{ registration: boolean } | undefined> {
+    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const seen: Seen = {};
+    let metadata: { registration_endpoint?: unknown; client_id_metadata_document_supported?: unknown } | undefined;
+    try {
+      metadata = (await (await sdk()).discoverOAuthServerInfo(url, { fetchFn: guarded(undefined, url.href, this.network, seen, reach) })).authorizationServerMetadata as typeof metadata;
+    } catch {
+      return undefined;
+    }
+    if (seen.refused) return undefined;
+    return { registration: Boolean(metadata?.registration_endpoint) || Boolean(metadata?.client_id_metadata_document_supported && this.metadataUrl) };
+  }
+
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
   async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind }): Promise<string> {
     const now = Date.now();
@@ -345,6 +370,9 @@ export class McpSignIns {
     const seen: Seen = {};
     const reach: Reach = { own: this.own, allowed: await this.allowed() };
     const provider = this.provider(entry, reach, { state, redirect: (to) => void (opened = to), seen });
+    // With no client entered, the authorization server must let this app register itself: one that doesn't (a code
+    // host's login, with no metadata or no registration endpoint) is said up front, on the field that fixes it.
+    if (!options.client && (await this.registration(url))?.registration === false) throw registrationUnavailable(url);
     try {
       await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, reach) });
     } catch (error) {

@@ -166,13 +166,29 @@ export class McpServersOverStore {
       const kept = await this.need(name);
       const url = new URL(kept.url);
       const send = await this.reached(kept.auth, url, stop);
-      return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop));
+      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop)));
     }
     const { url, auth } = this.admit(body);
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     if (auth.type !== "none" && auth.type !== "github_app" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
     const send = await this.reached(auth.type, url, stop);
-    return marked(url.href, await this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop)));
+  }
+
+  /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
+   *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
+   *  asks for one up front. */
+  private async signInNoted(url: URL, listing: Promise<Listed>): Promise<Listed> {
+    try {
+      return await listing;
+    } catch (error) {
+      const details = error instanceof ApiError && error.code === "auth_required" ? (error.extra.details as { auth?: string; oauth?: unknown } | undefined) : undefined;
+      if (details?.auth === "oauth") {
+        const registration = await this.signIns.registration(url);
+        if (registration) details.oauth = registration;
+      }
+      throw error;
+    }
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
@@ -362,7 +378,8 @@ export class McpServersOverStore {
       at = await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
     } catch (error) {
       if (stop?.aborted || this.stopped.signal.aborted) throw error;
-      throw new ApiError("upstream_failed", `The MCP server did not answer within ${ADDRESS_CHECK_MS / 1000} s.`);
+      // Its address check outlived its time: a name lookup that never answered (nothing was sent).
+      throw new ApiError("upstream_failed", `Could not reach the MCP server at ${url.origin} (DNS lookup timed out).`);
     }
     if ("refused" in at) {
       if (at.unresolved) throw new ApiError("upstream_failed", `Could not reach the MCP server at ${url.origin} (ENOTFOUND).`);
