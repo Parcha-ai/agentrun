@@ -134,6 +134,7 @@ import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-route
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
+import { adoptServerDisk, agentDiskOf, ARCHIL_DISK_ID, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -441,6 +442,9 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/sign-ins\/([^/]+)$/, name: "forgetSignIn" },
+  // The agent's Archil disk (archil-routes.ts): read, and removed for an archived agent.
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/archil$/, name: "getAgentArchil" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/archil$/, name: "deleteAgentArchil" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -1120,6 +1124,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const computerReady = async (setting: { kind: string; provider?: string }) =>
     computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
+  // The cutover to a disk per agent (archil-settings.ts adoptServerDisk): a settings row still naming the old server-wide
+  // disk gives it to every agent with no disk yet, archived ones too, and is saved without it; an agent made after has its
+  // own. Their files stay where they were.
+  const adopted = await adoptServerDisk(store, [...(await store.agents.list()), ...(await store.agents.list({ archived: true }))].map((agent) => agent.id));
+  if (adopted.length) log?.(logLine("archil_disk_adopted", { agents: adopted.length }));
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const run = await store.runs.get(runId);
@@ -1225,6 +1234,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     runnable,
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
+    // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
+    launchDiskOf: async (agentId, named) => {
+      if (!(await inArchilMode(store))) {
+        if (named === undefined) return undefined;
+        throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps run folders on its own disk (Mode 1): a run names an Archil disk only in Archil mode (PUT /v2/workspace/archil).", fix: "Remove archil_disk." }]);
+      }
+      if (named !== undefined) return { diskId: named, kind: "launch" };
+      const own = await agentDiskOf(store, agentId);
+      return own ? { diskId: own.diskId, kind: "agent" } : undefined;
+    },
     workflowTitle,
     serverSecrets,
     toolSettings: () => settings.get(),
@@ -1941,7 +1960,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk"]);
+    if (body.archil_disk !== undefined) {
+      const disk = body.archil_disk;
+      const extra = isObject(disk) ? Object.keys(disk).filter((key) => key !== "disk_id") : [];
+      if (!isObject(disk) || typeof disk.disk_id !== "string" || !ARCHIL_DISK_ID.test(disk.disk_id)) issues.push({ field: "archil_disk.disk_id", reason: "wrong_type", message: "archil_disk is { disk_id }: an Archil disk id, dsk-<16 hex digits>, in this server's Archil region" });
+      else if (extra.length) issues.push({ field: `archil_disk.${extra[0]}`, reason: "not_allowed", message: "archil_disk names a disk by its id alone: its region is this server's Archil key's, and no key is ever sent with a run", fix: `Remove ${extra.map((key) => `archil_disk.${key}`).join(" and ")}.` });
+    }
     if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
     if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
     if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -2559,6 +2584,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
         const entry = await needAgent(id);
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
+      }
+      case "getAgentArchil":
+      case "deleteAgentArchil": {
+        // The agent's Archil disk (archil-routes.ts): its rules are the handler's; removing it takes the agent archived with
+        // no live run, which the dispatch reads here.
+        const entry = await needAgent(id);
+        const live = found.name === "deleteAgentArchil" ? (await listRunsOverStore(store, { agent: id }, ctx)).filter((run) => run.state === "running").length : 0;
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        return send(res, 200, await archilRoute(archil, found.name, { agent: { id, archived: entry.agent.archivedAt != null, live }, signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "forgetSignIn": {
         await needAgent(id);

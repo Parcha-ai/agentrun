@@ -1,14 +1,16 @@
 // The server's read-only view of a run's folder: what the server reads a run's files through (its file routes), with no
 // runner claim. Mode 1: the run's local folder (runFolder). Mode 2 (the server's Archil settings present): the run's
-// folder on the server's Archil disk (runKey), its account key by the one resolver (archil-key.ts: the server's
+// folder on the run's Archil disk (runKey; the disk its launch record names, else its agent's), its account key by the
+// one resolver (archil-key.ts: the server's
 // ARCHIL_API_KEY, else the sealed row), with no claim around it: no exec, no spill sweep, no mount credential, no mount.
 //
 // Read-only: read, list, stat and grep work as the run's own Workspace answers them (a link is never followed). Every
 // call that would change the folder, run something in it, or put it in a computer is refused with REFUSED in plain words:
 // only the run's runner writes its folder.
 import { lstat } from "node:fs/promises";
-import { loadArchilSettings } from "../archil-settings.js";
-import type { Store } from "../store/index.js";
+import { agentDiskOf, loadArchilSettings } from "../archil-settings.js";
+import { readLaunchBody } from "../run-launch.js";
+import { type Store, StoreLaunchMissing } from "../store/index.js";
 import type { KeyEnv } from "../key-meta.js";
 import { ArchilClaimRefused } from "./archil-claim.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./archil-disk.js";
@@ -56,6 +58,12 @@ export function readOnlyWorkspace(workspace: Workspace): Workspace {
   };
 }
 
+/** The disk run `runId` keeps its folder on: its launch record's, else its agent's, or undefined when it has none yet. */
+async function runDiskIdOf(store: Pick<Store, "runs" | "settings">, runId: string, agentId: string): Promise<string | undefined> {
+  const named = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
+  return named?.diskId ?? (await agentDiskOf(store, agentId))?.diskId;
+}
+
 /**
  * Run `runId`'s folder as the server reads it, read-only; null when there is no such run, or its folder is not there yet.
  * In Mode 2, an Archil account key that is not saved, or a server with no seal key, is UNAVAILABLE in words that name
@@ -65,6 +73,10 @@ export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" 
   const run = await store.runs.get(runId);
   if (run === undefined) return null;
   const settings = await loadArchilSettings(store);
+  // The run's disk (Mode 2): the one its launch record names, else its agent's; none yet when its agent has no disk (its
+  // first run was not claimed), so it has no folder.
+  const diskId = settings === undefined ? undefined : await runDiskIdOf(store, runId, run.agentId);
+  if (settings !== undefined && diskId === undefined) return null;
   let workspace: Workspace;
   if (settings === undefined) {
     const folder = runFolder(options.data, run.agentId, runId);
@@ -80,7 +92,7 @@ export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" 
     let disk: ArchilDisk;
     try {
       const { value } = await archilApiKey({ env: options.env ?? {}, keys: store.sealedKeys, sealKey: options.sealKey });
-      disk = (options.makeDisk ?? archilDisk)({ disk: settings.diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => value });
+      disk = (options.makeDisk ?? archilDisk)({ disk: diskId!, region: settings.region, s3BaseUrl: settings.s3Url, key: () => value });
     } catch (error) {
       if (error instanceof ArchilClaimRefused) throw new WorkspaceError("UNAVAILABLE", `the server can't read this run's files: ${error.message}`, { cause: error });
       throw new WorkspaceError("UNAVAILABLE", `the server can't make this server's Archil disk: ${(error as Error)?.message ?? error}`, { cause: error });

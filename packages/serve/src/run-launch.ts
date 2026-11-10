@@ -54,7 +54,22 @@ export interface RunLaunch {
   readonly inputOrigin?: MessageOrigin;
   /** A run that re-asks its agent after it ends (a trigger's follow-up). */
   readonly followUp?: boolean;
+  /** The Archil disk the run keeps its folder on (Archil mode), chosen at its start: the one its launch named (`launch`, a
+   *  customer's disk agentrun never makes or removes), or its agent's when the agent had one then (`agent`). Absent, the
+   *  run uses its agent's disk, made at its claim when the agent has none (workspace/run-disk.ts). Kept here so every
+   *  claim, revoke and reclaim of the run, after a restart too, acts on that one disk. */
+  readonly archilDisk?: LaunchDisk;
 }
+
+/** The disk a launch record names, and whose it is. */
+export interface LaunchDisk {
+  readonly diskId: string;
+  readonly kind: "launch" | "agent";
+}
+
+/** The disk a launch body names, as read back, or undefined. */
+const readDisk = (value: unknown): LaunchDisk | undefined =>
+  isObject(value) && typeof value.disk_id === "string" && (value.kind === "launch" || value.kind === "agent") ? { diskId: value.disk_id, kind: value.kind } : undefined;
 
 /** The trigger a launch body names, as read back: `{ id, firing_key }`, or null (triggerOf of the old serve.json). */
 function readTrigger(value: unknown): RunTrigger | null {
@@ -109,6 +124,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
+    ...(launch.archilDisk ? { archil_disk: { disk_id: launch.archilDisk.diskId, kind: launch.archilDisk.kind } } : {}),
   };
 }
 
@@ -132,6 +148,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const inputOrigin = keepInputOrigin(stored.input_origin, trigger);
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
+  const archilDisk = readDisk(stored.archil_disk);
   return {
     input: stored.input,
     title: typeof stored.title === "string" ? stored.title : "",
@@ -150,6 +167,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
+    ...(archilDisk ? { archilDisk } : {}),
   };
 }
 

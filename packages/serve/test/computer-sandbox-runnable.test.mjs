@@ -24,7 +24,7 @@ const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/in
 // A computer key's save and the Archil settings' PUT are secret writes: the client sends them from the owner's session.
 SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/computers\/[^/]+\/keys$/ }, { methods: ["PUT"], path: /^\/workspace\/archil$/ });
 
-const ARCHIL = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
+const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
 /** The words runnable.ts says of a place this server can't run as a box. */
 const PLACE_WORDS = /This agent's place is sandbox on [a-z0-9-]+, and this server cannot run it there/;
 /** No provider key comes from this process's environment: each is the one saved here, or none. */

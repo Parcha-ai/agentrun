@@ -11,25 +11,24 @@ import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, Archil, ArchilBody } from "@/lib/v2";
 
 /** The page's one line about the disk, as decided: nothing else is said about disk state. */
-const COPY = "Runs keep their folders on this Archil disk. The server never mounts it; computers that support it mount a run's folder.";
+const COPY = "Each agent keeps its runs' folders on its own Archil disk, made on its first run in this region. The server never mounts one; computers that support it mount a run's folder.";
 
 // The page's only other words are its labels: what a field takes, the server says when it refuses one.
-const FIELDS: { name: "diskId" | "region" | "s3Url" | "image"; label: string; placeholder?: string }[] = [
-  { name: "diskId", label: "Disk id" },
+const FIELDS: { name: "region" | "s3Url" | "image"; label: string; placeholder?: string }[] = [
   { name: "region", label: "Region" },
   { name: "s3Url", label: "S3 URL", placeholder: "https://" },
   { name: "image", label: "Image", placeholder: "Archil's default (recommended)" },
 ];
 type Fields = Record<(typeof FIELDS)[number]["name"], string>;
-const fieldsOf = (v: Archil): Fields => ({ diskId: v.diskId ?? "", region: v.region ?? "", s3Url: v.s3Url ?? "", image: v.image ?? "" });
+const fieldsOf = (v: Archil): Fields => ({ region: v.region ?? "", s3Url: v.s3Url ?? "", image: v.image ?? "" });
 
 /** Archil's secret, served as "workspace:archil": the page says it, and the PUT takes it, as ARCHIL_API_KEY. */
 const KEY = "ARCHIL_API_KEY";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
-/** Settings → Workspace: Archil, the disk runs keep their folders on (Mode 2), as GET /v2/workspace/archil answers it. On
- *  or off with its disk and region; its fields and its secret as a SecretRow said ARCHIL_API_KEY (never a value). Save
+/** Settings → Workspace: Archil, where runs keep their folders (Mode 2: each agent's own disk), as GET /v2/workspace/archil
+ *  answers it. On or off with its region; its fields and its secret as a SecretRow said ARCHIL_API_KEY (never a value). Save
  *  sends the fields, and the key only when pasted (PUT), and a refusal is said under its field; Remove asks, then saves
  *  the key null; Test (POST …/test) says the server's detail or its why as given; Turn off (DELETE) asks first, and the
  *  key is kept. */
@@ -42,7 +41,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
 }) {
   const [view, setView] = useState<Archil | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
-  const [fields, setFields] = useState<Fields>({ diskId: "", region: "", s3Url: "", image: "" });
+  const [fields, setFields] = useState<Fields>({ region: "", s3Url: "", image: "" });
   const [invalid, setInvalid] = useState<{ fields: Record<string, string>; message: string | null } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -72,7 +71,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
 
   const keyValue = () => (form.current?.elements.namedItem(KEY) as HTMLInputElement | null)?.value ?? "";
   const put = async (key: string | null | undefined) => {
-    const body: ArchilBody = { diskId: fields.diskId, region: fields.region, s3Url: fields.s3Url, ...(fields.image ? { image: fields.image } : {}), ...(key !== undefined ? { keys: { [KEY]: key } } : {}) };
+    const body: ArchilBody = { region: fields.region, s3Url: fields.s3Url, ...(fields.image ? { image: fields.image } : {}), ...(key !== undefined ? { keys: { [KEY]: key } } : {}) };
     setBusy(true); setInvalid(null); setProblem(null);
     try {
       const answer = await v2.saveArchil(body);
@@ -120,7 +119,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
             <HardDrive className="size-4 text-muted-foreground" aria-hidden />
             <span className="font-mono text-prose font-semibold">Archil</span>
             <span data-archil-state>{view.on ? <Chip tone="success">On</Chip> : <Chip>Off</Chip>}</span>
-            {view.on && <span data-disk className="font-mono text-small text-muted-foreground">{`${view.diskId ?? ""} · ${view.region ?? ""}`}</span>}
+            {view.on && <span data-disk className="font-mono text-small text-muted-foreground">{view.region ?? ""}</span>}
             <span className="flex-1" />
             <Button size="sm" onClick={() => void test()} disabled={testing}>{testing ? "Testing…" : "Test"}</Button>
             {view.on && <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>Turn off</Button>}

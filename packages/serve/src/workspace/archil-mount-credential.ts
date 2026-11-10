@@ -21,10 +21,9 @@ export const ARCHIL_CONTROL_URLS: Readonly<Record<string, string>> = Object.free
 
 const LOOPBACK = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule names loopback hosts to allow plain http only to them, in tests
 
-export interface ArchilMountCredentialOptions {
-  /** The disk's id, dsk-<16 hex digits>. */
-  readonly disk: string;
-  /** Its region: it names the control plane. */
+/** Archil's control plane, for the account's calls (archil-disks.ts) as for a disk's. */
+export interface ArchilControlOptions {
+  /** The region: it names the control plane. */
   readonly region: string;
   /** The account API key, asked for on each call. */
   readonly key: () => string | Promise<string>;
@@ -32,6 +31,11 @@ export interface ArchilMountCredentialOptions {
   readonly baseUrl?: string;
   /** The fetch to call it with (default the global one). */
   readonly fetch?: typeof fetch;
+}
+
+export interface ArchilMountCredentialOptions extends ArchilControlOptions {
+  /** The disk's id, dsk-<16 hex digits>. */
+  readonly disk: string;
 }
 
 /** A minted mount credential: the token a computer's mount takes, and the identifier it is removed by. */
@@ -51,7 +55,7 @@ export class ArchilMountCredentialError extends Error {
 }
 
 /** The control plane's base URL: the region's, or the loopback one given. */
-function controlOf(options: ArchilMountCredentialOptions): string {
+export function controlOf(options: ArchilControlOptions): string {
   if (options.baseUrl !== undefined) {
     const url = new URL(options.baseUrl);
     if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.test(url.hostname))) throw new ArchilMountCredentialError("the Archil control plane must be https (plain http only to this machine's loopback, in tests)");
@@ -80,19 +84,26 @@ function claimOfNickname(nickname: unknown): { run: string; epoch: number } | un
 }
 
 /** `text` with each secret replaced. */
-const scrub = (text: string, secrets: readonly string[]): string => secrets.filter((one) => one.length >= 4).reduce((out, one) => out.split(one).join("[redacted]"), text);
+export const scrub = (text: string, secrets: readonly string[]): string => secrets.filter((one) => one.length >= 4).reduce((out, one) => out.split(one).join("[redacted]"), text);
 
 /** Archil's words for a failed call, from its error envelope ({error, code}), cut short and scrubbed. */
-async function wordsOf(response: Response, secrets: readonly string[]): Promise<string> {
+export async function wordsOf(response: Response, secrets: readonly string[]): Promise<string> {
+  return (await errorOf(response, secrets)).words;
+}
+
+/** Archil's error envelope ({error, code}): its words, cut short and scrubbed, and its code when it gives one. */
+export async function errorOf(response: Response, secrets: readonly string[]): Promise<{ words: string; code?: string }> {
   const text = await response.text().catch(() => "");
   let said = text;
+  let code: string | undefined;
   try {
-    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown; code?: unknown };
     said = typeof body.error === "string" ? body.error : typeof body.message === "string" ? body.message : text;
+    if (typeof body.code === "string") code = body.code;
   } catch {
     // not JSON: its text
   }
-  return scrub(said.trim().slice(0, 300), secrets);
+  return { words: scrub(said.trim().slice(0, 300), secrets), ...(code !== undefined ? { code } : {}) };
 }
 
 /** Mints the run's mount credential on the disk: a token user named `nickname`, which Archil ends after `ttlMs`. */

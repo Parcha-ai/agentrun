@@ -19,7 +19,7 @@ import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
-import { launchBody, type RunLaunch } from "./run-launch.js";
+import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
@@ -295,6 +295,10 @@ export interface StartDeps {
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
+  /** The Archil disk the run's launch record keeps (server.ts launchDiskOf): the one its body's `archil_disk` names, else
+   *  its agent's when it has one now; undefined for neither, or in Mode 1. A disk named in Mode 1 is refused. Absent, no
+   *  disk is kept. */
+  launchDiskOf?(agentId: string, named: string | undefined): Promise<LaunchDisk | undefined>;
   /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
   workflowTitle(name: string, input: Record<string, unknown>): string;
   /** Every secret this server never shows, for the title's redaction (server.ts serverSecrets). */
@@ -477,6 +481,11 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
   const learning = await learningStartFor(deps, entry, revision, rbody);
+  // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
+  // customer), else its agent's when it has one; with neither, its claim makes the agent's.
+  const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
+  if (named !== undefined && !deps.launchDiskOf) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps no run on an Archil disk." }]);
+  const archilDisk = deps.launchDiskOf ? await deps.launchDiskOf(entry.agent.id, named) : undefined;
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
@@ -494,6 +503,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(trigger ? { trigger } : {}),
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
+    ...(archilDisk ? { archilDisk } : {}),
   };
   return { launch, revision };
 }

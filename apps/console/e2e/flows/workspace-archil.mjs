@@ -1,5 +1,6 @@
-// Settings → Workspace, as served: Archil is off; saving its disk, region and S3 URL with a key turns it on, with no real
-// disk anywhere; Test then fails and says why in the server's words (the disk cannot be reached); Turn off asks first,
+// Settings → Workspace, as served: Archil is off; saving its region and S3 URL with a key turns it on, with no real disk
+// anywhere (each agent's own is made on its first run); Test then fails and says why in the server's words (the region
+// has no control plane, so nothing is called); Turn off asks first,
 // then turns it off with its keys kept. The key is a fake made per run, never printed, and never in the page once saved.
 import { randomBytes } from "node:crypto";
 import { check } from "../harness.mjs";
@@ -17,9 +18,9 @@ export default {
     // textContent: the chip's text, before its CSS upper-cases it.
     check((await archil.locator("[data-archil-state]").textContent())?.trim() === "Off", "Archil does not read Off on a new server");
 
-    // Save the fields and the key: the PUT answers the view, and the page reads On with the disk and region.
-    await archil.locator('input[name="diskId"]').fill("dsk-e2e-test");
-    await archil.locator('input[name="region"]').fill("aws-us-east-1");
+    // Save the fields and the key: the PUT answers the view, and the page reads On with the region. A region with no
+    // control plane: the test reaches no vendor.
+    await archil.locator('input[name="region"]').fill("e2e-nowhere-1");
     // A reserved name (RFC 2606 .invalid): no disk answers there.
     await archil.locator('input[name="s3Url"]').fill("https://s3.archil.invalid");
     await archil.locator('li[data-secret="workspace:archil"]').getByRole("button", { name: "Paste", exact: true }).click();
@@ -30,10 +31,10 @@ export default {
     check(response.status() === 200, `saving Archil answered ${response.status()}`);
     check(!(await response.text()).includes(fake), "the save's answer holds the key's value");
     await archil.locator("[data-archil-state]").getByText("On", { exact: true }).waitFor();
-    check(await archil.locator("[data-disk]").innerText() === "dsk-e2e-test · aws-us-east-1", "the disk and region do not show once on");
+    check(await archil.locator("[data-disk]").innerText() === "e2e-nowhere-1", "the region does not show once on");
     check(!(await page.content()).includes(fake), "the key's value is in the page after the save");
 
-    // Test: no disk answers, so it fails, in the server's words.
+    // Test: no control plane answers, so it fails, in the server's words.
     await archil.getByRole("button", { name: "Test", exact: true }).click();
     const tested = archil.locator("[data-test]");
     await tested.waitFor({ timeout: 30_000 });

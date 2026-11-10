@@ -26,7 +26,7 @@ import { archilClaim, archilWorkspace, computerForClaim, localWorkspace } from "
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf as archilReadBackOf } from "./fixtures/archil-readback.mjs";
-import { findPlanted, PLANTED_ARCHIL_SETTINGS, plantedOf, registeredPlants } from "./fixtures/planted-secrets.mjs";
+import { findPlanted, PLANTED_ARCHIL_DISK, PLANTED_ARCHIL_SETTINGS, plantedOf, registeredPlants } from "./fixtures/planted-secrets.mjs";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
@@ -146,7 +146,7 @@ test("Rule 5: with every key planted, a Mode 1 sandbox's computer, a faux deskto
   const control = archilControlFetch({ tokenOf: () => "fake-minted-mount-token-0001" });
   const disk = new FakeArchilDisk();
   const claim = await archilClaim({
-    settings: PLANTED_ARCHIL_SETTINGS, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, makeDisk: () => disk,
+    settings: { ...PLANTED_ARCHIL_SETTINGS, diskId: PLANTED_ARCHIL_DISK }, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, makeDisk: () => disk,
     mount: { runId: "run-3", epoch: 1, ttlMs: 86_400_000, baseUrl: control.baseUrl, fetch: control.fetch },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-3/work", { region: PLANTED_ARCHIL_SETTINGS.region, mountToken: () => claim.token() });

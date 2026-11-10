@@ -737,10 +737,38 @@ computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
   it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
-- **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
-  (and an exec image pinned by digest, if you want one other than Archil's default), and the account key,
-  `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
-  mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
+  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than Archil's default);
+  `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from its disk with a mount credential
+  minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+
+**Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
+it, never when the agent is made, in the account key's region, named `agentrun-<server id>-<agent id>`; making it is
+idempotent by that name, and `GET /v2/agents/{agent_id}/archil` says which disk it is. A run's mount credential is minted
+on its run's disk, so Archil refuses that token on every other disk: a run of one agent can't mount another agent's
+files. This is the default, and it is enough for one owner: this server has no roles, and everything on it is its
+owner's.
+
+- **Isolating tenants.** A run's start may name another disk: `"archil_disk": {"disk_id": "dsk-…"}` on
+  `POST /v2/agents/{agent_id}/runs` or `POST /v2/runs` (an agent given inline). The run then keeps its folder there, and
+  its token is minted there, so a system that runs one agent for many customers (one expert, say) names a disk per
+  customer. That disk is the caller's: agentrun never makes, renames or removes it. It takes the disk's id alone, never a
+  key or a region: it must be in the account key's region, and a disk elsewhere, or none of that id, fails the run at
+  its claim in words naming the region. The run's launch keeps the disk it used, and whether it was the launch's or the
+  agent's, so every claim, revoke and reclaim of that run acts on that one disk, after a restart too.
+- **The plan's disk limit.** Archil's free plan allows 5 disks per region. When Archil refuses to make an agent's disk
+  for its plan's limit, the run fails in words ("your Archil plan allows 5 disks; upgrade or delete an agent"); no run
+  falls back to a shared disk.
+- **Removing an agent's disk.** This server archives agents and never deletes one, and an archive keeps everything,
+  its disk included. `DELETE /v2/agents/{agent_id}/archil`, for an archived agent with no live run, deletes its own disk
+  at Archil (its runs' folders, its home and its learning with it) and frees a disk of the plan. It never touches a disk
+  a run's launch named.
+- **A server that had one disk.** Before agents had their own, Mode 2 kept every run on one disk the owner named. At its
+  start, such a server gives that disk to each agent it has, as the agent's, and keeps no server-wide disk: those agents
+  keep their files where they were, and an agent made later gets its own. Removing such an agent's disk only forgets it,
+  since the others share it. `diskId` is no longer a setting.
+- **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
+  path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
