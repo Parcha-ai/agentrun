@@ -14,7 +14,7 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
@@ -82,6 +82,11 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
     network: run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] },
   });
 }
+
+/** The run's timeline phase while its claim waits on its computer's image (computerForClaim's onImageWait): main's box
+ *  image row, the computer's noun for the box's. */
+export const imageWaitWords = (making: "build" | "pull", image: string): string =>
+  making === "build" ? `Preparing the computer's image: building it (${DOCKER_RECIPE_HAS})…` : `Preparing the computer's image: pulling ${image}…`;
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
