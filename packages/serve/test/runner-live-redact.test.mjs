@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { until } from "./runner-support.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { streamingSandbox } from "./fixtures/streaming-sandbox.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { secretRedactor } = await import("../dist/runner/redact.js");
@@ -67,9 +68,9 @@ test("a run's live view holds its running tool's name, args and output and its p
   assert.ok(stored.includes("echo ") && stored.includes("token ") && stored.includes("the key is "), `the rest of each value is kept: ${stored}`);
 });
 
-// SKIP (follow-up #2078): on the cutover a pi run's running tool does not reach the live view while it runs (the run here is
-// offered no tool), as runner-tool-call-model's streaming case; this case turns on with that fix.
-test.skip("a real pi run's running bash streaming a held secret: its live row (and so the live stream, which serves that row) holds the output cut", async (t) => {
+// A run with no mounting computer has no shell (#2088): this run's claim is handed a sandbox bound to its folder
+// (fixtures/streaming-sandbox.mjs), whose processes stream as computerd's do, so its bash exists and streams.
+test("a real pi run's running bash streaming a held secret: its live row (and so the live stream, which serves that row) holds the output cut", async (t) => {
   // Through the real stack: the pi adapter's session on a scripted model, the runner's own ticker and redactor (the runner
   // holds the secret by its environment, a key's name), the kernel's bash over the run's Workspace streaming its output
   // into pi's live slot. The bash prints the secret, then waits for the test's release file: its live row is read while
@@ -91,13 +92,13 @@ test.skip("a real pi run's running bash streaming a held secret: its live row (a
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } } });
   const folder = runFolder(dir, "agent-1", "run-1");
   mkdirSync(folder, { recursive: true });
-  const command = `echo "token $AGENTRUN_TEST_LIVE_TOKEN"; while [ ! -e release ]; do sleep 0.05; done`;
+  const command = `echo "token ${SECRET}"; while [ ! -e release ]; do sleep 0.05; done`;
   const requests = [];
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"r"}` },
     fetch: scriptedOrigin([{ call: "bash", args: { command } }, { say: "done" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1_000,
   };
-  const deps = { env: { AGENTRUN_TEST_LIVE_TOKEN: SECRET }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
+  const deps = { env: { AGENTRUN_TEST_LIVE_TOKEN: SECRET }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route, computerForClaim: async () => streamingSandbox(folder) };
   runner = startRunner({ store, name: "runner-a", live: { tickMs: 50 }, leaseMs: 30_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30,
     createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) }) });
   let row;
