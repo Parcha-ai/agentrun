@@ -10,9 +10,9 @@
 // registry is the agreed fixture (workspace-kinds-fixture.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
 import { dockerHost } from "./docker-host-fake.mjs";
@@ -425,4 +425,56 @@ test("on a named data volume the Docker provider's host addresses are the read's
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { why: "it failed" }, named: "198.51.100.9" }), { egress: { hostAddresses: ["198.51.100.9"] }, reads: 1 });
   assert.deepEqual(await claimWith({ dockerPaths: compose, read: { why: "it failed" } }), { egress: undefined, reads: 1 }, "none made up");
   assert.deepEqual(await claimWith({ dockerPaths: async () => ({ here: true }), read: { addresses: ["203.0.113.7"] } }), { egress: undefined, reads: 0 }, "no read on a host");
+});
+
+// The whole of compose's path through the computer package's own Docker provider, over its fake docker (no daemon): a
+// server in a container (its host root shows /.dockerenv), its data on a named volume. With the Docker host's addresses
+// found, the claim makes the default allow-list's Docker computer: the run's folder, the daemon's directory and the
+// egress proxy's code all mount as the volume's subpaths, nothing is bound from this process's paths, and the proxy
+// refuses the host's addresses. With none found, the provider refuses the allow-list in its words, and nothing is made.
+test("on compose, the default allow-list's Docker computer is made with every mount the data volume's subpath and the proxy refusing the host's addresses; with none found, it is refused", async () => {
+  const VOLUME = "agentrun_agentrun-data";
+  const { fakeDocker, valuesOf } = await import("../../computer/test/fake-docker.mjs");
+  for (const found of [true, false]) {
+    const work = scratch();
+    const root = dirname(work);
+    chmodSync(work, 0o700);
+    const hostRoot = join(root, "host-root");
+    mkdirSync(hostRoot);
+    writeFileSync(join(hostRoot, ".dockerenv"), "");
+    let calls = () => [];
+    const load = async (id, options) => {
+      assert.equal(id, "docker");
+      const made = fakeDocker({ daemonCache: options.daemonCache, volume: options.volume, volumeRoots: { [VOLUME]: root }, egressOptions: { ...(options.egress ?? {}), hostRoot } });
+      calls = made.calls;
+      // The computer's image is the one the owner named (AGENTRUN_DOCKER_IMAGE), on the fake's host: its readiness (the
+      // provider's image(), which builds a recipe) is not this test's, so the claim is shown none and takes the name.
+      return new Proxy(made.provider, { get: (target, key) => (key === "image" ? undefined : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    };
+    const sealKey = randomBytes(32);
+    const store = await savedKeysStore(sealKey);
+    const { computerForClaim, computerDeps } = computerDepsFrom({
+      env: { ...ENV, AGENTRUN_DOCKER_IMAGE: "debian:bookworm-slim" }, store, sealKey, kinds: KINDS, load,
+      dockerPaths: async () => ({ paths: { at: root, volume: VOLUME } }),
+      hostAddresses: async () => (found ? { addresses: ["203.0.113.7"] } : { why: "the read through Docker's socket failed (exit 125: no image)" }),
+    });
+    const claim = computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" }, boxAllow: [...DEFAULT_BOX_ALLOW] }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(work), sealKey });
+    if (!found) {
+      await assert.rejects(claim, { code: "computer_unavailable", message: /this provider runs in a container/ });
+      assert.deepEqual(calls().filter((args) => args[0] === "run"), [], "nothing is made");
+      continue;
+    }
+    const answer = await claim;
+    assert.equal(answer.computer?.kind, "sandbox");
+    const runs = calls().filter((args) => args[0] === "run");
+    const mounts = runs.flatMap((args) => valuesOf(args, "--mount"));
+    assert.ok(mounts.length >= 4, JSON.stringify(mounts));
+    assert.deepEqual(mounts.filter((mount) => !mount.startsWith("type=volume,")), [], "no bind of this process's paths");
+    const computer = runs.find((args) => args[args.indexOf("--entrypoint") + 1] === "/opt/agentrun/computerd");
+    assert.ok(valuesOf(computer, "--mount").includes(`type=volume,src=${VOLUME},dst=/workspace,volume-subpath=work,volume-nocopy`), JSON.stringify(valuesOf(computer, "--mount")));
+    const proxy = runs.find((args) => args[args.indexOf("--entrypoint") + 1] === "node");
+    assert.ok(valuesOf(proxy, "--local")[0]?.split(",").includes("203.0.113.7"), `the proxy refuses the host's address: ${JSON.stringify(valuesOf(proxy, "--local"))}`);
+    assert.equal(valuesOf(proxy, "--allow")[0], DEFAULT_BOX_ALLOW.join(","));
+    await answer.release();
+  }
 });
