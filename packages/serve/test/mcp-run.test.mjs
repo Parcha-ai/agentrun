@@ -37,9 +37,22 @@ async function addFake(t, api, name = "fake", fake) {
 
 /** Every file under `dir`, with its text. */
 async function filesUnder(dir) {
+  // Walked a folder at a time: a CLI mid-run makes and removes files in its home as this reads, and one recursive read
+  // fails whole when a folder goes under it. A folder or file that went is skipped; the rest is read.
   const out = [];
-  for (const entry of await readdir(dir, { withFileTypes: true, recursive: true }).catch(() => [])) {
-    if (entry.isFile()) out.push({ path: join(entry.parentPath, entry.name), text: await readFile(join(entry.parentPath, entry.name), "utf8").catch(() => "") });
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...(await filesUnder(path)));
+    else if (entry.isFile()) out.push({ path, text: await readFile(path, "utf8").catch(() => "") });
+  }
+  return out;
+}
+
+/** Every folder under `dir`, recursively, a folder at a time (one that went is skipped). */
+async function foldersUnder(dir) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) out.push(join(dir, entry.name), ...(await foldersUnder(join(dir, entry.name))));
   }
   return out;
 }
@@ -260,7 +273,9 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const runId = await runOf(api, "claude-adder", "Add 2 and 3 with the add tool.");
   await held.reached;
   const scratchFiles = await scratchOf(data, runId);
-  assert.ok(scratchFiles.some((file) => file.path.includes(`/${runId}/harness/`)), `the CLI's own files are read: ${scratchFiles.map((file) => file.path).join(", ")}`);
+  // The scan reached the CLI's own folder (its home and state, made at the session's start); it may hold no file yet, as
+  // the CLI writes some only later: the scan of what is there is what proves no file of its holds the token.
+  assert.ok((await foldersUnder(join(data, "scratch"))).some((folder) => folder.endsWith(`/${runId}/harness`)), `the CLI's own folder is read: ${scratchFiles.map((file) => file.path).join(", ")}`);
   const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leakedMidCall, [], "no file of the CLI's own (its home, its MCP config) holds the token");
   held.release();

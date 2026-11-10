@@ -77,8 +77,8 @@ test("a place of the wrong shape is a 422 whose fix is the place to copy, and th
 test("bash on a runner, the browser in a sandbox and a workflow in one are 422s that say what to do, each with a fix that saves", async (t) => {
   const { api } = await serve(t);
   const cases = [
-    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell, and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
-    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell, and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
+    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
+    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
     [agent("browsing", { tools: ["bash", "browser"], place: { mode: "sandbox", box: "docker" } }).definition, "definition.tools[1]", "browser does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.", 'Remove "browser" from definition.tools.'],
     [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", '"place": {"mode": "runner"}'],
   ];
@@ -126,8 +126,9 @@ test("a box this server does not enable names the setting that enables it: in ca
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const said = `This agent's place is sandbox on docker, and this server cannot run it there: ${ENABLE_DOCKER}.`;
-  assert.deepEqual(made.body.warnings, [{ field: "definition.place", reason: "not_set_up_here", message: said }]);
+  // A place is its computer setting's view: a Docker sandbox is refused in the Docker box's own reason, its fix.
+  const said = `This agent's computer is a Docker sandbox, and this server cannot run it: ${ENABLE_DOCKER}.`;
+  assert.deepEqual(made.body.warnings, [{ field: "definition.computer", reason: "not_set_up_here", message: said }]);
   const run = await api("POST", "/agents/docked/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code, run.body.error.message, run.body.error.details.box], [409, "agent_not_runnable", said, "docker"]);
 });
@@ -149,7 +150,7 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); ${VM} is unavailable (${VM_TOO}); daytona is unavailable (${DAYTONA_TOO})`);
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
-  const said = `This agent's place is sandbox on docker, and this server cannot run it there: ${DAEMON}.`;
+  const said = `This agent's computer is a Docker sandbox, and this server cannot run it: ${DAEMON}.`;
   assert.equal(made.body.warnings[0].message, said);
   const run = await api("POST", "/agents/docked/runs", { input: { content: "hi" } });
   assert.equal(run.body.error.message, said);

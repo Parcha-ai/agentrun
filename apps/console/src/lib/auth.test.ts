@@ -33,7 +33,11 @@ describe("authMode", () => {
 describe("signInProblem", () => {
   it("says a wrong password plainly, and a limit with its wait", () => {
     expect(signInProblem(err(wrong as never))).toBe("That is not the password.");
-    expect(signInProblem(Object.assign(new ClientError(429, "rate_limited", "too many sign-ins; try again later"), {}))).toBe("Too many sign-ins from here. Try again in 15 minutes.");
+    const limited = (ms?: number) => Object.assign(new ClientError(429, "rate_limited", "too many sign-ins from this address; try again in 8 s"), ms === undefined ? {} : { retryAfterMs: ms });
+    expect(signInProblem(limited(800))).toBe("Too many sign-ins. Try again in a second.");
+    expect(signInProblem(limited(7_200))).toBe("Too many sign-ins. Try again in 8 seconds.");
+    expect(signInProblem(limited(60_000))).toBe("Too many sign-ins. Try again in a minute.");
+    expect(signInProblem(limited())).toBe("Too many sign-ins. Try again in a minute.");
   });
   it("on setup: a refused code, from the link or typed, says what to do: the newest link in the server's log, or the token", () => {
     const refused = new ClientError(403, "forbidden", "that is not the setup code in the server's log");

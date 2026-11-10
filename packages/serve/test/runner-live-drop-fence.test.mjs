@@ -76,7 +76,8 @@ test("on a runner, a run's live row is dropped before its release: none is left 
   t.after(() => letSlowGo());
   ticker = withLiveTicker(store, piAdapterSubject.createLoop({ script: [{ call: "slow" }, { say: "done" }], tools, hooks: quiet }), { tickMs: 50 });
   const released = [];
-  runner = startRunner({ store, createLoop: ticker.createLoop, name: "runner-a", leaseMs: 5_000, renewEveryMs: 1_000, stopMarginMs: 1_000, pollMs: 50, commandPollMs: 200, onEvent: (event) => event.type === "released" && released.push(event) });
+  // The ticker wrapped here: the runner's own is off (live false).
+  runner = startRunner({ store, createLoop: ticker.createLoop, live: false, name: "runner-a", leaseMs: 5_000, renewEveryMs: 1_000, stopMarginMs: 1_000, pollMs: 50, commandPollMs: 200, onEvent: (event) => event.type === "released" && released.push(event) });
   await until(async () => (await server.live.read(["run-1"])).length === 1, "the run's live row while its tool runs", 30_000);
   letSlowGo();
   await until(() => released.length === 1, "the run's release", 30_000);

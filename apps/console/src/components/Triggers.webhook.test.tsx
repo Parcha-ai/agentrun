@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
+import { pick, picker } from "@/test/picker";
 
 // Triggers of every kind (serve's trigger/1): the list shows schedules and webhooks side by side; a webhook is made
 // from the console, its URL and signing secret shown once on the create (POST /v2/triggers answers `secret` that once,
@@ -72,9 +73,11 @@ async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   const set = async (name: string, value: string) => {
-    const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-    const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); });
+    // The agent is the console's Picker: picked as a person picks it.
+    if (name === "agent") return pick(picker(host, "Agent")!, value);
+    const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   return { host, went, button, click, set, settle, text: () => host.textContent ?? "" };
 }

@@ -123,6 +123,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     return refused;
   };
 
+  // A take-over or a hand-back of the run's computer (an ask's answer among them): its answer goes back to the Screen tab
+  // (who drives, or the refusal), and the run and its timeline are read again after it either way: an answered ask moves
+  // the run on.
+  const computerMove = async <T,>(go: () => Promise<T>): Promise<T> => {
+    try { return await go(); } finally { await refresh(); setFollows((n) => n + 1); }
+  };
+
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
   // open. A server without the route gives the run's other views only.
   const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" });
@@ -142,7 +149,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readBrowser={() => v2.runBrowser(runId)} onMessage={message} onApprove={approve}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );

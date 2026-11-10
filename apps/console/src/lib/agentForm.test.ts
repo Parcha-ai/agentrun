@@ -151,8 +151,8 @@ describe("harnessOptions", () => {
   it("offers pi, Claude and Codex in that order, each available or disabled with the server's reason", () => {
     expect(harnessOptions(caps.body.harnesses)).toEqual([
       { id: "pi", label: "Pi", available: true, reason: undefined },
-      { id: "claude-agent", label: "Claude", available: false, reason: "This server does not run claude-agent yet." },
-      { id: "codex", label: "Codex", available: false, reason: "This server does not run codex yet." },
+      { id: "claude-agent", label: "Claude", available: false, reason: "claude-agent needs ANTHROPIC_API_KEY." },
+      { id: "codex", label: "Codex", available: false, reason: "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL." },
     ]);
   });
   it("offers nothing the server does not list", () => {

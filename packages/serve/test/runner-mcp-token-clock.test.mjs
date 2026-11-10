@@ -34,14 +34,16 @@ const setOf = (leftMs) => ({
 });
 
 /** The authorization server: each refresh counted; `answer` "fresh" answers with FRESH (its life `freshS`), "never"
- *  leaves it unanswered; `lookup` the token endpoint's address. */
+ *  leaves it unanswered (`given`: resolved once its caller gives the request up); `lookup` the token endpoint's address. */
 function network({ answer = "fresh", freshS = 3600, address = "93.184.216.34" } = {}) {
+  let gaveUp;
   const net = {
     fetches: 0,
+    given: new Promise((resolve) => (gaveUp = resolve)),
     lookup: async () => [address],
     fetch: async (_url, init = {}) => {
       net.fetches += 1;
-      if (answer === "never") return new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+      if (answer === "never") return new Promise((_, reject) => init.signal?.addEventListener("abort", () => (gaveUp(), reject(init.signal.reason)), { once: true }));
       return new Response(JSON.stringify({ access_token: FRESH, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-2"}`, expires_in: freshS }), { status: 200, headers: { "content-type": "application/json" } });
     },
   };
@@ -119,11 +121,18 @@ for (const [why, net, bounds] of [["gets no answer", () => network({ answer: "ne
     // Two minutes left on the store's clock: inside the refresh margin, still valid.
     const { store, claim } = await setUp(t, 2 * MINUTE);
     const watched = releaseObserved(store);
-    const step = await stepOf(watched.store, claim, 60 * MINUTE, { network: net(), ...(bounds ? { bounds } : {}) });
+    const n = net();
+    const step = await stepOf(watched.store, claim, 60 * MINUTE, { network: n, ...(bounds ? { bounds } : {}) });
     t.after(() => step.release());
     assert.equal(bearer(step), `Bearer ${KEPT}`, `used at once: ${JSON.stringify(step.credentials.fake)}`);
-    // The refresh behind it fails and lets its lease go; what the step does next is judged after that turn.
-    await held(watched.released);
+    // The refresh behind it fails; what the step does next is judged after that turn. Refused unsent, it lets its lease go.
+    // Sent and unanswered, it holds the lease to its end (the refresh token may be spent): it is sent once, never again.
+    if (why === "gets no answer") {
+      await held(n.given);
+      for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(n.fetches, 1, "sent once");
+      assert.notEqual((await store.mcp.server("fake")).refreshHolder, null, "the lease is held to its end");
+    } else await held(watched.released);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(bearer(step), `Bearer ${KEPT}`, `still used after the refresh failed: ${JSON.stringify(step.credentials.fake)}`);
     assert.equal(unopened(step), undefined, "never refused");
