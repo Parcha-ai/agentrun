@@ -1,0 +1,59 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/agents/release-notes"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"d591fbb5ce4250ebfab607fcd8dee8c332a1e0bc592a405b3739316856f507d7\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "release-notes",
+    "definition": {
+      "id": "release-notes",
+      "version": 2,
+      "name": "Release notes writer",
+      "description": "Turns merged pull requests into release notes.",
+      "instructions": "Write release notes from the pull requests given.",
+      "learning": true,
+      "harness": "pi",
+      "skills": [],
+      "tools": [
+        "read"
+      ]
+    },
+    "kind": "agentic",
+    "revision": "d591fbb5ce4250ebfab607fcd8dee8c332a1e0bc592a405b3739316856f507d7",
+    "revisions": 2,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 0,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"d591fbb5ce4250ebfab607fcd8dee8c332a1e0bc592a405b3739316856f507d7\"",
+    "archived_at": null,
+    "learning": {
+      "pending": 0
+    },
+    "created_at": "2026-11-06T16:04:40.680Z",
+    "updated_at": "2026-11-06T16:05:11.057Z",
+    "tools": [
+      {
+        "name": "read",
+        "blurb": "Read files in the run's folder",
+        "permission": "allow",
+        "permission_from": "default",
+        "default_permission": "allow",
+        "permissions": [
+          "allow",
+          "ask",
+          "deny"
+        ]
+      }
+    ]
+  }
+}

@@ -33,7 +33,7 @@ const vendors = { remove: async () => undefined };
 
 // ---- Rule 1: the writes ---------------------------------------------------------------------------------------------
 
-test("rule 1: no browser route takes a credential in its body, so the plane registers no secret field and no write route", () => {
+test("rule 1: no browser route takes a credential in its body, so the plane registers no secret field and no write route; forgetting a sign-in drops one, the owner's alone", () => {
   const doc = openapiDocument(() => undefined);
   const found = browserBodyCredentials(doc);
   // The browser plane's operations, by path: the sign-in forget, the run's browser read and its hand-back; and the browser
@@ -42,15 +42,17 @@ test("rule 1: no browser route takes a credential in its body, so the plane regi
   assert.deepEqual(found.operations.sort(), ["createAgent#browser", "createInlineRun#browser", "forgetSignIn", "getRunBrowser", "handBackRunBrowser", "importHome#browser", "putToolSettings#browser", "updateDefinition#browser"].sort(), "the browser plane's operations, all of them looked at");
   assert.deepEqual(found.credentials, [], "no browser operation's body has a credential field");
   assert.deepEqual(found.anywhere, [], "no request body anywhere names a browser credential (a context, a profile, a sign-in ref)");
-  // No secret body field, so nothing to register with secret-writes.ts, and no write route for the planted harness.
-  assert.deepEqual(Object.keys(SIGN_IN_SECRET_FIELDS), []);
+  // No secret body field, and no write route for the planted harness. The one registration is forgetting a sign-in: it
+  // drops a sealed credential, so it is a secret write whatever its request.
+  assert.deepEqual(Object.keys(SIGN_IN_SECRET_FIELDS), ["forgetSignIn"]);
+  assert.equal(SIGN_IN_SECRET_FIELDS.forgetSignIn(undefined), true);
   assert.deepEqual(SIGN_IN_WRITE_ROUTES, []);
   // Nothing in the document marked a secret on a browser operation either (x-agentrun-secret).
   const marked = JSON.stringify(found.bodies).includes("x-agentrun-secret");
   assert.equal(marked, false);
-  // Registered through secret-writes.ts (the plane's empty registry): no browser operation is a secret write.
+  // Registered through secret-writes.ts: of the browser operations, only the forget.
   const browserOps = new Set(found.operations.map((op) => op.split("#")[0]));
-  assert.deepEqual(registeredOperations().filter((op) => browserOps.has(op)), []);
+  assert.deepEqual(registeredOperations().filter((op) => browserOps.has(op)), ["forgetSignIn"]);
 });
 
 test("rule 5: the planted-secret harness carries the browser sign-in plant, planted through the store since there is no write route", () => {

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createHmac, createVerify, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { call, serve, withEnv } from "./support.mjs";
+import { call, clientOwnerSession, serve, withEnv } from "./support.mjs";
 
 export const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 export const PUBLIC = "https://agents.example.test";
@@ -162,7 +162,12 @@ export function held() {
  *  on instead. Answers as the API client does: status, JSON body, headers.get. */
 export async function startConnect(server, body = {}, { wrong = false } = {}) {
   const port = Number(new URL(server.baseUrl).port);
-  const res = await call(port, { method: "POST", path: "/v2/integrations/github/connect", headers: { ...(wrong ? {} : { host: new URL(PUBLIC).host, "x-forwarded-proto": "https" }), authorization: `Bearer ${server.token}`, "content-type": "application/json" }, body });
+  // Connect is a secret write (it seals the App's key and webhook secret): the owner's session, as the console sends it,
+  // from the public URL (its https cookie name, its origin) unless `wrong`, never the token.
+  const session = await clientOwnerSession(server);
+  const cookie = wrong ? session.cookie : session.cookie.replace(`agentrun-${port}-session=`, "__Host-agentrun-session=");
+  const at = wrong ? { origin: session.origin } : { host: new URL(PUBLIC).host, "x-forwarded-proto": "https", origin: new URL(PUBLIC).origin };
+  const res = await call(port, { method: "POST", path: "/v2/integrations/github/connect", headers: { ...at, cookie, "content-type": "application/json" }, body });
   return { status: res.status, body: res.json ?? res.text, headers: { get: (name) => [res.headers[name] ?? []].flat().join(", ") || null } };
 }
 
