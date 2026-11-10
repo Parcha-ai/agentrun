@@ -1324,18 +1324,20 @@ runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
-key. With `AGENTRUN_SEAL_KEY` not set, the launcher keeps it in `agentrun/seal.key` under `$XDG_CONFIG_HOME` (or
-`~/.config`), making it the first time: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can
-read is refused, not changed. It is outside the data directory on purpose: a copy or a backup of the data directory
-holds the keys as ciphertext alone, and opens nowhere without the seal key. With no seal key (started with no launcher and
-no `AGENTRUN_SEAL_KEY`, or with no home directory) nothing is saved, never in the clear: `409 no_sealing_key`, and capabilities' `features.tool_keys.at_rest` is
-`unavailable` (`sealed` otherwise).
+key. With `AGENTRUN_SEAL_KEY` not set, the server keeps it in `seal/seal.key` in its data directory, beside the store,
+making it at the first start: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can read is
+refused, not changed. It lives and dies with the data (a disk, a volume): back it up with the data directory, and keep
+the two together. The store records the key's fingerprint (an HMAC of a fixed label under the key, never the key), and
+the server, every runner and `import` check the key they hold against it: a store whose secrets were sealed with another
+key does not start ("this store's secrets were sealed with another key; hand the server the original
+AGENTRUN_SEAL_KEY"), and no key is ever made over sealed secrets, so a lost `seal.key` is never replaced by a new one.
+The same holds on Postgres: a second machine with another key refuses. Only the server's start makes the key; a runner
+reads it from `AGENTRUN_SEAL_KEY` or the data directory, never makes one, and is refused without one. Set
+`AGENTRUN_SEAL_KEY` explicitly, the same in every process, and keep it.
 
 A stored value that does not open is never a reason not to start. It reads `set: false, stored_unreadable: true`, and
-`reenter` names those fields with why: `seal_key_missing`, `seal_key_changed` (a lost `seal.key` is made anew, so it
-shows as this) or `file_unreadable`. The log says so once, naming the condition and the file, never a value; a `PUT` of
-the value seals it again under the current key. In a container, `~/.config` is the container's own and goes with it:
-pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new container opens the keys the volume holds.
+`reenter` names those fields with why: `seal_key_changed` (sealed under another key) or `file_unreadable`. The log says
+so once, naming the condition and the file, never a value; a `PUT` of the value seals it again under the current key.
 
 A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
 gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its

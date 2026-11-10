@@ -18,14 +18,17 @@ import { closeOpenSessions, openSessions, piAdapterSpec } from "./conformance-pi
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
+/** A short lease: for the one case whose point is the lease (a lost claim during the end-of-run turn). */
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
-/** A lease no stall of a loaded machine outlasts: for a case whose point is not the lease. */
+/** A lease no stall of a loaded machine outlasts: every case whose point is not the lease. On the short lease a stall of
+ *  the box longer than it lets the claim lapse unrenewed, the runner takes the run back, and a step or a replay-safe tool
+ *  runs again (a mark written twice, a step asked twice). */
 const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const told = (marker) => ({ table: "channel_told", row: { channel: "learning:test", marker } });
 after(closeOpenSessions);
 
-async function setup(t, timing = TIMING) {
+async function setup(t, timing = STEADY) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-end-of-run-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
@@ -206,7 +209,7 @@ test("pi through the adapter: the end patch (outcome, cost, metrics) lands on th
 // and with none of the loop's patch. Waited for by the run's final state, never by a state the queued run already has; on
 // a lease no stall outlasts, so the claim the loop ends under is the one the runner ends.
 test("pi through the adapter: a fenced end writes neither the end nor its patch", async (t) => {
-  const { start, until, endsOf } = await setup(t, STEADY);
+  const { start, until, endsOf } = await setup(t);
   const endPatch = async () => ({ outcome: "escalated", costUsd: 1.25, metrics: { requests: 3 } });
   const refused = { ends: 0 };
   await start(loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch }, (deps) => ({ journal: (claim) => refusingTheEnd(deps.journal(claim), refused) })), "runner-a");
@@ -228,11 +231,8 @@ test("pi through the adapter: an end patch whose reader stalls cannot hold a per
   await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
 });
 
-// On a lease no stall outlasts: the case's point is the Harness's commit and its fence after the run's end, never the lease.
-// On the short lease a stall of the box between the mark and the tool's result lets the claim lapse unrenewed, the runner
-// takes the run back, and the replay-safe tool runs (and marks) again.
 test("pi through the adapter: a mark committed through harnessReady's commit is in the run's journal, and refused once the run's claim is gone", async (t) => {
-  const { start, until, entriesOf } = await setup(t, STEADY);
+  const { start, until, entriesOf } = await setup(t);
   let commit;
   const marked = [];
   const mark = (n) => commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: "test.mark", data: { n } }), BACKGROUND_CONTEXT);
@@ -312,7 +312,7 @@ test("pi through the adapter: a run whose step returns nothing stores no row bes
 });
 
 test("pi through the adapter: a lost claim during the end-of-run turn writes no end; the next claim asks again, and the end is written once", async (t) => {
-  const { start, until, toldRows, endEntries } = await setup(t);
+  const { start, until, toldRows, endEntries } = await setup(t, TIMING);
   let asked;
   const firstAsked = new Promise((resolve) => (asked = resolve));
   const seen = [];

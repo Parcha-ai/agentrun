@@ -6,6 +6,8 @@ import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { seal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, runDir, scratch, secretWritePath, serve, triggerStore, withEnv } from "./support.mjs";
 
@@ -186,7 +188,8 @@ test("a deleted webhook trigger's secret, quoted by a run its provider failed be
 
 test("a webhook trigger's secret that does not open under the server's seal key is said at the start, naming its trigger, and the trigger stays refused", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const key = sealKey();
+  withEnv(t, { AGENTRUN_SEAL_KEY: key });
   // The triggers' store, the next server's too: the trigger it made is read again there.
   const store = await triggerStore();
   const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", store });
@@ -195,8 +198,19 @@ test("a webhook trigger's secret that does not open under the server's seal key 
   const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   await first.close();
-  // Another seal key: the secret is still in the file, sealed, but does not open here.
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  // Another seal key handed: the store records its own, so the server does not start (seal-key.ts).
+  process.env.AGENTRUN_SEAL_KEY = sealKey();
+  await assert.rejects(startServe({ data, port: 0, faux: FAUX, store: await triggerStore(store) }), (error) => String(error.message).includes("this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY"));
+  process.env.AGENTRUN_SEAL_KEY = key;
+  // The trigger's secret sealed again under another key (a row copied from another server's store): still in the store,
+  // sealed, but it does not open here.
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  const other = randomBytes(32);
+  for (const row of db.prepare("SELECT adapter, scope, field FROM trigger_settings WHERE scope = ?").all(made.body.id)) {
+    const sealed = seal(other, Buffer.from("whsec_not-this-servers"), `trigger_settings|${row.adapter}|${row.scope}|${row.field}`).toString("base64");
+    db.prepare("UPDATE trigger_settings SET sealed = ? WHERE adapter = ? AND scope = ? AND field = ?").run(sealed, row.adapter, row.scope, row.field);
+  }
+  db.close();
   const lines = [];
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line), store: await triggerStore(store) });
   t.after(() => next.close());

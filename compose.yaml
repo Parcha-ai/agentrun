@@ -50,8 +50,9 @@ services:
       # socket: the ones no interface shows, such as a NAT'd or elastic public address. A sandbox's egress proxy refuses
       # them all, so an allow-list never reaches the host itself.
       AGENTRUN_DOCKER_HOST_ADDRESSES: ${AGENTRUN_DOCKER_HOST_ADDRESSES:-}
-      # The key every saved secret (model and tool keys, MCP credentials, sign-ins) is sealed under. Make it once in .env
-      # (README) and keep it: without it a recreated container makes a new key, and the secrets saved under the old one are lost.
+      # The key every saved secret (model and tool keys, MCP credentials, sign-ins) is sealed under: AGENTRUN_SEAL_KEY,
+      # else the one the server keeps in its data directory (<data>/seal/seal.key). Make it once in .env (README) and keep
+      # it; a store whose secrets were sealed with another key refuses to start, so hand it the original.
       AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?make .env with AGENTRUN_SEAL_KEY (openssl rand -base64 32) and keep it; it seals every saved key}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
       AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}
