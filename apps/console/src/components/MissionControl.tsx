@@ -55,7 +55,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
         {needsYou}
         <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {
-            const body = <><p className="caps text-[11px] text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-[11px] text-muted-foreground">{note}</p>}</>;
+            const body = <><p className="caps text-label text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-label text-muted-foreground">{note}</p>}</>;
             return <li key={label}>{href ? <a href={href} className="block h-full border p-4 hover:border-border-strong hover:bg-accent">{body}</a> : <div className="h-full border p-4">{body}</div>}</li>;
           })}
         </ul>
@@ -68,29 +68,29 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
         </section>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <section className="border">
-            <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Runs per agent</h2>
+            <h2 className="caps border-b px-4 py-3 text-small font-semibold">Runs per agent</h2>
             {perAgent.length ? (
               <ul>{perAgent.map((a) => (
-                <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
+                <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-lead hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-body text-muted-foreground">{a.runs}</span></a></li>
               ))}</ul>
-            ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No agents yet.</p>}
+            ) : <p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">No agents yet.</p>}
           </section>
           <section className="border">
-            <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Recent runs</h2>
+            <h2 className="caps border-b px-4 py-3 text-small font-semibold">Recent runs</h2>
             {view.recent.length ? (
               <ul>{view.recent.map((r) => (
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
                   <StatusBadge run={r} />
                   {/* The run's title, then its chips (what it learned and used) right after it. */}
-                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{runTitle(r)}</span><LearningChips run={r} className="hidden sm:inline-flex" />
-                    {stoppedRun(r) && <span className="shrink-0 text-[12px] text-muted-foreground">send a message to continue</span>}</span>
-                  <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
-                  {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-                  {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost, { ended: runEnded(r.status) })}</span>}
-                  <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{when(r.created_at)}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-lead">{runTitle(r)}</span><LearningChips run={r} className="hidden sm:inline-flex" />
+                    {stoppedRun(r) && <span className="shrink-0 text-small text-muted-foreground">send a message to continue</span>}</span>
+                  <span className="hidden shrink-0 text-body text-muted-foreground md:inline">{name(r.agent_id)}</span>
+                  {r.ended_at && <span className="hidden font-mono text-small text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
+                  {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="hidden font-mono text-small text-muted-foreground sm:inline">{cost(r.cost, { ended: runEnded(r.status) })}</span>}
+                  <span className="hidden font-mono text-small text-muted-foreground sm:inline">{when(r.created_at)}</span>
                 </a></li>
               ))}</ul>
-            ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs yet.</p>}
+            ) : <p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">No runs yet.</p>}
           </section>
         </div>
       </div>

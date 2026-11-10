@@ -372,7 +372,7 @@ describe("App, archiving a run and filtering the runs list", () => {
     expect(asked).toContain("POST /v2/runs/r1/archive");
     expect([...host.querySelectorAll("header")].find((h) => h.textContent?.includes("What is two and two?"))?.textContent).toContain("Archived");
     location.hash = "#/runs";
-    await wait(() => !!host.textContent?.includes("No runs yet."), "the default list leaves it out");
+    await wait(() => !!host.textContent?.includes("No runs yet"), "the default list leaves it out");
     expect(host.textContent).not.toContain("What is two and two?");
     await act(async () => { button(/^Archived$/)!.click(); });
     await wait(() => !!host.textContent?.includes("What is two and two?"), "the archived runs hold it");

@@ -1,6 +1,7 @@
 import { CircleDollarSign, MessageCircleQuestion, Pause } from "lucide-react";
 import { type FormEvent, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
 import { ClientError } from "@/lib/client";
 import type { BudgetPending, RaiseAnswer, TimelineRow } from "@/lib/v2";
 
@@ -21,9 +22,9 @@ export const pausedWords = (pending: BudgetPending): string =>
 export function BudgetPaused({ pending }: { pending: BudgetPending }) {
   return (
     <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Paused at its spend cap">
-      <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><CircleDollarSign className="size-3.5" aria-hidden /> {pausedWords(pending)}</p>
-      {typeof pending.said === "string" && <p className="mt-2 text-[15px] leading-relaxed">{pending.said}</p>}
-      <p className="mt-1 text-[13px] text-muted-foreground">It waits for its cap to be raised; a message can't go on until then.</p>
+      <p className="caps flex items-center gap-2 text-label text-warning-text"><CircleDollarSign className="size-3.5" aria-hidden /> {pausedWords(pending)}</p>
+      {typeof pending.said === "string" && <p className="mt-2 text-prose leading-relaxed">{pending.said}</p>}
+      <p className="mt-1 text-body text-muted-foreground">It waits for its cap to be raised; a message can't go on until then.</p>
     </section>
   );
 }
@@ -81,24 +82,24 @@ export function RaiseCap({ cap, suggested, least = null, paused, onRaise }: { ca
   return (
     <form className="border border-warning/50 p-4" aria-label="Raise the cap" onSubmit={(e) => void send(e)}>
       <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 font-mono text-[13px]">
+        <label className="flex items-center gap-2 font-mono text-body">
           <span className="text-muted-foreground">$</span>
-          <input aria-label="New cap in dollars" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} disabled={busy}
-            placeholder={`more than ${capWords(cap)}`} className="h-9 w-32 border bg-background px-3 font-mono text-[13px] outline-none focus:border-border-strong" />
+          <Input aria-label="New cap in dollars" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} disabled={busy}
+            placeholder={`more than ${capWords(cap)}`} className="h-9 w-32" />
         </label>
         <Button type="submit" size="sm" variant="solid" disabled={busy || !named}>{busy ? "Raising" : paused ? "Raise the cap and continue" : "Raise the cap"}</Button>
       </div>
       {/* The least that sends the refused request and the raise offered, apart and labelled: side by side unnamed, the
           server's "at least $X" and a larger prefill read as a contradiction. */}
       {(least !== null || suggested !== null) && (
-        <ul className="mt-2 space-y-0.5 font-mono text-[12px]" aria-label="Cap figures">
+        <ul className="mt-2 space-y-0.5 font-mono text-small" aria-label="Cap figures">
           {least !== null && <li data-cap-figure="least">Least to continue: {capWords(least)}</li>}
           {suggested !== null && <li data-cap-figure="suggested">Suggested: {capWords(suggested)}</li>}
         </ul>
       )}
-      {suggested !== null && <p className="mt-1 text-[12px] text-muted-foreground">The suggestion is prefilled; change it before you raise, if you like.</p>}
-      {refused && <p className="mt-2 text-[13px] text-destructive-text" role="alert">{refused}</p>}
-      {note && <p className="mt-2 text-[13px] text-muted-foreground" role="status">{note}</p>}
+      {suggested !== null && <p className="mt-1 text-small text-muted-foreground">The suggestion is prefilled; change it before you raise, if you like.</p>}
+      {refused && <p className="mt-2 text-body text-destructive-text" role="alert">{refused}</p>}
+      {note && <p className="mt-2 text-body text-muted-foreground" role="status">{note}</p>}
     </form>
   );
 }
@@ -110,15 +111,15 @@ export function NeedsYou({ waiting }: { waiting: TimelineRow | null }) {
     const question = (waiting.text ?? waiting.summary ?? "").replace(/^Waiting for you:\s*/, "");
     return (
       <section className="border border-warning/50 bg-warning/5 p-4" aria-label="The agent asks">
-        <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><MessageCircleQuestion className="size-3.5" aria-hidden /> Input required</p>
-        <p className="mt-2 text-[15px] leading-relaxed">{question}</p>
+        <p className="caps flex items-center gap-2 text-label text-warning-text"><MessageCircleQuestion className="size-3.5" aria-hidden /> Input required</p>
+        <p className="mt-2 text-prose leading-relaxed">{question}</p>
       </section>
     );
   }
   return (
     <section className="border border-border-strong/60 p-4" aria-label="Stopped">
-      <p className="caps flex items-center gap-2 text-[11px] text-muted-foreground"><Pause className="size-3.5" aria-hidden /> Stopped</p>
-      <p className="mt-2 text-[14px] text-muted-foreground">The turn was stopped. The run stays open: send a message to continue it.</p>
+      <p className="caps flex items-center gap-2 text-label text-muted-foreground"><Pause className="size-3.5" aria-hidden /> Stopped</p>
+      <p className="mt-2 text-lead text-muted-foreground">The turn was stopped. The run stays open: send a message to continue it.</p>
     </section>
   );
 }

@@ -46,7 +46,7 @@ export function GraphLegend({ run = false }: { run?: boolean }) {
   const who: [string, string][] = [["hsl(var(--wf-jev))", "Jev"], ["hsl(var(--wf-parallel))", "Parallel"], ["hsl(var(--wf-openrouter))", "OpenRouter"], ["hsl(var(--wf-tool))", "Tool"], ["hsl(var(--muted-foreground))", "Code"], ["hsl(var(--primary))", "Agent"]];
   const states: [string, string][] = [["border-success bg-success/40", "Done"], ["border-primary bg-primary/20", "Working"], ["border-dashed border-warning", "Held (paused)"], ["border-warning bg-warning/60", "Needs review"], ["border-destructive bg-destructive/60", "Failed"], ["border-dashed border-border-strong", "Pending"]];
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10.5px] text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-label text-muted-foreground">
       {who.map(([c, l]) => <span key={l} className="inline-flex items-center gap-1.5"><span className="inline-block size-2" style={{ background: c }} />{l}</span>)}
       {run && <span className="h-3 border-l" aria-hidden />}
       {run && states.map(([c, l]) => <span key={l} className="inline-flex items-center gap-1.5"><span className={cn("inline-block size-2.5 border", c)} />{l}</span>)}

@@ -45,7 +45,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../runs.js";
-import { claimSecrets } from "./claim-secrets.js";
+import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -53,6 +53,7 @@ import { piAdapter } from "./adapters/pi.js";
 import { entriesOf } from "./loop.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
+import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
@@ -223,8 +224,9 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), permissions });
 }
 
-/** The server's tool settings from the store now; a read that throws is unread (no value of it said). */
-async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<ReturnType<typeof loadToolSettings>>> {
+/** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
+ *  and model nodes read theirs through it too (workflow-spec.ts callPolicyOf), so both gates fail closed alike. */
+export async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<ReturnType<typeof loadToolSettings>>> {
   try {
     return await loadToolSettings(store);
   } catch {
@@ -232,13 +234,20 @@ async function storeSettings(store: Pick<Store, "settings">): Promise<Awaited<Re
   }
 }
 
-export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
+/** pi's spec for a claimed run. What it makes for the run (its Archil mount credential, its Workspace, its computer, its
+ *  tools) is held until the spec's release; a build that throws part-way lets go what it made by then (spec-holds.ts). */
+export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
+  return specBuilt((holds) => adapterSpec(launch, run, deps, claim, holds));
+}
+
+async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
   // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
   // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
   const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
+  holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   // A run handed a browser sign-in this runner can't read back (its seal does not open here, or nothing of it is kept):
@@ -265,11 +274,14 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
     // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
     : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+  // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go.
+  holds.hold({ archil });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
   // the run's folder on the disk.
   const ws = archil === undefined
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
+  holds.hold({ ws });
 
   // The run's uploaded files, copied into its work/inputs/ before the first turn, as the server's start copied them before
   // the per-run process ran (uploads.copyInto). Once per run: a fresh run has no inputs/ yet; a resumed claim finds them
@@ -287,6 +299,8 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold: (values) => cut.hold(values) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
+  holds.hold({ passed: mcp });
 
   // The run's computer, from the one shared claim-time function (the CLI spec takes the same): none for a runner place, a
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
@@ -303,14 +317,24 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   // A desktop's or a phone's hold (the person's take-over) wraps its ports: a call made while the person holds it waits,
   // and the agent's hand-over (computer_request_handoff) asks the person through it.
+  holds.hold({ computer });
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}) });
+  holds.hold({ tools });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
   // pi speaks both of main's wires: an OpenAI-family model's route is OpenAI's Responses itself.
   // The runner's one redactor (run.redact) goes to the route's translation and to the session's model proxy: a provider's
   // error that echoes a secret reaches pi's record with none in it, on any route.
-  const route = await deps.routeOf(modelAskOf(launch.model, body.model), deps.env, "default", PI_WIRES, undefined, cut);
+  // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
+  // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
+  // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
+  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  // The keys it opened join the run's one redactor before any tool or model request can echo one.
+  holdClaimed(cut, toolEnv);
+  // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
+  // saved in Settings → Model keys runs the next run with no restart (withModelKeys).
+  const route = await deps.routeOf(modelAskOf(launch.model, body.model), withModelKeys(deps.env, toolEnv), "default", PI_WIRES, undefined, cut);
   // The run's pi-native extensions, in the root agent through the pi adapter (PiAdapterOptions.extensions), which installs
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
@@ -352,22 +376,16 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
-  // has a cap.
+  // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).
   const cap = capUsd === undefined
     ? undefined
     : {
         capUsd,
-        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }) => parkOf(refusal as CapRefused, capUsd),
+        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => parkOf(refusal as CapRefused, capNow),
         checkRaise,
         followUpOf: (raised: number) => followUpOf(raised),
       };
 
-  // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
-  // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
-  // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
-  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
-  // The keys it opened join the run's one redactor before any tool or model request can echo one.
-  holdClaimed(cut, toolEnv);
   // And every secret the server keeps sealed (store-secrets.ts): a run's text may quote one it was never handed.
   await holdStored(cut, deps.store, deps.sealKey, deps.data);
   // The run's resolved tool plane (its web_search/web_fetch/browser providers), as main hands its per-run process (runs.ts):
@@ -491,14 +509,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
-    release: async () => {
-      await tools.end().catch((error: unknown) => log(`the run's tools' end failed: ${(error as Error)?.message ?? String(error)}`));
-      await computer.release().catch((error: unknown) => log(`the run's computer could not be let go: ${(error as Error)?.message ?? String(error)}`));
-      // The run's Archil mount credential, revoked at its end on every outcome, even with no computer (the computer's release
-      // revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
-      await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${(error as Error)?.message ?? String(error)}`));
-      await ws.end().catch((error: unknown) => log(`the run's workspace end failed: ${(error as Error)?.message ?? String(error)}`));
-    },
+    // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
+    // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
+    release: () => holds.release(),
   };
 }
 
