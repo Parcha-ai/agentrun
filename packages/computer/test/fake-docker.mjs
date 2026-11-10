@@ -9,6 +9,7 @@ import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
 import { DockerProvider } from "../dist/index.js";
+import { fakeProgram } from "./fake-program.mjs";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
@@ -197,9 +198,10 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	const config = JSON.stringify({ dir, log, state, volumeState, imageState, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
-	writeFileSync(
+	// The fake docker program, run in this process behind a real program at `program` (fake-program.mjs).
+	fakeProgram(
 		program,
-		`#!${process.execPath}
+		`
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { createHash } = require("node:crypto");
 const config = ${config};
@@ -411,7 +413,6 @@ switch (args[0]) {
 	default: process.stderr.write("unexpected docker call\\n"); process.exit(2);
 }
 `,
-		{ mode: 0o755 },
 	);
 	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));

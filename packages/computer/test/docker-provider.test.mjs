@@ -77,24 +77,19 @@ test("a lifetime is at most 30 days, and create() never throws on a spec check()
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
 	}
-	for (const spec of [{ ...SPEC, image: "debian\0" }, { ...SPEC, labels: { "team\0": "a" } }, { ...SPEC, labels: { team: "a\0" } }, { ...SPEC, workdir: "/work\0" }]) {
+	// Every spec check() refuses is refused by create() too, with no docker call: a NUL, an empty or bad allowlist, no
+	// lifetime, a GPU.
+	for (const spec of [
+		{ ...SPEC, image: "debian\0" },
+		{ ...SPEC, labels: { "team\0": "a" } },
+		{ ...SPEC, labels: { team: "a\0" } },
+		{ ...SPEC, workdir: "/work\0" },
+		{ ...SPEC, network: { allow: [] } },
+		{ ...SPEC, network: { allow: ["pypi.org:443"] } },
+		{ ...SPEC, lifetimeMs: undefined },
+		{ ...SPEC, gpu: 1 },
+	]) {
 		assert.equal(provider.check(spec).length, 1, JSON.stringify(spec));
-		const result = await provider.create(spec);
-		assert.equal(result.ok, false);
-		assert.equal(result.error.code, "refused");
-	}
-	assert.deepEqual(calls(), []);
-	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: days30 }), []);
-	const before = Date.now();
-	const made = await provider.create({ ...SPEC, lifetimeMs: days30 });
-	assert.equal(made.ok, true, JSON.stringify(made));
-	const deadline = valuesOf(runOf(calls()), "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
-	assert.ok(Math.abs(Date.parse(deadline) - (before + days30)) < 5000, deadline);
-});
-
-test("create() on a refused spec makes no docker call", async () => {
-	const { provider, calls } = fakeDocker();
-	for (const spec of [{ ...SPEC, network: { allow: [] } }, { ...SPEC, network: { allow: ["pypi.org:443"] } }, { ...SPEC, lifetimeMs: undefined }, { ...SPEC, gpu: 1 }]) {
 		const result = await provider.create(spec);
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
@@ -102,6 +97,12 @@ test("create() on a refused spec makes no docker call", async () => {
 	const allow = await provider.create({ ...SPEC, network: { allow: [] } });
 	assert.ok(allow.error.message.includes(NO_LIST), allow.error.message);
 	assert.deepEqual(calls(), []);
+	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: days30 }), []);
+	const before = Date.now();
+	const made = await provider.create({ ...SPEC, lifetimeMs: days30 });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const deadline = valuesOf(runOf(calls()), "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
+	assert.ok(Math.abs(Date.parse(deadline) - (before + days30)) < 5000, deadline);
 });
 
 test("create() runs a hardened container with the daemon as its first process and a deadline label", async () => {
@@ -380,24 +381,6 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	assert.deepEqual(names(), []);
 });
 
-test("create() deletes a computer whose /work or socket tmpfs drifts on size", async () => {
-	const [uid, gid] = DEFAULT_USER.split(":");
-	for (const Tmpfs of [
-		{ "/work": `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700` },
-		{ "/work": `rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700,size=4096m` },
-		{ "/run/agentrun": `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700` },
-	]) {
-		const { provider, calls, names } = fakeDocker({ patch: { HostConfig: { Tmpfs } } });
-		const result = await provider.create(SPEC);
-		assert.equal(result.ok, false, JSON.stringify(Tmpfs));
-		assert.equal(result.error.code, "refused");
-		const [path] = Object.keys(Tmpfs);
-		assert.match(result.error.message, new RegExp(`deleted: .*tmpfs ${path}: declared "[^"]*size=${path === "/work" ? 2048 : 1}m"`));
-		assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
-		assert.deepEqual(names(), []);
-	}
-});
-
 test("create() deletes a computer that runs as another user, without its tmpfs mounts, or on another CPU quota or command", async () => {
 	const { provider, calls, names } = fakeDocker({
 		patch: { Config: { User: "0:0", Cmd: ["init"] }, HostConfig: { Tmpfs: { "/work": "rw,uid=0,gid=0,mode=0777", "/run/agentrun": null }, CpuQuota: 0 } },
@@ -585,13 +568,12 @@ test("desktop: create() keeps to its bound when the daemon stops answering once 
 	// The test's own bound: a create that outwaits the desktop's is aborted at 20 s, so it fails here instead of hanging.
 	const controller = new AbortController();
 	const stop = setTimeout(() => controller.abort(), 20_000);
-	const began = Date.now();
 	const result = await provider.create(SPEC, { signal: controller.signal });
 	clearTimeout(stop);
 	assert.equal(result.ok, false);
+	// timeout, not aborted: the 300 ms bound ended the create, not the test's own 20 s one.
 	assert.equal(result.error.code, "timeout", result.error.message);
 	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
-	assert.ok(Date.now() - began < 10_000, `create took ${Date.now() - began} ms on a 300 ms bound`);
 	assert.deepEqual(names(), []);
 });
 

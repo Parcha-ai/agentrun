@@ -5,7 +5,7 @@
 // say what happened and the next step, and hold none of Docker's output.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import * as index from "../dist/index.js";
 import * as image from "../dist/docker/image.js";
 import { create } from "../dist/docker.js";
@@ -25,6 +25,23 @@ const RAW = "RAW-DOCKER-STDERR";
 const OFFLINE = `ERROR: failed to solve: alpine:3.20: failed to resolve source metadata for docker.io/library/alpine:3.20: failed to do request: Head "https://registry-1.docker.io/v2/library/alpine/manifests/3.20": dial tcp: lookup registry-1.docker.io: no such host ${RAW}`;
 const NO_BASE = `ERROR: failed to solve: alpine:3.20: failed to resolve source metadata for docker.io/library/alpine:3.20: pull access denied, repository does not exist or may require authorization ${RAW}`;
 const DENIED = `Error response from daemon: pull access denied for nosuch/box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied ${RAW}`;
+/**
+ * What calls() resolves to once its bound of `ms` passes, on node:test's mocked setTimeout, which ensureImage's bound
+ * runs on: the calls start, `reached()` says the step the bound must stop is under way (the fake holds it), then the
+ * bound fires at once, with no wall-clock wait and no margin a busy host can miss.
+ */
+async function pastTheBound(calls, reached, ms) {
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		const results = calls();
+		while (!reached()) await new Promise((resolve) => setImmediate(resolve));
+		mock.timers.tick(ms);
+		return await results;
+	} finally {
+		mock.timers.reset();
+	}
+}
+
 const failure = (result) => {
 	assert.equal(result.ok, false, `expected a failure, got ${JSON.stringify(result)}`);
 	assert.ok(!result.error.message.includes(RAW), `Docker's own output is in the words: ${result.error.message}`);
@@ -132,16 +149,18 @@ test("a caller's abort ends its own wait only, and the build goes on for the oth
 	assert.equal(fake.calls().length, before, "an aborted signal calls no docker");
 });
 
-test("a build past its bound is stopped, in words, and the next call builds again; the first caller's bound is the flight's", async () => {
+test("a build past its bound is stopped, in words, and the next call builds again; the first caller's bound is the flight's", { timeout: 30_000 }, async () => {
 	const fake = fakeImageDocker({ "build-hold": "" });
-	const started = Date.now();
-	const late = ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 1_000 });
-	const joined = ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 60_000 });
+	// The build is held far past the first caller's 1 s bound, and the joiner's own 60 s does not lengthen it.
+	const [late, joined] = await pastTheBound(
+		() => Promise.all([ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 1_000 }), ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 60_000 })]),
+		() => fake.builds().length === 1,
+		1_000,
+	);
 	const message = `the build of ${TAG} did not finish within 1 s, so it was stopped: call again to build it again`;
-	assert.deepEqual(failure(await late), { code: "timeout", message });
-	assert.deepEqual(failure(await joined), { code: "timeout", message }, "a caller that joined shares the flight's bound");
-	assert.ok(Date.now() - started < 10_000, "the bound ends the build");
-	await until(() => !alive(fake.builds()[0].pid), "the stopped build's docker to end", 5_000);
+	assert.deepEqual(failure(late), { code: "timeout", message });
+	assert.deepEqual(failure(joined), { code: "timeout", message }, "a caller that joined shares the flight's bound");
+	await until(() => !alive(fake.builds()[0].pid), "the stopped build's docker to end");
 	fake.clear("build-hold");
 	assert.deepEqual(await ensureImage({ recipe: RECIPE }, { docker: fake.docker }), { ok: true, value: TAG });
 	assert.equal(fake.builds().length, 2);
@@ -203,7 +222,14 @@ test("a build or pull that fails because another process tagged the image first 
 test("an onWait that aborts its own caller's signal settles that caller as aborted at once, joining a build under way or starting one; the build goes on for the others", { timeout: 30_000 }, async () => {
 	const fake = fakeImageDocker({ "build-hold": "" });
 	/** The call's result, or "still waiting" when it has not settled within ms: the build is held far longer. */
-	const within = (call, ms = 2_000) => Promise.race([call, new Promise((resolve) => setTimeout(() => resolve("still waiting"), ms))]);
+	const within = async (call, ms = 20_000) => {
+		let timer;
+		try {
+			return await Promise.race([call, new Promise((resolve) => (timer = setTimeout(() => resolve("still waiting"), ms)))]);
+		} finally {
+			clearTimeout(timer);
+		}
+	};
 	const stays = ensureImage({ recipe: RECIPE }, { docker: fake.docker });
 	await until(() => fake.builds().length === 1, "the build");
 	// Joins the build under way: onWait is told at once, before ensureImage returns, and aborts the caller's own signal.
@@ -275,7 +301,7 @@ test("a docker that is Podman, saying `image not known`, has the image pulled or
 	assert.equal(fake.builds().length, 1);
 });
 
-test("a pull that fails, or passes its bound, says why and the next step, with none of Docker's output", async () => {
+test("a pull that fails, or passes its bound, says why and the next step, with none of Docker's output", { timeout: 30_000 }, async () => {
 	const fake = fakeImageDocker();
 	const said = async (stderr) => {
 		fake.mark("pull-fail", stderr);
@@ -295,16 +321,15 @@ test("a pull that fails, or passes its bound, says why and the next step, with n
 	assert.equal(fake.pulls().length, 4, "no failure is kept");
 	fake.clear("pull-fail");
 	fake.mark("pull-hold");
-	const started = Date.now();
-	assert.deepEqual(failure(await ensureImage({ image: "nosuch/box:1" }, { docker: fake.docker, timeoutMs: 1_000 })), {
+	const held = await pastTheBound(() => ensureImage({ image: "nosuch/box:1" }, { docker: fake.docker, timeoutMs: 1_000 }), () => fake.pulls().length === 5, 1_000);
+	assert.deepEqual(failure(held), {
 		code: "timeout",
 		message: "the pull of nosuch/box:1 did not finish within 1 s, so it was stopped: run docker pull nosuch/box:1 on this machine, or call again",
 	});
-	assert.ok(Date.now() - started < 10_000);
 	assert.equal(fake.pulls().length, 5, "a pull past its bound is not tried again within the call");
 });
 
-test("an inspect that fails, not for want of the image, builds and pulls nothing: Docker not answering, another failure, an inspect past its bound, no docker CLI", async () => {
+test("an inspect that fails, not for want of the image, builds and pulls nothing: Docker not answering, another failure, an inspect past its bound, no docker CLI", { timeout: 30_000 }, async () => {
 	const fake = fakeImageDocker({ "inspect-fail": `Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running? ${RAW}` });
 	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: fake.docker })), {
 		code: "docker",
@@ -317,7 +342,8 @@ test("an inspect that fails, not for want of the image, builds and pulls nothing
 	});
 	fake.clear("inspect-fail");
 	fake.mark("inspect-hold");
-	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 1_000 })), {
+	const asked = fake.calls().length;
+	assert.deepEqual(failure(await pastTheBound(() => ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 1_000 }), () => fake.calls().length === asked + 1, 1_000)), {
 		code: "timeout",
 		message: `docker image inspect ${TAG} did not answer within 1 s, so it was stopped: call again`,
 	});
@@ -325,13 +351,14 @@ test("an inspect that fails, not for want of the image, builds and pulls nothing
 	assert.deepEqual(failure(await ensureImage({ recipe: RECIPE }, { docker: "/nonexistent/docker" })), { code: "docker", message: "the docker CLI (/nonexistent/docker) was not found" });
 });
 
-test("a build or pull that fails, and whose second inspect the bound stops, fails as the timeout, not as the build's or pull's failure", async () => {
+test("a build or pull that fails, and whose second inspect the bound stops, fails as the timeout, not as the build's or pull's failure", { timeout: 30_000 }, async () => {
 	for (const [source, step, tag] of [
 		[{ recipe: RECIPE }, "build", TAG],
 		[{ image: IMAGE }, "pull", IMAGE],
 	]) {
 		const fake = fakeImageDocker({ [`${step}-fail`]: `odd ${RAW}`, "then-inspect-hold": "" });
-		assert.deepEqual(failure(await ensureImage(source, { docker: fake.docker, timeoutMs: 1_000 })), {
+		// The bound fires once the second inspect, after the failed build or pull, is under way.
+		assert.deepEqual(failure(await pastTheBound(() => ensureImage(source, { docker: fake.docker, timeoutMs: 1_000 }), () => fake.calls().length === 3, 1_000)), {
 			code: "timeout",
 			message: `docker image inspect ${tag} did not answer within 1 s, so it was stopped: call again`,
 		}, step);
@@ -367,7 +394,7 @@ test("a source that is neither a recipe nor an image name, or a bound that is no
 	assert.deepEqual(fake.calls(), [], "Docker was never called");
 });
 
-test("DockerProvider.image(): the default recipe, or the source it was given, through its own docker CLI", async () => {
+test("DockerProvider.image(): the default recipe, or the source it was given, through its own docker CLI", { timeout: 30_000 }, async () => {
 	const fake = fakeImageDocker();
 	const provider = new DockerProvider({ daemonPath: fake.docker, docker: fake.docker });
 	assert.deepEqual(await provider.image(), { ok: true, value: DEFAULT_DOCKER_IMAGE });
@@ -379,7 +406,8 @@ test("DockerProvider.image(): the default recipe, or the source it was given, th
 	assert.deepEqual(fake.calls().slice(2), [[...INSPECT, IMAGE]]);
 	fake.mark("build-hold");
 	const built = new DockerProvider({ daemonPath: fake.docker, docker: fake.docker, image: { recipe: RECIPE } });
-	assert.deepEqual(failure(await built.image({ timeoutMs: 1_000 })).code, "timeout", "image() takes a bound");
+	const builds = fake.builds().length;
+	assert.deepEqual(failure(await pastTheBound(() => built.image({ timeoutMs: 1_000 }), () => fake.builds().length === builds + 1, 1_000)).code, "timeout", "image() takes a bound");
 	assert.deepEqual(failure(await built.image({ signal: AbortSignal.abort() })).code, "aborted", "and a signal");
 	assert.throws(() => new DockerProvider({ daemonPath: fake.docker, image: { recipe: "no base" } }), /^Error: the provider's image: a recipe is the text of a Dockerfile with a FROM line/);
 });
