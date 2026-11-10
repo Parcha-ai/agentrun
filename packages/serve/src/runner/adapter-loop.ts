@@ -1213,6 +1213,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           break;
         }
         if (parkOn !== undefined) return await parkOnAsk(harness, root, gate, parkOn);
+        // A person who holds the run's desktop or phone keeps it (#2134): the run's end, and its computer's release after
+        // it, wait for the hand-back or the hold's idle bound, the Timeline saying why. A stop ends the run stopped at
+        // once, and a lost claim or a closing runner leaves it for the next claim, as during the end-of-run step.
+        if (computerNow) {
+          const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
+          await computerNow.heldAtEnd(Promise.race([stopping, aborted, harness.closed]));
+          // Set by stop() during the wait: read past the narrowing TypeScript did before it.
+          const cut = stopReason as StopReason | undefined;
+          if (cut?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(cut.cancel) }, [cut.commandId], await cutRows(claim, spec, "stopped"));
+          if (cut || deps.signal.aborted) return await interrupted(cut?.kind ?? "its claim's signal aborted");
+        }
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");

@@ -123,6 +123,24 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
       if (typeof body.take !== "string" || body.take !== hold.current()) return { refused: takeEndedWords(kind, "given") };
       return hold.give("given", { by: command.id }) ? { taken: true } : { refused: takeEndedWords(kind, "given") };
     },
+    /** The run's end while a person holds the computer (#2134): the Timeline says the run waits for the hand-back, and
+     *  this resolves once the agent drives again (a hand-back, the hold's idle bound, the viewer gone) or `cut` settles
+     *  first (a stop, a lost claim). With the agent driving, it resolves at once and writes nothing. */
+    async heldAtEnd(cut: Promise<unknown>): Promise<void> {
+      let off: () => void = () => {};
+      const back = new Promise<void>((resolve) => {
+        off = hold.on(() => void (hold.state() === "agent" && resolve()));
+        if (hold.state() === "agent") resolve();
+      });
+      try {
+        if (hold.state() === "agent") return;
+        // A row the journal refuses (a lost claim's fence) is the cut's to answer, not this wait's.
+        await write([phase(words.ending, now())]).catch(() => undefined);
+        await Promise.race([back, cut]);
+      } finally {
+        off();
+      }
+    },
     /** Whether `data`, a computer entry's, is the change row `id` made: the commit that writes it takes the row. */
     madeBy: (data: Record<string, unknown>, id: number): boolean => data.by === id,
     /** Every commit asked for so far is done. */
