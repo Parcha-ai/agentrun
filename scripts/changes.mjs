@@ -392,15 +392,28 @@ export const pythonVersionOf = text => /^\[project\][\s\S]*?^version\s*=\s*"([^"
 /** What the Python client publishes, by its path under python/: its project, README, LICENSE and NOTICE, and its package. */
 const pythonShipped = path => ['pyproject.toml', 'README.md', 'LICENSE', 'NOTICE'].includes(path) || path.startsWith('agentrun/');
 
-/** Whether the Python client's published files differ from the merge base's while its version does not: the release would find that
- *  version on PyPI already and publish nothing. A client the base does not have is new. */
+/** The newest release tag (v*) reachable from HEAD, or null when there is none. */
+async function lastReleaseTag(root) {
+  try {
+    return (await git(root, ['describe', '--tags', '--abbrev=0', '--match', 'v*', 'HEAD'])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the Python client's published files differ from the last release's (the newest v* tag reachable from HEAD) while
+ *  its version does not: the release would find that version on PyPI already and publish nothing. Against the last release,
+ *  not the pull request's base, so a client change merged in an earlier pull request still needs the release to bump it.
+ *  With no release tag, or a release that had no client, nothing has been published to go stale. `base` is the caller's. */
 export async function stalePython(root, base) {
-  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
-  const was = await gitShow(root, mergeBase, PYTHON_PROJECT);
+  void base;
+  const tag = await lastReleaseTag(root);
+  if (tag === null) return false;
+  const was = await gitShow(root, tag, PYTHON_PROJECT);
   const now = await readOptional(join(root, PYTHON_PROJECT));
   if (was === null || now === null || pythonVersionOf(was) !== pythonVersionOf(now)) return false;
   const under = list => list.split('\n').filter(Boolean).map(path => path.slice('python/'.length));
-  const changed = under(await git(root, ['diff', '--name-only', mergeBase, '--', 'python']));
+  const changed = under(await git(root, ['diff', '--name-only', tag, '--', 'python']));
   const added = under(await git(root, ['ls-files', '--others', '--exclude-standard', '--', 'python']));
   return [...changed, ...added].some(pythonShipped);
 }

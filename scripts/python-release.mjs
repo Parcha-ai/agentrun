@@ -7,17 +7,18 @@
 //   node scripts/python-release.mjs --verify DIST [--python PYTHON]
 //       the project (its name, version, classifiers, LICENSE and NOTICE), DIST's sdist and wheel against this tree's python/,
 //       file for file, `twine check --strict`, and the wheel installed in a clean venv whose smoke runs with no network;
-//       writes .release/python-plan.json, the files' SHA-256, which the upload step checks again
-//   node scripts/python-release.mjs --on-pypi
-//       whether this version is on PyPI already: publish=false when it is (a re-run publishes nothing twice), publish=true on
-//       PyPI's 404, written to $GITHUB_OUTPUT when it is set; any other answer stops the release
+//       writes .release/python-plan.json, the files' SHA-256, as evidence: the release job retains it with the archives it uploads
+//   node scripts/python-release.mjs --on-pypi DIST [--python PYTHON]
+//       whether this version is on PyPI already: publish=true on PyPI's 404; publish=false when its wheel there carries DIST's
+//       wheel's agentrun/ files byte for byte (a re-run publishes nothing twice); a version there with other contents, any
+//       other answer and any network failure stop the release. Written to $GITHUB_OUTPUT when it is set
 // PYTHON (default python3) needs twine for --verify. The script uploads nothing: the release workflow's trusted-publishing step does.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { parseArgs } from 'node:util';
@@ -115,7 +116,16 @@ export async function checkPythonDist(root, dist, python = 'python3') {
       if (member.startsWith(`${at}agentrun/`)) assert.ok(tree.has(path), `${file} holds ${path}, which this tree's python/agentrun does not`);
     }
   };
-  same(wheel, await archiveMembers(join(dist, wheel), python), '', tree);
+  const members = await archiveMembers(join(dist, wheel), python);
+  same(wheel, members, '', tree);
+  // The licence files setuptools 77 and newer package (PEP 639): the root's LICENSE and NOTICE, byte for byte.
+  for (const file of ['LICENSE', 'NOTICE']) {
+    const rooted = await readFile(join(root, file)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (rooted === null) continue;
+    const at = `${base}.dist-info/licenses/${file}`;
+    assert.ok(members.has(at), `${wheel} is missing ${at}`);
+    assert.equal(members.get(at), sha256(rooted), `${wheel}: ${at} is not the root ${file}`);
+  }
   same(sdist, await archiveMembers(join(dist, sdist), python), `${base}/`, new Map([...tree, ...project]));
   const files = [];
   for (const filename of [wheel, sdist].sort()) files.push({ filename, sha256: sha256(await readFile(join(dist, filename))) });
@@ -161,17 +171,42 @@ print(json.dumps({"installed": version, "client": True, "usage": usage, "network
   }
 }
 
-/** Whether PYPI_NAME at `version` is on PyPI: true on 200, false on 404; anything else throws. */
-async function onPyPI(version, fetchImpl = fetch) {
+/** Whether this version is on PyPI, and if so whether it is this tree's: 'absent' on PyPI's 404, 'same' when the wheel it
+ *  holds carries the freshly built wheel's agentrun/ files byte for byte. A version on PyPI with other contents throws: a
+ *  change merged without a version bump would otherwise be skipped, and pip would never get it. The published wheel is
+ *  fetched over https only, and its SHA-256 checked against the digest PyPI's JSON API gives. Any other answer, and any
+ *  network failure, throws: nothing here is ever read as a skip. */
+export async function publishedState(version, builtWheel, python = 'python3', fetchImpl = fetch) {
   const response = await fetchImpl(`https://pypi.org/pypi/${PYTHON_NAME}/${version}/json`, { signal: AbortSignal.timeout(30_000) });
-  if (response.status === 404) return false;
+  if (response.status === 404) return 'absent';
   assert.equal(response.status, 200, `PyPI answered ${response.status} for ${PYTHON_NAME} ${version}: not published, not skipped`);
-  return true;
+  const wheelName = basename(builtWheel);
+  const entry = ((await response.json())?.urls ?? []).find(file => file?.packagetype === 'bdist_wheel' && file?.filename === wheelName);
+  assert.ok(entry, `${PYTHON_NAME} ${version} is on PyPI with no ${wheelName} to compare: bump python/pyproject.toml's version`);
+  assert.ok(typeof entry.url === 'string' && entry.url.startsWith('https://'), `PyPI names ${wheelName} at a URL that is not https: not fetched`);
+  const digest = entry.digests?.sha256;
+  assert.ok(typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest), `PyPI gives no SHA-256 for ${wheelName}: not compared, not skipped`);
+  const download = await fetchImpl(entry.url, { signal: AbortSignal.timeout(120_000) });
+  assert.equal(download.status, 200, `PyPI's ${wheelName} answered ${download.status}: not compared, not skipped`);
+  assert.ok(!download.url || download.url.startsWith('https://'), `PyPI's ${wheelName} came from a URL that is not https: not compared`);
+  const bytes = Buffer.from(await download.arrayBuffer());
+  assert.equal(sha256(bytes), digest, `PyPI's ${wheelName} is not the file its digest names: not compared, not skipped`);
+  const folder = await mkdtemp(join(tmpdir(), 'parcha-agentrun-published-'));
+  try {
+    await writeFile(join(folder, wheelName), bytes);
+    const package_ = (members) => [...members].filter(([name]) => name.startsWith('agentrun/')).sort(([a], [b]) => a.localeCompare(b));
+    const published = package_(await archiveMembers(join(folder, wheelName), python));
+    const built = package_(await archiveMembers(builtWheel, python));
+    assert.deepEqual(published, built, `${PYTHON_NAME} ${version} is on PyPI with different contents: bump python/pyproject.toml's version`);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+  return 'same';
 }
 
 async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const { values } = parseArgs({ options: { verify: { type: 'string' }, python: { type: 'string' }, 'on-pypi': { type: 'boolean' } } });
+  const { values } = parseArgs({ options: { verify: { type: 'string' }, python: { type: 'string' }, 'on-pypi': { type: 'string' } } });
   const python = values.python ?? 'python3';
   if (values.verify) {
     const dist = resolve(values.verify);
@@ -184,12 +219,13 @@ async function main() {
     for (const file of plan.files) console.log(`${file.sha256}  ${file.filename}`);
     console.log('Python release checks passed. Plan: .release/python-plan.json. Nothing was uploaded.');
   } else if (values['on-pypi']) {
+    const dist = resolve(values['on-pypi']);
     const { version } = await checkPythonProject(root);
-    const there = await onPyPI(version);
-    console.log(there ? `${PYTHON_NAME} ${version} is on PyPI already: it is not published again.` : `${PYTHON_NAME} ${version} is not on PyPI: the release publishes it.`);
-    if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `publish=${there ? 'false' : 'true'}\n`);
+    const state = await publishedState(version, join(dist, `parcha_agentrun-${version}-py3-none-any.whl`), python);
+    console.log(state === 'same' ? `${PYTHON_NAME} ${version} is on PyPI already, with this tree's agentrun/: it is not published again.` : `${PYTHON_NAME} ${version} is not on PyPI: the release publishes it.`);
+    if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `publish=${state === 'same' ? 'false' : 'true'}\n`);
   } else {
-    throw new Error('Usage: node scripts/python-release.mjs --verify DIST [--python PYTHON] | --on-pypi');
+    throw new Error('Usage: node scripts/python-release.mjs --verify DIST [--python PYTHON] | --on-pypi DIST [--python PYTHON]');
   }
 }
 

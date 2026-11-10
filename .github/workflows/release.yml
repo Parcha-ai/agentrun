@@ -163,13 +163,24 @@ jobs:
         run: python -m build --sdist --wheel --outdir "$RUNNER_TEMP/python-dist" python
       # The project, the archives against this tree's python/ file for file, twine check, and a clean venv's offline smoke.
       - run: node scripts/python-release.mjs --verify "$RUNNER_TEMP/python-dist" --python python
+      # On PyPI already: skipped only when its wheel is this build's agentrun/, byte for byte; other contents stop the job.
       - name: Is this version on PyPI already?
         id: pypi
-        run: node scripts/python-release.mjs --on-pypi
+        run: node scripts/python-release.mjs --on-pypi "$RUNNER_TEMP/python-dist" --python python
       - if: steps.pypi.outputs.publish == 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: ${{ runner.temp }}/python-dist
+      # The plan and the exact archives, kept as the publish job keeps its evidence (the repository's retention).
+      - name: Retain the Python archives and plan
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pypi-release-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/python-dist
+            .release/python-plan.json
+          if-no-files-found: ignore
 
   # AgentRun Server's container image, built from the same reviewed tag once the packages are published and verified.
   # It runs only after the approved publish job and pushes with this run's GITHUB_TOKEN, so it needs no environment.

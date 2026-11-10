@@ -652,6 +652,10 @@ test('the Python client that changes a file it publishes and keeps its version i
   await withVersion(root, git);
   assert.equal(await stalePython(root, (await git('rev-parse', 'HEAD')).stdout.trim()), false, 'a client the base does not have is new');
   const base = await pythonClient(root, git, '0.3.0');
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  assert.equal(await stalePython(root, base), false, 'with no release tag, nothing has been published to go stale');
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 1\n');
+  await git('tag', 'v0.1.0-beta.13');
   await writeFile(join(root, 'python/tests/test_rules.py'), 'MORE = 2\n');
   assert.equal(await stalePython(root, base), false, 'its tests are not published');
   await writeFile(join(root, 'python/README.md'), 'Start it.\n');
@@ -671,6 +675,7 @@ test('a pull request that moves the Python client\'s version is refused; one tha
   assert.equal(await movedPython(root, started), null, 'a base on a pre-release had no line yet');
   await commitAll(git, 'the line starts');
   const base = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('tag', 'v0.1.0-beta.13');
   assert.equal(await movedPython(root, base), null);
   await setPythonVersion(root, '0.3.1');
   assert.deepEqual(await movedPython(root, base), { was: '0.3.0', now: '0.3.1' });
@@ -689,4 +694,23 @@ test('a pull request that moves the Python client\'s version is refused; one tha
   assert.match(stale.stderr, /python changed the files it publishes and kept its version 0\.3\.0/);
   await setPythonVersion(root, '0.3.1');
   assert.equal(local().status, 0, local().stderr);
+}));
+
+test('a client change merged in an earlier pull request is still stale at the release that keeps its version: against the last release tag, not the release pull request\'s base', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await pythonClient(root, git, '0.3.0');
+  await git('tag', 'v0.1.0-beta.13');
+  // Pull request 1 changes the client and, as a pull request does, leaves its version; it merges.
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  await commitAll(git, 'pull request 1: the client changes');
+  const merged = (await git('rev-parse', 'HEAD')).stdout.trim();
+  // Pull request 2 is the release: its base is pull request 1's merge, and it bumps the workspace, not the client.
+  await bump(root, '0.1.0-beta.14');
+  assert.equal(await stalePython(root, merged), true, 'what the client publishes differs from the last release\'s, though not from this base');
+  await setPythonVersion(root, '0.3.1');
+  assert.equal(await stalePython(root, merged), false, 'bumped, it publishes');
+  await setPythonVersion(root, '0.3.0');
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 1\n');
+  await commitAll(git, 'pull request 3: the change undone');
+  assert.equal(await stalePython(root, merged), false, 'the same files as the last release: nothing new to publish');
 }));

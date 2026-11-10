@@ -111,7 +111,7 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 
 ## From a program
 
-Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` (packages/client) is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`, installed from this repository until it is published. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command here is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.
+Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`; `npm install @parcha/agentrun-client` installs it. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command here is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.
 
 ## Commands
 

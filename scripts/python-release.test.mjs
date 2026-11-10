@@ -3,11 +3,12 @@
 // the sdist and wheel the release uploads are this tree's python/, file for file.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { checkPythonDist, checkPythonProject, checkPythonVersion, PYPI_FLOOR } from './python-release.mjs';
+import { checkPythonDist, checkPythonProject, checkPythonVersion, publishedState, PYPI_FLOOR } from './python-release.mjs';
 
 const python = spawnSync('python3', ['--version']).status === 0;
 const LICENSE = 'Apache License\nVersion 2.0, January 2004\n';
@@ -62,8 +63,10 @@ with zipfile.ZipFile(os.path.join(dist, base + "-py3-none-any.whl"), "w") as whe
     for name in files:
         if name.startswith("agentrun/"): wheel.writestr(name, data(name))
     wheel.writestr(f"{base}.dist-info/METADATA", "Metadata-Version: 2.4\\n")
-    wheel.writestr(f"{base}.dist-info/licenses/LICENSE", data("LICENSE"))
-    wheel.writestr(f"{base}.dist-info/licenses/NOTICE", data("NOTICE"))
+    for name in ("LICENSE", "NOTICE"):
+        key = "licenses/" + name
+        if key in edit and edit[key] is None: continue
+        wheel.writestr(f"{base}.dist-info/licenses/{name}", edit[key].encode() if key in edit else data(name))
 `;
   const made = spawnSync('python3', ['-I', '-c', script, root, version, dist, JSON.stringify(edit)], { encoding: 'utf8' });
   assert.equal(made.status, 0, made.stderr);
@@ -138,4 +141,57 @@ test('release.yml publishes parcha-agentrun only after the npm packages, by trus
   const upload = at(/^pypa\/gh-action-pypi-publish@/);
   assert.ok(at(/python -m build /) < at(/python-release\.mjs --verify/) && at(/python-release\.mjs --verify/) < at(/python-release\.mjs --on-pypi/) && at(/--on-pypi/) < upload, 'build, then the checks, then the PyPI probe, then the upload');
   assert.equal(job.steps[upload].if, "steps.pypi.outputs.publish == 'true'", 'a version on PyPI already is not published again');
+  assert.match(job.steps[at(/python-release\.mjs --on-pypi/)].run, /--on-pypi "\$RUNNER_TEMP\/python-dist" --python python/, 'the probe compares PyPI\'s wheel with this build');
+  const kept = job.steps.find((step) => /^actions\/upload-artifact@/.test(step.uses ?? ''));
+  assert.ok(kept, 'the plan and archives are kept');
+  assert.equal(kept.if, 'always()', 'kept whether the job passed or not');
+  assert.match(kept.with.path, /\$\{\{ runner\.temp \}\}\/python-dist/);
+  assert.match(kept.with.path, /\.release\/python-plan\.json/);
+  const evidence = workflow.jobs.publish.steps.find((step) => /^actions\/upload-artifact@/.test(step.uses ?? ''));
+  assert.equal(kept.with['retention-days'], evidence.with['retention-days'], 'kept as long as the publish job keeps its evidence');
+});
+
+test('the wheel carries the root LICENSE and NOTICE as its packaged licence files, byte for byte', { skip: !python && 'no python3 to write the archives with' }, async (t) => {
+  const { root } = await tree(t);
+  for (const [name, edit, pattern] of [
+    ['no LICENSE', { 'licenses/LICENSE': null }, /parcha_agentrun-0\.3\.0-py3-none-any\.whl is missing parcha_agentrun-0\.3\.0\.dist-info\/licenses\/LICENSE/],
+    ['no NOTICE', { 'licenses/NOTICE': null }, /is missing parcha_agentrun-0\.3\.0\.dist-info\/licenses\/NOTICE/],
+    ['another LICENSE', { 'licenses/LICENSE': 'MIT\n' }, /dist-info\/licenses\/LICENSE is not the root LICENSE/],
+    ['another NOTICE', { 'licenses/NOTICE': 'Someone else\n' }, /dist-info\/licenses\/NOTICE is not the root NOTICE/],
+  ]) {
+    const dist = join(root, name.replace(/ /g, '-'));
+    distOf(root, '0.3.0', dist, edit);
+    await assert.rejects(checkPythonDist(root, dist), pattern, name);
+  }
+});
+
+test('a version on PyPI already is skipped only when its wheel is this build\'s agentrun/, fetched over https and checked by its digest; anything else stops the release', { skip: !python && 'no python3 to write the archives with' }, async (t) => {
+  const { root } = await tree(t);
+  const built = join(root, 'built');
+  const other = join(root, 'other');
+  distOf(root, '0.3.0', built);
+  distOf(root, '0.3.0', other, { 'agentrun/_client.py': 'class AgentRun: pass  # changed\n' });
+  const wheel = 'parcha_agentrun-0.3.0-py3-none-any.whl';
+  const builtWheel = join(built, wheel);
+  const bytesOf = (dist) => readFile(join(dist, wheel));
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const pypi = ({ status = 200, published, url = `https://files.pythonhosted.org/packages/x/${wheel}`, sha = published && digest(published), files } = {}) => async (address) => {
+    if (address.startsWith('https://pypi.org/pypi/parcha-agentrun/0.3.0/json')) {
+      return new Response(JSON.stringify({ urls: files ?? [{ packagetype: 'sdist', filename: 'parcha_agentrun-0.3.0.tar.gz', url: 'https://x/sdist', digests: { sha256: 'a'.repeat(64) } }, { packagetype: 'bdist_wheel', filename: wheel, url, digests: { sha256: sha } }] }), { status });
+    }
+    assert.equal(address, url, 'only the wheel PyPI names is fetched');
+    return new Response(published, { status: 200 });
+  };
+  assert.equal(await publishedState('0.3.0', builtWheel, 'python3', pypi({ status: 404 })), 'absent', 'not there: published');
+  assert.equal(await publishedState('0.3.0', builtWheel, 'python3', pypi({ published: await bytesOf(built) })), 'same', 'there with this build: skipped');
+  // A wheel built again has other bytes but the same agentrun/: still the same.
+  const again = join(root, 'again');
+  distOf(root, '0.3.0', again);
+  assert.equal(await publishedState('0.3.0', join(again, wheel), 'python3', pypi({ published: await bytesOf(built) })), 'same');
+  await assert.rejects(publishedState('0.3.0', builtWheel, 'python3', pypi({ published: await bytesOf(other) })), /parcha-agentrun 0\.3\.0 is on PyPI with different contents: bump python\/pyproject\.toml's version/);
+  await assert.rejects(publishedState('0.3.0', builtWheel, 'python3', pypi({ published: await bytesOf(built), sha: 'b'.repeat(64) })), /is not the file its digest names: not compared, not skipped/);
+  await assert.rejects(publishedState('0.3.0', builtWheel, 'python3', pypi({ published: await bytesOf(built), url: `http://files.pythonhosted.org/${wheel}` })), /a URL that is not https/);
+  await assert.rejects(publishedState('0.3.0', builtWheel, 'python3', pypi({ files: [] })), /on PyPI with no parcha_agentrun-0\.3\.0-py3-none-any\.whl to compare/);
+  await assert.rejects(publishedState('0.3.0', builtWheel, 'python3', pypi({ status: 503 })), /PyPI answered 503 for parcha-agentrun 0\.3\.0: not published, not skipped/);
+  await assert.rejects(publishedState('0.3.0', builtWheel, 'python3', async () => { throw new TypeError('fetch failed'); }), /fetch failed/, 'a network failure is never read as a skip');
 });
