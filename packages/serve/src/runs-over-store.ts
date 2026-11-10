@@ -144,11 +144,18 @@ export async function message(
   // A person's message while a tool call waits for approval declines it, with the message as the reason: a deny the run's
   // gate acts on as any deny, resuming the session with the refusal and the person's words in one turn. A trigger's never
   // does (answers false, refused above). Marked as the person's message (`by`), so its approval reads "Declined by your
-  // message", as main's declineBy kept it.
+  // message", as main's declineBy kept it. A person's answer to that call written first (not taken yet) stands, and the store refuses this deny (one answer per
+  // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } });
-    return { mode: "answer", messageId };
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof StoreConstraint) return false;
+        throw error;
+      },
+    );
+    if (declined) return { mode: "answer", messageId };
   }
   if (moment.terminal) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
@@ -199,18 +206,34 @@ function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false):
   return new ApiError("not_continuable", `The tool call ${id} was already ${how}.`, { details: { reason: "already_answered", decision } });
 }
 
+/** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
+ *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
+ *  run could not resume) answers nothing, so the person may answer again. */
+async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
+  return row && { decision: row.kind === "approve" ? "allow" : "deny" };
+}
+
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
- *  runner reads and acts on. The first answer wins — the same one again changes nothing, another is 409 already-answered —
- *  and a run with no such waiting call is 404. The note is the person's words, carried on the command for the run's gate. */
+ *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
+ *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
+ *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
+ *  person's words, carried on the command for the run's gate. */
 export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
-  const given = moment.answeredApprovals?.[id];
-  if (!given && !(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
-  if (given) {
-    if (given.decision === decision) return;
-    throw alreadyAnswered(id, given.decision, given.ended === true);
-  }
+  const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
+    if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
+  };
+  const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
+  if (given) return settle(given);
+  if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
-  await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+  try {
+    await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+  } catch (error) {
+    const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
+    if (!won) throw error;
+    settle(won);
+  }
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
