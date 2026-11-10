@@ -160,7 +160,11 @@ const BUILT = {
 			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
 		},
 	],
-	orgo: [() => createOrgo({ apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
+	orgo: [
+		() => createOrgo({ apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) }),
+		() => createOrgo({ os: "windows", apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) }),
+		() => createOrgo({ os: "macos", apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) }),
+	],
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {

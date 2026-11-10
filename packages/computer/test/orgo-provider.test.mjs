@@ -59,7 +59,15 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	assert.ok(built instanceof OrgoProvider);
 	assert.equal(built.id, "orgo");
 	assert.deepEqual(MOUNT, []);
-	assert.deepEqual(CAPABILITIES, [{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] }], "what a built provider declares, known without building one");
+	assert.deepEqual(
+		CAPABILITIES,
+		[
+			{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] },
+			{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"] },
+			{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"] },
+		],
+		"what a built provider declares, known without building one: the Linux desktop, then Windows and macOS (orgo-desktop.test.mjs)",
+	);
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
 	assert.equal(orgo.fromEnv, undefined, "every setting is an option");
 	assert.deepEqual(api.requests, [], "building a provider calls nothing");

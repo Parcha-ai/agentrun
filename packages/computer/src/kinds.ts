@@ -12,6 +12,7 @@ import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
 import { MODAL_DEFAULT_IMAGE } from "./modal.js";
 import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
+import { MACOS_GROUPS, WINDOWS_GROUPS } from "./orgo-desktop.js";
 import { PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities } from "./provider.js";
@@ -157,7 +158,8 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		keys: [{ name: "ORGO_API_KEY", required: true }],
 		mounts: [],
 		metered: true,
-		capabilities: [LINUX_DESKTOP],
+		// The Linux desktop with computerd, then the Windows and macOS desktops Orgo's API answers (create's os option).
+		capabilities: [LINUX_DESKTOP, { kind: "desktop", groups: [...WINDOWS_GROUPS] }, { kind: "desktop", groups: [...MACOS_GROUPS] }],
 		defaultImage: { desktop: ORGO_BASE_IMAGE },
 	}),
 	entry({

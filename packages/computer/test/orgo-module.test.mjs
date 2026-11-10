@@ -17,13 +17,14 @@ writeFileSync(DRIFT, "a daemon of another version\n");
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 const ENV_OK = { AGENTRUN_COMPUTER_LIVE_ORGO: "1", COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE };
 
-test("the Orgo module's env names: the live switch, the key, the workspace, the API URL and the run's template, each COMPUTER_ORGO_* but the switch", () => {
+test("the Orgo module's env names: the live switch, the key, the workspace, the API URL, the run's template and the desktop's os, each COMPUTER_ORGO_* but the switch", () => {
 	assert.deepEqual(ENV, {
 		live: "AGENTRUN_COMPUTER_LIVE_ORGO",
 		template: "COMPUTER_ORGO_TEMPLATE",
 		key: "COMPUTER_ORGO_API_KEY",
 		workspace: "COMPUTER_ORGO_WORKSPACE",
 		apiUrl: "COMPUTER_ORGO_API_URL",
+		os: "COMPUTER_ORGO_OS",
 	});
 	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }), { apiKey: KEY, workspaceId: WORKSPACE });
 	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE, COMPUTER_ORGO_API_URL: "https://orgo.example/api" }).apiUrl, "https://orgo.example/api");

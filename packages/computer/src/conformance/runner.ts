@@ -19,6 +19,7 @@ import {
 	type CaseResult,
 	type ConformanceOptions,
 	type ConformanceReport,
+	caseOs,
 	coreGroups,
 	type Ran,
 	type RunFolder,
@@ -274,6 +275,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			for (const need of lacking) if (!report.undeclared.includes(need)) report.undeclared.push(need);
 			return { ...result("skip", why), undeclared: lacking };
 		}
+		// A case written for other systems (a POSIX program, /proc) is not this computer's to pass or fail: skipped in words.
+		const systems = caseOs(c);
+		if (systems !== undefined && !systems.includes(capabilities.os)) return result("skip", `the case is written for ${systems.join(" or ")}, and this computer runs ${capabilities.os}`);
 		// The shared computer is made, bounded on its own, before the case's time starts.
 		const sharedComputer = (c.computer ?? "shared") === "shared" ? await getShared() : undefined;
 		const timeoutMs = c.timeoutMs ?? caseTimeoutMs;
@@ -366,6 +370,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				track,
 				connect: (ref) => connect(ref ?? needComputer().ref),
 				async home() {
+					if (capabilities.os === "windows") {
+						// Windows has no HOME: the profile folder is USERPROFILE, read through PowerShell's own environment.
+						const profile = (await t.exec(["powershell.exe", "-NoProfile", "-Command", "[Console]::Out.Write($env:USERPROFILE)"])).out.trim();
+						if (!/^[A-Za-z]:[\\/]/.test(profile)) throw new Error(`USERPROFILE in the computer is ${show(profile)}, not an absolute path`);
+						return profile.replace(/[\\/]+$/, "");
+					}
 					const env = await t.exec(["env"]);
 					const home = /^HOME=(.*)$/m.exec(env.out)?.[1];
 					if (home === undefined || !home.startsWith("/")) throw new Error(`HOME in the computer is ${show(home)}, not an absolute path`);
@@ -377,10 +387,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return path;
 				},
 				fixture() {
-					if (fixture === undefined) {
+					// A Windows desktop's fixture is a PowerShell script this package carries (windows-fixture.ts): no file to name.
+					if (fixture === undefined && !(capabilities.kind === "desktop" && capabilities.os === "windows")) {
 						return t.skip("no fixture was given: --fixture names computerd-fixture for a desktop, or the fixture APK for an Android phone");
 					}
-					started ??= startFixture(t, fixture, (stop) => {
+					started ??= startFixture(t, fixture ?? "", (stop) => {
 						stopFixture = stop;
 					});
 					return started;

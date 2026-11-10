@@ -402,7 +402,7 @@ in the kernel's tool registry, keyed by these groups.
   | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
-  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
@@ -1941,6 +1941,54 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Orgo: Windows and macOS desktops
+
+Orgo's Linux desktop runs computerd (`src/orgo.ts`). Its Windows and macOS desktops do not: computerd for Windows and
+macOS is CP-8, deferred. For those two, `create({ os: "windows" | "macos", apiKey, workspaceId })` builds an
+`OrgoDesktopProvider` (`src/orgo-desktop.ts`) with daemon `none`. It answers the protocol's methods in process over
+Orgo's REST API, as the phone harness and Browserbase do. `PROVIDERS` lists both as configurations of the `orgo` entry
+(`CAPABILITIES`). A spec's image is `"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"`
+(`ORGO_MACOS_IMAGE`): the one the provider was built for.
+
+- **What each offers.** The protocol groups, by Orgo's calls:
+  - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
+    polls it about once a second, scaled by Orgo past `maxWidth`.
+  - `input.pointer` and `input.keys`: Orgo's click, mouse-move, drag, scroll, type and key calls.
+  - `exec`: Orgo's bash call. On Windows that is PowerShell: argv becomes a call operator over single-quoted words,
+    and the exit code is `$LASTEXITCODE`. On macOS it is the shell, every word quoted. argv is never a shell string.
+  - `files`, Windows only: one PowerShell script whose request is base64 JSON. A write over 96 KiB is uploaded first
+    (Orgo's `/files/upload` with `destPath`).
+  - No `processes`: Orgo runs a command and waits for it. No `tar`, and no mount.
+  - Network `open`, never read back from inside: Orgo has no egress control, and no daemon runs in the computer to
+    hold its programs to loopback, so the provider cannot prove `none`.
+- **What Orgo's API cannot do is refused in words, and a refused batch runs nothing:**
+  - on Windows, a triple click, keys held during a click, a drag of more than two points, a sideways or pixel
+    scroll, and `hold`;
+  - on macOS, a right-button double click or drag;
+  - `+` as a key, since it joins Orgo's combinations.
+- **down and up.** Orgo has no separate press and release. A `down` is held in the client, across batches as the
+  protocol says. Its `up` becomes one click (the pointer did not move) or one drag (from where it went down). A batch
+  that fails releases a press it holds.
+- **The cursor.** The live view's frames carry the place the client last moved the pointer to (`cursor`), and a move is
+  a new frame even when Orgo's screenshot leaves the cursor out.
+- **Lifetime.** The name carries the run, the epoch and the deadline, as the Linux desktop's does (`src/orgo-names.ts`),
+  and the janitor ends a computer by it. On Windows, Orgo's `ends_in_hours` is the backstop. A Mac has no Orgo end.
+  The other labels are a file the provider writes in the computer (`C:\ProgramData\agentrun\labels.json`,
+  `/Users/Shared/agentrun/labels.json`). A program in the computer can change that file, so list, the janitor and
+  the takeover trust the name, which only the key can change.
+- **attach** reports who the programs run as. On Windows that is `0:0` for a member of the Administrators group,
+  since it can do what a root can, and is said as it is.
+- **Idle suspension.** Nothing runs in a computer Orgo does not read `running`: any action wakes a suspended one.
+  `list` reads the labels file of a running computer alone, and attach, connect and extend refuse the others in words.
+- **Release** deletes. A Mac Orgo manages answers 409 to a delete. That is refused in Orgo's words, and the Mac is
+  left.
+- **Conformance.** `COMPUTER_ORGO_OS=windows` (or `macos`) with `--kind desktop` runs the desktop's cases:
+  - The Windows fixture is a PowerShell script this package carries (`src/conformance/windows-fixture.ts`): the same
+    window as `computerd-fixture`, started with `Start-Process` through exec and files.
+  - The cases written for Linux (exec's and files' POSIX programs and paths) are skipped in words (`caseOs`).
+  - The live run needs Orgo's Scale plan or a Windows computer bought on the plan; the macOS run needs Orgo's Mac
+    access.
+
 ## Browsers: Browserbase and Kernel
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
@@ -2163,6 +2211,10 @@ capabilities), no case of the run failed (a declared optional group that fails w
 every required group has at least one passing case and no Core case skipped but for an optional group the computer does
 not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
 words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip.
+A case is written for the systems its `os` names (`caseOs`). Without one, a case that needs exec or processes runs
+POSIX programs (`sh`, `id`, `/proc`) and is Linux's alone, and one that needs files names POSIX paths and is no Windows
+computer's. A computer of another os skips it in words ("the case is written for linux, and this computer runs
+windows"), after the check of what it declares.
 `none` is no computer, and `--kind` refuses it in words. Given no cases, a run takes `casesFor(machineKind)`: a
 browser's own cases (`browserCases`), every other kind the suite's (`conformanceCases`), in the library as in the CLI;
 `kindCases` draws from the same by kind. `kindCases`, `kindVerdict` and `casesFor` are exported, so the serve side reads

@@ -1,6 +1,6 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
-import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
+import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
 import type { ComputerSettingKind } from "../kinds.js";
@@ -165,7 +165,21 @@ export interface Case {
 	computer?: "shared" | "fresh" | "none";
 	/** The longest this case may run, when it needs longer than the run's default. */
 	timeoutMs?: number;
+	/**
+	 * The systems the case's body is written for. Absent: any, but a case that needs exec or processes runs POSIX
+	 * programs (sh, id, /proc) and is Linux's alone, and one that needs files names POSIX paths (/tmp) and is no Windows
+	 * computer's (caseOs). A computer of another os skips it in words.
+	 */
+	os?: readonly ComputerOs[];
 	run(t: CaseContext): Promise<void>;
+}
+
+/** The systems a case runs on: its own os; else Linux alone for one that runs programs, any but Windows for one that names paths. */
+export function caseOs(c: Pick<Case, "os" | "needs">): readonly ComputerOs[] | undefined {
+	if (c.os !== undefined) return c.os;
+	if (c.needs.some((need) => need === "exec" || need === "processes")) return ["linux"];
+	if (c.needs.includes("files")) return ["linux", "macos", "android", "ios"];
+	return undefined;
 }
 
 export interface CaseResult {

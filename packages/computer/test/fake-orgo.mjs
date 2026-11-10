@@ -31,15 +31,19 @@ const json = (status, body, headers = {}) => new Response(body === undefined ? n
  *  - bash: (computerId, command, timeout) => { exit_code, output } for POST /computers/{id}/bash;
  *  - hold: ({ method, path, body }) => a promise the request waits for before Orgo acts on it, or undefined (a test
  *    makes one call's request land after another's);
+ *  - deleteRefused: a computer id => { status, error, code } its DELETE answers instead (a Mac Orgo manages);
+ *  - extra: ({ method, path, query, body, form, record }) => a Response for a route this fake has not (a Windows or macOS
+ *    desktop's screenshot and input calls, fake-orgo-desktop.mjs), or undefined;
+ *  - upload: (form) => what an upload with destPath does in the computer (fake-orgo-desktop.mjs puts the file there);
  * fake.requests holds every request: { method, path, headers, body, form }; fake.computers each computer's record.
  */
-export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold } = {}) {
+export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, deleteRefused = () => undefined } = {}) {
 	const computers = new Map();
 	const requests = [];
 	let wakingLeft = waking;
-	const add = ({ name, workspace_id = WORKSPACE, status = "running", ends_at = null, ram = 4, cpu = 1, created_at = new Date().toISOString() }) => {
+	const add = ({ name, workspace_id = WORKSPACE, status = "running", ends_at = null, ram = 4, cpu = 1, os = "linux", created_at = new Date().toISOString() }) => {
 		const id = newId();
-		computers.set(id, { id, name, workspace_id, project_id: workspace_id, os: "linux", ram, cpu, status, ends_at, created_at, vnc_password: VNC, deleted: false, reads: 0 });
+		computers.set(id, { id, name, workspace_id, project_id: workspace_id, os, ram, cpu, status, ends_at, created_at, vnc_password: VNC, deleted: false, reads: 0 });
 		return computers.get(id);
 	};
 	const visible = (record) => record !== undefined && !(record.deleted && record.lingered >= lingers);
@@ -60,7 +64,7 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 			if (create === "unauthorized") return json(401, { error: "Invalid API key", code: "unauthorized" });
 			if (create === "fail") return json(400, { error: "ram must be one of 4, 8, 16, 32, 64", code: "invalid_ram" });
 			if ([...computers.values()].some((c) => !c.deleted && c.name === body.name && c.workspace_id === body.workspace_id)) return json(409, { error: "name in use", code: "name_taken" });
-			const record = add({ name: body.name, workspace_id: body.workspace_id, ram: body.ram, cpu: body.cpu, status: create === "creating" ? "creating" : "running", ends_at: body.ends_in_hours ? new Date(Date.now() + body.ends_in_hours * 3_600_000).toISOString() : null });
+			const record = add({ name: body.name, workspace_id: body.workspace_id, ram: body.ram, cpu: body.cpu, os: body.os ?? "linux", status: create === "creating" ? "creating" : "running", ends_at: body.ends_in_hours ? new Date(Date.now() + body.ends_in_hours * 3_600_000).toISOString() : null });
 			record.creatingLeft = create === "creating" ? creatingReads : 0;
 			record.asked = body;
 			const { deleted: _d, reads: _r, creatingLeft: _c, asked: _a, ...answer } = record;
@@ -88,6 +92,8 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 			}
 			if (method === "DELETE") {
 				if (record === undefined || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
+				const refused = deleteRefused(record.id);
+				if (refused !== undefined) return json(refused.status, { error: refused.error, ...(refused.code ? { code: refused.code } : {}) });
 				if (wakingLeft > 0) {
 					wakingLeft--;
 					return json(409, { error: "Computer is waking", code: "computer_waking" });
@@ -108,14 +114,22 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 		if ((match = /^\/computers\/([^/]+)\/bash$/.exec(path)) && method === "POST") {
 			const record = computers.get(match[1]);
 			if (!visible(record) || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
-			return json(200, { success: true, ...bash(match[1], body.command, body.timeout) });
+			const answer = await bash(match[1], body.command, body.timeout);
+			// An answer with httpStatus is Orgo's refusal of the call itself (503 "Computer not ready" while a computer boots).
+			if (answer?.httpStatus !== undefined) return json(answer.httpStatus, answer.body);
+			return json(200, { success: true, ...answer });
 		}
-		if (path === "/files/upload" && method === "POST") return json(200, { success: true, file: { id: "f1", filename: form?.get("file")?.name } });
+		if (path === "/files/upload" && method === "POST") {
+			if (form?.get("destPath")) await upload?.(form);
+			return json(200, { success: true, file: { id: "f1", filename: form?.get("file")?.name } });
+		}
 		if ((match = /^\/workspaces\/([^/]+)$/.exec(path)) && method === "GET") {
 			if (match[1] !== WORKSPACE) return json(404, { error: "Workspace not found", code: "workspace_not_found" });
 			const desktops = [...computers.values()].filter((c) => !c.deleted && c.workspace_id === WORKSPACE).map((c) => ({ id: c.id, name: c.name, status: c.status, created_at: c.created_at }));
 			return json(200, { id: WORKSPACE, name: "agentrun", desktops });
 		}
+		const routed = extra?.({ method, path, query: Object.fromEntries(searchParams), body, form, record: (match = /^\/computers\/([^/]+)\//.exec(path)) ? computers.get(match[1]) : undefined });
+		if (routed !== undefined) return routed;
 		return json(404, { error: `no route ${method} ${path}`, code: "not_found" });
 	};
 	const publicOf = (record) => {
