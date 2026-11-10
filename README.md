@@ -25,7 +25,7 @@ You need Node 24.11 or newer, on macOS or Linux.
    opens the console in your browser.
 
 2. In the console, set a password, then add one model key under **Settings → Model keys**. One `OPENROUTER_API_KEY`
-   gives every harness a model; an Anthropic or OpenAI key works too.
+   gives every harness a model. An Anthropic key runs pi and Claude Code; an OpenAI key runs pi, Codex and OpenCode.
 
 3. Open **Templates**, apply one, and start a run. Or choose **New agent** and write your own instructions.
 
@@ -77,8 +77,8 @@ flowchart LR
   Postgres with `AGENTRUN_STORE_URL`.
 - **Runners.** Each runner claims runs from the store and runs many at once. Every approval check, cap and model call happens
   here. Add runners to scale out.
-- **Hands.** Where the agent's tools act. Each run has a run folder for its files. If the agent has a computer, the
-  computer mounts that folder at `/workspace` and the tools run inside it.
+- **Hands.** Where the agent's tools act. Each run has a run folder for its files. A sandbox mounts that folder at
+  `/workspace` and the tools run inside it; a desktop, phone or browser leaves the folder on the runner.
 
 ## A first run from the terminal
 
@@ -158,17 +158,19 @@ flowchart LR
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 
-Every kind but `none` names its provider; nothing picks one for you.
+Every kind but `none` names its provider. An agent with no computer setting gets the Docker sandbox where the server
+has Docker, and no computer otherwise.
 
 - **Keys.** Add a vendor's key once in **Settings → Computers**. Your server seals it and shows it only as set or
   missing; it never enters the agent's computer. **Test connection** makes one read at the vendor and starts nothing.
 - **The run's files.** By default a run's folder lives on your server and the Docker sandbox mounts it. Turn on an
   Archil disk in Settings and the folder lives there instead, so a Daytona, Modal or E2B sandbox mounts the same folder.
+  Those three run only with an Archil disk, and with Archil on the Docker sandbox is refused.
 - **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
   a login or a captcha.
-- **Proof.** A provider ships only after it passes the conformance suite for its kind against the vendor's real
-  service. Run it yourself:
+- **Proof.** Each provider has a conformance suite for its kind. Run it against the vendor yourself, from a checkout
+  after `npm ci && npm run build`:
   `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
 
 Remote computers bill through your own account with the vendor. [`@parcha/agentrun-computer`](packages/computer/README.md)
@@ -224,14 +226,15 @@ what it says, and AgentRun commits what passes. A risky rule waits for your OK.
 - **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions.
 
 The agent's **Learning** tab shows every note, skill and workflow and the log of changes, and each run shows which
-notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire`. Git keeps the
+notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire` and the note's ETag. Git keeps the
 history, so a retired note can come back.
 
 ## Security
 
 Every saved secret (model and tool keys, MCP credentials, sign-ins, webhook signing secrets) is sealed under one key,
 `AGENTRUN_SEAL_KEY`; keep it, because losing it loses what it sealed. Secrets are write-only: the console shows each one
-as set or missing, and only your signed-in console session can paste, replace or remove one. The API token can't write
+as set or missing, and only the console can paste, replace or remove one (your signed-in session, or the launcher's console on
+loopback when accounts are off). A key set where the server starts wins over a pasted one. The API token can't write
 a secret or approve a tool call. A run gets only the keys its own model and tools need, and nothing a run learns
 can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
@@ -248,7 +251,7 @@ git clone https://github.com/Parcha-ai/agentrun && cd agentrun/deploy
 printf 'AGENTRUN_SEAL_KEY=%s\n' "$(openssl rand -base64 32)" > .env && chmod 600 .env
 echo 'OPENROUTER_API_KEY=...' >> .env
 docker compose up -d --build
-docker compose logs server     # the console's link and, the first time, the token
+docker compose logs server     # the console's link, the first visit's setup code and, the first time, the token
 ```
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
