@@ -103,3 +103,31 @@ test("a faux name in the server's own environment, with no faux option, enables 
     await exited;
   }
 });
+
+test("a separate runner takes the faux model from its own --faux option, as a --faux server does: a run of a --faux server answers from the module, in the runner's process (the deploy walk's runners)", { timeout: 90_000 }, async (t) => {
+  const dir = await scratch(t);
+  const marker = join(dir, "imported");
+  // No faux name in any environment: the server takes --faux, the runner takes its own --faux.
+  withEnv(t, { AGENTRUN_TEST_FAUX_MARKER: marker }, ["AGENTRUN_SERVE_FAUX", "AGENTRUN_HARNESS_TABLE", "AGENTRUN_TEST_FAUX_MARKER"]);
+  const { api, data } = await serve(t, { faux: MARKER_MODULE, runner: false });
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  const started = await api("POST", "/agents/plain/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  let said = "";
+  const runner = spawn(process.execPath, [RUNNER_CLI, "runner", "--data", data, "--faux", MARKER_MODULE], { env: { ...process.env }, stdio: ["ignore", "ignore", "pipe"] });
+  runner.stderr.on("data", (chunk) => (said += chunk));
+  const exited = new Promise((resolve) => runner.once("exit", resolve));
+  t.after(() => void (runner.exitCode === null && runner.kill("SIGKILL")));
+  try {
+    const ended = await Promise.race([follow(api, started.body.run_id, ["completed", "failed"]), exited.then((code) => ({ exited: code }))]);
+    assert.equal(ended.exited, undefined, `the runner exited (${ended.exited}) before the run ended: ${said.trim()}`);
+    const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+    assert.deepEqual([run.status, run.result?.final_answer], ["completed", "faux"], `the run answered from the runner's faux module: ${JSON.stringify(run.error)}`);
+    const { readFileSync } = await import("node:fs");
+    assert.ok(readFileSync(marker, "utf8").split("\n").includes(String(runner.pid)), "the runner's own process loaded the module");
+  } finally {
+    runner.kill("SIGTERM");
+    await Promise.race([exited, sleep(5_000).then(() => runner.kill("SIGKILL"))]);
+    await exited;
+  }
+});
