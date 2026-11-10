@@ -116,3 +116,19 @@ test("a runner run's desktop registers its live view: GET /computer is live with
   assert.match(said, /You took over the desktop/);
   assert.match(said, /You handed the desktop back/);
 });
+
+// #2170: a desktop or phone run whose screen is not open (no runner has it, or its viewer does not answer) has a computer
+// all the same: GET /computer reads none with its kind, never off with "this run's agent has no computer".
+test("a desktop or phone run whose screen is not open reads none with its kind; only an agent with no computer reads off (#2170)", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key" }, ["E2B_API_KEY"]);
+  // No runner: the runs stay queued, their computers never made, so no viewer answers.
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true, faux: FAUX });
+  const owner = await clientOwnerSession(server);
+  const read = async (id, definition) => {
+    assert.equal((await server.api("POST", "/agents", agent(id, definition))).status, 201);
+    const runId = (await server.api("POST", `/agents/${id}/runs`, { input: { content: "Look." } })).body.run_id;
+    return (await call(server.port, { path: `/v2/runs/${runId}/computer`, headers: { cookie: owner.cookie } })).json;
+  };
+  assert.deepEqual(await read("desk", { computer: { kind: "desktop", provider: "e2b" } }), { state: "none", kind: "desktop", hold: "agent" });
+  assert.deepEqual(await read("plain", {}), { state: "off", hold: "agent", why: "this run's agent has no computer" });
+});
