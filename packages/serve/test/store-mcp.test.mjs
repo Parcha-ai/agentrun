@@ -158,7 +158,13 @@ async function rotatingServer(t, KEY) {
   t.after(() => fake.close());
   const { store } = await storeOn(t);
   const env = { AGENTRUN_SEAL_KEY: KEY.toString("base64") };
-  await mcpServersOverStore(store, env, "test").save("fake", { url: fake.url, auth: { type: "bearer", token: tokens[0] } });
+  /** The registry over `over`, attached as a local install's (a loopback MCP server is allowed on one). */
+  const registry = (over = store) => {
+    const made = mcpServersOverStore(over, env, "test");
+    made.attach("http://127.0.0.1:9", "http://127.0.0.1:9", true); // key-gate: loopback-rule a local install's own address in a test, never an endpoint
+    return made;
+  };
+  await registry().save("fake", { url: fake.url, auth: { type: "bearer", token: tokens[0] } });
   /** The runner's refresh: a new token, the old one spent at the provider, its set sealed as the runner keeps it. */
   const rotation = () => {
     tokens.push(`not-a-secret-${`runner-kept-${tokens.length}`}`);
@@ -168,7 +174,7 @@ async function rotatingServer(t, KEY) {
     const opened = openMcpCredential(KEY, await store.mcp.server("fake"));
     return opened.credential?.headers?.authorization;
   };
-  return { fake, store, env, tokens, rotation, bearer, registry: (over = store) => mcpServersOverStore(over, env, "test") };
+  return { fake, store, env, tokens, rotation, bearer, registry };
 }
 
 test("an owner's tools refresh, or a save that keeps the sealed credential, never writes back the credential it read over a runner's rotated set: the server stays signed in", async (t) => {
