@@ -6,8 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
-import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
-import { browserSpend } from "../dist/browser-cost.js";
+import { BROWSER_CHARGED, browserSpend } from "../dist/browser-cost.js";
 import { paidHolds, useSpend } from "../dist/cap.js";
 
 const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
@@ -20,12 +19,30 @@ const microUsd = (usd) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 const claimOn = async (store, capUsd = 1) => cap.runCap({ sessions: store, capUsd: () => capUsd, now: () => T0, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
-test("a take-over's fifteen minutes are held on the run's one ledger, and a later claim counts the hold", async () => {
+/** A run's browser on its ledger over `store` (under `capUsd`), with its commits published to its watch as the claim's
+ *  Harness publishes them: `commit(data)` lands one browser charge. Its booking (`paid`) is the claim's. */
+async function browserOn(store, capUsd = 1) {
+  const paid = await claimOn(store, capUsd);
+  const spend = browserSpend("browserbase", PRICE, 180, async () => {}, () => {}, { paid });
+  let listener;
+  spend.watch({ observeCommits: (given) => void (listener = given), closed: new Promise(() => {}) });
+  const commit = (data) => listener.advance({ changes: [{ type: "entry", value: { kind: BROWSER_CHARGED, data: { tool: "browser", charged_by: "browserbase", call: null, seconds: 0, tag: "s1", conversation: 1, at: new Date().toISOString(), final: false, ...data } } }] });
+  return { spend, paid, commit };
+}
+
+test("a take-over's fifteen minutes are held on the run's one ledger while it runs: a hold, never spent; a claim lost meanwhile gives it back, and the session's charge books the time once", async () => {
   const store = memorySessionStore();
-  const spend = browserSpend("browserbase", PRICE, 180, async () => {}, () => {}, { paid: await claimOn(store) });
+  const { spend, paid } = await browserOn(store);
   const hold = await spend.personTime("your time in the browser", 900, { pauses: false, tag: "s1", from: T0 });
   assert.equal("refused" in hold, false, `held: ${JSON.stringify(hold)}`);
-  near((await claimOn(store)).spentUsd(), microUsd(usdOf(900)), "the next claim counts the person's held time");
+  near(paid.heldUsd(), microUsd(usdOf(900)), "held on this claim's ledger");
+  near(paid.spentUsd(), 0, "a hold, never spent");
+  // The claim is lost with the hold open: the next claim gives it back, and the time it held is the session's to charge.
+  const next = await browserOn(store);
+  near(next.paid.spentUsd(), 0, "the next claim gives the lost claim's hold back");
+  next.commit({ usd: 0.03, seconds: 900, final: true });
+  await next.spend.ledgerIdle?.();
+  near((await claimOn(store)).spentUsd(), 0.03, "the session's charge books the person's time, once");
 });
 
 test("a take-over past the cap is refused in the cap's words, and holds nothing", async () => {
@@ -37,47 +54,49 @@ test("a take-over past the cap is refused in the cap's words, and holds nothing"
   near((await claimOn(store)).spentUsd(), 0, "nothing held");
 });
 
-test("on the run's one ledger a session's reserve and charges are the ledger's alone: nothing is held in, or added to, this process's spend", async (t) => {
+test("on the run's one ledger a session's reserve and charges are the ledger's alone: nothing is held in, or added to, this process's spend; its charge is spent, its reserve only held", async (t) => {
   // This process's own spend, as a run of main's process would have it (cap.ts): it must see none of the runner's.
   let processSpent = 0;
   useSpend({ cap: 1, spent: () => processSpent, add: (usd) => void (processSpent += usd ?? 0) });
   t.after(() => useSpend(undefined));
   const store = memorySessionStore();
-  const spend = browserSpend("browserbase", PRICE, 180, async () => {}, () => {}, { paid: await claimOn(store) });
-  // The session's first charge, as its commit publishes it (watch): its reserve is held from here.
-  let listener;
-  spend.watch({ observeCommits: (given) => void (listener = given), closed: new Promise(() => {}) });
-  listener.advance({ changes: [{ type: "entry", value: { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: "c1", usd: 0.0003, seconds: 9, tag: "s1", conversation: 1, at: new Date(T0).toISOString(), final: false } } }] });
+  const { spend, paid, commit } = await browserOn(store);
+  // The session's first charge, as its commit publishes it (watch): booked on the ledger, its reserve held from here.
+  commit({ call: "c1", usd: 0.0003, seconds: 9 });
   await spend.ledgerIdle?.();
   assert.equal(paidHolds(), 0, "no hold in this process's paid holds");
   assert.equal(processSpent, 0, "nothing added to this process's spend");
-  // Its charge is booked on the ledger once its commit is in (as watch sees it), beside the reserve held from it.
-  near((await claimOn(store)).spentUsd(), spend.stretch + 0.0003, "the session's reserve is held, and its charge booked, on the run's ledger");
+  near(paid.spentUsd(), 0.0003, "its charge is spent on the ledger");
+  near(paid.heldUsd(), spend.stretch, "its reserve is held there");
+  near((await claimOn(store)).spentUsd(), 0.0003, "a later claim counts the charge, and gives the lost claim's reserve back");
+  const turns = (await store.read(cap.TOOL_SESSION)).filter((r) => r.kind === "runner.turn").map((r) => r.data);
+  assert.ok(turns.some((d) => d.givenBack === true && d.usd === 0), `the reserve is given back, never a $0 charge: ${JSON.stringify(turns)}`);
 });
 
-test("a person's time carried after it ended is held until a charge books it, and a later claim counts it", async () => {
+test("a person's time carried after it ended is held until a charge books it; a claim lost meanwhile gives it back", async () => {
   const store = memorySessionStore();
-  const spend = browserSpend("browserbase", PRICE, 180, async () => {}, () => {}, { paid: await claimOn(store) });
+  const { spend, paid } = await browserOn(store);
   spend.carry("s1", 120);
   await spend.ledgerIdle?.();
-  const carried = (await claimOn(store)).spentUsd();
-  assert.ok(typeof carried === "number" && carried > 0 && carried <= microUsd(usdOf(120)) + 1e-9, `the next claim counts the carried time, at most its two minutes: ${carried}`);
+  const carried = paid.heldUsd();
+  assert.ok(carried > 0 && carried <= microUsd(usdOf(120)) + 1e-9, `held on this claim, at most its two minutes: ${carried}`);
+  near((await claimOn(store)).spentUsd(), 0, "a hold: the next claim gives it back");
 });
 
 // Money its provider is already owed, run outside any call, is held on the ledger however the run's spend stands (owed:
 // never asked of the cap's rule, as main's keepHold): a session still open at a reopen, and a person's time that ran.
-test("past the run's cap, a session held from a reopen and a person's carried time are still held on the ledger (owed), and a later claim counts them", async () => {
+test("past the run's cap, a session held from a reopen and a person's carried time are still held on the ledger (owed)", async () => {
   const store = memorySessionStore();
   // A $0.001 cap: one stretch ($0.009) of either does not fit, so a refusable hold would be refused.
-  const spend = browserSpend("browserbase", PRICE, 180, async () => {}, () => {}, { paid: await claimOn(store, 0.001) });
+  const { spend, paid } = await browserOn(store, 0.001);
   const docs = { Inventory: "inventory", Sessions: "sessions" };
   const harness = { snapshot: async (doc) => (doc === docs.Inventory ? { rows: { s1: { tag: "s1", conversationId: 1, state: "kept", resourceId: "bb-1" } } } : { sessions: [{ tag: "s1", spent: { chargedThrough: new Date().toISOString() } }] }) };
   await spend.reopened(harness, docs, {});
   await spend.ledgerIdle?.();
-  const reopened = (await claimOn(store)).spentUsd();
-  assert.ok(typeof reopened === "number" && reopened >= spend.stretch - 1e-9, `the reopen's reserve is held past the cap: ${reopened}`);
-  spend.carry("s1", 120);
+  const reopened = paid.heldUsd();
+  assert.ok(reopened >= spend.stretch - 1e-9, `the reopen's reserve is held past the cap: ${reopened}`);
+  // Another session's person time (the reopened one's is in its reserve since its last charge already).
+  spend.carry("s2", 120);
   await spend.ledgerIdle?.();
-  const carried = (await claimOn(store)).spentUsd();
-  assert.ok(typeof carried === "number" && carried > reopened, `the carried time is held too: ${carried}, after ${reopened}`);
+  assert.ok(paid.heldUsd() > reopened, `the carried time is held too: ${paid.heldUsd()}, after ${reopened}`);
 });

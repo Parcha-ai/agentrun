@@ -123,3 +123,18 @@ test("list-priced dollars are tracked as the charges accumulate: a record that r
   // Nothing new billed (the release already closed the record): the estimate it held stays, and nothing is added.
   assert.deepEqual(withEstimate(other, other, true).estimatedUsd, 0.001);
 });
+
+// A host that gives a cut call's hold back (agentrun's runner, on a lost claim) relies on this: a charge is the session's
+// wall time since its last COMMITTED charge (its record's chargedThrough), so time a charge covered that never committed
+// (computed, billed at the provider, its process lost before the commit) is billed by the next charge, never lost.
+test("a charge that never commits leaves the session's record as it was: the next charge, its release, bills that time too", () => {
+  const prices = { sessionUsdPerHour: 0.12, sessionMinimumS: 60 };
+  const committed = sessionCharge(startSpent(at(0)), at(100), prices).spent;
+  // A call's charge through 200 s, computed and never committed (its process lost): the record stays at 100 s.
+  const lost = sessionCharge(committed, at(200), prices);
+  assert.equal(lost.spent.seconds, 200);
+  // The next claim's release, from the committed record: the 100 s the lost charge covered, and the 30 s after it.
+  const release = sessionCharge(committed, at(230), prices, "priced", true);
+  assert.equal(release.spent.seconds, 230, "every second since the session opened, once");
+  assert.ok(Math.abs(release.spent.usd - (0.12 * 230) / 3600) < 1e-11, `the whole time billed, the lost charge's included: ${release.spent.usd}`);
+});

@@ -91,7 +91,7 @@ const pauseOn = async (error: unknown, pause: Ledger["pause"] = ledgers.getStore
 export type PaidBooking = {
   /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
    *  browser vendor), named on its runner.request. */
-  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true }): Promise<unknown>;
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }): Promise<unknown>;
   /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };
@@ -221,21 +221,25 @@ export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.pai
  *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). One refused
  *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
  *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
-export async function paidStep<T>(paid: PaidBooking, call: string, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
-  const id = `${call}#${(paidSeq += 1)}`;
+export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
+  const id = `${call ?? fee.ref ?? fee.name}#${(paidSeq += 1)}`;
+  let admitted: unknown;
   try {
-    await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, call, chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}) });
+    admitted = await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, ...(call === undefined ? {} : { call }), chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}), ...(fee.hold ? { hold: true as const } : {}), ...(fee.ref === undefined ? {} : { ref: fee.ref }) });
   } catch (error) {
     await pauseOn(error, pause);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };
   }
+  // Its ref booked already (by this claim or an earlier one): no step was opened, so nothing is settled.
+  if ((admitted as { booked?: unknown } | undefined)?.booked === true) return { result: await run() };
   let outcome: { result: T } | { thrown: unknown };
   try {
     outcome = { result: await run() };
   } catch (thrown) {
     outcome = { thrown };
   }
-  await paid.settle(id, chargeOf(outcome)).catch(() => undefined);
+  // A hold-only step (`hold`) is given back, never a charge: its money is booked by its own charges' steps.
+  await (fee.hold ? paid.settle(id, 0, { givenBack: true }) : paid.settle(id, chargeOf(outcome))).catch(() => undefined);
   if ("thrown" in outcome) throw outcome.thrown;
   return outcome;
 }

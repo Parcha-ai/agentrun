@@ -25,7 +25,7 @@
 // shown.
 import type { Context } from "@earendil-works/chord";
 import type { Refusal } from "@parcha/agentrun-kernel";
-import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { type Harness, ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
@@ -93,15 +93,15 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
  *  (default: the server's stderr). */
 export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking; pause?: (refusal: LedgerRefusal) => Promise<void> } = {}) {
-  /** The runner's one ledger (the kernel cap's paidCalls), when the run has one: each browser call is one paid request on
-   *  it, held at the hold main takes for it and settled at the charges booked under it; a charge under no call (a
-   *  session's release, its top-up to the minute) is one more, owed (never refused: its time is spent at the provider)
-   *  and settled at that charge. Each is booked once its commit is in (booked). In place of this process's spend. Every
-   *  step names its tool ("browser") and, where it has one, its session, so the run view places it as main's charge. */
+  /** The runner's one ledger (the kernel cap's paidCalls), when the run has one. Its holds are hold-only steps (`hold`:
+   *  money reserved, never spent, given back when let go or when a claim is lost): each browser call's, held at the hold
+   *  main takes for it, a session's reserve, a person's time. Its money is its charges: each one paid step of its own,
+   *  owed (its time is spent at the provider: never refused, however the run's spend stands), settled at the charge,
+   *  named by its session and time (`ref`) so it is booked once, and booked once its commit is in (booked); a reopen books
+   *  any the root holds and the ledger lacks (reopened). In place of this process's spend. Every step names its tool
+   *  ("browser") and, where it has them, its call and session, so the run view folds it as main's charge. */
   const paid = ledger.paid;
-  /** Each browser call under way on the ledger: what has been charged under it (null: a charge with no price). */
-  const chargedUnder = new Map<string, number | null>();
-  /** The ledger steps of charges under no call, until they are written (ledgerIdle). */
+  /** The ledger steps of charges and holds, until they are written (ledgerIdle). */
   const pending = new Set<Promise<unknown>>();
   let ledgerSeq = 0;
   /** A hold of `usd` under `name`: on the run's one ledger when it is given (a held paid step, given back when the hold is
@@ -114,7 +114,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     if (!paid) return { hold: keepHold(usd), admitted: Promise.resolve({}) };
     const booking = paid;
     const id = `browser:${name}#${(ledgerSeq += 1)}`;
-    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = booking.admit({ id, name, holdUsd: usd, basis, chargedBy: provider, tool: BROWSER_TOOL, ...(options.tag ? { tag: options.tag } : {}), ...(options.owed ? { owed: true as const } : {}) }).then(
+    const admitted: Promise<{ refused?: string; refusal?: LedgerRefusal }> = booking.admit({ id, name, holdUsd: usd, basis, chargedBy: provider, tool: BROWSER_TOOL, hold: true, ...(options.tag ? { tag: options.tag } : {}), ...(options.owed ? { owed: true as const } : {}) }).then(
       () => ({}),
       (error: unknown) => {
         const capped = (error as { code?: unknown })?.code === "spend_cap_reached";
@@ -203,18 +203,19 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: paid ? BROWSER_CHARGED : TOOL_COST, data });
   }
 
-  /** A charge on the run's one ledger, once its commit is in: under its call while that call's paid step is under way
-   *  (settled at the charges under it), else one more paid step of its own, owed (its time is spent at the provider, so
-   *  the cap never refuses it, however the run's spend stands) and settled at the charge, under its session's last call. */
-  function bookOnLedger(booking: PaidBooking, data: Booked): void {
-    if (data.call !== null && chargedUnder.has(data.call)) {
-      const so = chargedUnder.get(data.call) ?? null;
-      chargedUnder.set(data.call, so === null || data.usd === null ? null : so + data.usd);
-      return;
-    }
-    const step = paidStep(booking, data.call ?? `${data.tag}${data.final ? "@release" : "@charge"}`, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, owed: true }, async () => undefined, () => data.usd).catch(() => undefined);
+  /** A charge on the run's one ledger, once its commit is in: one paid step of its own, owed (its time is spent at the
+   *  provider, so the cap never refuses it, however the run's spend stands), settled at the charge, under its call (the
+   *  one that ran it, else its session's last; none after a restart that lost it) and named by its session and time, so
+   *  it is booked once whoever books it (this, or a reopen's: reopened). One that cannot be booked (its claim lost, a
+   *  write that failed) is said in the log, and booked by the next claim's reopen. */
+  function bookOnLedger(booking: PaidBooking, data: Booked): Promise<void> {
+    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, owed: true, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
+      (stepped) => void ("refused" in stepped && log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${stepped.refused.slice(0, 200)}): the next claim's reopen books it` }))),
+      (error: unknown) => void log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${String((error as Error)?.message ?? error).slice(0, 200)}): the next claim's reopen books it` })),
+    );
     pending.add(step);
     void step.finally(() => pending.delete(step));
+    return step;
   }
 
   /** A charge whose commit is in (watch): it joins what the run's process counts as spent, and moves the holds. Never
@@ -251,12 +252,33 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
+  /** The one booking a charge names on the ledger: its session, its time, and whether it was the session's last. */
+  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`;
+
+  /** At a reopen, on the runner's one ledger: every charge the root holds (BROWSER_CHARGED) is booked there, once by its
+   *  ref, so one whose commit landed and whose booking did not (its process lost between the two) is counted now; one
+   *  booked already books nothing. */
+  async function bookRootCharges(harness: Pick<Harness, "conversation">, context: Context): Promise<void> {
+    if (!paid) return;
+    const root = await harness.conversation(ROOT_CONVERSATION_ID as never, context);
+    if (!root) return;
+    const charges: Booked[] = [];
+    for (let cursor: unknown = undefined; ; ) {
+      const page = await root.entries({ order: "ascending" } as never, 500, cursor as never, context);
+      for (const entry of page.items as readonly { kind: string; data?: unknown }[]) if (entry.kind === BROWSER_CHARGED) charges.push(entry.data as Booked);
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    await Promise.all(charges.map((data) => bookOnLedger(paid, data)));
+  }
+
   /** At a reopen, after pi-browser's reconcile: every session its custody still tracks (each row of its inventory: kept,
    *  unreached, still releasing, lost) is held from here as if opened in this process, at a stretch beside what it ran
    *  since its last charge, the time the process was down included; that is already spent at the provider, so it is
    *  held, never refused. Its final charge, or its leaving the inventory, lets it go. One billed in full is not held. */
-  async function reopened(harness: Pick<Session, "snapshot">, docs: { Inventory: unknown; Sessions: unknown }, context: Context): Promise<void> {
+  async function reopened(harness: Pick<Session, "snapshot"> & Partial<Pick<Harness, "conversation">>, docs: { Inventory: unknown; Sessions: unknown }, context: Context): Promise<void> {
     if (rate === 0) return;
+    if (harness.conversation) await bookRootCharges(harness as Pick<Harness, "conversation">, context);
     const rows = Object.values(((await harness.snapshot(docs.Inventory as never, context)) as { rows?: Record<string, Row> } | undefined)?.rows ?? {});
     for (const row of rows.filter((r) => !sessions.has(r.tag))) {
       const record = ((await harness.snapshot(docs.Sessions as never, row.conversationId as never, context)) as { sessions?: { tag: string; spent: { chargedThrough: string; final?: true } }[] } | undefined)?.sessions?.find((s) => s.tag === row.tag);
@@ -346,20 +368,18 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         const usd = microUsd(Math.max(0, usdOf(ranS) - carriedUsd) + 2 * stretch);
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
         if (ledger.paid) {
-          // On the runner's one ledger: one paid request, held at that same figure, settled at the charges booked under
-          // this call (a call with none charged nothing; one with an unpriced charge at its hold).
-          chargedUnder.set(api.callId, 0);
+          // On the runner's one ledger: one hold-only step, held at that same figure and given back when the call returns
+          // (or its claim is lost): the call's charges are each their own step (booked).
           calls.set(api.callId, { cid: api.conversationId, hold: { usd, drop: () => {} } as Hold });
           try {
             // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
             // One refused for room pauses the run (ledger.pause, the run's own: a native tool task runs in no host tool
             // call's ledger), in the cap's words and figures, as an ask's person time does: its next request is refused
             // and the run parks for a raise.
-            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider, tool: BROWSER_TOOL }, () => tool.execute(args, api as never, context), () => chargedUnder.get(api.callId) ?? null, ledger.pause);
+            const stepped = await paidStep(ledger.paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider, tool: BROWSER_TOOL, hold: true }, () => tool.execute(args, api as never, context), () => 0, ledger.pause);
             return "refused" in stepped ? await refuse(stepped.refused, api, context) : stepped.result;
           } finally {
             calls.delete(api.callId);
-            chargedUnder.delete(api.callId);
           }
         }
         const paid = await paidCall("this browser call", async () => keepHold(usd), () => undefined, { usd, basis });

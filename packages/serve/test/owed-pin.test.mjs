@@ -58,3 +58,28 @@ test("owed is set in exactly four places, in browser-cost.ts, for money already 
   for (const [what, words] of SITES) assert.equal(setters.filter(({ line }) => words.test(line)).length, 1, `one setter for ${what}`);
   assert.deepEqual(passes.filter(({ passedOn }) => !passedOn), [], "every other `owed: true as const` only passes on the owed it was given");
 });
+
+// `hold` (kernel/cap run-cap.ts) gives a step back on a lost claim: money reserved, never booked as cut. So only the
+// browser's holds set it, in browser-cost.ts: its ledger holds (holdOf: a session's reserve, a reopen's, a delayed
+// release, a person's time) and a browser call's hold. Every other `hold: true` only passes on the one it was given; the
+// recorder's credential `hold` (pi-browser, which reaches no ledger) is another word for another thing.
+test("hold is set in exactly two places, in browser-cost.ts, on the browser's hold-only steps; elsewhere only passed on", () => {
+  const setters = [];
+  const passes = [];
+  for (const file of sources()) {
+    const where = relative(PACKAGES, file);
+    if (where === "pi-browser/src/recorder/credential.ts") continue;
+    readFileSync(file, "utf8").split("\n").forEach((line, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
+      for (const match of line.matchAll(/\bhold:\s*true(\s+as const)?/g)) {
+        if (match[1]) passes.push({ where: `${where}:${i + 1}`, passedOn: /\.hold \? \{ hold: true as const \} : \{\}/.test(line) });
+        else setters.push({ where: `${where}:${i + 1}`, line });
+      }
+    });
+  }
+  assert.ok(setters.every(({ where }) => where.startsWith("serve/src/browser-cost.ts:")), `hold is set only in browser-cost.ts: ${JSON.stringify(setters.map(({ where }) => where))}`);
+  assert.equal(setters.length, 2, `exactly two setters: ${JSON.stringify(setters.map(({ where }) => where))}`);
+  assert.equal(setters.filter(({ line }) => /booking\.admit\(\{ id, name, holdUsd: usd/.test(line)).length, 1, "one in holdOf, the ledger's holds");
+  assert.equal(setters.filter(({ line }) => /name: "this browser call"/.test(line)).length, 1, "one on a browser call's hold");
+  assert.deepEqual(passes.filter(({ passedOn }) => !passedOn), [], "every other `hold: true as const` only passes on the hold it was given");
+});
