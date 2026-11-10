@@ -3,12 +3,13 @@
 // pipes, a missing root, and durability on return, shown with pi-durable-disk's fsync-snapshot shim.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import { runDirIn } from "@parcha/pi-durable-agent";
 import { learningRepo } from "../dist/learning.js";
+import { sendFile } from "../dist/run-files.js";
 import { ID } from "../dist/validate.js";
 import { agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
@@ -29,6 +30,13 @@ function scratch() {
 suite("LocalWorkspace", async () => {
   const { root, outside } = scratch();
   return { workspace: localWorkspace(root), root, outside };
+});
+
+// The branch every platform without /proc/self/fd takes (macOS, where Docker Desktop binds the run's folder), forced
+// here so Linux CI runs it: the same answers, each path checked under the root.
+suite("LocalWorkspace, resolving paths (as off Linux)", async () => {
+  const { root, outside } = scratch();
+  return { workspace: localWorkspace(root, { procFd: false }), root, outside };
 });
 
 async function refused(promise, code) {
@@ -284,6 +292,103 @@ test("local: a folder swapped for a link to outside, over and over, never sends 
   assert.deepEqual(readdirSync(outside), ["victim"], "nothing was made or removed outside");
   assert.equal(readFileSync(join(outside, "victim"), "utf8"), "outside\n", "the outside file is unchanged");
 });
+
+// A box process swapping a folder of the run's for a link to the host, landed at the worst moment: once the walk holds
+// the folder, before anything is done in it (the onHeld hook). Shown for both branches: through /proc/self/fd (Linux)
+// and resolving paths (macOS's, forced so Linux CI runs it).
+const BRANCHES = [
+  { name: "through /proc/self/fd", procFd: true, skip: process.platform !== "linux" && "only Linux has /proc/self/fd" },
+  { name: "resolving paths (as off Linux)", procFd: false, skip: false },
+];
+
+/** A hook that, the `nth` time folder `target` is held, moves it aside and puts a link to `to` in its place. */
+function swapWhenHeld(target, to, nth = 1) {
+  let seen = 0;
+  return (abs) => {
+    if (abs !== target || ++seen !== nth) return;
+    renameSync(target, `${target}.real`);
+    symlinkSync(to, target);
+  };
+}
+
+/** A host folder beside the root: a file, and a folder holding another, that no call may touch. */
+function hostFiles(outside) {
+  writeFileSync(join(outside, "victim"), "the host's file\n");
+  mkdirSync(join(outside, "deep"));
+  writeFileSync(join(outside, "deep", "victim"), "the host's other file\n");
+}
+const hostUntouched = (outside) => {
+  assert.deepEqual(readdirSync(outside).sort(), ["deep", "victim"], "nothing outside was made or removed");
+  assert.equal(readFileSync(join(outside, "victim"), "utf8"), "the host's file\n");
+  assert.equal(readFileSync(join(outside, "deep", "victim"), "utf8"), "the host's other file\n");
+};
+
+for (const branch of BRANCHES) {
+  test(`local, ${branch.name}: the end-of-run sweep never unlinks a host file through a folder swapped for a link mid-walk`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "output", "sub", "deep"), { recursive: true });
+    writeFileSync(join(root, "output", "sub", "victim"), "the run's file\n");
+    writeFileSync(join(root, "output", "sub", "deep", "victim"), "the run's other file\n");
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "output", "sub"), outside) });
+    // The sweep's own call (run-tools.ts sweep): the run's output/ removed, recursive and forced.
+    const swept = workspace.remove("output", { recursive: true, force: true });
+    if (branch.procFd) await swept.catch(() => undefined);
+    else await refused(swept, "ESCAPE");
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: a read never returns a host file through a folder swapped for a link once walked`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "a"));
+    writeFileSync(join(root, "a", "victim"), "the run's file\n");
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "a"), outside) });
+    const read = workspace.read("a/victim");
+    if (branch.procFd) assert.equal(Buffer.from(await read).toString("utf8"), "the run's file\n", "read in the folder held, never through the link");
+    else await refused(read, "ESCAPE");
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: a file GET of the run refuses a host file through a folder swapped for a link, or a link at the path`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "a"));
+    writeFileSync(join(root, "a", "victim"), "the run's file\n");
+    symlinkSync(join(outside, "victim"), join(root, "a", "linked"));
+    /** GET /runs/{id}/files/<rel> through run-files.ts sendFile, as the route calls it: the bytes sent, or its error. */
+    const get = async (workspace, rel) => {
+      const sent = [];
+      const res = { destroyed: false, writeHead() {}, write(chunk) { sent.push(Buffer.from(chunk)); return true; }, end() {}, destroy() { this.destroyed = true; }, once() {} };
+      await sendFile({ method: "GET" }, res, new URL(`http://x/files/${rel}`), workspace, rel, "a tool");
+      return Buffer.concat(sent).toString("utf8");
+    };
+    const notFound = (error) => error?.code === "not_found";
+    // The listing holds a/ first (the 1st time), then the read holds it again (the 2nd): swapped between the two.
+    const swapped = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "a"), outside, 2) });
+    if (branch.procFd) assert.equal(await get(swapped, "a/victim"), "the run's file\n");
+    else await assert.rejects(get(swapped, "a/victim"), notFound, "a GET through a swapped folder is a 404, never the host's bytes");
+    // A link at the path itself, made by the box before the GET: never listed, never followed.
+    rmSync(join(root, "a")); // the first swap's link (only the link), and the run's folder back
+    renameSync(join(root, "a.real"), join(root, "a"));
+    await assert.rejects(get(localWorkspace(root, { procFd: branch.procFd }), "a/linked"), notFound, "a link at the path is a 404");
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: grep never searches a host file through a folder swapped for a link once walked`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "a"));
+    writeFileSync(join(root, "a", "victim"), "the run's file\n");
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "a"), outside) });
+    const found = await workspace.grep("file", { path: "a" }).then(({ matches }) => matches.map((match) => match.text), (error) => {
+      assert.equal(error?.code, "ESCAPE", `refused as a link, not ${error}`);
+      return [];
+    });
+    assert.ok(found.every((text) => !text.includes("host")), `no host line was searched: ${JSON.stringify(found)}`);
+    hostUntouched(outside);
+  });
+}
 
 test("local: every write is durable on return (a crash after it keeps it whole); plain node:fs writes are lost", { skip: SHIM_SKIP, timeout: 60_000 }, () => {
   const { dir } = scratch();

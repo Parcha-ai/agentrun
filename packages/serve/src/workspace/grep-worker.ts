@@ -1,15 +1,22 @@
 // LocalWorkspace's grep, in a worker thread: the caller's regex runs here, so one that backtracks without end blocks
 // this thread, never the runner's, and local.ts terminates it at the deadline. It searches the folder `dir` names (on
 // Linux, /proc/self/fd/<fd> of a folder local.ts holds open for it), or the one file `only` in it, opening every entry
-// with O_NOFOLLOW: a link is skipped, never followed. Each match is posted as it is found; the last message is
-// `{ done: false | "max" }`.
-import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
+// with O_NOFOLLOW: a link is skipped, never followed. Off /proc/self/fd (macOS), where `dir` is a path and every open
+// resolves it again, each entry opened is checked first: its real path is under `root` and is the file opened (dev and
+// inode), else it is skipped, so a folder swapped for a link mid-search never sends a byte from outside. Each match is
+// posted as it is found; the last message is `{ done: false | "max" }`.
+import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, realpathSync, type Stats, statSync } from "node:fs";
+import { sep } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
 import { globRegex } from "./glob.js";
 
 export type GrepJob = {
   readonly dir: string;
   readonly rel: string;
+  /** Whether `dir` is /proc/self/fd/<fd> (Linux): else a path, and every entry opened is checked under `root`. */
+  readonly procFd: boolean;
+  /** The workspace's root, its real path. */
+  readonly root: string;
   readonly only?: string;
   readonly pattern: string;
   readonly glob?: string;
@@ -21,7 +28,6 @@ export type GrepJob = {
 type Match = { path: string; line: number; text: string };
 
 const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = constants;
-const LINUX = process.platform === "linux";
 
 const sorted = (names: string[]): string[] => names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
@@ -54,6 +60,17 @@ function run(job: GrepJob, post: (message: unknown) => void): void {
       post({ matches: [match] });
     }
   };
+  /** Off /proc/self/fd, whether path `at` leads under the root to the file opened (`stats`, its fstat). */
+  const confined = (at: string, stats: Stats): boolean => {
+    if (job.procFd) return true;
+    try {
+      const real = realpathSync(at);
+      const there = statSync(real);
+      return (real === job.root || real.startsWith(job.root + sep)) && there.dev === stats.dev && there.ino === stats.ino;
+    } catch {
+      return false;
+    }
+  };
   /** Entry `name` of folder `dir`, opened without following a link, searched if it is a file or a folder. */
   const searchEntry = (dir: string, name: string, rel: string): void => {
     let fd: number;
@@ -64,7 +81,8 @@ function run(job: GrepJob, post: (message: unknown) => void): void {
     }
     try {
       const stats = fstatSync(fd);
-      if (stats.isDirectory()) searchDir(LINUX ? `/proc/self/fd/${fd}` : `${dir}/${name}`, rel);
+      if (!confined(`${dir}/${name}`, stats)) return;
+      if (stats.isDirectory()) searchDir(job.procFd ? `/proc/self/fd/${fd}` : `${dir}/${name}`, rel);
       else if (stats.isFile()) searchFile(fd, stats.size, rel, name);
     } finally {
       closeSync(fd);
