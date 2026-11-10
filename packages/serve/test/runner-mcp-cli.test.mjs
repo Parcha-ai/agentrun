@@ -113,7 +113,7 @@ function mcpCli(seen, { reissue = false } = {}) {
   };
 }
 
-async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, wrap = (store) => store, timing = STEADY, reissue = false } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, wrap = (store) => store, timing = STEADY, reissue = false, settle = true } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -149,8 +149,22 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
       ...(mcp ? { mcp } : {}),
     };
   });
+  // Each loop a runner makes, by runner: a runner killed (a crash) leaves its loops as they stand, holding what they opened
+  // (the session's model proxy), which a crashed process would let go as it died. Here they are stopped at the case's end.
+  let made = [];
+  const dead = [];
+  const tracked = (deps) => {
+    const one = loop(deps);
+    made.push(one);
+    return one;
+  };
+  t.after(async () => {
+    // A commit a crash held fails now, as a dead process's write never lands, and its loop unwinds and is stopped.
+    for (const fail of holds.splice(0)) fail(new Error("the runner died"));
+    await Promise.all(dead.map((one) => one.stop({ kind: "shutdown" }).catch(() => {})));
+  });
   // `wrap`: the first runner's store as a case sees it (a commit held, the way a crash would stop it); `timing` its claim.
-  runner = startRunner({ store: wrap(store), createLoop: loop, name: "runner-a", ...timing });
+  runner = startRunner({ store: wrap(store), createLoop: tracked, name: "runner-a", ...timing });
   /** The run once it is no longer running (or once `done` says so), and its journal's entries. */
   const settled = async (done = (row) => row.state !== "running" && row.state !== "queued" && row.runner === null) => {
     const from = Date.now();
@@ -166,15 +180,18 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
   /** The runner goes (closed while the run is parked: it holds no claim) and another starts on the same store. */
   const replaceRunner = async () => {
     await runner.close();
-    runner = startRunner({ store, createLoop: loop, name: "runner-b", ...STEADY });
+    runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...STEADY });
   };
   /** The runner dies where it stands (no release, its claim left to run out) and another starts on the same store, which
    *  claims the run once that claim has run out. */
   const crashRunner = () => {
     runner.kill();
-    runner = startRunner({ store, createLoop: loop, name: "runner-b", ...timing });
+    dead.push(...made);
+    made = [];
+    runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...timing });
   };
-  return { ...(await settled()), seen, fake, server, settled, replaceRunner, crashRunner };
+  // `settle: false`: the case starts its own wait (a run held mid-commit never settles before its runner is killed).
+  return { ...(settle ? await settled() : {}), seen, fake, server, settled, replaceRunner, crashRunner };
 }
 
 const toolCalls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
@@ -290,6 +307,10 @@ function sentWatched(store, onSent) {
   });
 }
 
+/** A commit held the way a crash stops it: it never lands while the case runs; at the case's end it fails (cliRun). */
+const holds = [];
+const held = () => new Promise((_, reject) => holds.push(reject));
+
 /** Resolves once `check` holds, polling. */
 const reached = async (check, what, ms = 20_000) => {
   for (const from = Date.now(); !(await check()); await sleep(20)) assert.ok(Date.now() - from < ms, what);
@@ -312,7 +333,7 @@ test("P1: a parked call is on the record from its park, unsent; Allow sends it o
 test("P2: an allowed parked call whose runner dies before its sent mark is sent once by the next runner, never interrupted", async (t) => {
   let hit;
   const atMark = new Promise((resolve) => (hit = resolve));
-  const run = await cliRun(t, { timing: SHORT, wrap: (store) => sentWatched(store, () => (hit(), new Promise(() => {}))) });
+  const run = await cliRun(t, { timing: SHORT, wrap: (store) => sentWatched(store, () => (hit(), held())) });
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
   await atMark;
@@ -330,7 +351,7 @@ test("P6: an allowed parked call whose runner dies after its sent mark, before t
   const run = await cliRun(t, { timing: SHORT, wrap: (store) => sentWatched(store, async (commit) => {
     const landed = await commit();
     hit();
-    await new Promise(() => {});
+    await held();
     return landed;
   }) });
   await run.server.command("run-1", { kind: "approve", body: { approval: CALL_ID } });
@@ -374,7 +395,8 @@ test("P7: an allowed call whose runner dies after its start and before its sent 
     settings: { "mcp:fake/add": { permission: "allow" } },
     timing: SHORT,
     reissue: true,
-    wrap: (store) => sentWatched(store, () => (hit(), new Promise(() => {}))),
+    settle: false,
+    wrap: (store) => sentWatched(store, () => (hit(), held())),
   }).catch((error) => assert.fail(error));
   await atMark;
   run.crashRunner();
