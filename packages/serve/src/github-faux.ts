@@ -15,7 +15,7 @@ export const FAUX_GITHUB_FILE = "faux-github.json";
 export const FAUX_GITHUB: { appId: string; slug: string; installation: number; account: string; repositories: readonly string[] } = { appId: "1", slug: "agentrun-faux", installation: 1, account: "faux-org", repositories: ["faux-org/demo"] };
 
 export type FauxGitHub = {
-  /** GitHub's API, as the server's githubApi. */
+  /** Its API's base, which the server's Connect GitHub asks in place of GitHub's own; never a URL anyone gives. */
   url: string;
   /** The App as Connect GitHub keeps it (github-connection.ts GitHubConnection.save). */
   app: { id: string; slug: string; clientId: string; pem: string; webhookSecret: string; settingsUrl: string };
