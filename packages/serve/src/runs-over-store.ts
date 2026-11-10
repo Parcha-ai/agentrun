@@ -128,13 +128,15 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  call waiting for approval is a deny with the person's words as the reason (as runs.ts declineBy did); every other message
  *  is a steer, which the runner places into the turn in flight, answers a question with, or runs as a follow-up turn, by the
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
- *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. */
+ *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
+ *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
+ *  which may skip it, in words. */
 export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin }: { requestId?: string; answers?: boolean; origin?: unknown } = {},
-): Promise<{ mode: MessageMode; messageId: string }> {
+  { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
+): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
@@ -144,11 +146,18 @@ export async function message(
   // A person's message while a tool call waits for approval declines it, with the message as the reason: a deny the run's
   // gate acts on as any deny, resuming the session with the refusal and the person's words in one turn. A trigger's never
   // does (answers false, refused above). Marked as the person's message (`by`), so its approval reads "Declined by your
-  // message", as main's declineBy kept it.
+  // message", as main's declineBy kept it. A person's answer to that call written first (not taken yet) stands, and the store refuses this deny (one answer per
+  // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } });
-    return { mode: "answer", messageId };
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof StoreConstraint) return false;
+        throw error;
+      },
+    );
+    if (declined) return { mode: "answer", messageId };
   }
   if (moment.terminal) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
@@ -160,9 +169,16 @@ export async function message(
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
   const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
+  if (queue) {
+    const queued = await queue({ kind: "steer", body });
+    return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
+  }
   await sendCommand(store, moment.id, { kind: "steer", body });
   return { mode, messageId };
 }
+
+/** A steer command row, as message() writes it. */
+export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
 
 /** The raise command rows this run already has, newest last, with the cap each names. */
 async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
@@ -199,18 +215,34 @@ function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false):
   return new ApiError("not_continuable", `The tool call ${id} was already ${how}.`, { details: { reason: "already_answered", decision } });
 }
 
+/** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
+ *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
+ *  run could not resume) answers nothing, so the person may answer again. */
+async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
+  return row && { decision: row.kind === "approve" ? "allow" : "deny" };
+}
+
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
- *  runner reads and acts on. The first answer wins — the same one again changes nothing, another is 409 already-answered —
- *  and a run with no such waiting call is 404. The note is the person's words, carried on the command for the run's gate. */
+ *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
+ *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
+ *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
+ *  person's words, carried on the command for the run's gate. */
 export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
-  const given = moment.answeredApprovals?.[id];
-  if (!given && !(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
-  if (given) {
-    if (given.decision === decision) return;
-    throw alreadyAnswered(id, given.decision, given.ended === true);
-  }
+  const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
+    if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
+  };
+  const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
+  if (given) return settle(given);
+  if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
-  await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+  try {
+    await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+  } catch (error) {
+    const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
+    if (!won) throw error;
+    settle(won);
+  }
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
@@ -289,6 +321,8 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
+  /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
+  readonly title?: string;
   readonly origin?: RunOrigin;
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
@@ -320,7 +354,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
  *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
  *  one-run-per-key), so a retry never starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title: given }: StartOptions = {}): Promise<RunRow> {
   const issues = deps.runBodyIssues(body);
   if (issues.length) {
     // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
@@ -351,7 +385,8 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
-  const title = revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+  // A starter's title (a trigger's "<Source> <name>") is shown words too: cut as the input is, then as every title is below.
+  const title = given !== undefined ? String(redactedOutput(given, deps.serverSecrets())) : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
   // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
   const tooling = await toolingOf(revision);

@@ -76,7 +76,9 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
   // no file of it in the run's directory.
   assert.deepEqual(Object.keys(handed).sort(), ["at", "id", "kind", "port", "tag", "token"]);
   assert.equal(handed.kind, "browser");
-  assert.ok(!existsSync(join(runFolder(w.server.data, w.runId), "browser-live")), "no hand-over file in the run's directory");
+  const folder = runFolder(w.server.data, w.runId);
+  assert.ok(existsSync(folder), "the run's folder is where the test looks");
+  for (const dir of [folder, join(folder, "work")]) assert.ok(!existsSync(join(dir, "browser-live")), `no hand-over file under ${dir}`);
 
   // Owner-only: no credential 401, the server's token 403, the owner's session 200.
   assert.equal((await computerOf(w, {})).status, 401);

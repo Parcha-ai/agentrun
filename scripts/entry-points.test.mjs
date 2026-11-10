@@ -22,7 +22,6 @@ const reviewed = new Map([
   ['packages/computer/src/entry.ts', realpathForm],
   ['packages/pi-durable-disk/src/cli.ts', realpathForm],
   ['packages/pi-durable-agent/test/agent-store.test.mjs', childScript],
-  ['packages/serve/test/graph-lockfree.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve-store.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve.test.mjs', childScript],
   ['packages/pi-durable-disk/test/commands.test.ts', childScript],

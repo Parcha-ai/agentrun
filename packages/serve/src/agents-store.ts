@@ -8,6 +8,7 @@
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
 import { randomBytes } from "node:crypto";
 import { agentLink } from "./console-links.js";
+import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
@@ -88,7 +89,9 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}),
     ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}),
   };
-  if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...common, ...capped };
+  // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
+  // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
+  if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
   const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
   return {
     kind: "agentic",
@@ -230,7 +233,8 @@ export async function commitAgent(
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
-        ...(definition.approvals === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).approvals !== undefined ? { approvals: (currentBody as AgenticBody).approvals } : {}),
+        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals, as main's agents.ts),
+        // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
@@ -285,7 +289,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).approvals !== undefined ? { approvals: (body as AgenticBody).approvals } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
@@ -293,6 +297,8 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    // Its approvals, of either kind: "ask" where none is set, as main's definition read says it (agents.ts definitionOf).
+    approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
     // A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the

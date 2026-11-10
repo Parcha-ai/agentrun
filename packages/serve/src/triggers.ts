@@ -81,7 +81,6 @@ export const SEEN_KEPT = 5_000;
 /** The highest max_active_runs a trigger may set (the store's CHECK holds the same). */
 export const MAX_ACTIVE_RUNS = 100;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
-const LOST_AT_SETUP = "The server stopped while setting up the run.";
 /** Why a message_run trigger turned itself off: the run it messages is gone. */
 const RUN_DELETED = "its run was deleted";
 const CONVERSATION_RUN_DELETED = "The conversation's run was deleted.";
@@ -127,9 +126,9 @@ export type TriggerDeps = {
   /** How a run ended and its answer, read as GET /v2/runs/{id} reads it; null when there is no such run. Only a target
    *  with include_last_answer asks. */
   lastRun?(runId: string): Promise<LastRun | null>;
-  /** The run the store started under origin `key`, if one: a firing left due by a server that went down mid-start.
-   *  `setup_lost`: that server went down before it set the run up, so the run never started. */
-  runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
+  /** The run the store started under origin `key`, if one: a firing left due by a server that went down mid-start. A run
+   *  is inserted whole (its row and launch in one transaction), so a found run started. */
+  runOf(key: string): Promise<{ run_id: string } | null>;
   /** Queues a trigger.failed webhook message under `key`, the firing's (webhooks.ts emitTrigger): `off` when there is no
    *  webhook to send it to; `unsaved` or `closed` when it is not in the outbox. */
   notify(failed: TriggerFailed, key: string): "queued" | "unsaved" | "off" | "closed";
@@ -684,8 +683,6 @@ export class Triggers {
       // Its run already started (the store has its key) is its run, whatever runs now.
       const prior = await this.deps.runOf(key);
       if (this.closed) return;
-      // A key stays bound to its run: one lost at setup is this firing's failure, never fired again.
-      if (prior?.setup_lost) return void (await this.failed(triggerId, key, { code: "run_failed", message: LOST_AT_SETUP }, prior.run_id, LOST_AT_SETUP));
       // The conversation this firing starts, if it starts one: kept on the run's trigger (its launch row), as the store
       // clears a firing's attrs once its run starts.
       const conversation = conversationOf(firing.attrs);
