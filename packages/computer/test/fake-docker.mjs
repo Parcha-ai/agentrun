@@ -183,9 +183,11 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * images on the host (default: every image is), which `image inspect` finds, `pull` adds and `run --pull never` needs;
  * `pull` is "ok" or "fails" (the registry refuses it); "pull" can be held too. `volume` is the provider's volume option;
  * `volumeRoots` maps a volume's name to the directory its files are in, so a `volume-subpath` that is not there fails as
- * Docker's does. docker info reports `ServerVersion` 29.0.0 unless `info` says otherwise.
+ * Docker's does. docker info reports `ServerVersion` 29.0.0 unless `info` says otherwise. `lateRun` ("egress" or
+ * "computer") makes that kind's `docker run` a CLI that never answers, whose container the daemon still makes 200 ms
+ * after the CLI is killed (by the caller's abort), as a real daemon does with a create already under way.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {} } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -202,7 +204,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, DAEMON_BYTES);
 	chmodSync(daemonPath, daemonMode);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
+	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, lateRun, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
@@ -222,6 +224,23 @@ const saveVolumes = (all) => writeFileSync(config.volumeState, JSON.stringify(al
 // The images on the host, or null when every image is.
 const loadImages = () => JSON.parse(readFileSync(config.imageState, "utf8"));
 const saveImages = (all) => writeFileSync(config.imageState, JSON.stringify(all));
+// A container docker run made: saved and its id printed, or, for config.lateRun's kind, a CLI that never answers while
+// the daemon (a detached process here) still makes the container after the CLI is killed: once the cleanup that follows
+// has gone quiet (no docker call for 150 ms), so it lands after the provider's first removal looked and found nothing.
+const commit = (made, kind) => {
+	if (config.lateRun !== kind) {
+		save([...load(), made]);
+		process.stdout.write(made.Id + "\\n");
+		return;
+	}
+	const daemon = "const fs = require('node:fs'); const parent = " + process.pid + "; const state = " + JSON.stringify(config.state) + "; const log = " + JSON.stringify(config.log) + "; const made = " + JSON.stringify(made) + ";" +
+		"const alive = () => { try { process.kill(parent, 0); return true; } catch { return false; } };" +
+		"let size = -1; let since = Date.now();" +
+		"const wait = setInterval(() => { if (alive()) return; const now = fs.statSync(log).size; if (now !== size) { size = now; since = Date.now(); return; } if (Date.now() - since < 150) return;" +
+		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state, JSON.stringify(all)); }, 20);";
+	require("node:child_process").spawn(process.execPath, ["-e", daemon], { detached: true, stdio: "ignore" }).unref();
+	setInterval(() => {}, 1000);
+};
 const labelFilters = () => args.flatMap((arg, i) => (arg === "--filter" && args[i + 1].startsWith("label=") ? [args[i + 1].slice("label=".length)] : []));
 // A filter of a label's name alone (label=k) asks only that the label is there.
 const hasLabels = (labels) => labelFilters().every((f) => (f.includes("=") ? (labels ?? {})[f.slice(0, f.indexOf("="))] === f.slice(f.indexOf("=") + 1) : Object.hasOwn(labels ?? {}, f)));
@@ -288,8 +307,7 @@ switch (args[0]) {
 				ulimits: (flags["--ulimit"] ?? []).map((u) => { const [n, limits] = u.split("="); const [soft, hard = soft] = limits.split(":").map(Number); return { Hard: hard, Name: n, Soft: soft }; }),
 				logs: config.egress === "ready" ? "egress ready allow=" + args[args.indexOf("--allow") + 1] + "\\n" : ends ? "egress: no host list, so the proxy does not start\\n" : "",
 			});
-			save([...load(), merge(made, config.proxyPatch)]);
-			process.stdout.write(made.Id + "\\n");
+			commit(merge(made, config.proxyPatch), "egress");
 			break;
 		}
 		const [mount, ...more] = parsed;
@@ -313,8 +331,7 @@ switch (args[0]) {
 		made.Mounts[0].RW = !("readonly" in mount);
 		if (!config.running) Object.assign(made.State, { ExitCode: 127, Error: "exec format error" });
 		if (flags["--cpus"]) made.HostConfig.NanoCpus = Math.round(Number(flags["--cpus"][0]) * 1e9);
-		save([...load(), merge(made, config.patch)]);
-		process.stdout.write(made.Id + "\\n");
+		commit(merge(made, config.patch), "computer");
 		break;
 	}
 	case "inspect": held("inspect", () => {

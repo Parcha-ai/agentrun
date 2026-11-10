@@ -223,6 +223,10 @@ const FIXED = "a Docker computer's network is fixed at create; create a new comp
 const NETWORKS = 'network is required: "none", "open" or { allow: [names or CIDRs] }';
 /** How often create asks whether the egress proxy is ready. */
 const EGRESS_POLL_MS = 100;
+/** After a docker run cut off before its own exit: how long, at most, and how often the leftovers are removed and
+ *  looked for again (#settle). */
+const SETTLE_MS = 10_000;
+const SETTLE_EVERY_MS = 500;
 /** Only the fields hostOf reads, as JSON. */
 const INFO_FORMAT =
 	'{"Architecture":{{json .Architecture}},"SecurityOptions":{{json .SecurityOptions}},"MemoryLimit":{{json .MemoryLimit}},' +
@@ -504,8 +508,15 @@ export class DockerProvider implements ComputerProvider {
 		const ranMs = Date.now() - lifetimeFrom;
 		if (!started.ok || started.value.exitCode !== 0) {
 			// A run that failed or was aborted may still have made the container; an allowlist's proxy and volume go with it.
-			await this.release({ id: name, name }, "delete");
-			return started.ok ? fail("docker", `docker run failed: ${started.value.stderr.trim()}`) : started;
+			const released = await this.release({ id: name, name }, "delete");
+			if (started.ok) return fail("docker", `docker run failed: ${started.value.stderr.trim()}`);
+			// Cut off before its own exit: the daemon may still make the computer after release looked, and then its egress
+			// volume with it (#settle).
+			const left = await this.#settle([name], allow === undefined ? [] : [egressNameOf(name)]);
+			const what = allow === undefined ? `the computer ${name}` : `the computer ${name}, its proxy and its volume`;
+			const removed = allow === undefined ? "was removed, if Docker made it after" : "were removed, if Docker made them after";
+			const words = !released.ok ? `${what} could not all be removed: ${released.error.message}` : left === undefined ? `${what} ${removed}` : `${what} could not all be removed: ${left}`;
+			return fail(started.error.code, `${started.error.message === "docker run was aborted" ? "create was aborted during docker run" : started.error.message}; ${words}`);
 		}
 		const ref = { id: started.value.stdout.trim(), name };
 		// From here the computer exists: every step takes the caller's signal, and an abort deletes the computer.
@@ -553,6 +564,37 @@ export class DockerProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
+	/**
+	 * After a `docker run` that did not end with an exit of the CLI's own (it was aborted, or the CLI could not be run):
+	 * the CLI client is gone, but the Docker daemon may still finish making the container a moment later, after a single
+	 * `docker rm` found nothing, and leave it Created. So the containers and volumes named are removed by name, then
+	 * inspected, again and again SETTLE_EVERY_MS apart, until two inspects in a row find none of them, on a bound of
+	 * their own (SETTLE_MS), never the caller's signal, which has already ended. Undefined when they are gone; else what
+	 * is still there, in words.
+	 */
+	async #settle(containers: string[], volumes: string[]): Promise<string | undefined> {
+		const bound = AbortSignal.timeout(SETTLE_MS);
+		let gone = 0;
+		let left = [...containers, ...volumes];
+		while (!bound.aborted) {
+			for (const container of containers) await this.#run(["rm", "--force", container], bound);
+			for (const volume of volumes) await this.#run(["volume", "rm", "--force", volume], bound);
+			const found = containers.length === 0 ? ok([]) : await this.#inspect(containers, bound, "{{json .Name}}");
+			const listed = volumes.length === 0 ? undefined : await this.#run(["volume", "inspect", "--format", "{{.Name}}", ...volumes], bound);
+			// A read that fails for any reason but "no such" counts as all still there.
+			const unread = (ran: Ran) => ran.exitCode !== 0 && ran.stderr.split("\n").some((line) => line.trim() !== "" && !/no such volume/i.test(line));
+			const there = [
+				...(found.ok ? found.value.map((name) => String(name).replace(/^\//, "")) : containers),
+				...(listed === undefined ? [] : listed.ok && !unread(listed.value) ? listed.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean) : volumes),
+			];
+			left = there;
+			gone = there.length === 0 ? gone + 1 : 0;
+			if (gone >= 2) return undefined;
+			await sleep(SETTLE_EVERY_MS, undefined, { signal: bound }).catch(() => undefined);
+		}
+		return `${left.join(" and ")} ${left.length === 1 ? "was" : "were"} still there ${SETTLE_MS / 1000} s after docker run was cut off`;
+	}
+
 	/** Deletes a computer whose create was aborted after docker run; the delete itself is not signalled. */
 	async #abandon(ref: ComputerRef): Promise<Result<never>> {
 		const removed = await this.release(ref, "delete");
@@ -573,7 +615,12 @@ export class DockerProvider implements ComputerProvider {
 		const { image, hint, readyMs } = this.#egress;
 		const args = egressRunArgs({ name, user, image, allow, local: this.#hostLocal(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
 		const ran = await this.#run(args, signal);
-		if (!ran.ok) return ran;
+		if (!ran.ok) {
+			// Cut off before its own exit: the daemon may still make the proxy after the caller's cleanup looked (#settle).
+			const left = await this.#settle([proxy], [proxy]);
+			const words = left === undefined ? "the proxy and its volume, if Docker made them after, were removed" : `the proxy and its volume could not all be removed: ${left}`;
+			return fail(ran.error.code, `${ran.error.message === "docker run was aborted" ? "create was aborted during docker run of the egress proxy" : ran.error.message}; ${words}`);
+		}
 		if (ran.value.exitCode !== 0) return fail("docker", `docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
 		// Every call of the poll ends at the readiness bound, so a docker that stops answering cannot hold create past it: a
 		// call the bound cut off is the timeout, and the caller's own abort stays aborted.
