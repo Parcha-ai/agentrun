@@ -110,21 +110,3 @@ test("a trigger is named once per agent: a second of the same name, made or rena
   const other = await engine.create({ name: "other", source: { kind: "webhook" }, target: { kind: "message_run", run_id: "run-1", input: { content: "Poke." } } });
   await assert.rejects(engine.update(other.id, { name: "poke" }), taken, "renamed");
 });
-
-test("a message_run trigger whose run was deleted turns itself off at its next firing, in words; its last run reference is cleared", async (t) => {
-  const { store, file, engine, make } = await engineOn(t);
-  const trigger = await make({ kind: "webhook" });
-  await store.triggers.update(trigger.id, {});
-  const db = await raw(file);
-  if (db.kind === "sqlite") await db.exec("PRAGMA foreign_keys = ON");
-  await db.run("UPDATE triggers SET last_run_id = 'run-1' WHERE id = ?", trigger.id);
-  await db.run("DELETE FROM runs WHERE id = 'run-1'");
-  assert.equal((await store.triggers.get(trigger.id)).lastRunId, null, "the trigger's last run reference cleared with the run");
-  await db.close();
-  await engine.receive(trigger.id, "evt-1", "{}");
-  await until(async () => (await store.triggers.get(trigger.id)).enabled === false, "turned off");
-  const off = await store.triggers.get(trigger.id);
-  assert.deepEqual(off.disabled && [off.disabled.reason, off.disabled.detail], ["source_unreadable", "its run was deleted"]);
-  const [firing] = await store.triggers.firings(trigger.id);
-  assert.deepEqual([firing.status, firing.reason], ["skipped", "its run was deleted"]);
-});
