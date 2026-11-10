@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { type Change, checkProposal, draftFiles, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { baseOf } from "./learn/seed-check.js";
+import { parseNoteFile, ruleOf } from "./learn/notes.js";
 import { writeDurable } from "./files.js";
 import { type Proposal, PROPOSAL, type Turn } from "./learning.js";
 import type { Workspace } from "./workspace/index.js";
@@ -98,9 +99,16 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
     }),
   ] : [];
   // The seed is read whatever the answer: a seed the folder does not hold fails the check.
-  const { snapshot, texts } = await seedAt(input.folder, input.seed, () => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file)] : []));
+  // The seed's active notes are read too: a new note of the same rule as one (notes.ts ruleOf) is a duplicate.
+  const activeOf = (seedSnapshot: Snapshot) => seedSnapshot.notes.filter((note) => note.status === "active").map((note) => note.file);
+  const { snapshot, texts } = await seedAt(input.folder, input.seed, (seedSnapshot) => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file), ...activeOf(seedSnapshot)] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
-  const { base, kept } = baseOf(snapshot);
+  const { base: seedBase, kept } = baseOf(snapshot);
+  const rules = new Map(activeOf(snapshot).flatMap((file): [string, string][] => {
+    const note = texts.has(file) ? parseNoteFile(file, texts.get(file)!) : undefined;
+    return note && !Array.isArray(note) ? [[ruleOf(note.body), file]] : [];
+  }));
+  const base = { ...seedBase, rules };
   const held = new Set(base.files);
   const files = given.filter((group) => group.some(({ file, text }) => texts.get(file) !== text)).flat();
   const changes: Change[] = [

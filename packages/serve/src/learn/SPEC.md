@@ -188,7 +188,12 @@ when risky; one that would be no note is dropped, saying it belongs in a note. A
 keeps (a new note, or a skill re-filed as one) whose file main already holds is settled alone (the learning run's
 `takenOnMain`), never a refusal of the whole merge: the same text is no change, dropped unsaid; a note whose front matter
 supersedes the note of its own name is a modification, written over it (the merge's `replace`, main's blob checked as
-graded); any other is dropped, saying a note of that name was added since or was there already. The rest merges. Steps or a format for one kind of job,
+graded); any other is dropped, saying a note of that name was added since or was there already. The rest merges.
+One copy of each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts
+`ruleOf`), is exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the
+seed's active notes, and of two new notes the same, the second), and the merge leaves it out unsaid (against main's
+active notes now). A note that supersedes the one it repeats updates it, never a duplicate. Anything near is the
+grader's to judge. Steps or a format for one kind of job,
 named by when it applies, are a skill. `note` is a skill's decision alone: on any other item it is no merge. An item
 the rubric drops is
 dropped. A risky rule (one that widens trust in a site or a seller, skips or loosens an approval or a check, or names

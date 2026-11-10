@@ -215,6 +215,15 @@ export async function mainTexts(ws: Workspace, paths: readonly string[]): Promis
   });
 }
 
+/** The text of each note main holds active now, by its file: what a merge checks a new note's rule against (the
+ *  learning loop's takenOnMain). From the folder's snapshot and its bodies: no git, no exec. */
+export async function activeTexts(ws: Workspace): Promise<Record<string, string>> {
+  return readLearning(ws, async ({ snapshot, body }) => {
+    const active = (snapshot?.notes ?? []).filter((note) => note.status === "active");
+    return Object.fromEntries(await Promise.all(active.map(async (note) => [note.file, await body(note.file, note.oid)] as const)));
+  });
+}
+
 export async function readMain(ws: Workspace, proposal: { readonly notes: readonly NoteText[] }): Promise<{ active: IndexEntry[]; superseded: NoteText[]; graded: Record<string, string> } | { problems: Problem[] }> {
   const added = proposal.notes.map(({ file, text }) => parseNoteFile(file, text));
   const bad = proposal.notes.filter((_, i) => Array.isArray(added[i])).map(({ file }): Problem => ({ rule: "note", path: file, detail: "the proposal's note is out of shape" }));

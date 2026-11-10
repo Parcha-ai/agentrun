@@ -202,7 +202,7 @@ test("a skill's or a draft's folder name, any other file under them, a deletion,
 });
 
 test("skills and drafts are not notes: eight notes beside a skill and a draft pass", () => {
-  const notes = Array.from({ length: CAPS.newNotes }, (_, i) => added(`n${i}.md`, note({ name: `N${i}` })));
+  const notes = Array.from({ length: CAPS.newNotes }, (_, i) => added(`n${i}.md`, note({ name: `N${i}`, body: `Rule ${i}.\n` })));
   const result = check([...notes, added(SKILL_PATH, skill()), ...draft()]);
   assert.deepEqual([result.ok, result.notes.length], [true, CAPS.newNotes]);
 });

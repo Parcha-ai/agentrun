@@ -48,6 +48,7 @@ const RULE_WORDS: Record<string, string> = {
   edited: "a change to a note it had (a new note replaces an old one instead)",
   deleted: "a deleted note",
   exists: "a note under a name already taken",
+  duplicate: "a note that says what another one says",
   too_large: `a note over ${CAPS.note / 1024} KB`,
   too_many_notes: `more than ${CAPS.newNotes} new notes`,
   note: "a note whose header is not in shape",

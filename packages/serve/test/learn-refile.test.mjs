@@ -5,7 +5,9 @@
 // keptOf, mergeChangeOf), pending when risky. A skill that would be no note is dropped, saying where it belongs. `note`
 // is a skill's decision alone. Then a learning run whose faux grader re-files a skill writes the note to the folder, and
 // no skill; a note of that name main already holds is never written over, and never fails the run: the same text is no
-// change, other text drops that item alone, saying so, and the rest merges.
+// change, other text drops that item alone, saying so, and the rest merges. One copy of each rule: a new note whose body
+// is exactly an active note's (whitespace and case aside), under another name, is a duplicate, at the checks and at the
+// merge; of two new notes the same, the first is kept.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +17,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const { GRADE_RUBRIC, gradedItems, gradePrompt, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
-const { parseNoteFile } = await import("../dist/learn/notes.js");
+const { parseNoteFile, ruleOf } = await import("../dist/learn/notes.js");
+const { checkProposal } = await import("../dist/learn/check.js");
 const { keptOf, mergeChangeOf, NOTE_NAME_TAKEN, SAME_NOTE, takenOnMain } = await import("../dist/runner/learning-loop.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 const { learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
@@ -198,4 +201,50 @@ test("takenOnMain and the merge: a kept note that supersedes the note of its own
   } finally {
     await folder.end();
   }
+});
+
+/** A note named `name` (its file `<slug>.md`) whose body is `body`. */
+const noteNamed = (slug, name, body, extra = "") => ({ file: `${slug}.md`, text: `---\nname: ${name}\ndescription: ${name}, as a rule\ntype: feedback\n${extra}---\n${body}\n` });
+
+test("ruleOf: a note's rule is its body alone, whitespace and case set aside; nothing near is the same", () => {
+  assert.equal(ruleOf("Convert every amount\n to   CENTS first."), ruleOf("convert every amount to cents first."));
+  assert.notEqual(ruleOf("Convert every amount to cents first."), ruleOf("Convert every amount to cents, first."));
+});
+
+test("the checks: a new note whose rule an active note of the seed holds, under another name, is a duplicate; of two new notes the same, the first passes; one that supersedes the note it repeats is no duplicate", () => {
+  const active = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const base = { files: ["MEMORY.md", active.file], active: [parseNoteFile(active.file, active.text)], rules: new Map([[ruleOf("Convert every amount to cents first."), active.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  const one = checkProposal({ base, changes: [change(again)] });
+  assert.deepEqual(one.problems.map(({ rule, path, detail }) => [rule, path, detail]), [["duplicate", again.file, "it says what units.md says"]]);
+  const first = noteNamed("first", "First", "Retry a flaky fetch twice.");
+  const second = noteNamed("second", "Second", "retry a flaky fetch twice.");
+  const two = checkProposal({ base, changes: [change(first), change(second)] });
+  assert.deepEqual(two.problems.map(({ rule, path }) => [rule, path]), [["duplicate", second.file]]);
+  const update = noteNamed("units-v2", "Units", "Convert every amount to cents first.", "supersedes: [units.md]\n");
+  assert.deepEqual(checkProposal({ base, changes: [change(update)] }).problems, []);
+});
+
+test("the merge: a kept note whose rule main's active note holds under another name is dropped unsaid, and the run's other note merges", async (t) => {
+  const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  const { end, notes, words } = await refileRun(t, { existing: { [units.file]: units.text }, notes: [again, NOTE], files: [], answer: KEEP_BOTH([again.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes[again.file], undefined, "not kept under its other name");
+  assert.equal(notes[units.file], units.text);
+  assert.ok(notes["retries.md"], "the other note merged");
+  assert.equal(words, "Learned: Retries");
+});
+
+test("the merge: of two kept notes of one rule, the first is kept; a skill re-filed as a note of a rule main holds is a duplicate too", async (t) => {
+  const first = noteNamed("first", "First", "Start every report with STATUS, at most 5 lines, and end it with Next:.");
+  const second = noteNamed("second", "Second", "start every report with status, at most 5 lines, and end it with next:.");
+  const { end, notes, words } = await refileRun(t, { notes: [first, second, NOTE], files: [SKILL], answer: verdictOf([...[first, second, NOTE].map(({ file }) => ({ file, decision: "keep", why: "useful" })), { file: SKILL.file, decision: "note", why: "a rule for every report" }]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.ok(notes[first.file], "the first kept");
+  assert.equal(notes[second.file], undefined, "the second, the same rule, not kept");
+  assert.equal(notes["report-format.md"], undefined, "the skill's rule, the same, not kept as a note again");
+  assert.ok(notes["retries.md"]);
+  assert.equal(words, "Learned 2 notes: First; Retries");
 });

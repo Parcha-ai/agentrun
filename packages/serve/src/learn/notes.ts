@@ -79,6 +79,10 @@ function marked(text: string, lines: readonly string[], replaced: readonly strin
 /** `text`, a run's new note, as the host merges it: `origin: you` for one kept from the user's own words (a note the run
  *  worked out carries none, which reads as `run`) and, for a note that waits for its owner's OK, `status: pending`, in
  *  place of any of the three it had. */
+/** A note's rule as two notes are the same rule by: its body (its front matter never counts), lowercased, every run of
+ *  whitespace one space, trimmed. Only an exact match is the same rule: a near one is the grader's to judge. */
+export const ruleOf = (body: string): string => body.toLowerCase().replace(/\s+/g, " ").trim();
+
 export function mergedNote(text: string, as: { origin: NoteOrigin; pending?: boolean }): string {
   if (!(NOTE_ORIGINS as readonly string[]).includes(as.origin)) throw new Error(`origin is ${NOTE_ORIGINS.join(" or ")}`);
   // The run's own `risky` mark is read by the grade (runMarkedRisky) and never kept: a held note says so by its status.

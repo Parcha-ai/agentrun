@@ -4,7 +4,7 @@
 // here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
-import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
+import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
 import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
@@ -41,7 +41,7 @@ export type Rule =
   | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
   | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full"
   | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node"
-  | "skill_front_matter" | "skill_status";
+  | "skill_front_matter" | "skill_status" | "duplicate";
 
 /** One problem with what a run proposed, printable as it is. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
@@ -59,7 +59,9 @@ export type Change = {
 
 /** The folder a proposal is checked against (the run's seed, or main at merge time): every path it holds, and its active
  *  notes. */
-export type Base = { readonly files: Iterable<string>; readonly active: readonly LearnedNote[] };
+/** What a proposal is checked against: every path at the seed's top, its active notes, and `rules`, when the caller read
+ *  the active notes' texts, each one's rule (notes.ts ruleOf) to its file: a new note of the same rule is a duplicate. */
+export type Base = { readonly files: Iterable<string>; readonly active: readonly LearnedNote[]; readonly rules?: ReadonlyMap<string, string> };
 /** A new note that passed, with its whole text. */
 export type ProposedNote = LearnedNote & { readonly text: string };
 
@@ -221,6 +223,9 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   const refused = valueMatcher(values);
   const base = new Set(input.base.files);
   const notes: ProposedNote[] = [];
+  // Each rule held, by the file that holds it: the seed's active notes', then each new note's as it passes. A new note
+  // of a rule held already is a duplicate, whatever its name; of two new notes the same, the first is kept.
+  const rules = new Map(input.base.rules ?? []);
   const skills: string[] = [];
   const workflows = new Set<string>();
   let added = 0;
@@ -244,6 +249,11 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
     if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
+    const rule = ruleOf(note.body);
+    const holder = rules.get(rule);
+    // One that supersedes the note it repeats updates it (its name or description, say): no duplicate.
+    if (holder !== undefined && !note.supersedes.includes(holder)) return add("duplicate", `it says what ${holder} says`, path);
+    rules.set(rule, path);
     notes.push(note);
   };
   for (const change of changes) one(change);

@@ -63,14 +63,14 @@ test("supersedes must name a note active on the seed, once among the new notes",
     const result = check([added(NEW, note({ extra: `supersedes: [${old}]\n` }))]);
     assert.deepEqual(result.problems, [{ rule: "supersedes", path: NEW, detail: `it supersedes ${old}, which is not an active note` }], old);
   }
-  const twice = check([added("a.md", note({ extra: "supersedes: [shipping-path.md]\n" })), added("b.md", note({ extra: "supersedes: shipping-path.md\n" }))]);
+  const twice = check([added("a.md", note({ extra: "supersedes: [shipping-path.md]\n" })), added("b.md", note({ extra: "supersedes: shipping-path.md\n", body: "Open /policies/shipping before searching.\n" }))]);
   assert.deepEqual(twice.problems, [{ rule: "supersedes", path: "b.md", detail: "shipping-path.md is superseded by another new note too" }]);
 });
 
 test("the new notes supersede at most eight notes together: eight pass, and a ninth is refused as supersedes", () => {
   const files = { ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`n${i}.md`, note({ name: `N${i}` })])), "MEMORY.md": "" };
   const olds = (n) => Array.from({ length: n }, (_, i) => `n${i}.md`).join(", ");
-  const at = (n) => checkProposal({ base: baseOf(files), changes: [added("a.md", note({ extra: `supersedes: [${olds(n - 1)}]\n` })), added("b.md", note({ extra: `supersedes: [n${n - 1}.md]\n` }))] });
+  const at = (n) => checkProposal({ base: baseOf(files), changes: [added("a.md", note({ extra: `supersedes: [${olds(n - 1)}]\n` })), added("b.md", note({ extra: `supersedes: [n${n - 1}.md]\n`, body: "Another rule.\n" }))] });
   assert.equal(at(CAPS.supersedes).ok, true);
   assert.deepEqual(at(CAPS.supersedes + 1).problems, [{ rule: "supersedes", detail: `the new notes supersede ${CAPS.supersedes + 1} notes; the cap is ${CAPS.supersedes} a run` }]);
   // At merge time too: main is asked the same.
@@ -79,7 +79,7 @@ test("the new notes supersede at most eight notes together: eight pass, and a ni
 });
 
 test("eight new notes pass and a ninth is refused; a run's note over 4068 bytes is refused and one at 4068 passes: the note cap less the 28 bytes of the host's own lines", () => {
-  const notes = (n) => Array.from({ length: n }, (_, i) => added(`n${i}.md`, note({ name: `N${i}` })));
+  const notes = (n) => Array.from({ length: n }, (_, i) => added(`n${i}.md`, note({ name: `N${i}`, body: `Rule ${i}.\n` })));
   assert.equal(check(notes(CAPS.newNotes)).ok, true);
   assert.deepEqual(rules(check(notes(CAPS.newNotes + 1))), ["too_many_notes"]);
   // What the host adds to a run's note as it merges it, at the most: `origin: you` and `status: pending`, a line each.
@@ -98,10 +98,10 @@ test("an index that would pass 200 lines is refused; a note that supersedes one 
   const files = { ...Object.fromEntries(Array.from({ length: 199 }, (_, i) => [`n${i}.md`, note({ name: `N${i}` })])), "MEMORY.md": "" };
   const base = baseOf(files);
   assert.equal(checkProposal({ base, changes: [added(NEW, note())] }).ok, true, "200 lines");
-  const over = checkProposal({ base, changes: [added(NEW, note()), added("two.md", note())] });
+  const over = checkProposal({ base, changes: [added(NEW, note()), added("two.md", note({ body: "Another rule.\n" }))] });
   assert.deepEqual(rules(over), ["index_full"]);
   assert.match(over.problems[0].detail, /201 lines; it holds at most 200/);
-  assert.equal(checkProposal({ base, changes: [added(NEW, note()), added("two.md", note({ extra: "supersedes: [n0.md]\n" }))] }).ok, true);
+  assert.equal(checkProposal({ base, changes: [added(NEW, note()), added("two.md", note({ extra: "supersedes: [n0.md]\n", body: "Another rule.\n" }))] }).ok, true);
 });
 
 test("the index counts what the merge makes active: a note that waits for its OK supersedes nothing until approved, so the notes it names stay lines, and the merge writes by the same rule", () => {
