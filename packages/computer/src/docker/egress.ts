@@ -42,9 +42,11 @@ const PROXY_VOLUME = "/egress";
 const PROXY_SOCKET = `${PROXY_VOLUME}/egress.sock`;
 const PROXY_CODE = "/code/docker";
 const PROXY_PACKAGE = "/code/package.json";
+/** With the provider's volume option, the staged tree (src/docker/stage.ts) mounted whole: docker/ and package.json. */
+const PROXY_ROOT = "/code";
 const PROXY_MAIN = `${PROXY_CODE}/egress-main.js`;
 /** The files the proxy container runs, in dist/docker. */
-const CODE_FILES = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
+export const CODE_FILES = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
 const EXAMPLE = '["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"]';
 
 /** The proxy container's name, and the volume's, for computer `name`. */
@@ -55,6 +57,15 @@ export const egressNameOf = (name: string): string => `${name}-egress`;
 export interface EgressCode {
 	dir: string;
 	packageJson: string;
+	/** With the provider's volume option: the code is staged below the volume's root in one tree (src/docker/stage.ts),
+	 *  `root` its subpath (undefined when unknown), which the proxy mounts whole at /code. */
+	volume?: {
+		name: string;
+		root?: string;
+		/** For a read-back: whether a proxy may be mounted on this subpath, any verified copy of the code (stage.ts
+		 *  egressStaged), not only `root`. Without it, `root` alone. */
+		accepts?: (subpath: string) => boolean;
+	};
 }
 
 /** This package's own build: the directory this file is in, and the package's package.json. */
@@ -190,7 +201,13 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
 	args.push("--network", "bridge");
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
-	args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
+	if (code.volume === undefined) {
+		args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
+	} else {
+		// With the provider's volume option, the staged tree, one directory, as the volume's subpath: the Docker daemon has
+		// none of this process's paths.
+		args.push("--mount", `type=volume,src=${code.volume.name},dst=${PROXY_ROOT},volume-subpath=${code.volume.root ?? ""},volume-nocopy,readonly`);
+	}
 	// Create pulled the image before it made the volume, so this run never pulls: the sweep's grace holds.
 	args.push("--pull", "never");
 	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, "--allow", allow.join(","));
@@ -264,13 +281,25 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	for (const field of ["Binds", "VolumesFrom", "Devices", "PidMode", "UsernsMode"]) if (!blank(host[field])) return other(`has ${field} ${show(host[field])}`);
 	if (config.User !== owner.user) return other(`runs as ${show(config.User).replaceAll('"', "")}, not the computer's ${show(owner.user).replaceAll('"', "")}`);
 	const mounts = proxy.Mounts ?? [];
-	const want = [
-		{ Type: "volume", Name: named, Destination: PROXY_VOLUME, RW: true },
-		{ Type: "bind", Destination: PROXY_CODE, RW: false, ...(code ? { Source: code.dir } : {}) },
-		{ Type: "bind", Destination: PROXY_PACKAGE, RW: false, ...(code ? { Source: code.packageJson } : {}) },
-	];
+	// The code: binds of `code`'s paths, or, with the provider's volume option, the staged tree at /code, the volume's
+	// subpath (checked below in HostConfig.Mounts, which records it; Mounts shows the volume by name).
+	const shared = code?.volume;
+	const codeMounts =
+		shared === undefined
+			? [
+					{ Type: "bind", Destination: PROXY_CODE, RW: false, ...(code ? { Source: code.dir } : {}) },
+					{ Type: "bind", Destination: PROXY_PACKAGE, RW: false, ...(code ? { Source: code.packageJson } : {}) },
+				]
+			: [{ Type: "volume", Name: shared.name, Destination: PROXY_ROOT, RW: false }];
+	const want = [{ Type: "volume", Name: named, Destination: PROXY_VOLUME, RW: true }, ...codeMounts];
 	const fits = mounts.length === want.length && want.every((wanted) => mounts.some((mount) => Object.entries(wanted).every(([key, value]) => (mount as Record<string, unknown>)[key] === value)));
 	if (!fits) return other(`has mounts ${show(mounts.map((m) => `${m.Type} ${m.Name ?? m.Source} at ${m.Destination}${m.RW ? "" : " read-only"}`))}, not its volume read-write at ${PROXY_VOLUME} and its code read-only`);
+	if (shared !== undefined) {
+		const asked = (host.Mounts ?? []).filter((mount) => mount.Target === PROXY_ROOT);
+		const subpath = (asked[0]?.VolumeOptions as { Subpath?: unknown } | undefined)?.Subpath;
+		const right = asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === shared.name && asked[0].ReadOnly === true && (typeof subpath === "string" && subpath !== "" && (shared.accepts !== undefined ? shared.accepts(subpath) : shared.root === undefined || subpath === shared.root));
+		if (!right) return other(`mounts ${show(asked)} at ${PROXY_ROOT}, not the staged code's subpath ${show(shared.root)} of the volume ${shared.name}, read-only`);
+	}
 	const entrypoint = config.Entrypoint;
 	if (!Array.isArray(entrypoint) || entrypoint.length !== 1 || entrypoint[0] !== "node") return other(`has the entrypoint ${show(entrypoint)}, not node`);
 	const cmd = Array.isArray(config.Cmd) ? config.Cmd : [];
