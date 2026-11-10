@@ -45,5 +45,6 @@ export default defineConfig({
     },
   },
   build: { outDir: "dist", assetsInlineLimit: 0 },
-  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], ...(workers ? { minWorkers: 1, maxWorkers: workers } : {}) },
+  // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
+  test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { minWorkers: 1, maxWorkers: workers } : {}) },
 });
