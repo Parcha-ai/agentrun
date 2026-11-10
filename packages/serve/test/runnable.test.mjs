@@ -8,9 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
 import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
-import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */

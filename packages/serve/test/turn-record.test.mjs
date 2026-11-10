@@ -7,8 +7,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;

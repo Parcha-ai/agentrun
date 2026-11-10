@@ -8,8 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { metersIn } from "../dist/cap.js";
 import { readRunDbSync } from "../dist/run-db.js";
-import { startServe } from "../dist/index.js";
-import { agent, client, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, runRecordOf, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 

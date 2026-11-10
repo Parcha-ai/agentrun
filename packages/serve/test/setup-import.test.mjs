@@ -12,7 +12,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { MessageChannel } from "node:worker_threads";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { startServe } from "../dist/index.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { listRuns } from "../dist/store-reads/runs.js";
 import { answerStoreCall, importStoreProxy } from "../dist/import-proxy.js";
@@ -20,7 +19,7 @@ import { StoreBusy, StoreConstraint } from "../dist/store/index.js";
 import { launchBody } from "../dist/run-launch.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
-import { call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { call, client, cookieOf, FAUX, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };

@@ -14,8 +14,7 @@ import { release } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { startServe } from "../dist/index.js";
+import { follow, jsonLines, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 /** The whole environment of a box's programs, as the server gives it: a constant, never its own. */
 const BOX_ENV = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });

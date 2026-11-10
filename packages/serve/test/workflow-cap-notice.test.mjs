@@ -6,8 +6,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { startServe } from "../dist/index.js";
-import { client, flowAgent, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, letGo, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_SEAL_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];

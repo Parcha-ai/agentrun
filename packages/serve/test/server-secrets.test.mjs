@@ -8,8 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { seal } from "@parcha/pi-durable-agent";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, secretWritePath, serve, triggerStore, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, secretWritePath, serve, startServe, triggerStore, withEnv } from "./support.mjs";
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);

@@ -6,8 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readWorkflowRun } from "@parcha/pi-durable-agent/workflow";
-import { startServe } from "../dist/index.js";
-import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, storeRun } from "./support.mjs";
+import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, startServe, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const start = async (api, id, input, workflow = answerFlow()) => {

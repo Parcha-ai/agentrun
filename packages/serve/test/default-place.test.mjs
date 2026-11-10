@@ -12,8 +12,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, flowAgent, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, flowAgent, follow, jsonLines, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
