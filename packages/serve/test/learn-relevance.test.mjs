@@ -5,8 +5,9 @@ import { test } from "node:test";
 
 const { bm25, changedPaths, inputText, queryOf, wordsOf } = await import("../dist/learn/relevance.js");
 
-test("words: lowercase letters and digits, no stop word or single letter; a path's segments are words", () => {
+test("words: lowercase letters and digits, no stop word, single letter or bare number; a path's segments are words", () => {
   assert.deepEqual(wordsOf("Reconcile the invoices: src/billing/Invoice.ts, a 2nd time"), ["reconcile", "invoices", "src", "billing", "invoice", "ts", "2nd", "time"]);
+  assert.deepEqual(wordsOf("Step 6 and step 46, line 0042 of v2"), ["step", "step", "line", "v2"], "a bare number is no word; one in a word stays");
 });
 
 test("a code review's changed paths: a diff's headers and a file list's paths, never /dev/null or prose", () => {

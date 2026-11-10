@@ -9,10 +9,11 @@ const STOP = new Set([
   "where", "which", "while", "who", "will", "with", "you", "your", "use", "used", "using", "note", "notes", "run", "runs",
 ]);
 
-/** A text's words: lowercase letters and digits, two characters or more, no stop word. A path's segments are words too
- *  (`src/learn/grade.ts` is src, learn, grade, ts). */
+/** A text's words: lowercase letters and digits, two characters or more, no stop word, and no bare number (a diff's
+ *  line numbers, a note's "Step 46"): a number tells no topic apart, and a note's length never turns on one. A path's
+ *  segments are words too (`src/learn/grade.ts` is src, learn, grade, ts). */
 export function wordsOf(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((word) => word.length > 1 && !STOP.has(word));
+  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((word) => word.length > 1 && !/^\d+$/.test(word) && !STOP.has(word));
 }
 
 /** The paths a code review names: a unified diff's `diff --git a/x b/y`, `+++ b/x` and `--- a/x` lines, and a file list's

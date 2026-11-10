@@ -839,10 +839,19 @@ export function learnedParts(seed: Seed, options: LearnedOptions): { section: st
   const whole = choice.whole.filter((note) => blocks.has(note)).map((note) => blocks.get(note)!);
   // Rule lines in place of the index: the whole notes first, then a line for each of the rest the selector names.
   if (choice.lines) {
-    const lined = choice.lines.filter((note) => blocks.has(note) && !chosen.has(note));
-    const listed = new Set(lined);
-    const given = notes.filter((note) => chosen.has(note) || listed.has(note));
-    return { section: [LINES_INTRO, ...whole, lined.map((note) => ruleLine(note, shown)).join("\n"), ...(read && lined.length ? [READ_LINE] : [])].filter(Boolean).join("\n\n"), given };
+    // The whole section fits the budget, its intro, blank lines and read-tool line counted: while it does not, the last
+    // whole note goes to the head of the lines (what the selector ranked best of the rest). Lines alone may pass it, as
+    // the index may (the selector bounds them as loadedIndex does).
+    const wholeNotes = choice.whole.filter((note) => blocks.has(note));
+    let lined = choice.lines.filter((note) => blocks.has(note) && !chosen.has(note));
+    const render = () => [LINES_INTRO, ...wholeNotes.map((note) => blocks.get(note)!), lined.map((note) => ruleLine(note, shown)).join("\n"), ...(read && lined.length ? [READ_LINE] : [])].filter(Boolean).join("\n\n");
+    let section = render();
+    while (Buffer.byteLength(section) > budget && wholeNotes.length) {
+      lined = [wholeNotes.pop()!, ...lined];
+      section = render();
+    }
+    const served = new Set([...wholeNotes, ...lined]);
+    return { section, given: notes.filter((note) => served.has(note)) };
   }
   if (!choice.index) return { section: [WHOLE_INTRO, ...whole].join("\n\n"), given: notes.filter((note) => chosen.has(note)) };
   // Given: each note whole here, and each the index names by its file, by any of a line's links (a hand-edited line may

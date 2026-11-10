@@ -99,3 +99,22 @@ test("an input with no word any note holds, or none at all, reads by recency pas
   }
   assert.deepEqual(byRelevance({ notes: [], indexBytes: 0, indexComplete: true, budget: 0 }, {}), { whole: [], index: false });
 });
+
+const REFUNDS = "What is our refund window for annual plans? Quote the policy page.";
+const MIGRATION_DIFF = ["Review this PR.", "diff --git a/db/migrations/0042.sql b/db/migrations/0042.sql", "--- a/db/migrations/0042.sql", "+++ b/db/migrations/0042.sql"].join("\n");
+
+test("the section by relevance fits the budget whole, its intro, blank lines and read-tool line counted, for a prose input and a diff, with the read tool and without", () => {
+  for (const n of [40, 50]) for (const content of [REFUNDS, MIGRATION_DIFF]) for (const read of [true, false]) {
+    const { section, given } = learnedParts(topical(n), { budget: 8000, read, shown, run: { input: { content } } });
+    assert.ok(Buffer.byteLength(section) <= 8000, `${n} notes, ${content.slice(0, 20)}, read ${read}: ${Buffer.byteLength(section)} bytes`);
+    assert.ok(wholeFiles(section).length >= 1, "still some notes whole");
+    assert.equal(given.length, n, "every note given, whole or as a line");
+  }
+});
+
+test("notes that score the same are read newest first, as recency orders them: refunds-46 before refunds-06", () => {
+  const whole = wholeFiles(learnedParts(topical(50), { budget: 8000, read: true, shown, run: { input: { content: REFUNDS } } }).section);
+  assert.ok(whole.every((file) => file.startsWith("refunds-")), whole.join(", "));
+  assert.deepEqual(whole, [...whole].sort((a, b) => Number(b.slice(-5, -3)) - Number(a.slice(-5, -3))), `newest first: ${whole.join(", ")}`);
+  assert.equal(whole[0], "refunds-46.md");
+});
