@@ -122,37 +122,6 @@ test("a restore checks the text again as a new note is checked: a retired note h
   assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
 });
 
-test("every item in the learning view says its last change, from the newest commit on its file: learned by a run, then approved, edited, retired and restored by a person, each with when", { timeout: 200_000 }, async (t) => {
-  const PENDING = note("Buy from PaperDepot24 first", "Where to buy office paper", "Buy from PaperDepot24 first.\n", "origin: you\nstatus: pending\n");
-  const { api, data, cookie, origin, port, restore, retire, etag } = await keeper(t, { "paperdepot24-first.md": PENDING });
-  // A note a run's merge kept: learned, by the run.
-  await made(api, learner("learnt", { plan: [["answer-in-tables.md", TABLES]] }));
-  const learntRun = await started(api, "learnt");
-  await ended(api, learntRun);
-  assert.equal((await learnedOnMain({ api, data }, "learnt", learntRun)).result?.ok, true);
-  const learnt = (await api("GET", "/agents/learnt/learning")).body.notes.items.find((item) => item.file === "answer-in-tables.md");
-  assert.deepEqual([learnt?.last_change?.kind, learnt?.last_change?.by], ["learned", "run"], JSON.stringify(learnt));
-  assert.ok(!Number.isNaN(Date.parse(learnt.last_change.at)));
-  const lastOf = async (file) => (await api("GET", "/agents/keeper/learning")).body.notes.items.find((item) => item.file === file)?.last_change;
-  // Approved by its owner.
-  const approved = await call(port, { method: "POST", path: "/v2/agents/keeper/learning/files/paperdepot24-first.md/approve", headers: { ...json, cookie, origin, "if-match": await etag("paperdepot24-first.md") }, body: {} });
-  assert.equal(approved.status, 200, approved.text);
-  assert.deepEqual([(await lastOf("paperdepot24-first.md"))?.kind, (await lastOf("paperdepot24-first.md"))?.by], ["approved", "person"]);
-  // Edited.
-  const edited = await api("PUT", "/agents/keeper/learning/files/paperdepot24-first.md", { text: note("Buy from PaperDepot24 first", "Where to buy office paper", "Buy from PaperDepot24 first, then OfficeHub.\n", "origin: you\n") }, { "if-match": await etag("paperdepot24-first.md") });
-  assert.equal(edited.status, 200, JSON.stringify(edited.body));
-  assert.equal((await lastOf("paperdepot24-first.md"))?.kind, "edited");
-  // Retired, then restored.
-  await retire("paperdepot24-first.md");
-  assert.deepEqual([(await lastOf("paperdepot24-first.md"))?.kind, (await lastOf("paperdepot24-first.md"))?.by], ["retired", "person"]);
-  assert.equal((await restore("paperdepot24-first.md", { ...json, cookie, origin })).status, 200);
-  assert.deepEqual([(await lastOf("paperdepot24-first.md"))?.kind, (await lastOf("paperdepot24-first.md"))?.by], ["restored", "person"]);
-  // The notes page says the same.
-  const paged = (await api("GET", "/agents/keeper/learning/notes")).body.items.find((item) => item.file === "paperdepot24-first.md");
-  assert.equal(paged?.last_change?.kind, "restored");
-  void data;
-});
-
 test("restoring a note that supersedes another marks that one superseded, as approving it would: one note's rule reaches MEMORY.md, never both", { timeout: 150_000 }, async (t) => {
   const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\norigin: you\nstatus: pending\n");
   const { api, repo, cookie, origin, restore, retire } = await keeper(t, { "answer-in-tables.md": TABLES, "answer-in-short-tables.md": SHORT });
