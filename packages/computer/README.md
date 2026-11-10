@@ -910,7 +910,10 @@ await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, networ
   one with the same bytes and modes is there. A published tree, the daemon's or the proxy's, is never removed or written
   over, since a running computer may have it mounted: providers sharing `daemonCache` that stage at once use the tree
   the first one renamed into place, and a tree at that name that no longer holds the same (a hand edit) is left as it
-  is, the new one published beside it as `<name>-<random>`. A source that is not a regular file (a named pipe) is
+  is, the new one published beside it as `<name>-<random>`. The read-back (`attach`, `list`, `network`, the drift
+  check) takes a computer mounted on `<name>` or any `<name>-<anything>` in that directory whose contents verify, byte
+  for byte and mode for mode: two providers that repaired the same tree at once each mounted their own copy, and both
+  are as `create` makes one. A source that is not a regular file (a named pipe) is
   refused in words, never waited on. The proxy then mounts that one
   directory, the layout it runs from, whole at `/code` as the volume's subpath, read-only, and the read-back holds it to
   it. The egress volume is a named volume of its own, as before. In a container the provider still needs

@@ -446,7 +446,8 @@ switch (args[0]) {
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
 	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }) };
-	return { provider: new DockerProvider(options), calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started };
+	// `options` makes a fresh provider over the same Docker: another process's.
+	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and

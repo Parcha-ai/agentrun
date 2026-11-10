@@ -228,10 +228,49 @@ export function egressStage(code: EgressCode, directory: string, volume: DockerV
 	return codeAt(volume, at.value);
 }
 
-/** Where the egress proxy's code staged in `directory` is, read only: for a read-back. */
+/**
+ * Where the egress proxy's code staged in `directory` is, read only: for a read-back. Its `accepts` takes a mounted
+ * subpath that is any verified copy (verifiedTree), not only the one staging would use now: two providers that
+ * published copies beside a tree that no longer held each mounted their own, and both are as create makes one.
+ */
 export function egressStaged(code: EgressCode, directory: string, volume: DockerVolume): Result<EgressCode> {
 	const entries = egressEntries(code);
-	return entries.ok ? codeAt(volume, treeAt(directory, "egress", entries.value)) : entries;
+	if (!entries.ok) return entries;
+	const found = codeAt(volume, treeAt(directory, "egress", entries.value));
+	if (!found.ok || found.value.volume === undefined) return found;
+	const accepts = (subpath: string) => subpath === found.value.volume?.root || verifiedTree(directory, "egress", entries.value, volume, subpath) !== undefined;
+	return ok({ ...found.value, volume: { ...found.value.volume, accepts } });
+}
+
+/**
+ * The daemon's tree a computer mounts at `subpath` of the volume, when it is a verified copy of the daemon at `source`
+ * (verifiedTree): its path. For the read-back of a computer mounted on a copy other than the one staging uses now.
+ */
+export function daemonVerified(source: string, directory: string, volume: DockerVolume, subpath: string): string | undefined {
+	const entries = daemonEntries(source);
+	return entries.ok ? verifiedTree(directory, "daemon", entries.value, volume, subpath) : undefined;
+}
+
+/**
+ * The tree at `subpath` of the volume when it is a published copy of `entries` in `directory`: named `<prefix>-<sha>`
+ * or `<prefix>-<sha>-<anything>` (a copy published beside one that no longer held), directly in the staging directory,
+ * and holding every entry with its bytes and modes, as heldTree checks. Its path; else undefined.
+ */
+function verifiedTree(directory: string, prefix: string, entries: Entry[], volume: DockerVolume, subpath: string): string | undefined {
+	let base: string;
+	try {
+		base = realpathSync(directory);
+	} catch {
+		base = resolve(directory);
+	}
+	const staging = subpathOf(volume, base, { orRoot: true });
+	const parts = subpath.split("/");
+	const leaf = parts.pop() ?? "";
+	if (staging === undefined || parts.join("/") !== staging || parts.includes("..") || parts.includes(".")) return undefined;
+	const name = `${prefix}-${shaOf(entries)}`;
+	if (leaf !== name && !leaf.startsWith(`${name}-`)) return undefined;
+	const path = join(base, leaf);
+	return holds(path, entries) ? path : undefined;
 }
 
 /** The staged proxy tree at `at` as an EgressCode: its own paths, and its subpath of the volume. */

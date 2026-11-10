@@ -59,7 +59,13 @@ export interface EgressCode {
 	packageJson: string;
 	/** With the provider's volume option: the code is staged below the volume's root in one tree (src/docker/stage.ts),
 	 *  `root` its subpath (undefined when unknown), which the proxy mounts whole at /code. */
-	volume?: { name: string; root?: string };
+	volume?: {
+		name: string;
+		root?: string;
+		/** For a read-back: whether a proxy may be mounted on this subpath, any verified copy of the code (stage.ts
+		 *  egressStaged), not only `root`. Without it, `root` alone. */
+		accepts?: (subpath: string) => boolean;
+	};
 }
 
 /** This package's own build: the directory this file is in, and the package's package.json. */
@@ -291,7 +297,7 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (shared !== undefined) {
 		const asked = (host.Mounts ?? []).filter((mount) => mount.Target === PROXY_ROOT);
 		const subpath = (asked[0]?.VolumeOptions as { Subpath?: unknown } | undefined)?.Subpath;
-		const right = asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === shared.name && asked[0].ReadOnly === true && (shared.root === undefined ? typeof subpath === "string" && subpath !== "" : subpath === shared.root);
+		const right = asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === shared.name && asked[0].ReadOnly === true && (typeof subpath === "string" && subpath !== "" && (shared.accepts !== undefined ? shared.accepts(subpath) : shared.root === undefined || subpath === shared.root));
 		if (!right) return other(`mounts ${show(asked)} at ${PROXY_ROOT}, not the staged code's subpath ${show(shared.root)} of the volume ${shared.name}, read-only`);
 	}
 	const entrypoint = config.Entrypoint;
