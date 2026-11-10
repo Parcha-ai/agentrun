@@ -20,7 +20,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
-import { type ClientKind, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { type ClientKind, dialAt, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
@@ -28,6 +28,8 @@ import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Se
 import { isObject, unknownFields } from "./validate.js";
 
 const SCOPE_LIST = "scopes is a list of 1 to 32 OAuth scopes.";
+/** The longest an MCP server's address check (its name's lookup) may take before a door answers. */
+const ADDRESS_CHECK_MS = 15_000;
 const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 
 /** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
@@ -85,8 +87,10 @@ export class McpServersOverStore {
   /** The callbacks under way, which close() waits out before the server lets its data go. */
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly stopped = new AbortController();
+  /** Whether this server is a local install (attach): only then may an MCP server's URL be on loopback. */
+  private loopback = false;
 
-  constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, network: OAuthNetwork = systemNetwork) {
+  constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
     // The server never starts without a seal key (seal-key.ts ensureSealKey), so there is no keyless registry: every
     // credential is kept sealed under it.
     const sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
@@ -95,10 +99,14 @@ export class McpServersOverStore {
     this.signIns = new McpSignIns(network, pendingOverStore(store, sealKey), () => privateOAuthHosts(store));
   }
 
-  /** This server's address as a browser reaches it and where it listens (McpServers.attach). */
-  attach(base: string, listening: string): void {
+  /** This server's address as a browser reaches it and where it listens (McpServers.attach). `local`: whether it is a
+   *  local install, listening on loopback alone and reached there (server.ts: its listen address on loopback and no public
+   *  address off it), the one kind of server an MCP server's URL may be on loopback for; omitted, whether `listening` is
+   *  on loopback. Never attached, it is not one. */
+  attach(base: string, listening: string, local?: boolean): void {
     this.signIns.base = base.replace(/\/+$/, "");
     this.signIns.listening = listening.replace(/\/+$/, "");
+    this.loopback = local ?? LOOPBACK.test(URL.parse(listening)?.hostname ?? "");
   }
 
   clientDocument() {
@@ -154,12 +162,14 @@ export class McpServersOverStore {
       const name = String(body.name);
       const kept = await this.need(name);
       const url = new URL(kept.url);
-      return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), stop));
+      const send = await this.reached(kept.auth, url, stop);
+      return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop));
     }
     const { url, auth } = this.admit(body);
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     if (auth.type !== "none" && auth.type !== "github_app" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return marked(url.href, await this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), stop));
+    const send = await this.reached(auth.type, url, stop);
+    return marked(url.href, await this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop));
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
@@ -167,6 +177,7 @@ export class McpServersOverStore {
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
     nameOf(name);
     const { url, auth, prices } = this.admit(body, true);
+    const send = await this.reached(auth.type, url, stop);
     const was = await this.store.mcp.server(name);
     let credential: McpCredential | undefined;
     // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
@@ -193,7 +204,7 @@ export class McpServersOverStore {
     } else if (auth.type !== "none") {
       credential = { type: "headers", headers: headers! };
     }
-    const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), stop);
+    const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop);
     const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // A body with no `prices` keeps the saved ones, for the tools still listed at the same address.
@@ -209,8 +220,9 @@ export class McpServersOverStore {
   /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. */
   async refresh(name: string, stop?: AbortSignal) {
     const was = await this.need(name);
+    const send = await this.reached(was.auth, new URL(was.url), stop);
     const open = await this.opened(name, was, "name");
-    const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), stop);
+    const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), send, stop);
     const before = new Map((was.tools as McpTool[]).map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     const prices = pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools);
@@ -247,6 +259,8 @@ export class McpServersOverStore {
       if (text !== undefined && !oauthValueValid(text)) issues.push({ field, reason: "invalid", message: `${field} is text, at most ${MAX_VALUE_BYTES} bytes.` });
     if (client_secret !== undefined && client_id === undefined) issues.push({ field: "client_id", reason: "missing", message: "A client_secret goes with the client_id it is the secret of." });
     if (issues.length) throw invalid(issues);
+    // The MCP server's own address first: its sign-in's discovery is sent there.
+    await this.reached("oauth", url!);
     const was = await this.store.mcp.server(name);
     // A body with no client_id signs in again with the client kept in the sealed token set, for the same origin only.
     const kept = typeof client_id !== "string" && was?.auth === "oauth" && new URL(was.url).origin === url!.origin ? await this.openedSet(name, was) : undefined;
@@ -272,8 +286,10 @@ export class McpServersOverStore {
     try {
       const error = query.get("error");
       if (error) return back(/^[a-z_]{1,64}$/.test(error) ? error : "sign_in_failed");
+      // Checked again before the code is spent: the owner's list may have changed since the start.
+      const send = await this.reached("oauth", new URL(entry.url), stop);
       const set = await this.signIns.finish(entry, query.get("code") ?? "", query.get("iss") ?? undefined, stop);
-      const listed = await this.listServer(new URL(entry.url), { authorization: `Bearer ${set.tokens.access_token}` }, stop);
+      const listed = await this.listServer(new URL(entry.url), { authorization: `Bearer ${set.tokens.access_token}` }, send, stop);
       const now = await this.store.mcp.server(entry.name);
       // Saved, signed in to again or forgotten since this sign-in started: that stands.
       if ((now ? saving(now) : null) !== entry.was) return back("changed_meanwhile");
@@ -289,9 +305,35 @@ export class McpServersOverStore {
     }
   }
 
-  private listServer(url: URL, headers: HeaderMap, stop?: AbortSignal): Promise<Listed> {
-    // The shared probe (mcp-probe.listServer), bound also to this server's own stop.
-    return listServer(url, headers, this.version, AbortSignal.any([this.stopped.signal, ...(stop ? [stop] : [])]));
+  private listServer(url: URL, headers: HeaderMap, send: typeof fetch, stop?: AbortSignal): Promise<Listed> {
+    // The shared probe (mcp-probe.listServer), bound also to this server's own stop, each request sent as `send` (reached).
+    return listServer(url, headers, this.version, AbortSignal.any([this.stopped.signal, ...(stop ? [stop] : [])]), send);
+  }
+
+  /** How a request to the MCP server at `url` goes, or a 422 on url before anything is sent to it (or a token minted for
+   *  it): a github_app server anywhere but GitHub's hosted MCP (GITHUB_MCP_ONLY, as withAppToken says), and at it, as it
+   *  is, since that one origin is this server's to name, never the owner's; any other server held to the address rule
+   *  (mcp-oauth.ts mcpServerAt, the one an authorization server's endpoint is held to), with the private-network hosts the
+   *  owner allows read now, loopback only for a local install. The fetch it answers dials the address checked. A name
+   *  that does not resolve is the unreachable server it always was (424). */
+  private async reached(type: string, url: URL, stop?: AbortSignal): Promise<typeof fetch> {
+    if (type === "github_app") {
+      if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
+      return fetch;
+    }
+    const signal = AbortSignal.any([AbortSignal.timeout(ADDRESS_CHECK_MS), this.stopped.signal, ...(stop ? [stop] : [])]);
+    let at: Awaited<ReturnType<typeof mcpServerAt>>;
+    try {
+      at = await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
+    } catch (error) {
+      if (stop?.aborted || this.stopped.signal.aborted) throw error;
+      throw new ApiError("upstream_failed", `The MCP server did not answer within ${ADDRESS_CHECK_MS / 1000} s.`);
+    }
+    if ("refused" in at) {
+      if (at.unresolved) throw new ApiError("upstream_failed", `Could not reach the MCP server at ${url.origin} (ENOTFOUND).`);
+      throw invalid([{ field: "url", reason: "not_allowed", message: `${at.refused.charAt(0).toUpperCase()}${at.refused.slice(1)}.` }]);
+    }
+    return dialAt(this.network, at.address) as typeof fetch;
   }
 
   private async need(name: string): Promise<McpServerRow> {

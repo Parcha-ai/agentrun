@@ -229,6 +229,11 @@ export interface McpGatewayOptions {
    *  Only the runner's MCP claim step (runner/mcp-claim.ts), which keeps that object current, passes it. Without it, the
    *  credentials are copied at construction and a client sends the headers it connected with. */
   liveCredentials?: true;
+  /** Where each request to a server may go, asked before anything is sent to it: the runner's MCP claim passes the
+   *  address rule (mcp-oauth.ts mcpServerAt) with the owner's private-network hosts read now, and a fetch dialled at the
+   *  address it checked (`send`; none, `fetch` as it is). A refusal is said to the model, nothing sent. None: every
+   *  request goes as `fetch` sends it. */
+  reach?: (url: string, signal: AbortSignal) => Promise<{ refused: string } | { send?: typeof fetch }>;
 }
 
 /** What a call with no call id answers where a gate must know it by one: nothing was sent. */
@@ -255,8 +260,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = live
     ? { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) }
     : new Map(Object.entries(options.credentials));
-  /** Each server's last HTTP status, which tells a refused credential from another failure. */
-  const statuses = new Map<string, { last?: number }>();
+  /** Each server's last HTTP status, which tells a refused credential from another failure, and the address refusal
+   *  (`reach`) of the request that never left, if one did not. */
+  const statuses = new Map<string, { last?: number; refused?: string }>();
   const send = options.fetch ?? fetch;
   /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
    *  server: with liveCredentials a refresh can swap a token between a call taking its headers and a request leaving, so
@@ -287,11 +293,22 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {})]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number; refused?: string }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+    // Its address checked first, every request: a name that resolves somewhere private now is refused before anything
+    // (its credential among it) leaves, and the request is dialled at the address checked.
+    let through = send;
+    if (options.reach) {
+      const at = await options.reach(input instanceof Request ? input.url : String(input), init.signal ?? AbortSignal.timeout(options.bounds?.connectMs ?? CONNECT_MS));
+      if ("refused" in at) {
+        status.refused = at.refused;
+        throw new Error(`its address is refused here: ${at.refused}`);
+      }
+      if (at.send) through = at.send;
+    }
     const sent = new Headers(init.headers);
     // Live credentials: the server's headers as they are at this request, held for the scrub before they leave.
     for (const [name, value] of Object.entries(hold(server, typeof headers === "function" ? headers() : headers))) sent.set(name, value);
-    const response = await send(input, { ...init, headers: sent, redirect: "manual" });
+    const response = await through(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
     if (!response.body) return response;
@@ -309,7 +326,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const connect = (server: string, url: string, headers: Record<string, string>): Promise<Upstream> => {
     let upstream = clients.get(server);
     if (!upstream) {
-      const status: { last?: number } = {};
+      const status: { last?: number; refused?: string } = {};
       statuses.set(server, status);
       upstream = (async () => {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
@@ -355,6 +372,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
     const clean = scrubberOf(server, hold(server, headers), held.values);
+    const was = statuses.get(server);
+    if (was) delete was.refused;
     try {
       const upstream = await until(connect(server, url, headers), signal);
       connected = true;
@@ -370,6 +389,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
+      // Its address refused before the request left (reach): nothing reached it.
+      const refused = statuses.get(server)?.refused;
+      if (refused !== undefined) return said(`The MCP server ${server}'s address is refused here: ${refused}. Nothing was sent.`, true);
       const status = statuses.get(server)?.last;
       // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);

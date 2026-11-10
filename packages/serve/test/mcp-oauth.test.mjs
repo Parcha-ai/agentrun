@@ -266,7 +266,8 @@ test("CIMD only on a public https address: the client id is this server's metada
   const key = sealKey();
   const { as, mcp } = await fakes(t, { cimd: true });
   const store = await registry(t, key);
-  store.attach("https://agents.example.com", "https://agents.example.com");
+  // Offered from a public https address, as a local install behind its own https name: the MCP fake is on loopback.
+  store.attach("https://agents.example.com", "https://agents.example.com", true);
   const pub = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.equal(pub.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.equal(pub.searchParams.get("redirect_uri"), `https://agents.example.com${CALLBACK}`);

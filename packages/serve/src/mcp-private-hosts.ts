@@ -1,12 +1,14 @@
-// The owner's private-network OAuth hosts (the launch decision of 2026-11-09): an MCP server's authorization server on a
+// The owner's private-network hosts (the launch decision of 2026-11-09): an MCP server, or its authorization server, on a
 // private network is refused by default, and an owner can allow named hosts in Settings → MCP servers. The list is one
-// row in the store (store.settings, MCP_PRIVATE_HOSTS_KEY), read by the server's sign-in and the runner's token refresh
-// through privateOAuthHosts() alone, and the rule a listed host is held to is privateAllowed(), applied by mcp-oauth.ts's
-// address check. A listed host may resolve to a private-network address (RFC 1918, 100.64.0.0/10, fc00::/7), still only
-// over https; loopback, link-local (cloud metadata among it), unspecified, multicast, broadcast, reserved and this
-// machine's own addresses stay refused whatever the list says.
+// row in the store (store.settings, MCP_PRIVATE_HOSTS_KEY), read by the server's sign-in, preview, save and refresh and
+// the runner's token refresh and calls through privateOAuthHosts() alone, and the rule a listed host is held to is
+// privateAllowed(), applied by mcp-oauth.ts's address check. A listed host may resolve to a private-network address
+// (RFC 1918, 100.64.0.0/10, fc00::/7), still only over https; loopback, link-local (cloud metadata among it, and the
+// metadata services inside those ranges), unspecified, multicast, broadcast, reserved and this machine's own addresses
+// stay refused whatever the list says.
 import net from "node:net";
 import os from "node:os";
+import { checkAddress } from "./egress-table.js";
 import { invalid, type InputIssue } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import type { Settings } from "./store/index.js";
@@ -29,8 +31,16 @@ ALLOWABLE.addSubnet("fc00::", 7, "ipv6");
 
 const familyOf = (address: string) => (net.isIPv6(address) ? "ipv6" : "ipv4");
 
-/** Whether `address` is in a range a listed host may resolve to (ALLOWABLE). */
-export const inAllowableRange = (address: string): boolean => net.isIP(address) !== 0 && ALLOWABLE.check(address, familyOf(address));
+/** Whether `address` is a cloud metadata service's, by the egress table's one list (egress-table.ts): the ones inside
+ *  ALLOWABLE (AWS's over IPv6 in fc00::/7, Alibaba Cloud's in 100.64/10) are never allowable whatever the list says; the
+ *  rest (169.254.169.254 among them) are link-local, outside it already. */
+const isMetadata = (address: string): boolean => {
+  const verdict = checkAddress(address, []);
+  return !verdict.ok && verdict.class === "metadata";
+};
+
+/** Whether `address` is in a range a listed host may resolve to (ALLOWABLE), and not a cloud metadata service's. */
+export const inAllowableRange = (address: string): boolean => net.isIP(address) !== 0 && ALLOWABLE.check(address, familyOf(address)) && !isMetadata(address);
 
 /** Every address on this machine's network interfaces: never an authorization server's, listed or not. */
 export function localAddresses(): string[] {
@@ -52,9 +62,9 @@ function hostsOf(value: unknown): string[] {
   return ((value as { hosts: unknown[] }).hosts).filter((host): host is string => typeof host === "string");
 }
 
-/** The private-network hosts the owner allows an authorization server on: read from the store at each use, so a host
- *  removed is refused from the next request on. The one read of the setting, for the server's sign-in and the runner's
- *  refresh alike. */
+/** The private-network hosts the owner allows an authorization server, or an MCP server itself (mcp-oauth.ts
+ *  mcpServerAt), on: read from the store at each use, so a host removed is refused from the next request on. The one read
+ *  of the setting, for the server's sign-in, preview, save and refresh and the runner's token refresh and calls alike. */
 export async function privateOAuthHosts(store: { settings: Pick<Settings, "get"> }): Promise<string[]> {
   return hostsOf(await store.settings.get(MCP_PRIVATE_HOSTS_KEY));
 }
@@ -97,7 +107,7 @@ function entryOf(value: unknown, field: string): { host: string } | { issue: Inp
   }
   const address = host.replace(/^\[(.*)\]$/, "$1");
   if (net.isIP(address) && !inAllowableRange(address)) {
-    return bad("invalid", NEVER_RANGES.check(address, familyOf(address)) ? `${host} can't be allowed: ${NEVER}.` : `${host} is not in a range a listed host may resolve to (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), so there is nothing to allow.`);
+    return bad("invalid", NEVER_RANGES.check(address, familyOf(address)) || isMetadata(address) ? `${host} can't be allowed: ${NEVER}.` : `${host} is not in a range a listed host may resolve to (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), so there is nothing to allow.`);
   }
   if (host === "localhost" || host.endsWith(".localhost")) return bad("invalid", `${host} can't be allowed: ${NEVER}.`);
   return { host };

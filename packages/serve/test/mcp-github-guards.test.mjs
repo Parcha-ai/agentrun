@@ -17,7 +17,13 @@ const { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN } = await import("../dist/github.js")
 
 const KEY = randomBytes(32);
 const APP_TOKEN = `not-a-secret-${"ghs-listing"}`;
-const reg = (store) => mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
+/** The registry as a local install's server attaches it (listening on loopback alone), so its fake MCP server on
+ *  loopback is one it may reach. */
+const reg = (store) => {
+  const registry = mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
+  registry.attach("http://127.0.0.1:9", "http://127.0.0.1:9", true); // key-gate: loopback-rule a local install's own address in a test, never an endpoint
+  return registry;
+};
 const BAD = [
   "https://mcp.example.com/mcp",
   "https://x@api.githubcopilot.com/mcp/",

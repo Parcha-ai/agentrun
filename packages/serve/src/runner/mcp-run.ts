@@ -22,7 +22,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
-import type { OAuthNetwork } from "../mcp-oauth.js";
+import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
+import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
@@ -127,10 +128,19 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     held.abort();
     return undefined;
   }
+  const network = options.network ?? systemNetwork;
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
     liveCredentials: true,
+    // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
+    // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
+    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback as written is dialled as written:
+    // only a local install's server admits one (McpServersOverStore), and the server is the one writer of these rows.
+    reach: async (url, signal) => {
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: true });
+      return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
+    },
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
