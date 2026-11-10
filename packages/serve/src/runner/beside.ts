@@ -12,8 +12,7 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
-  const { RunnerRefused, runEnv } = await import("./main.js");
-  const { computerDepsFrom } = await import("../workspace/index.js");
+  const { RunnerRefused, runEnv, runnerComputers } = await import("./main.js");
   const { openSqliteStore, SchemaVersionUnknown } = await import("../store/index.js");
   let store: Awaited<ReturnType<typeof openSqliteStore>>;
   try {
@@ -36,9 +35,9 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
+  // (main.ts runnerComputers, a desktop's or a phone's live view with it), from that same environment.
   const runs = env ?? runEnv(process.env);
-  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  const computers = runnerComputers(store, runs, sealKey);
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); } };

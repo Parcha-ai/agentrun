@@ -13,7 +13,9 @@ import { SECRET_NAMES, secret } from "../secrets.js";
 import { openSqliteStore, SchemaVersionUnknown, type Store } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import { computerDepsFrom } from "../workspace/computer-deps.js";
+import { openClaimView } from "../computer-live.js";
+import type { KeyEnv } from "../key-meta.js";
+import { computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -87,6 +89,14 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
   return out;
 }
 
+/** The run's computer at its claim, composed once for a runner (workspace/computer-deps.ts computerDepsFrom), the live view
+ *  of a desktop or a phone (computer-live.ts openClaimView) with it: runnerLoop's, runnerBeside's and a test's in-process
+ *  runner's. `own`: a test's kind registry and provider loader, in place of the computer package's. */
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load"> = {}) =>
+  // TODO(tl-places k2): the cast goes once computerForClaim hands the launched computer's watch(handlers, options), the
+  // shape openClaimView takes, and its refusals include "failed".
+  computerDepsFrom({ env, store, sealKey, openComputerView: openClaimView as unknown as ComputerDepsOptions["openComputerView"], ...own });
+
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
  *  journal, the seal key and the model route. Refused in words with no seal key. */
@@ -94,9 +104,10 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   const sealKey = sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
-  // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
-  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.
-  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  // The run's computer at its claim, composed once (runnerComputers): none for the runner's place, a box's computer by the
+  // agent's setting, its keys read from the run environment first, then the store's sealed rows; a desktop's or a phone's
+  // live view opened with it.
+  const computers = runnerComputers(store, runs, sealKey);
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,

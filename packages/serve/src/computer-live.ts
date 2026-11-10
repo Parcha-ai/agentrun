@@ -1,29 +1,40 @@
-// The run-side viewer of a desktop's or a phone's screen (REGISTRATION.md): tl-places calls openComputerView as it claims
-// the run's computer. It starts the viewer's endpoint on loopback (port 0), mints the viewer's path id and token, and
-// hands them over in the store under the run's claim (store.liveViewers, the token sealed), as the browser's viewer is
-// handed over (browser-live.ts). The server finds the row, serves the viewer's page itself (computer-viewer.ts) under
-// /v2/runs/{id}/computer/live/v/<id>, and proxies only the viewer's WebSocket here, from its own origin.
+// The run-side viewer of a desktop's or a phone's screen (REGISTRATION.md): the runner's computerForClaim opens it as it
+// claims the run's computer (openClaimView, which runner/main.ts composes in). It starts the viewer's endpoint on loopback
+// (port 0), mints the viewer's path id and token, and hands them over in the store under the run's claim
+// (store.liveViewers, the token sealed), as the browser's viewer is handed over (browser-live.ts). The server finds the row,
+// serves the viewer's page itself (computer-viewer.ts) under /v2/runs/{id}/computer/live/v/<id>, and proxies only the
+// viewer's WebSocket here, from its own origin.
 //
 // The WebSocket speaks pi-browser's live-view protocol: hello{token} first, then ready{takeOver: true}; the screen's frames
 // as binary messages ([u16 w][u16 h][image], w and h the screen's real pixels, the input space), each sent only after the
 // viewer acked the one before ({type: "ack"}, once drawn); take and give; hold and status as the hold changes; held,
-// refused and ended. Its input is the viewer's events (ViewerEvent), mapped by toAction for the computer's input kind and
-// sent to the watch's input only while the person holds the computer: otherwise it is answered held ("Take over to
-// drive."). The view-only rule is this server's, never a vendor's flag.
+// refused and ended. Its input is the viewer's events (ViewerEvent), mapped by one createActionMapper per take (a new one
+// each time a take begins) and sent to the watch's input only while the person holds the computer: otherwise it is
+// answered held ("Take over to drive."). Whether the person holds it is asked of the run's own hold at the moment of
+// sending (ViewerHold.driving), so input stops the moment a take ends, before its end is committed and heard. What a take
+// pressed and never released (the mapper's release(): button ups) is let go when the viewer loses focus, before a hand
+// back, and once when a take ends on the run's side or the viewer goes. The view-only rule is this server's, never a
+// vendor's flag.
 //
 // One viewer per computer: a second socket is refused viewer_in_use. The viewer closing or losing its socket mid-take is
-// the hold's away. close("released" | "ended") drops the row under the claim, ends the socket, the watch and the endpoint.
-// Re-registering the same tag (a relaunch) replaces the row, and the old viewer is ended. The token is in no log, no error
-// and no row in plaintext.
+// the hold's away (again once a take it was waiting for lands, if it lands after). close("released" | "ended") drops the
+// row under the claim, ends the socket, the watch and the endpoint. Re-registering the same tag (a relaunch) replaces the
+// row, and the old viewer is ended. Every frame the watch hands over is acked once: drawn, replaced, or let go with its
+// viewer. The token is in no log, no error and no row in plaintext.
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
-import { redactWords, type Result, type ScreenFrame, type ScreenWatch, type ScreenWatchHandlers, toAction, type ViewerEvent, type WatchOptions } from "@parcha/agentrun-computer";
+import { type ActionMapper, createActionMapper, type InputAction, redactWords, type Result, type ScreenFrame, type ScreenWatch, type ScreenWatchHandlers, type ViewerEvent, type WatchOptions } from "@parcha/agentrun-computer";
 import { acceptWebSocket, CLOSE_CODES, encodeFrame, tokenMatches, type WsConn } from "@parcha/pi-browser/live-view";
 import type { LiveViewerStore } from "./browser-live.js";
+import { type ComputerCallStore, computerHoldOf, handBackComputer, takeOverComputer } from "./computer-commands.js";
+import { type ComputerHoldChange, onComputerHold } from "./runner/computer-journal.js";
 import { sealColumn, sealedAt } from "./store/seal.js";
 import type { Claim } from "./store/store.js";
+import type { ComputerHold, HoldEnd, HoldState } from "./workspace/computer-hold.js";
+
+export type { HoldEnd, HoldState } from "./workspace/computer-hold.js";
 
 /** Where the viewer's endpoint listens: the runner's loopback address alone. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the run-side computer viewer listens on
@@ -48,47 +59,55 @@ const WHEEL = 100_000;
 const KEY = 64;
 const TEXT = 12 * 1024;
 
-/** Who drives the computer now (tl-places' computer-hold). */
-export type HoldState = "agent" | "pending" | "person";
-/** Why a person's hold ended. */
-export type HoldEnd = "given" | "answered" | "idle" | "away" | "released";
-/** A committed change of the hold: its state, and when a hold ended, why and the hold's words. */
-export type HoldEvent = { state: HoldState; ended?: HoldEnd; message?: string };
+/** A committed change of the hold, as the runner signals it (computer-journal.ts onComputerHold): its state, and when a
+ *  take ended, why and the hold's words. */
+export type HoldChange = ComputerHoldChange;
 
-/** The hold the viewer drives: tl-places' computer-hold for this run's computer, through viewerHoldOf. */
+/** The hold the viewer drives: the run's computer's, through viewerHoldOf. */
 export interface ViewerHold {
+  /** Who drives, as the store has it. */
   state(): HoldState | Promise<HoldState>;
   /** The person's Take over: pending until the agent's step in flight ends, then person. */
-  take(): Promise<{ hold: HoldState }>;
+  take(): Promise<{ readonly hold: HoldState }>;
   /** Hand back; it also answers an open ask "done" (first wins). */
-  give(): Promise<{ hold: HoldState }>;
+  give(): Promise<{ readonly hold: HoldState }>;
   /** The viewer closed or lost its socket mid-take: back to the agent at once. */
-  away(): Promise<unknown>;
+  away(): unknown;
   /** Any person input while held: resets the 15-minute idle bound, where the hold keeps one. */
   touched?(): void;
+  /** Whether the person drives the computer this moment, as the run's own hold has it when it changes, before the change
+   *  is committed and `on` hears it: input goes to the computer only while this says so. Absent: as `on` last said. */
+  driving?(): boolean;
   /** Each committed change, after its entry; returns the unsubscribe. */
-  on(listener: (event: HoldEvent) => void): () => void;
+  on(listener: (event: HoldChange) => void): () => void;
 }
 
-/** tl-places' computer-hold functions (places/computers-cut), as their signatures stand. */
+/** tl-places' four calls on a run's hold (computer-commands.ts, runner/computer-journal.ts), as their signatures stand. */
 export type PlacesHold<S> = {
-  computerHoldOf(store: S, runId: string): HoldState | Promise<HoldState>;
-  takeOverComputer(store: S, runId: string): Promise<{ hold: HoldState }>;
-  handBackComputer(store: S, runId: string, options: { outcome?: "done" | "cancelled" }): Promise<{ hold: HoldState; outcome?: string }>;
-  onComputerHold(runId: string, listener: (event: HoldEvent) => void): () => void;
+  computerHoldOf(store: S, runId: string): Promise<HoldState>;
+  takeOverComputer(store: S, runId: string): Promise<{ readonly hold: HoldState }>;
+  handBackComputer(store: S, runId: string, body?: { readonly outcome?: "done" | "cancelled" }): Promise<{ readonly hold: HoldState }>;
+  onComputerHold(runId: string, listener: (change: HoldChange) => void): () => void;
 };
 
-/** Run `runId`'s computer-hold as the viewer drives it, over tl-places' functions on `store`. Hand back answers an open ask
- *  "done"; away hands back with no outcome. */
-export function viewerHoldOf<S>(places: PlacesHold<S>, store: S, runId: string): ViewerHold {
+/** The run's own hold in the runner's process (workspace/computer-hold.ts, computerForClaim's): what changes at once. */
+export type RunnersHold = Pick<ComputerHold, "state" | "away" | "touched">;
+
+/** The four calls as the runner has them. */
+export const PLACES: PlacesHold<ComputerCallStore> = { computerHoldOf, takeOverComputer, handBackComputer, onComputerHold };
+
+/** Run `runId`'s hold as the viewer drives it: who drives, Take over and Hand back through tl-places' calls on `store`, the
+ *  same the routes make (a take-over or hand-back row the runner applies), and the committed changes through its signal;
+ *  away, touched and who drives this moment through the run's own hold (`local`). Hand back answers an open ask "done";
+ *  away ends the take `away` and answers no ask. */
+export function viewerHoldOf<S>(places: PlacesHold<S>, store: S, runId: string, local: RunnersHold): ViewerHold {
   return {
     state: () => places.computerHoldOf(store, runId),
     take: () => places.takeOverComputer(store, runId),
     give: () => places.handBackComputer(store, runId, { outcome: "done" }),
-    // TODO(tl-places): away() once computer-hold has one (back to the agent at once, ended "away"); until then the hand
-    // back with no outcome, which answers no ask.
-    away: () => places.handBackComputer(store, runId, {}),
-    // TODO(tl-places): touched() once computer-hold keeps its idle bound from the viewer's input.
+    away: () => local.away(),
+    touched: () => local.touched(),
+    driving: () => local.state() === "person",
     on: (listener) => places.onComputerHold(runId, listener),
   };
 }
@@ -106,7 +125,7 @@ export type OpenComputerView = {
   sealKey: Buffer;
   claim: Claim;
   kind: "desktop" | "phone";
-  /** How the computer takes input (toAction's kind): a desktop's, an Android phone's or an iPhone's. */
+  /** How the computer takes input (createActionMapper's kind): a desktop's, an Android phone's or an iPhone's. */
   input: "desktop" | "android" | "ios";
   /** The computer's ref id. */
   tag: string;
@@ -115,16 +134,46 @@ export type OpenComputerView = {
   /** The frames' width at most, and their JPEG quality (the computer's defaults when absent). */
   maxWidth?: number;
   quality?: number;
-  /** For tests: the bounds (VIEWER_LIMITS), the timers the hello's wait runs on, and a socket's unsent bytes as read. */
+  /** For tests: the bounds (VIEWER_LIMITS), the timers the hello's wait runs on, a socket's unsent bytes as read, and each
+   *  socket as it is upgraded. */
   limits?: Partial<typeof VIEWER_LIMITS>;
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
   bufferedOf?: (conn: WsConn) => number;
+  sockets?: (socket: Duplex) => void;
 };
 
-export type OpenedComputerView = { ok: true; view: ComputerView } | { ok: false; refused: "fenced" | "bad_tag" | "kind"; message: string };
+/** Why a view was not opened: a stale claim (nothing written), a tag or a kind it does not take, or a failure in words. */
+export type OpenedComputerView = { ok: true; view: ComputerView } | { ok: false; refused: "fenced" | "bad_tag" | "kind" | "failed"; message: string };
 
-/** What a viewer sends: its hello, its hands, its acks and its events. */
-type ViewerMessage = { type: "hello"; token: string } | { type: "take" } | { type: "give" } | { type: "ack" } | { type: "text"; text: string } | ViewerEvent;
+/** What computerForClaim hands its openComputerView dep: the store and seal key it was given, the run's claim, the
+ *  computer's kind, input and ref id, the launched computer's watch (provider.watch(ref, handlers, options) bound to its
+ *  ref: this opener gives the handlers and the signal), and the run's own hold (workspace/computer-hold.ts). */
+export type ClaimViewArgs = {
+  readonly store: unknown;
+  readonly sealKey: Buffer | undefined;
+  readonly claim: unknown;
+  readonly kind: "desktop" | "phone";
+  readonly input: "desktop" | "android" | "ios";
+  readonly tag: string;
+  readonly watch: ComputerWatchOf;
+  readonly hold: unknown;
+};
+
+/** The runner's opener for computerForClaim's openComputerView dep (runner/main.ts runnerComputers): the view of a run's
+ *  desktop or phone under its claim, on the store the claim was given, held through viewerHoldOf over tl-places' calls on
+ *  that store and the run's own hold beneath. With no seal key no token can be sealed, and no view is opened. */
+export const openClaimView = (args: ClaimViewArgs): Promise<OpenedComputerView> => {
+  if (!args.sealKey) return Promise.resolve({ ok: false, refused: "failed", message: "this runner has no seal key, so no viewer's token can be handed over" });
+  const claim = args.claim as Claim;
+  const store = args.store as LiveViewerStore & ComputerCallStore;
+  return openComputerView({
+    store, sealKey: args.sealKey, claim, kind: args.kind, input: args.input, tag: args.tag, watch: args.watch,
+    hold: viewerHoldOf(PLACES, store, claim.runId, args.hold as RunnersHold),
+  });
+};
+
+/** What a viewer sends: its hello, its hands, its acks, its focus lost, and its events. */
+type ViewerMessage = { type: "hello"; token: string } | { type: "take" } | { type: "give" } | { type: "ack" } | { type: "blur" } | { type: "text"; text: string } | ViewerEvent;
 
 const finite = (v: unknown, max: number): v is number => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= max;
 const word = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
@@ -146,6 +195,7 @@ export function parseViewerMessage(raw: string): ViewerMessage | null {
     case "take":
     case "give":
     case "ack":
+    case "blur":
       return keys === 1 ? { type: m.type } : null;
     case "text":
       return word(m.text, TEXT) ? { type: "text", text: m.text } : null;
@@ -190,17 +240,20 @@ const opened = new Map<string, { close(why: "released" | "ended"): Promise<void>
 /** The opens of each run, kind and tag, one after another: two at once would each start an endpoint and one be orphaned. */
 const opening = new Map<string, Promise<unknown>>();
 
+/** The view of a desktop's or a phone's screen, handed over under `input.claim`. It never throws: an open that fails is
+ *  refused "failed" in its words, having left nothing listening and nothing subscribed, and the opens after it go on. */
 export async function openComputerView(input: OpenComputerView): Promise<OpenedComputerView> {
   const { claim, kind, tag } = input;
   if (!TAG.test(tag)) return { ok: false, refused: "bad_tag", message: "the computer's ref id is not a tag a viewer takes (1 to 200 of A-Z a-z 0-9 . _ : -)" };
   const fits = kind === "desktop" ? input.input === "desktop" : input.input === "android" || input.input === "ios";
   if ((kind !== "desktop" && kind !== "phone") || !fits) return { ok: false, refused: "kind", message: `a ${String(kind)} viewer takes ${kind === "desktop" ? "desktop" : "android or ios"} input, not ${String(input.input)}` };
   const key = `${claim.runId}\n${kind}\n${tag}`;
-  const mine = (opening.get(key) ?? Promise.resolve()).then(() => openOne(input, key));
-  const settled = mine.catch(() => undefined);
-  opening.set(key, settled);
-  void settled.then(() => {
-    if (opening.get(key) === settled) opening.delete(key);
+  const mine = (opening.get(key) ?? Promise.resolve())
+    .then(() => openOne(input, key))
+    .catch((error: unknown): OpenedComputerView => ({ ok: false, refused: "failed", message: `the ${kind}'s live view could not be opened: ${redactWords((error as Error)?.message ?? String(error))}` }));
+  opening.set(key, mine);
+  void mine.then(() => {
+    if (opening.get(key) === mine) opening.delete(key);
   });
   return mine;
 }
@@ -218,11 +271,21 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   let closed = false;
   let origin = "";
   const pending = new Set<WsConn>();
-  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: { frame: ScreenFrame; ack: () => void }; chain: Promise<void>; queued: number; idle?: unknown };
+  type Parked = { frame: ScreenFrame; ack: () => void };
+  type Viewer = { conn: WsConn; watch?: ScreenWatch; abort: AbortController; ack?: () => void; parked?: Parked; chain: Promise<void>; queued: number; idle?: unknown };
   let viewer: Viewer | null = null;
   let state: HoldState = "agent";
-  /** Moves on with every take: an event queued under one hold is never sent under the next. */
+  /** Moves on with every take and every hand back: an event queued under one take is never sent under the next. */
   let epoch = 0;
+  /** This take's mapper of the viewer's events: one per take, a new one each time a take begins. */
+  let mapper: ActionMapper = createActionMapper(input.input);
+  /** The viewer went while a take was pending or held: a take that lands after it goes back at once (the hold's away). */
+  let awayOwed = false;
+  const newTake = (): void => {
+    epoch += 1;
+    mapper.release();
+    mapper = createActionMapper(input.input);
+  };
 
   const refuse = (conn: WsConn, reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message" | "slow_viewer"): void => {
     conn.send(JSON.stringify({ type: "refused", reason }));
@@ -256,18 +319,37 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     if (current.idle !== undefined) timers.clear(current.idle);
     current.idle = undefined;
   };
-  /** One frame to the viewer, its ack held until the viewer drew it; held back whole while the viewer is slow. */
+  /** The viewer is let go: the frame it holds back and the frame it has not acked are acked, so the watch is never left
+   *  waiting on an ack nobody will send. */
+  const letGoFrames = (current: Viewer): void => {
+    const { parked, ack } = current;
+    current.parked = undefined;
+    current.ack = undefined;
+    acked(current);
+    parked?.ack();
+    ack?.();
+  };
+  /** One frame to the viewer, its ack held until the viewer drew it; held back whole while the viewer is slow, in one slot:
+   *  a newer frame takes the slot, and the one it replaced is acked. */
   const sendFrame = (current: Viewer, frame: ScreenFrame, ack: () => void): void => {
     const conn = current.conn;
     if (viewer !== current || conn.closed) return ack();
     awaitAck(current);
-    if (bufferedOf(conn) > limits.maxBufferedBytes) return refuse(conn, "slow_viewer");
+    if (bufferedOf(conn) > limits.maxBufferedBytes) {
+      ack();
+      return refuse(conn, "slow_viewer");
+    }
     if (bufferedOf(conn) > limits.slowViewerBytes) {
+      const replaced = current.parked;
       current.parked = { frame, ack };
+      replaced?.ack();
       return;
     }
-    // The next frame is asked for once the viewer has drawn this one (its ack).
+    // The next frame is asked for once the viewer has drawn this one (its ack). A frame still unacked when a newer one comes
+    // (a watch that does not wait for its ack) is acked now: the newer one is what the viewer draws.
+    const stale = current.ack;
     current.ack = ack;
+    stale?.();
     if (!conn.send(encodeFrame(frame.bytes, frame.width, frame.height), () => resume(conn))) {
       current.ack = undefined;
       acked(current);
@@ -275,11 +357,33 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     }
   };
 
-  /** The hold moved: the viewer is told once per change, and each end of a hold with why. */
-  const moved = (event: HoldEvent): void => {
+  /** What this take pressed and has not released (the mapper's ups), let go once, in order behind the input before it,
+   *  whatever the hold says now: ups only lift. */
+  const liftHeld = (current: Viewer | null): Promise<void> => {
+    const ups = mapper.release();
+    if (ups.length === 0 || !current) return Promise.resolve();
+    // Sent even if the viewer went meanwhile: its watch takes them until it is closed.
+    const lifted = current.chain.then(async () => {
+      await current.watch?.input(ups).catch(() => undefined);
+    });
+    current.chain = lifted;
+    return lifted;
+  };
+
+  /** The hold moved (a committed change, or Take over's and Hand back's own answers): the viewer is told once per change,
+   *  and each end of a take with why. A take that begins is a new take, whoever began it; a take that ends lets go of what
+   *  it held. */
+  const moved = (event: HoldChange): void => {
     const before = state;
     state = event.state;
-    if (before === "agent" && event.state !== "agent") epoch += 1;
+    if (before === "agent" && event.state !== "agent") newTake();
+    if (event.state === "agent") {
+      awayOwed = false;
+      if (before !== "agent") void liftHeld(viewer);
+    } else if (!viewer && awayOwed && !closed) {
+      // The viewer went while this take waited for the runner: it goes back now that it has landed.
+      void Promise.resolve().then(() => hold.away()).catch(() => undefined);
+    }
     const conn = viewer?.conn;
     if (!conn) return;
     if (event.state === "person") {
@@ -289,16 +393,26 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   };
   const unsubscribe = hold.on(moved);
 
-  /** The viewer is gone: its watch ends, and a take it held or was waiting for is the hold's away. */
+  /** The viewer is gone: what its take held is let go, its watch ends, and a take it held or was waiting for is the hold's
+   *  away. */
   const endViewer = (conn: WsConn): void => {
     if (viewer?.conn !== conn) return;
     const gone = viewer;
     viewer = null;
     acked(gone);
-    gone.abort.abort();
-    gone.ack = undefined;
-    void gone.watch?.close().catch(() => undefined);
-    if (!closed && (state === "person" || state === "pending")) void Promise.resolve().then(() => hold.away()).catch(() => undefined);
+    const ups = mapper.release();
+    // The watch ends before its frames are acked: an ack then asks for no frame more.
+    const stop = (): void => {
+      gone.abort.abort();
+      letGoFrames(gone);
+      void gone.watch?.close().catch(() => undefined);
+    };
+    if (ups.length && gone.watch) void gone.watch.input(ups).catch(() => undefined).finally(stop);
+    else stop();
+    if (!closed && (state === "person" || state === "pending")) {
+      awayOwed = true;
+      void Promise.resolve().then(() => hold.away()).catch(() => undefined);
+    }
   };
 
   const startWatch = async (conn: WsConn): Promise<void> => {
@@ -326,27 +440,32 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     current.watch = started.value;
   };
 
-  /** One event, in order behind the ones before it: sent only while the person holds the computer. */
-  const onInput = (current: NonNullable<typeof viewer>, message: Exclude<ViewerMessage, { type: "hello" | "take" | "give" | "ack" }>): void => {
+  /** Whether the viewer's input goes to the computer now: the person holds it as committed, and as the run's own hold has
+   *  it this moment (a take it ended is over before its end is heard). */
+  const drivingNow = (): boolean => state === "person" && hold.driving?.() !== false;
+
+  /** One event, in order behind the ones before it: mapped and sent only while the person holds the computer, under the
+   *  take it came in. Mapped at its turn, so an event never sent is never remembered as pressed. */
+  const onInput = (current: Viewer, message: Exclude<ViewerMessage, { type: "hello" | "take" | "give" | "ack" | "blur" }>): void => {
     const conn = current.conn;
-    if (state !== "person") {
+    if (!drivingNow()) {
       // A hover outside a hold is no input anyone meant.
       if (!(message.type === "mouse" && message.action === "move")) send(conn, { type: "held", reason: state === "pending" ? "taking" : "not_taken", message: state === "pending" ? "Taking over: wait for the agent's step to end." : NOT_TAKEN });
       return;
     }
-    const actions = message.type === "text" ? [{ type: "type" as const, text: message.text }] : toAction(message, input.input);
-    if (!Array.isArray(actions)) return send(conn, { type: "held", reason: "refused", message: actions.message });
-    if (actions.length === 0) return;
     // At most so many wait behind the one being sent: the rest are dropped, said, never queued without bound.
     if (current.queued >= limits.maxQueuedInput) return send(conn, { type: "held", reason: "busy", message: "Too much input at once: that input was dropped." });
-    hold.touched?.();
     current.queued += 1;
     const under = epoch;
     current.chain = current.chain.then(async () => {
       try {
-        // Taken back meanwhile (the hold moved, a new take began, or the viewer went): nothing more is sent.
-        if (viewer !== current || state !== "person" || under !== epoch) return;
+        // Taken back meanwhile (the take ended, a new one began, or the viewer went): nothing more is sent.
+        if (viewer !== current || under !== epoch || !drivingNow()) return;
+        const actions: InputAction[] | { readonly message: string } = message.type === "text" ? [{ type: "type", text: message.text }] : mapper.map(message);
+        if (!Array.isArray(actions)) return send(conn, { type: "held", reason: "refused", message: actions.message });
+        if (actions.length === 0) return;
         if (!current.watch) return send(conn, { type: "held", reason: "failed", message: "The computer's screen is not open yet: try again in a moment." });
+        hold.touched?.();
         const result = await current.watch.input(actions).catch((error: unknown) => ({ ok: false as const, error: { message: (error as Error)?.message ?? String(error) } }));
         if (!result.ok && viewer === current) send(conn, { type: "held", reason: "failed", message: redactWords(result.error.message) });
       } finally {
@@ -355,13 +474,22 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     });
   };
 
-  const onHands = async (current: NonNullable<typeof viewer>, which: "take" | "give"): Promise<void> => {
+  const onHands = async (current: Viewer, which: "take" | "give"): Promise<void> => {
     const conn = current.conn;
     try {
-      if (which === "take" && state === "person") return send(conn, { type: "hold", held: true });
-      if (which === "take") epoch += 1;
-      const answer = which === "take" ? await hold.take() : await hold.give();
-      if (viewer === current) moved({ state: answer.hold, ...(which === "give" && answer.hold === "agent" && state !== "agent" ? { ended: "given" as const } : {}) });
+      if (which === "take") {
+        if (state === "person") return send(conn, { type: "hold", held: true });
+        newTake();
+        const answer = await hold.take();
+        // The answer moves the viewer on from the agent, never back from a change already heard.
+        if (viewer === current && state === "agent" && answer.hold !== "agent") moved({ state: answer.hold });
+        return;
+      }
+      // Hand back: what is queued is not sent, what this take holds is let go, then the hold is given.
+      epoch += 1;
+      await liftHeld(current);
+      const answer = await hold.give();
+      if (viewer === current && answer.hold === "agent" && state !== "agent") moved({ state: "agent", ended: "given" });
     } catch (error) {
       if (viewer === current) send(conn, { type: "take_refused", message: redactWords((error as Error)?.message ?? "The computer could not be handed over.") });
     }
@@ -374,6 +502,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     // One viewer per computer, told so, and the first is never replaced.
     if (viewer) return refuse(conn, "viewer_in_use");
     viewer = { conn, abort: new AbortController(), chain: Promise.resolve(), queued: 0 };
+    awayOwed = false;
     const current = viewer;
     state = await Promise.resolve(hold.state()).catch(() => state);
     if (viewer !== current) return;
@@ -394,6 +523,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (ack) acked(current);
       return ack?.();
     }
+    if (message.type === "blur") return void liftHeld(current);
     if (message.type === "take" || message.type === "give") return void onHands(current, message.type);
     onInput(current, message);
   };
@@ -409,6 +539,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     const conn = acceptWebSocket(req, socket, head, { maxPayload: MAX_MESSAGE_BYTES });
     if (!conn) return;
     pending.add(conn);
+    input.sockets?.(socket);
     socket.on("drain", () => resume(conn));
     const timer = timers.set(() => void (pending.delete(conn) && refuse(conn, "unauthorized")), limits.helloMs);
     conn.onClose = () => {
@@ -431,22 +562,32 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     res.writeHead(ok ? 200 : 404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end();
   });
   server.on("upgrade", upgrade);
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, LOOPBACK, () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-  server.unref();
-  const port = (server.address() as AddressInfo).port;
-  origin = `http://${LOOPBACK}:${port}`;
   const stopServer = (): Promise<void> => new Promise((resolve) => {
     server.close(() => resolve());
     server.closeAllConnections();
   });
 
-  const put = await store.liveViewers.put(claim, { kind, tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, kind, tag), token) }).catch(() => false);
+  let put: boolean;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, LOOPBACK, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    server.unref();
+    const port = (server.address() as AddressInfo).port;
+    origin = `http://${LOOPBACK}:${port}`;
+    const sealed = sealColumn(sealKey, sealedAt.liveViewer(claim.runId, kind, tag), token);
+    put = await store.liveViewers.put(claim, { kind, tag, port, id, sealed }).catch(() => false);
+  } catch (error) {
+    // Nothing is left of an open that failed: no subscription, and nothing listening.
+    closed = true;
+    unsubscribe();
+    await stopServer();
+    throw error;
+  }
   if (!put) {
     closed = true;
     unsubscribe();
@@ -473,8 +614,8 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (viewer) {
         const gone = viewer;
         viewer = null;
-        acked(gone);
         gone.abort.abort();
+        letGoFrames(gone);
         await gone.watch?.close().catch(() => undefined);
       }
       await stopServer();

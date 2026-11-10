@@ -5,7 +5,9 @@
 // sent once, in the hello (computer-live.ts has the protocol). Frames are drawn by their format (JPEG or PNG, told by their
 // bytes) and acked once drawn, so the next comes only then. The bar has Take over and Hand back; no address bar, back or
 // reload (a browser's). A desktop gets the mouse, the wheel and keys; a phone gets taps, swipes, its back, home and
-// recents buttons, and keys. Coordinates are the screen's real pixels, the w and h each frame carries.
+// recents buttons, and keys. Coordinates are the screen's real pixels, the w and h each frame carries. A swipe lasts 1,000 ms
+// at most, as the computer takes it (createActionMapper's bound). Losing focus tells the endpoint ("blur"), which lets go of
+// the buttons held.
 
 const html = `<!doctype html>
 <html lang="en">
@@ -204,6 +206,9 @@ const js = `"use strict";
     if (!scheduled) { scheduled = true; requestAnimationFrame(function () { scheduled = false; if (moved) { send(moved); moved = null; } }); }
   });
   canvas.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  // The viewer losing focus (another window, or the run's page around it) lets go of what the person holds down: the
+  // computer would never see its release.
+  window.addEventListener("blur", function () { if (holding) raw({ type: "blur" }); });
   canvas.addEventListener("wheel", function (e) {
     if (input !== "desktop") return;
     var p = point(e); if (!p) return;
@@ -227,7 +232,7 @@ const js = `"use strict";
     if (!p) return;
     e.preventDefault();
     var far = Math.abs(p.x - from.x) + Math.abs(p.y - from.y) > 12;
-    if (far) send({ type: "swipe", x1: from.x, y1: from.y, x2: p.x, y2: p.y, ms: Math.max(50, Math.min(5000, Date.now() - from.at)) });
+    if (far) send({ type: "swipe", x1: from.x, y1: from.y, x2: p.x, y2: p.y, ms: Math.max(50, Math.min(1000, Date.now() - from.at)) });
     else send({ type: "tap", x: p.x, y: p.y });
   });
   ["back", "home", "recents"].forEach(function (name) { $(name).addEventListener("click", function () { send({ type: "button", name: name }); focusScreen(); }); });
