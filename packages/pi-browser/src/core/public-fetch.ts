@@ -12,9 +12,21 @@ import { refusedError } from "./custody.js";
  *  included). */
 const V4_PRIVATE: ReadonlyArray<readonly [number, number]> = [[0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xe0000000, 4], [0xf0000000, 4]];
 /** ::/8 reserved by the IETF (the unspecified and loopback addresses, IPv4-compatible ones, and the NAT64 prefixes
- *  64:ff9b::/96 and 64:ff9b:1::/48), fc00::/7 unique-local, fe80::/10 link-local, fec0::/10 site-local and ff00::/8
- *  multicast. An IPv4-mapped address (::ffff:0:0/96) is checked as the IPv4 address it carries. */
-const V6_PRIVATE: ReadonlyArray<readonly [string, number]> = [["::", 8], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]];
+ *  64:ff9b::/96 and 64:ff9b:1::/48), 100::/64 discard-only, 2001:db8::/32 documentation, fc00::/7 unique-local,
+ *  fe80::/10 link-local, fec0::/10 site-local and ff00::/8 multicast. An IPv4-mapped address (::ffff:0:0/96) is checked
+ *  as the IPv4 address it carries; a 6to4 (2002::/16) or Teredo (2001::/32) address as each IPv4 address it embeds
+ *  (V6_EMBEDS_V4). */
+const V6_PRIVATE: ReadonlyArray<readonly [string, number]> = [["::", 8], ["100::", 64], ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]];
+/** The tunnelling prefixes whose addresses carry IPv4 addresses, and those addresses from an address's eight groups:
+ *  6to4 (RFC 3056) its site's IPv4 in bits 16-47; Teredo (RFC 4380) its server's IPv4 in bits 32-63 and its client's in
+ *  the low 32 bits, each bit flipped. Such an address is private when any IPv4 it carries is: a page steered to one
+ *  reaches that IPv4 host through a relay. One that carries only public IPv4 addresses is judged as any other. */
+const V6_EMBEDS_V4: ReadonlyArray<readonly [string, number, (groups: number[]) => number[][]]> = [
+  ["2002::", 16, (g) => [[g[1]!, g[2]!]]],
+  ["2001::", 32, (g) => [[g[2]!, g[3]!], [g[6]! ^ 0xffff, g[7]! ^ 0xffff]]],
+];
+/** Two 16-bit groups as the dotted IPv4 address they hold. */
+const dotted = ([high, low]: number[]) => [high! >> 8, high! & 0xff, low! >> 8, low! & 0xff].join(".");
 const v4 = (ip: string) => ip.split(".").reduce((n, octet) => n * 256 + Number(octet), 0);
 /** An IPv6 address's eight 16-bit groups, read through the URL parser's canonical form; null when it does not parse
  *  (a zone index among them). */
@@ -33,7 +45,8 @@ export function isPrivateAddress(ip: string): boolean {
   if (net.isIPv4(ip)) return V4_PRIVATE.some(([base, bits]) => Math.floor(v4(ip) / 2 ** (32 - bits)) === Math.floor(base / 2 ** (32 - bits)));
   const groups = net.isIPv6(ip) ? v6Groups(ip) : null;
   if (!groups) return true;
-  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) return isPrivateAddress([groups[6]! >> 8, groups[6]! & 0xff, groups[7]! >> 8, groups[7]! & 0xff].join("."));
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) return isPrivateAddress(dotted([groups[6]!, groups[7]!]));
+  for (const [base, bits, embedded] of V6_EMBEDS_V4) if (inV6(groups, v6Groups(base)!, bits) && embedded(groups).some((pair) => isPrivateAddress(dotted(pair)))) return true;
   return V6_PRIVATE.some(([base, bits]) => inV6(groups, v6Groups(base)!, bits));
 }
 

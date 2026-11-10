@@ -130,6 +130,13 @@ const RANGES = [
   ["240.0.0.0/4", "240.0.0.1"],
   ["192.0.0.0/24", "192.0.0.170"],
   ["fec0::/10", "fec0::1"],
+  ["100::/64", "100::1"], // key-gate: denylist discard-only, a refused test target
+  ["2001:db8::/32", "2001:db8::1"], // key-gate: denylist documentation, a refused test target
+  // 6to4 and Teredo, judged by each IPv4 they carry.
+  ["2002::/16 carrying 192.168.0.1", "2002:c0a8:1::1"], // key-gate: denylist 6to4 over a private IPv4, a refused test target
+  ["2002::/16 carrying 127.0.0.1", "2002:7f00:1::1"], // key-gate: denylist 6to4 over loopback, a refused test target
+  ["2001::/32, its client 10.0.0.1 (bits flipped)", "2001:0:101:101:8000:63bf:f5ff:fffe"], // key-gate: denylist Teredo over a private client, a refused test target
+  ["2001::/32, its server 192.168.0.1", "2001:0:c0a8:1:8000:63bf:f7f7:f7f7"], // key-gate: denylist Teredo over a private server, a refused test target
 ];
 
 test("the special-purpose ranges are private: each refused by isPrivateAddress and by publicFetch before it is dialled", async () => {
@@ -144,6 +151,9 @@ test("the special-purpose ranges are private: each refused by isPrivateAddress a
   for (const ip of ["198.17.255.255", "198.20.0.1", "192.0.1.1", "223.255.255.254", "2001:4860:4860::8888", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) {
     assert.equal(isPrivateAddress(ip), false, ip);
   }
+  // No over-blocking: a 6to4 address over a public IPv4 (8.8.8.8), and a Teredo address whose server (1.1.1.1) and client
+  // (8.8.8.8, its bits flipped) are both public, are judged as any public address.
+  for (const ip of ["2002:808:808::1", "2001:0:101:101:8000:63bf:f7f7:f7f7"]) assert.equal(isPrivateAddress(ip), false, ip);
   assert.equal(isPrivateAddress("fe80::1%eth0"), true, "a scoped address is refused");
 });
 
