@@ -21,11 +21,13 @@ export type Proposed =
   | { state: "dropped"; reason: "unparsed"; detail: string }
   | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
-/** The rules that refuse a proposal whole, whatever item they name: its counts and caps, a path outside what a run may
- *  write, a deletion, the folder's index full, anything that must never be stored (a secret, a character a reader does
- *  not see), which says the run's answer is not to be trusted for any item, and text that is not UTF-8, which cannot be
- *  read for one. Every other problem is its item's alone; unstorable reads every item's text whole first. */
-const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["too_many_files", "too_many_notes", "too_many_skills", "too_many_workflows", "outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
+/** The rules that refuse a proposal whole, whatever item they name: a path outside what a run may write, a deletion,
+ *  the folder's index full (the notes' total, which no one item is past), anything that must never be stored (a secret,
+ *  a character a reader does not see), which says the run's answer is not to be trusted for any item, and text that is
+ *  not UTF-8, which cannot be read for one. Every other problem is its item's alone: a count cap names the items past it
+ *  (learn/check.ts), a size cap the item over it, and they are left out and the rest kept; unstorable reads every item's
+ *  text whole first. */
+const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
 
 /** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
 const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);
@@ -112,27 +114,29 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(dsl ? { dsl } : {}) });
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
-  // and the rest is checked again; a problem that names no item, or one that refuses the whole (WHOLE), drops it all,
-  // as does a rest the checks still refuse.
+  // and the rest is checked again, until it passes; a problem that names no item, or one that refuses the whole (WHOLE),
+  // drops it all, as does a rest with nothing left. A later pass can name what an earlier one did not reach (the
+  // supersedes count, asked only of a rest with no other problem); each pass leaves out at least one item, so it ends.
   let checked = check(changes);
   let left: Problem[] = [];
-  let passing = files;
+  const out = new Set<string>();
   if (checked.problems.length) {
     const named = new Set(changes.map(({ path }) => itemOf(path)));
-    if (checked.problems.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined || !named.has(itemOf(problem.path)))) return { state: "dropped", reason: "checker", problems: checked.problems };
     // Before any item is kept from an answer the checks refuse: every name and text it gave, read whole. Something
     // that must never be stored anywhere in it (in an item the checks refused unread, too) refuses it all.
     const never = unstorable(changes, input.refuse);
-    if (never.length) return { state: "dropped", reason: "checker", problems: [...checked.problems, ...never] };
-    const out = new Set(checked.problems.map((problem) => itemOf(problem.path!)));
-    const rest = changes.filter(({ path }) => !out.has(itemOf(path)));
-    const again = rest.length ? check(rest) : undefined;
-    // A rest the checks refuse again: its own problems are what keeps it out, said with the first pass's.
-    if (!again || again.problems.length) return { state: "dropped", reason: "checker", problems: [...checked.problems, ...(again?.problems ?? [])] };
-    left = checked.problems;
-    checked = again;
-    passing = files.filter(({ file }) => !out.has(itemOf(file)));
+    for (;;) {
+      if (checked.problems.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined || !named.has(itemOf(problem.path)))) return { state: "dropped", reason: "checker", problems: [...left, ...checked.problems] };
+      if (never.length) return { state: "dropped", reason: "checker", problems: [...left, ...checked.problems, ...never] };
+      left = [...left, ...checked.problems];
+      for (const problem of checked.problems) out.add(itemOf(problem.path!));
+      const rest = changes.filter(({ path }) => !out.has(itemOf(path)));
+      if (!rest.length) return { state: "dropped", reason: "checker", problems: left };
+      checked = check(rest);
+      if (!checked.problems.length) break;
+    }
   }
+  const passing = files.filter(({ file }) => !out.has(itemOf(file)));
   if (!checked.notes.length && !passing.length) return { state: "dropped", reason: "empty" };
   // Each message cut of the host's secrets whole first, and only then shortened: a secret the cut fell inside would
   // leave a part of itself that no longer matches. The whole message is read, however long (a message is bounded by
