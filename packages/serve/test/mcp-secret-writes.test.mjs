@@ -34,7 +34,7 @@ test("the table: true only for a body that carries an MCP secret value, or the p
   ]) assert.equal(mcpWritesSecret(operation, body), writes, `${operation}: ${why}`);
 });
 
-test("MCP's operations are registered with the one gate, by this predicate; the document marks MCP's secret fields, and none is unguarded", async () => {
+test("MCP's operations are registered with the one gate, by this predicate; the document marks MCP's secret fields (that no marked operation is unguarded is secret-openapi.test.mjs')", async () => {
   const gate = await import("../dist/secret-writes.js");
   await import("../dist/mcp-servers-store.js");
   const { openapiDocument } = await import("../dist/openapi.js");
@@ -46,7 +46,6 @@ test("MCP's operations are registered with the one gate, by this predicate; the 
   const doc = openapiDocument(() => undefined);
   const marked = gate.markedOperations(doc);
   for (const operation of ["saveMcpServer", "startMcpOAuth"]) assert.ok(marked.includes(operation), `${operation}'s secret fields are marked: ${JSON.stringify(marked)}`);
-  assert.deepEqual(gate.unguardedOperations(doc, gate.registeredOperations()), []);
   const save = doc.paths["/settings/mcp-servers/{name}"].put.requestBody.content["application/json"].schema.properties.auth;
   assert.equal(save.properties.token["x-agentrun-secret"], true, "auth.token");
   assert.equal(save.properties.headers.additionalProperties["x-agentrun-secret"], true, "auth.headers' values");
