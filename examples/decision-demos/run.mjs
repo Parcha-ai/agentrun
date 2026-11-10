@@ -91,12 +91,15 @@ const options = {
 const child = spawn(process.execPath, opts.live ? args : [launcher, JSON.stringify(options)], { env, stdio: ["ignore", "pipe", "pipe"] });
 let stderr = "";
 child.stderr.on("data", (chunk) => (stderr += chunk));
-const base = await new Promise((resolveBase, reject) => {
+// The base URL, and the console's link from the server's Open line, which comes after it: with no accounts the launch
+// link (`?launch=<code>`) that signs this browser in. The token never signs a browser in.
+const { base, openLink } = await new Promise((resolveBase, reject) => {
   let text = "";
   child.stdout.on("data", (chunk) => {
     text += chunk;
     const found = /AGENTRUN_BASE_URL=(\S+)/.exec(text)?.[1];
-    if (found) resolveBase(found);
+    const open = /^Open (\S+)$/m.exec(text)?.[1];
+    if (found && open) resolveBase({ base: found, openLink: open });
   });
   child.once("exit", (code) => reject(new Error(`serve exited ${code}: ${stderr.trim()}`)));
 });
@@ -125,7 +128,7 @@ async function api(method, path, body) {
 }
 
 console.log(`serve ${opts.live ? "LIVE" : "faux"} on ${origin} (data ${data})`);
-console.log(`console: ${origin}/?token=${encodeURIComponent(token)}`);
+console.log(`console: ${openLink}`);
 
 /** The tools a workflow's call nodes name: a revision lists each tool its workflow may call. */
 function callTools(node, found = new Set()) {
@@ -163,7 +166,7 @@ for (const id of opts["serve-only"] ? [] : useCase === "all" ? Object.keys(cases
   if (run.status !== 202) { console.log(`run ${id} (${inputName}): ${run.status} ${JSON.stringify(run.body?.error ?? run.body)}`); failures++; continue; }
   const runId = run.body.run_id ?? run.body.id;
   started.push({ id, runId, inputName, postedAt });
-  console.log(`run ${id} (${inputName}): ${runId}\n  ${origin}/?token=${encodeURIComponent(token)}#/runs/${encodeURIComponent(runId)}`);
+  console.log(`run ${id} (${inputName}): ${runId}\n  ${openLink}#/runs/${encodeURIComponent(runId)}`);
 }
 
 // ---- the report of one run

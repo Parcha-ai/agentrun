@@ -1,6 +1,7 @@
 // The smokes' server: startServe in this process with the options in argv[2] (JSON), so the decision fakes come in
 // through startServe's options (fauxJev, fauxParallel, fauxOpenrouter), as the server takes test hooks, never from its
-// environment. Prints the base URL as the CLI's banner does, and closes on SIGTERM.
+// environment. Prints the base URL and the console's Open line as the CLI's banner does (with no accounts, the launch
+// link that signs a browser in, never the token), and closes on SIGTERM.
 import { startServe } from "../../dist/server.js";
 
 const options = JSON.parse(process.argv[2]);
@@ -8,4 +9,5 @@ const options = JSON.parse(process.argv[2]);
 process.env.AGENTRUN_BOXES ??= "none";
 const serve = await startServe({ ...options, log: () => {} });
 process.stdout.write(`AGENTRUN_BASE_URL=${serve.baseUrl}\n`);
+process.stdout.write(`Open ${serve.url}/${serve.launchCode ? `?launch=${serve.launchCode}` : ""}\n`);
 process.once("SIGTERM", () => void serve.close().then(() => process.exit(0)));
