@@ -31,7 +31,7 @@ export interface ClaimSecretsDeps {
 /** The environment a claimed run's tools run under: the runner's base (its secrets stripped), with the keys the run's
  *  revision needs read from the store on top — the tool keys its tools unlock, the model keys its model needs, and its
  *  decision provider keys. A fresh object per claim, so no run's keys reach another's. */
-export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane">): Promise<NodeJS.ProcessEnv> {
+export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   // Every candidate secret into a working environment, then scoped to the run below so a key the run does not need is never
   // put on the environment its tools run under. The server process's own environment value wins over the store's by the same
@@ -43,8 +43,12 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
     if (value !== undefined) working[name] = value;
   }
   const needs = await needsOf(revision);
+  // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
+  // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
+  // in its place, and the run would hold a key its model never sends and lack the one it does.
+  const scoped = launch.model && !needs.tiers ? { ...needs, model: `${launch.model.provider}/${launch.model.modelId}` } : needs;
   const env: NodeJS.ProcessEnv = { ...base };
-  for (const name of keysFor(needs, working)) if (working[name] !== undefined) env[name] = working[name];
+  for (const name of keysFor(scoped, working)) if (working[name] !== undefined) env[name] = working[name];
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   return env;
@@ -57,16 +61,23 @@ export const MODEL_KEY_NAMES: readonly string[] = [...new Set([...Object.values(
  *  as runEnv makes them (readable by name, never enumerable), with each model key it lacks taken from `opened`: the keys
  *  a claim opened from the store (claimSecrets, scoped to the run's model), or every one the server holds
  *  (savedModelKeys). So a model key saved in Settings → Model keys reaches the next run's model requests with no
- *  restart, as a tool key reaches its tools; a key set where AgentRun starts still wins (claimSecrets reads it first).
+ *  restart, as a tool key reaches its tools; a key set where AgentRun starts still wins (claimSecrets reads it first),
+ *  and a provider the runner holds any key of gets none of its saved ones.
  *  The keys added are never enumerable either: a spread of the result, or a spawn given it, carries none of them. */
 export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   for (const name of Object.getOwnPropertyNames(env)) {
     if (!Object.prototype.propertyIsEnumerable.call(env, name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
   }
-  for (const name of MODEL_KEY_NAMES) {
-    if (out[name] !== undefined || opened[name] === undefined) continue;
-    Object.defineProperty(out, name, { value: opened[name], enumerable: false, writable: false, configurable: false });
+  // A provider's keys are filled together or not at all: only when the runner holds none of them. A credential handed where
+  // AgentRun started (ANTHROPIC_AUTH_TOKEN, an AWS key id) is never mixed with a saved key of the same provider, which its
+  // route would send first (ANTHROPIC_API_KEY before the token) or pair with it (another AWS name).
+  for (const names of [...Object.values(PROVIDER_KEYS), [GATEWAY_KEY_ENV]]) {
+    if (names.some((name) => env[name] !== undefined)) continue;
+    for (const name of names) {
+      if (out[name] !== undefined || opened[name] === undefined) continue;
+      Object.defineProperty(out, name, { value: opened[name], enumerable: false, writable: false, configurable: false });
+    }
   }
   return out;
 }
