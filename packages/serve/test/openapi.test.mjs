@@ -153,6 +153,17 @@ test("the contract's operations are as vendored; this server's own are added and
       assert.ok(isDeepStrictEqual(same, vendoredSame), "listAgents is the contract's but for its archived");
       continue;
     }
+    if (op.operationId === "listRuns") {
+      // runlabels/1: an agent's runs take GET /runs' `label` filter too: the contract's parameters, then this server's one,
+      // and the rest as vendored.
+      assert.deepEqual(Object.keys(changes), ["label"]);
+      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
+      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["label", "query", false]);
+      const { parameters: _a, ...same } = rest;
+      const { parameters: _b, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "listRuns is the contract's but for its label");
+      continue;
+    }
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
       // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
       // the contract has none; the rest as vendored.

@@ -6,7 +6,7 @@
 // shows its stored cost. These reads carry no secret text; the server's view layer cuts what it serves (an error, a review,
 // the rows) by the run's handed sign-ins.
 import type { Context } from "@earendil-works/chord";
-import type { ImportedFrom, RunRow, Store } from "../store/store.js";
+import type { ImportedFrom, RunLabels, RunRow, Store } from "../store/store.js";
 import { spentOverStore } from "./cap.js";
 
 /** A revision's kind, as the row names it. */
@@ -85,12 +85,13 @@ function joins(store: Store, context: Context) {
   };
 }
 
-/** The runs, newest first; `agent` and `revision` narrow it. Archived runs are listed too (the server filters them), with
- *  the archive time coalesced onto each row, and a not-ended run's cost its booked-so-far spend. */
-export async function listRuns(store: Store, filter: { agent?: string; revision?: string }, context: Context): Promise<RunRowView[]> {
+/** The runs, newest first; `agent`, `revision` and `labels` (every one held) narrow it. Archived runs are listed too (the
+ *  server filters them), with the archive time coalesced onto each row, and a not-ended run's cost its booked-so-far spend. */
+export async function listRuns(store: Store, filter: { agent?: string; revision?: string; labels?: RunLabels }, context: Context): Promise<RunRowView[]> {
   const runs = await store.runs.list({
     ...(filter.agent !== undefined ? { agentId: filter.agent } : {}),
     ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}),
+    ...(filter.labels !== undefined ? { labels: filter.labels } : {}),
   });
   const join = joins(store, context);
   const views: RunRowView[] = [];

@@ -32,12 +32,29 @@ import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
+import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
 
 type Json = Record<string, unknown>;
+
+/** runlabels/1: a run's labels, given at its start and served on every read of it (run-labels.ts). */
+const RUN_LABELS: Json = {
+  type: "object",
+  maxProperties: MAX_LABELS,
+  propertyNames: { pattern: LABEL_KEY.source },
+  additionalProperties: { type: "string", minLength: 1, maxLength: MAX_LABEL_VALUE },
+  "x-agentrun-serve": "runlabels/1",
+};
+/** runlabels/1: GET /runs' and GET /agents/{agent_id}/runs' filter on a run's labels. */
+const LABEL_PARAMETER: Json = {
+  name: "label", in: "query", required: false,
+  description: `Only runs holding this label: \`<key>:<value>\`, split at the first \`:\` (a key holds none). Given more than once (up to ${MAX_LABELS} times), only runs holding every one. One that does not read as a label is 400.`,
+  schema: { type: "string" },
+  "x-agentrun-serve": "runlabels/1",
+};
 
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
@@ -1042,6 +1059,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "revision", in: "query", required: false, description: "Only runs of this revision.", schema: { type: "string" } },
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
+        LABEL_PARAMETER,
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },
@@ -1740,6 +1758,7 @@ const RUN_FIELDS: Record<string, Json> = {
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
   archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+  labels: { ...RUN_LABELS, description: "The labels the run was started with (RunCreate.labels), as given; `{}` when none. Always sent by a server that keeps labels (`runlabels/1`); absent from an earlier one's answer." },
 };
 /** What a run waits on, one field for every kind, told apart by `kind`: a question it asked a person, or a tool call
  *  that waits for approval. */
@@ -1848,7 +1867,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     ...SO_FAR,
     overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
   },
-  RunCreate: { cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` } },
+  RunCreate: {
+    cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    labels: { ...RUN_LABELS, description: `The caller's own labels for the run: at most ${MAX_LABELS} keys, each 1 to 63 letters, digits, \`.\`, \`_\`, \`-\` or \`/\` starting with a letter or a digit; each value text of 1 to ${MAX_LABEL_VALUE} characters with no control character. Kept on the run as given, served on every read of it (\`labels\` on Run and RunSummary) and matched by GET /runs' \`label\`; set once, at the start. The server reads nothing else from them: put no secret in one. Another shape is 422 under \`labels\` or \`labels.<key>\`. Absent: none.` },
+  },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
@@ -2397,6 +2419,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   listAgents.parameters = [...listAgents.parameters, { name: "archived", in: "query", required: false, description: "true lists only archived agents; false, the default, the others.", schema: { type: "boolean" } }];
   listAgents["x-agentrun-serve-changed"] = { archived: "archivedparam/1" };
   changed.push("GET /agents");
+  // GET /agents/{agent_id}/runs takes GET /runs' `label` filter too (server.ts runsPage, shared by both routes).
+  const listAgentRuns = (doc.paths["/agents/{agent_id}/runs"] as Json).get as Json & { parameters: Json[] };
+  listAgentRuns.parameters = [...listAgentRuns.parameters, LABEL_PARAMETER];
+  listAgentRuns["x-agentrun-serve-changed"] = { ...(listAgentRuns["x-agentrun-serve-changed"] as Json | undefined), label: "runlabels/1" };
+  changed.push("GET /agents/{agent_id}/runs");
   // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
   // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.
   const getAgent = (doc.paths["/agents/{agent_id}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };

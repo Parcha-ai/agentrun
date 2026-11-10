@@ -3,7 +3,7 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
@@ -22,16 +22,17 @@ export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
   wake_at: number | null; backoff_until: number | null; cost_usd: number | null; metrics: string | null; summary: string | null;
-  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; started_at: number; ended_at: number | null;
+  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; started_at: number; ended_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, started_at, ended_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, started_at, ended_at";
 
 export const runOf = (r: RunRecord): RunRow => ({
   id: r.id, agentId: r.agent_id, revisionId: r.revision_id, state: r.state, epoch: r.epoch, runner: r.runner, claimedUntil: r.claimed_until,
   wakeAt: r.wake_at, backoffUntil: r.backoff_until, costUsd: r.cost_usd, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
-  signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), startedAt: r.started_at, endedAt: r.ended_at,
+  signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), labels: r.labels === null ? {} : (JSON.parse(r.labels) as RunLabels),
+  startedAt: r.started_at, endedAt: r.ended_at,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing

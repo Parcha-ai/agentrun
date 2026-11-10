@@ -132,6 +132,10 @@ export interface RunOrigin {
   readonly fingerprint?: string | null;
 }
 
+/** A run's labels: a small map of the caller's own strings, set once at its start, never read by the server (only
+ *  filtered on). Bounds: run-labels.ts. */
+export type RunLabels = Readonly<Record<string, string>>;
+
 export interface RunRow {
   readonly id: string;
   readonly agentId: string;
@@ -155,6 +159,8 @@ export interface RunRow {
   /** The SHA-256 hashes of the browser sign-in pointers handed to the run at its launch (never the pointers), or null when
    *  it was handed none. A sign-in whose pointer hashes to one of these cannot be forgotten while the run runs. */
   readonly signInHanded: readonly string[] | null;
+  /** The caller's labels, given at its start (RunLabels): opaque to the server, kept as given, {} when none. */
+  readonly labels: RunLabels;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -527,7 +533,7 @@ export interface Runs {
    *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
    *  or nothing). */
-  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin }, launch?: RunLaunchInput): Promise<RunRow>;
+  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -537,7 +543,7 @@ export interface Runs {
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
     revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
-    run: { id: string; origin?: RunOrigin };
+    run: { id: string; origin?: RunOrigin; labels?: RunLabels };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
@@ -545,8 +551,8 @@ export interface Runs {
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
+   *  false: not); its agent's archive is read apart. `labels`: only runs holding every one of these labels, key and value. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner

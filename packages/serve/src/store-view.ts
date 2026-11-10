@@ -365,6 +365,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // Only what an imported run shows: never the server's internal file stamp (importedFrom.file).
     imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
     trigger: launch?.trigger ?? null,
+    // The caller's labels, as given at the start ({} when none): its own strings, never cut.
+    labels: runRow.labels,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
     learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),
     poll_after_ms: terminal && settled ? 0 : 1000,
@@ -376,11 +378,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
 export async function summaryOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const view = await viewOverStore(store, runId, deps);
   if (!view) return undefined;
-  const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = view as Record<string, unknown>;
+  const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
     ...(effort ? { effort } : {}),
-    created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger,
+    created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
   };
 }

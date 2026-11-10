@@ -15,6 +15,7 @@ import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { labelsOf } from "./run-labels.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
@@ -357,7 +358,8 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+    const labels = labelsOf(body.labels);
+    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch) });
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -396,11 +398,12 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
   const runId = (deps.newRunId ?? uuidv7)();
+  const labels = labelsOf(body.labels);
   try {
     return await store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
-      run: { id: runId, ...(origin ? { origin } : {}) },
+      run: { id: runId, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) },
       launch: { body: launchBody(launch) },
     });
   } catch (error) {

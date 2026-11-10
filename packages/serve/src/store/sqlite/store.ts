@@ -13,7 +13,7 @@ import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type JournalReads, type UpdatedRun,
+  type JournalReads, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
@@ -133,6 +133,11 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+/** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. */
+const labelsColumn = (labels: RunLabels | undefined): string | null => {
+  const keys = Object.keys(labels ?? {}).sort();
+  return keys.length === 0 ? null : JSON.stringify(Object.fromEntries(keys.map((key) => [key, labels![key]])));
+};
 
 type McpServerRecord = {
   name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
@@ -271,6 +276,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
     // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
+    // An earlier build of this version made the runs table with no labels: the server adds the column, nullable, so its
+    // runs read as given none.
+    if (role === "server" && !(await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('runs') WHERE name = 'labels'"))) {
+      await connection.write([{ sql: `ALTER TABLE runs ADD COLUMN labels TEXT CHECK (labels IS NULL OR json_valid(labels))` }], { full: true });
+    }
     if (role === "server") {
       await connection.write([
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
@@ -728,25 +738,26 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
+        const labelled = labelsColumn(labels);
         if (origin || launch) {
           // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
           // never lands, and a run never exists without the launch it was started with.
           return db.transaction(async (tx) => {
             const at = now();
-            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
             if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
             if (launch) await writeLaunch(tx, id, launch, at);
             return runOf(row!);
           });
         }
-        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, labelled, now()] }]);
         return runOf(result!.rows[0] as RunRecord);
       },
       createInline: async ({ agent, revision, run, launch }) => {
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
         return db.transaction(async (tx) => {
           const at = now();
           // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
@@ -770,7 +781,7 @@ class SqliteStore implements Store {
             await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
           }
           // The run, its origin and its launch, in the same transaction as the agent and the revision.
-          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, at);
+          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, labelsColumn(run.labels), at);
           if (run.origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", run.origin.key, run.id, run.origin.fingerprint ?? null, at);
           await writeLaunch(tx, run.id, launch, at);
           return runOf(row!);
@@ -781,13 +792,15 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
-      list: async ({ agentId, revisionId, state, archived, limit }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, limit }) => {
         const where: string[] = [];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
+        // Each label, key and value bound as parameters (never spliced into a JSON path), all of them held.
+        for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("labels")), params.push(key, value));
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);

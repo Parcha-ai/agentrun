@@ -104,6 +104,10 @@ export const STORE_DDL: readonly string[] = [
     -- the write-back (sign-ins-store.ts / runs.update's save decision). Null until it first leaves running. Other vendors
     -- free the lease the instant it leaves running (no settle window), so this is read only with one.
     left_running_at INTEGER,
+    -- The caller's labels (RunLabels): a JSON object of strings, set once with the queued run (runs.create), opaque to the
+    -- server and only filtered on (runs.list). Null when it was given none. Added to a store an earlier build of this
+    -- version made at the server's open (sqlite/store.ts).
+    ${json("labels", true)},
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,

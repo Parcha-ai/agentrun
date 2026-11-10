@@ -16,6 +16,9 @@ export interface Dialect {
   jsonNotFalse(column: string, path: readonly string[]): string;
   /** True when the JSON array in TEXT column `column` holds the string parameter that follows (one `?`). */
   jsonArrayHas(column: string): string;
+  /** True when the JSON object of strings in TEXT column `column` holds the key and the value of the two string parameters
+   *  that follow (two `?`): bound, never spliced, so any key reads safely. False when the column is NULL. */
+  jsonObjectHas(column: string): string;
   /** The length of the JSON array in TEXT column `column`. */
   jsonArrayLength(column: string): string;
   /** trigger_firings' insertion order: the tie-break of rows written in the same ms. */
@@ -73,6 +76,7 @@ export const SQLITE: Dialect = {
   jsonText: (column, path) => `json_extract(${column}, ${jsonPath(path)})`,
   jsonNotFalse: (column, path) => `json_extract(${column}, ${jsonPath(path)}) IS NOT 0`,
   jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ?)`,
+  jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) AS entry WHERE entry.key = ? AND entry.value = ?)`,
   jsonArrayLength: (column) => `json_array_length(${column})`,
   firingOrder: "rowid",
   limitAll: "LIMIT -1",

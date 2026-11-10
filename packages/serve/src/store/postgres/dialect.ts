@@ -21,6 +21,7 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     // SQLite's json_extract(...) IS NOT 0: true unless the value is false or the number 0 (absent and null are true).
     jsonNotFalse: (column, keys) => `COALESCE((${column}::json #> ${path(keys)})::text NOT IN ('false', '0'), TRUE)`,
     jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_array_elements_text(${column}::json) AS element(value) WHERE element.value = ?)`,
+    jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each_text(${column}::json) AS entry(key, value) WHERE entry.key = ? AND entry.value = ?)`,
     jsonArrayLength: (column) => `json_array_length(${column}::json)`,
     firingOrder: "ord",
     limitAll: "LIMIT ALL",
