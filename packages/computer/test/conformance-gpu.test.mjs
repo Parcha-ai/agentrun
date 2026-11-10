@@ -32,6 +32,8 @@ test("checkGpu: no spec.gpu is no refusal; a provider with no gpu refuses any; a
 	assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: unmounted }), [], "no mount asked: none refused");
 	assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: { ...GPU, mounts: ["archil"] } }, { kind: "archil" }), []);
 	assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: GPU }, { kind: "archil" }), [], "no gpu.mounts: the provider's own mounts hold");
+	// A mount that is not an object with a kind is checkMount's refusal: checkGpu reads nothing from it, and never throws.
+	for (const mount of [null, "archil", 3, {}]) assert.deepEqual(checkGpu({ type: "T4", count: 1 }, { gpu: unmounted }, mount), [], JSON.stringify(mount));
 });
 
 test("provider.check-refuses: a provider with no gpu refuses any spec.gpu; one that declares gpu refuses a type it does not offer and a count outside 1 to max", async () => {

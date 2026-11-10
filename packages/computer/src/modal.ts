@@ -152,6 +152,11 @@ export interface ModalTimeouts {
 	releaseMs: number;
 	/** The first pause between two of those polls; the pauses double up to 5 s. */
 	releasePollMs: number;
+	/**
+	 * How long a create whose sandbox Modal says is shutting down on its own (its command, init, exited) waits for poll to
+	 * read it finished, to give the command's exit code and words in its failure.
+	 */
+	endedMs: number;
 	/** Each root step of an Archil mount through exec (the preflight, mount or revoke, serve), and its checkin at release. */
 	mountMs: number;
 }
@@ -355,6 +360,7 @@ const DEFAULT_TIMEOUTS: ModalTimeouts = {
 	uploadMs: 300_000,
 	releaseMs: 120_000,
 	releasePollMs: 500,
+	endedMs: 30_000,
 	mountMs: 120_000,
 };
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
@@ -538,6 +544,9 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidError" || code === 3) return "invalid";
 	// gRPC's UNAUTHENTICATED and PERMISSION_DENIED: a token Modal refused.
 	if (code === 16 || code === 7) return "denied";
+	// gRPC's FAILED_PRECONDITION on an exec: the sandbox is ending on its own ("Modal Sandbox is shutting down", from
+	// TaskExecStart, when its command, init, has exited). Gone, so create waits to read why.
+	if (code === 9) return "gone";
 	return "modal";
 }
 
@@ -874,7 +883,7 @@ export class ModalProvider implements ComputerProvider {
 		}
 		// A GPU computer runs on gVisor, Modal's one GPU runtime, where the Archil client's FUSE mount is not yet proven:
 		// its gpu.mounts is empty, so checkGpu refuses a GPU with a mount.
-		refusals.push(...checkGpu(given.gpu, this.capabilities(), mount as { kind?: unknown } | undefined));
+		refusals.push(...checkGpu(given.gpu, this.capabilities(), mount));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			refuse(field, `a Modal computer does not support ${field}`);
@@ -997,7 +1006,8 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (checked.ok) return ok(checked.value.length > 0 ? { ...ref, notes: checked.value } : ref);
 		// Read before the terminate, which would end it with its own code: whether the sandbox's command had already ended.
-		const why = await this.#endedWords(sandbox, archil?.mount.token, signal);
+		// A sandbox Modal says is ending on its own (gone) is waited for, bounded, so its command's exit and words are read.
+		const why = await this.#endedWords(sandbox, name, archil?.mount.token, checked.error.code === "gone", signal);
 		await letGo();
 		const after = await this.#terminate(sandbox, name, signal);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}${why}`);
@@ -1005,10 +1015,13 @@ export class ModalProvider implements ComputerProvider {
 
 	/**
 	 * When a create's sandbox has already finished, its command's exit code and the tail of its output (stdout, then
-	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read.
+	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read. With
+	 * `ending` (Modal said the sandbox is shutting down), first waits up to endedMs for poll to read it finished: Modal
+	 * ends a sandbox asynchronously, and poll reads null until then, so its command's words would be lost.
 	 */
-	async #endedWords(sandbox: ModalSandbox, token: string | undefined, signal?: AbortSignal): Promise<string> {
-		const { callMs } = this.#timeouts;
+	async #endedWords(sandbox: ModalSandbox, name: string, token: string | undefined, ending: boolean, signal?: AbortSignal): Promise<string> {
+		const { callMs, endedMs, releasePollMs } = this.#timeouts;
+		if (ending) await untilFinished(() => sandbox.poll(), { name, boundMs: endedMs, callMs, minMs: Math.min(releasePollMs, RELEASE_POLL_MAX_MS), maxMs: RELEASE_POLL_MAX_MS, signal });
 		const polled = await call("poll of the sandbox", () => sandbox.poll(), callMs, signal);
 		if (!polled.ok || polled.value === null) return "";
 		const read = async (stream: ModalSandbox["stdout"]) => {

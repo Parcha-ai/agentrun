@@ -251,6 +251,17 @@ test("check() refuses a GPU with an Archil mount on Modal: its gVisor runtime ha
 	assert.ok(!JSON.stringify(refusals).includes(mount.token));
 });
 
+test("check() and create() refuse a GPU spec with mount null in words, never by throwing (review: null mounts throw)", async () => {
+	const { provider, fake } = setup();
+	const spec = { ...SPEC, mount: null, gpu: { type: "T4", count: 1 } };
+	const refusals = provider.check(spec);
+	assert.ok(refusals.some((r) => r.field === "mount"), JSON.stringify(refusals));
+	const created = await provider.create(spec);
+	assert.equal(created.ok, false);
+	assert.equal(created.error.code, "refused", "check's refusal, as a result");
+	assert.equal(fake.sandboxes.size, 0, "nothing made");
+});
+
 test("create: sizes, user and workdir map onto Modal's fields; open makes nothing", async () => {
 	const { provider, fake } = setup({ user: "2000:3000" });
 	const created = await provider.create({ ...SPEC, cpus: 4, memoryMb: 100, workdir: "/opt/app", lifetimeMs: 1500 });
@@ -448,6 +459,22 @@ test("create: a sandbox whose own command has already ended is refused with its 
 	// A sandbox that ended with no output says so, in words.
 	const quiet = await driftedCreate({ running: false, ended: { exitCode: 0 } }, /finished/);
 	assert.match(quiet.message, /its command exited 0, with no output/);
+});
+
+test("create: a sandbox Modal is shutting down when the bridge's exec starts (its init exited) is waited for, and refused with init's exit code and words", async () => {
+	// The Modal GPU live run (gVisor): the bridge's exec was refused with FAILED_PRECONDITION "Modal Sandbox is shutting
+	// down" while poll still read null, so the failure said nothing of why init ended.
+	const words = "computerd init: cannot make a network namespace of its own for init and its programs: operation not permitted";
+	const initExits = { exitCode: 1, stderr: `${words}\n`, polls: 3 };
+	for (const spec of [SPEC, { ...SPEC, gpu: { type: "T4", count: 1 } }]) {
+		const error = await driftedCreate({ initExits }, /shutting down/, spec, { timeouts: { endedMs: 2000, releasePollMs: 1 } });
+		assert.equal(error.code, "gone");
+		assert.match(error.message, /its command exited 1/);
+		assert.ok(error.message.includes(words), error.message);
+	}
+	// Bounded: a sandbox that is still shutting down when endedMs runs out is refused without its words, and terminated.
+	const slow = await driftedCreate({ initExits: { ...initExits, polls: 1_000_000 } }, /shutting down/, SPEC, { timeouts: { endedMs: 50, releasePollMs: 1 } });
+	assert.doesNotMatch(slow.message, /its command exited/);
 });
 
 test("create: a sandbox that is not running after create, or has no daemon, is refused", async () => {

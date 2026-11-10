@@ -169,10 +169,10 @@ export function checkLifetime(lifetimeMs: unknown, { lifetime, maxLifetimeMs }: 
 /**
  * The one GPU rule every provider's check() shares, with no vendor call: no spec.gpu is no refusal; one given is an
  * object of a declared type (capabilities().gpu.types) and a whole count from 1 to capabilities().gpu.max; a provider
- * that declares no gpu refuses any. With `mount`, the spec's, a GPU computer takes only the kinds gpu.mounts names, where
- * it names them. Serve's claim and readiness read the same rule, so a refusal reads alike wherever it is met.
+ * that declares no gpu refuses any. With `mount`, the spec's as given, a GPU computer takes only the kinds gpu.mounts
+ * names, where it names them. Serve's claim and readiness read the same rule, so a refusal reads alike wherever it is met.
  */
-export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabilities, "gpu">, mount?: { kind?: unknown }): Refusal[] {
+export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabilities, "gpu">, mount?: unknown): Refusal[] {
 	if (gpu === undefined) return [];
 	const refuse = (message: string): Refusal[] => [{ field: "gpu", message }];
 	if (offered === undefined) return refuse("this provider offers no GPU: ask a provider that declares one (capabilities().gpu) for a GPU computer");
@@ -183,8 +183,10 @@ export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabiliti
 	if (!Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > offered.max) {
 		return refuse(`gpu.count ${JSON.stringify(count)} is not a whole number from 1 to ${offered.max}, the most GPUs this provider gives one computer`);
 	}
-	if (mount !== undefined && offered.mounts !== undefined && !offered.mounts.includes(mount.kind as MountKind)) {
-		return refuse(`a GPU computer here takes no ${String(mount.kind)} mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU`);
+	// A mount that is not an object with a kind (null among them) is checkMount's refusal; nothing is read from it here.
+	const kind = typeof mount === "object" && mount !== null ? (mount as { kind?: unknown }).kind : undefined;
+	if (kind !== undefined && offered.mounts !== undefined && !offered.mounts.includes(kind as MountKind)) {
+		return refuse(`a GPU computer here takes no ${String(kind)} mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU`);
 	}
 	return [];
 }

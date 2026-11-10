@@ -350,10 +350,15 @@ function rooter(found, command, fake, answers) {
  *    finishes with 137, and list still yields it for the next `lists` listings, finished or not (default none);
  *  - bridgeMs: how long exec of the daemon's stdio bridge takes to answer with its process (default at once);
  *  - archil: answers of an Archil computer's root commands, by verb (see rooter).
+ *  - initExits: { exitCode, stderr, polls }: the sandbox's command, once the daemon is in place, becomes init and exits
+ *    at once (as init that cannot isolate its programs ends, failing closed). Modal then ends the sandbox on its own and
+ *    asynchronously: every exec from then on throws Modal's ClientError FAILED_PRECONDITION "Modal Sandbox is shutting
+ *    down" (gRPC code 9), poll reads null for the next `polls` polls (default 2), then the exit code; the sandbox's
+ *    stderr holds init's words.
  * fake.events records, in order, every SDK call on a sandbox, every root command and every daemon method, each as
  * { sandbox, what }; fake.rootRuns each root command with what its stdin was given; fake.syncs each mount.sync.
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {}, ended } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {}, ended, initExits } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [], events: [], rootRuns: [], syncs: [] };
@@ -398,7 +403,7 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 	const handle = (id) => ({
 		sandboxId: id,
 		stdout: streamOf(ended?.stdout ?? ""),
-		stderr: streamOf(ended?.stderr ?? ""),
+		stderr: streamOf(ended?.stderr ?? initExits?.stderr ?? ""),
 		async getTags() {
 			record("sandbox.getTags", id);
 			const found = sandboxes.get(id);
@@ -412,6 +417,13 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			if (found.lingering?.polls > 0) {
 				found.lingering.polls--;
 				return null;
+			}
+			if (found.shutting) {
+				if (found.shutting.polls > 0) {
+					found.shutting.polls--;
+					return null;
+				}
+				if (found.running) Object.assign(found, { running: false, exitCode: initExits.exitCode });
 			}
 			if (found.lingering && found.running) Object.assign(found, { running: false, exitCode: 137 });
 			return found.running ? null : found.exitCode;
@@ -430,6 +442,11 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			const found = sandboxes.get(id);
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
 			if (!found.running) throw new ConflictError(`Sandbox ${id} has already finished`);
+			// init exits as soon as the daemon is in place (the upload's or the image's): the sandbox is shutting down.
+			if (initExits && found.box.daemon && !found.shutting) found.shutting = { polls: initExits.polls ?? 2 };
+			if (found.shutting) {
+				throw Object.assign(new Error("/modal.task_command_router.TaskCommandRouter/TaskExecStart FAILED_PRECONDITION: Modal Sandbox is shutting down."), { name: "ClientError", code: 9 });
+			}
 			if (command[0] === DAEMON && command[1] === "stdio" && command.length === 2) {
 				if (bridgeMs > 0) await sleep(bridgeMs);
 				return bridge(found.box, fake);

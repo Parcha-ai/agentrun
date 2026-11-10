@@ -1255,7 +1255,11 @@ of that slice, and the live conformance file waits for a key (below).
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
   is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
-  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
+  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read. Before that
+  terminate, a create whose sandbox's own command had ended says so: its exit code and the tail of its output. When
+  Modal refuses an exec with FAILED_PRECONDITION ("Modal Sandbox is shutting down", code `gone`), the command, init, has
+  just exited and Modal ends the sandbox asynchronously, so create first waits up to `endedMs` (30 s) for `poll()` to
+  read it finished, then reads init's words. The first GPU live run on gVisor ended this way, with no words.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
   `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer
   (Modal refuses an `A10` past 4, in its words). Its `H100!` and `B200+` variants are not offered: a computer gets the
