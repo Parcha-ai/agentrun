@@ -56,7 +56,7 @@ test("with no public URL, Connect GitHub is refused in words: GitHub could not r
   assert.match(refused.body.error.message, /AGENTRUN_PUBLIC_URL/);
 });
 
-test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid, a code GitHub does not convert with conversion_failed; a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
+test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid (a code GitHub does not convert is the next case); a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
   // Before the App is installed GitHub holds no installation of it: the read finds none.
   server.github.installations.clear();

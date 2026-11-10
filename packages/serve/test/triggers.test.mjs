@@ -189,19 +189,13 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
-  // A server started with no seal key handed over has one all the same (ensureSealKey): what it keeps is always sealed.
-  assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
-});
-
-test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
-  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
-  const onFlow = schedule("flow", { every_s: 600 });
-  onFlow.target.input = { question: "What is six times seven?" };
+  // A capped one on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped (#1861).
   const taken = await api("POST", "/triggers", onFlow);
   assert.equal(taken.status, 201, JSON.stringify(taken.body));
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((trigger) => [trigger.target.agent_id, trigger.target.max_cost_usd]), [["flow", 0.5]]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
+  // A server started with no seal key handed over has one all the same (ensureSealKey): what it keeps is always sealed.
+  assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000, skip: RUN_EXEC }, async (t) => {
