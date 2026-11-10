@@ -199,17 +199,17 @@ test("(d) Postgres: a second process with another key on the same database refus
   await runner.close();
 });
 
-test("a store whose only secret is kept beside it (the outbound webhook's signing secret, in webhook.json) and no record of its key: a start with no key refuses and makes none; with the key it opens and records it", { timeout: 60_000 }, async (t) => {
+test("a store whose only secret is the outbound webhook's signing secret (a trigger_settings row) and no record of its key: a start with no key refuses and makes none; with the key it opens and records it", { timeout: 60_000 }, async (t) => {
   await cleanEnv(t);
   const key = newKey();
   const data = join(await scratch(t), "data");
   process.env.AGENTRUN_SEAL_KEY = key;
   const server = await startServe({ data, port: 0 });
   const { client } = await import("./support.mjs");
-  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "https://hooks.example/hook" })).status, 201);
   await server.close();
   delete process.env.AGENTRUN_SEAL_KEY;
-  // The store's record of its key gone, and no secret in the store itself: the webhook's is the only one.
+  // The store's record of its key gone, and no sealed key: the webhook's secret is the only secret it keeps.
   const db = new DatabaseSync(join(data, "store.sqlite"));
   db.prepare("DELETE FROM settings WHERE key = 'seal_key'").run();
   assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no secret in the store");
@@ -243,7 +243,20 @@ test("two servers on two data directories in one process each keep their own key
   await cleanEnv(t);
   const { client } = await import("./support.mjs");
   const { hostSecrets } = await import("../dist/secrets.js");
-  const { webhookSecretIn } = await import("../dist/webhooks.js");
+  const { unseal } = await import("@parcha/pi-durable-agent");
+  // The webhook's secret as each store keeps it (trigger_settings, adapter webhook-out), opened under `key`, or not.
+  const opensUnder = (data, key) => {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+    try {
+      const { sealed } = db.prepare("SELECT sealed FROM trigger_settings WHERE adapter = 'webhook-out' AND scope = 'server' AND field = 'secret'").get();
+      unseal(Buffer.from(key, "base64"), Buffer.from(sealed, "base64"), "trigger_settings|webhook-out|server|secret");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      db.close();
+    }
+  };
   const [a, b] = [join(await scratch(t), "a"), join(await scratch(t), "b")];
   // Both boot at once, each making a key of its own in its data directory.
   const [first, second] = await Promise.all([startServe({ data: a, port: 0 }), startServe({ data: b, port: 0 })]);
@@ -252,15 +265,15 @@ test("two servers on two data directories in one process each keep their own key
   const [keyA, keyB] = [readFileSync(keyFile(a), "utf8").trim(), readFileSync(keyFile(b), "utf8").trim()];
   assert.notEqual(keyA, keyB, "two keys");
   // Each seals a secret while both are open, and reads it back under its own key.
-  for (const [server, url] of [[first, "http://127.0.0.1:9/a"], [second, "http://127.0.0.1:9/b"]]) {
+  for (const [server, url] of [[first, "https://hooks.example/a"], [second, "https://hooks.example/b"]]) {
     const api = client(server.baseUrl, server.token);
     assert.equal((await api("PUT", "/settings/webhook", { url })).status, 201);
     assert.equal((await api("GET", "/settings/webhook")).body.signing, "sealed", `${url}: sealed under its own key and read back`);
   }
   // What each sealed opens under its own key alone, never the other's.
   for (const [data, own, other] of [[a, keyA, keyB], [b, keyB, keyA]]) {
-    assert.ok("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: own }), `${data}: its own key opens it`);
-    assert.ok(!("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: other })), `${data}: the other's key does not`);
+    assert.ok(opensUnder(data, own), `${data}: its own key opens it`);
+    assert.ok(!opensUnder(data, other), `${data}: the other's key does not`);
   }
   // Both keys are cut from what a run writes while their servers are open.
   const listed = hostSecrets({});

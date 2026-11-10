@@ -107,7 +107,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -1157,7 +1157,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
-  const webhooks = new Webhooks(store, checked.sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
+  const webhooks = new Webhooks(store, sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
     ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
     privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
   });
@@ -3267,7 +3267,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
-    const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
+    // One marker per ask (webhooks.ts waitMarkerOf), so the held read and the let-go read of one ask agree.
+    const marker = waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
     if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";

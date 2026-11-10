@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
-import { signatureOf, Webhooks } from "../dist/webhooks.js";
+import { signatureOf, waitMarkerOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { client, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
@@ -327,6 +327,21 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     const [sent] = second.got;
     new Webhook(moved.body.signing_secret).verify(sent.body, sent.headers);
     assert.throws(() => new Webhook(set.signing_secret).verify(sent.body, sent.headers), /verif|signature/i, "the old secret signs nothing for the new receiver");
+  });
+
+  test("one marker per ask: a parked question answered, read again while its row is still marked waiting and the answer shows last, makes the marker it made before; a new ask makes a new one", () => {
+    // The rows a reclaimed run showed between the person's answer and its runner taking it (the server's read of it then):
+    // the question's call, its result and waiting row, the answer, usage.
+    const asked = [{ id: "1:20:0", kind: "tool_use" }, { id: "1:22", kind: "tool_result" }, { id: "1:22:waiting", kind: "waiting" }];
+    const answered = [...asked, { id: "1:24", kind: "user_message" }, { id: "1:usage", kind: "usage" }];
+    const question = { kind: "question" };
+    assert.equal(waitMarkerOf(asked, question, true, "learning"), "1:22:waiting");
+    assert.equal(waitMarkerOf(answered, question, true, "learning"), "1:22:waiting", "the same ask, the same marker, so no second needs_input");
+    const again = [...answered, { id: "1:30:0", kind: "tool_use" }, { id: "1:31", kind: "tool_result" }, { id: "1:31:waiting", kind: "waiting" }];
+    assert.equal(waitMarkerOf(again, question, true, "learning"), "1:31:waiting", "a new ask, a new marker");
+    assert.equal(waitMarkerOf(answered, { kind: "approval", id: "appr_1" }, true, "learning"), "approval:appr_1");
+    assert.equal(waitMarkerOf(answered, { kind: "browser", asked_at: "2026-11-10T00:00:00.000Z" }, true, "learning"), "browser:2026-11-10T00:00:00.000Z");
+    assert.equal(waitMarkerOf(answered, null, false, "learning"), "1:24", "a stop waits on no ask: its last row that shows");
   });
 
   test("a run stopped, then asked a question on its next turn, gives two needs_input notices: different webhook-ids, `stopped` then `question`", { skip: "stop->message resume (switch line, not ask_person): POST /runs/{id}/messages to a stopped agentic run 409s not_continuable because over the store the stopped run reads terminal in statusOf (stopped()/outcome), not input_required/idle; E2v/E2c to carry the stop marker into the store view" }, async (t) => {

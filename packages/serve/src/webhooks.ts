@@ -117,6 +117,27 @@ export function webhookSecretIn(data: string, env: NodeJS.ProcessEnv): { secret:
   }
 }
 
+/** The marker of the wait a run stands at: one per ask, however often or whenever the run is read, so every read of the
+ *  same ask makes the same webhook-id. A question's is its waiting row (run-view.ts withAsks: the asked call's result,
+ *  `:waiting`); an approval's, the call it holds; a budget pause's, its time; a hand-over's, when it was asked; a stop,
+ *  which waits on no ask, the last row that shows (not usage, a phase or learning's). Never the last row for an ask: a
+ *  run read again between the person's answer and its runner taking it (its row still marked waiting) shows the answer
+ *  last, and a marker from that row would tell the same ask twice, under two ids. Undefined when there is none. */
+export function waitMarkerOf(
+  rows: readonly { id: string; kind: string; agent_label?: string | null }[],
+  pending: { kind?: unknown; id?: unknown; at?: unknown; asked_at?: unknown } | null | undefined,
+  waiting: boolean,
+  learningLabel: string,
+): string | undefined {
+  const last = () => rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== learningLabel)?.id;
+  if (!waiting) return last();
+  const kind = pending?.kind;
+  if (kind === "approval" && typeof pending?.id === "string") return `approval:${pending.id}`;
+  if (kind === "budget" && typeof pending?.at === "string") return `budget:${pending.at}`;
+  if ((kind === "browser" || kind === "computer") && typeof pending?.asked_at === "string") return `${kind}:${pending.asked_at}`;
+  return rows.findLast((r) => r.kind === "waiting")?.id ?? last();
+}
+
 /** The store slice the webhook reads and writes. */
 export type WebhooksStore = Pick<Store, "settings" | "triggerSettings" | "channels" | "flush">;
 
