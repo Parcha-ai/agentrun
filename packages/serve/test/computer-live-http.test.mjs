@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fakeDesktopProvider } from "./computer-live-support.mjs";
+import { onComputerHold } from "../dist/runner/computer-journal.js";
 import { connect } from "./fixtures/ws-client.mjs";
 import { agent, call, clientOwnerSession, follow, serve, withEnv } from "./support.mjs";
 
@@ -24,9 +25,36 @@ async function until(check, what, ms = 30_000) {
 }
 const next = async (ws, type) => JSON.parse((await ws.until((m) => m.type === "text" && JSON.parse(m.data).type === type, 10_000)).item?.data ?? "null");
 
-test("a runner run's desktop registers its live view: GET /computer is live with kind desktop for the owner alone, the viewer's page and socket reach the runner's endpoint, and Take over, input and Hand back go through the run's hold", { timeout: 120_000 }, async (t) => {
+/** The runner answering at 127.0.0.2, another host for the server (Linux answers all of 127/8 on loopback): its live host
+ *  on the runner, and its host among the server's runners'. */
+const REMOTE = { AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.2", AGENTRUN_RUNNER_HOSTS: "127.0.0.2" };
+const LINUX_ONLY = process.platform === "linux" ? false : "127.0.0.2 answers as loopback on Linux alone";
+
+test("a runner run's desktop registers its live view: GET /computer is live with kind desktop for the owner alone, the viewer's page and socket reach the runner's endpoint, and Take over, input and Hand back go through the run's hold", { timeout: 120_000 }, (t) => desktopRun(t));
+
+test("the same on a runner on another host than its server: the viewer's row names the runner's host, and the server reaches it there", { timeout: 120_000, skip: LINUX_ONLY }, (t) => desktopRun(t, REMOTE));
+
+test("a runner on another host that is not one of the server's runners: its viewer is never dialled, and GET /computer is not live", { timeout: 120_000, skip: LINUX_ONLY }, async (t) => {
+  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.2" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
+  const desktop = fakeDesktopProvider({ holdShot: 2 });
+  t.after(() => desktop.letGo());
+  const server = await serve(t, { accounts: true, openSetup: true, faux: FAUX, computers: { load: desktop.load } });
+  const owner = await clientOwnerSession(server);
+  assert.equal((await server.api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b" } }))).status, 201);
+  const runId = (await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } })).body.run_id;
+  await desktop.inShot;
+  await until(async () => (await server.store.liveViewers.of(runId)).length === 1, "the runner put its viewer's row");
+  assert.equal((await server.store.liveViewers.of(runId))[0].host, "127.0.0.2");
+  const answer = await call(server.port, { path: `/v2/runs/${runId}/computer`, headers: { cookie: owner.cookie } });
+  assert.notEqual(answer.json.state, "live", JSON.stringify(answer.json));
+  desktop.letGo();
+  await follow(server.api, runId, ["completed"]);
+});
+
+/** A runner run's desktop, watched and taken over through the server; `env`: the runner on another host (REMOTE). */
+async function desktopRun(t, env = {}) {
   // The desktop's provider key, as the server and its runner read it: a stand-in, which only the fake desktop is given.
-  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key" }, ["E2B_API_KEY"]);
+  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key", ...env }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
   // The agent's second look waits inside the shot until the test lets it go.
   const desktop = fakeDesktopProvider({ holdShot: 2 });
   t.after(() => desktop.letGo());
@@ -51,6 +79,7 @@ test("a runner run's desktop registers its live view: GET /computer is live with
   const [, id, token] = /^\/v2\/runs\/[^/]+\/computer\/live\/v\/([A-Za-z0-9_-]{22})#t=([A-Za-z0-9_-]{43})$/.exec(answer.json.viewer ?? "") ?? [];
   assert.ok(id && token, "the viewer's link, its token in the fragment");
   assert.deepEqual({ ...answer.json, viewer: "" }, { state: "live", kind: "desktop", viewer: "", hold: "agent" });
+  assert.equal((await server.store.liveViewers.of(runId))[0].host, env.AGENTRUN_RUNNER_LIVE_HOST, "the row names the runner's host, or none on the server's own machine");
   assert.equal(answer.headers["cache-control"], "no-store");
   assert.equal((await get(`/v2/runs/${runId}/browser/live/v/${id}`, { cookie: owner.cookie })).status, 404, "a desktop's viewer is never under the browser's route");
 
@@ -83,8 +112,14 @@ test("a runner run's desktop registers its live view: GET /computer is live with
   // is up): a take-over row the runner applies to the run's hold, pending until the look ends, then the person's.
   await desktop.inShot;
   await until(async () => (await server.api("GET", `/runs/${runId}`)).body.computer?.state === "ready", "the run's journal says its desktop is up");
+  // The runner applies the take-over row to the run's hold while the look is in flight: pending, said in this process
+  // (onComputerHold, the in-process runner's), and only then does the look end.
+  const applied = new Promise((resolve) => {
+    const off = onComputerHold(runId, (change) => change.state === "pending" && (off(), resolve()));
+  });
   ws.sendJson({ type: "take" });
   assert.deepEqual(await next(ws, "status"), { type: "status", drive: "pending" });
+  await applied;
   desktop.letGo();
   assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
   assert.equal((await get(path, { cookie: owner.cookie })).json.hold, "person");
@@ -108,4 +143,4 @@ test("a runner run's desktop registers its live view: GET /computer is live with
   const said = JSON.stringify((await server.api("GET", `/runs/${runId}/timeline`)).body);
   assert.match(said, /You took over the desktop/);
   assert.match(said, /You handed the desktop back/);
-});
+}
