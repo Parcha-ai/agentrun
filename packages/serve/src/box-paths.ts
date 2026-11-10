@@ -5,9 +5,10 @@
 // container, as compose.yaml makes it. The server reads its own container's id from /proc/self/mountinfo (Docker binds
 // /etc/hostname from `<its root>/containers/<id>/hostname`), asks Docker for that container's mounts, and takes the
 // named volume that holds the data directory; a box then mounts the run's work/ and its egress directory as that volume's
-// subpaths (pi-transport's Docker `paths`, `volume-subpath`: Docker Engine 26 and later), never the volume's root. Any
-// other layout, or an older engine, is a reason, said once at the start, and docker is unavailable: a guess would make
-// every box fail at its create.
+// subpaths (pi-transport's Docker `paths`, `volume-subpath`: Docker Engine 26 and later), never the volume's root, and a
+// run's Docker computer mounts its run's folder and its daemon copy the same way (workspace/computer-deps.ts
+// dockerVolumeOf, the Docker provider's `volume`). Any other layout, or an older engine, is a reason, said once at the
+// start, and docker is unavailable: a guess would make every box fail at its create.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";

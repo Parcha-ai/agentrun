@@ -157,16 +157,9 @@ once without checking again (a key some harness reads would, with `why=key`).
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
 `compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
-Docker socket ([in the published image](#in-the-published-image)).
-
-**Docker sandboxes wait on a fix here.** A run's Docker computer mounts the run's folder by the server's own path, which
-the host's Docker doesn't have while the server runs in a container. Until that lands, Docker isn't offered: capabilities
-say why (`the server runs in a container: Docker can't mount the run's folder from inside it yet, so Docker computers
-aren't available on this setup (...)`), an agent that names a Docker computer is refused at its run's start in those
-words, and an agent with no computer runs on the runner, with the file tools and no shell. A vendor's computer
-(Settings → Computers) is unaffected. The same holds for a server whose `DOCKER_HOST` is another machine's daemon.
-`AGENTRUN_DOCKER_HOST_ADDRESSES` (a comma list of the Docker host's own IP addresses, such as `172.17.0.1`) is checked
-at the start and handed to the Docker provider's egress proxy, for when Docker computers run from a container.
+Docker socket, so each run's Docker sandbox is a container beside the server's, its run's folder mounted from that
+volume ([in the published image](#in-the-published-image)). It takes Docker Engine 26 or later, which mounts a
+volume's subpath.
 
 1. Start it (below).
 2. Open the console and set your password.
@@ -667,10 +660,8 @@ never runs; the box's first process is a `sleep` of its lifetime.
 
 ### In the published image
 
-The published image, `ghcr.io/parcha-ai/agentrun-server`, is given the Docker of the host it runs on, through that
-Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). Its Docker
-sandboxes wait on a fix: Docker computers aren't offered from a container yet (see there); what follows is how the
-server finds its files, which that fix builds on. The image
+The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker sandboxes on the Docker of the host it runs on,
+through that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
 has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives the image's `node` user the socket's group
 (`DOCKER_GID`), so the server never runs as root.
 
@@ -683,16 +674,27 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   host list and the same address rule ([a run in a Docker box](#a-run-in-a-docker-box)).
 - **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
-  (`docker inspect`), and takes the named volume that holds the data directory. A box mounts that run's `work/` from it,
-  and the run's egress proxy's directory (`<data>/box-egress/<16 hex>/`, read-only), as the volume's subpaths
-  (`--mount type=volume,...,volume-subpath=disk/agents/<key>/runs/<run>/work`), never the rest. The run's files and the box's are the same
+  (`docker inspect`), and takes the named volume that holds the data directory. A run's sandbox mounts that run's folder
+  from it, and the sandbox's own daemon (copied to `<volume mount>/.agentrun/computerd`, read-only), as the volume's
+  subpaths (`--mount type=volume,...,volume-subpath=...`), never the rest. The run's files and the sandbox's are the same
   files, as on a host.
+- **The host's own addresses.** A sandbox's egress proxy refuses the Docker host's own addresses, which the server in a
+  container can't see on its interfaces. At its start it reads them once through the socket: one container on the
+  host's network (`--network host`, with `host.docker.internal` added for Docker Desktop and OrbStack, whose listing is
+  the VM's), from the proxy's own image, as nobody (`65534:65534`), every capability dropped, no new privileges, a
+  read-only root, 64 MiB and 32 processes, removed at its exit, bounded to 60 s. To those it adds
+  `AGENTRUN_DOCKER_HOST_ADDRESSES` (a comma list of IP addresses, checked at the start), for what no interface shows,
+  such as a NAT'd or elastic public address. The union is in capabilities' docker entry (`host_addresses`) and the
+  `event=docker_host_addresses` line. With none known under an allow-list (the read failed, nothing set), docker is
+  unavailable at the start, saying so and naming the setting or `AGENTRUN_BOX_ALLOW=none`; under `none` nothing is read.
 - **Any other layout** (the data directory not on a read-write named volume of the server's own container, the socket of
-  another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name), or an
-  older engine, is said in the `event=box_paths` line at the start: `run AgentRun in a container with docker compose up
-  from compose.yaml (its named data volume is how boxes reach a run's files)`, or `Docker Engine <26 can't mount a named
-  volume's subpath: upgrade to Docker 26+`. In every layout in a container, capabilities give docker's reason as the one
-  above: Docker computers aren't available on this setup yet.
+  another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name) makes
+  docker unavailable at the start, its reason in capabilities and the `event=box_paths` line: `run AgentRun in a
+  container with docker compose up from compose.yaml (its named data volume is how boxes reach a run's files)`. On an
+  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`. A `DOCKER_HOST` that
+  names another machine's daemon makes it unavailable too: that daemon has none of this machine's paths. An agent that
+  names a Docker computer is refused at its run's start in those words, and one with no computer runs on the runner,
+  with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
 

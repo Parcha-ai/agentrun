@@ -1,4 +1,4 @@
-# AgentRun Server in a container, on a Linux host with Docker Engine 26 or later. In the directory
+# AgentRun Server in a container, with Docker sandboxes, on a Linux host with Docker Engine 26 or later. In the directory
 # that holds this file, once, then every later compose command in any shell:
 #   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 #   docker compose up -d
@@ -6,13 +6,15 @@
 # (packages/serve/docker/Dockerfile) in place of the published one.
 #
 # The server gets this host's Docker socket, and so does every process it starts. Whatever can reach that socket is root
-# on this host: run this only where you would give the server root.
+# on this host: run this only where you would give the server root. A run's Docker sandbox is a container beside the
+# server's, made through that socket: no socket, no network but its egress proxy (the hosts of AGENTRUN_BOX_ALLOW),
+# every capability dropped, and of the data volume only the run's folder (and the sandbox's own daemon, read-only),
+# mounted as the volume's subpaths.
 #
-# Docker sandboxes here wait on a fix: a run's Docker computer mounts the run's folder by the server's own path, which
-# the host's Docker doesn't have while the server runs in a container. Until that lands, the server says so where
-# Docker is offered (capabilities and a run's start), so an agent that names a Docker computer is refused at
-# its start in those words, and an agent with no computer runs on the runner, with the file tools and no shell. A
-# vendor's computer (Settings → Computers) is unaffected.
+# Its egress proxy refuses this host's own addresses, which the server in a container can't see: at its start it reads
+# them once through the socket (one short-lived container on the host's network, as nobody, from the proxy's own
+# image) and adds AGENTRUN_DOCKER_HOST_ADDRESSES; capabilities show the result. With none known, Docker sandboxes are
+# refused before a run, saying how to fix it.
 #
 # The port is published on this machine's loopback only; put a reverse proxy with TLS in front of it before you publish it
 # anywhere else, and set AGENTRUN_TRUSTED_PROXIES to the address the server sees it come from (Docker's bridge, in the
@@ -26,7 +28,8 @@ services:
     ports:
       - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
     volumes:
-      # Everything the server keeps, on a named volume.
+      # Everything the server keeps, on a named volume: a sandbox mounts its run's part of it by the volume's subpath,
+      # which is how a server in a container gives a sandbox the run's files.
       - agentrun-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     # The socket's group, so the server (the image's node user) may use it.
@@ -42,10 +45,9 @@ services:
       AGENTRUN_BOXES: docker
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
-      # This Docker host's own IP addresses, as a comma list (such as its docker0 address, 172.17.0.1, and its LAN
-      # address): a Docker sandbox's egress proxy refuses them, so an allow-list never reaches the host itself. The server
-      # in a container can't read them, and without them a Docker sandbox's allow-list is refused. Not used until Docker
-      # sandboxes run here (see the head of this file).
+      # More of this Docker host's own IP addresses, as a comma list, beside the ones the server reads through the
+      # socket: the ones no interface shows, such as a NAT'd or elastic public address. A sandbox's egress proxy refuses
+      # them all, so an allow-list never reaches the host itself.
       AGENTRUN_DOCKER_HOST_ADDRESSES: ${AGENTRUN_DOCKER_HOST_ADDRESSES:-}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
       AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}

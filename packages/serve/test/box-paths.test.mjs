@@ -228,12 +228,14 @@ test("the server in a container with no named data volume: a run naming a Docker
 const COMPOSE_MOUNTS = (data) => ({ mounts: [{ Type: "volume", Name: "agentrun_agentrun-data", Source: "/var/lib/docker/volumes/agentrun_agentrun-data/_data", Destination: data, RW: true }], volumes: { "agentrun_agentrun-data": data } });
 const hostReads = (fake) => jsonLines(join(fake.state, "host-reads.jsonl"));
 
-test("compose's layout under an allow-list: the Docker host's addresses read once through the socket, Docker offered; a failed read with no AGENTRUN_DOCKER_HOST_ADDRESSES is refused in words, with it offered", { timeout: 180_000 }, async (t) => {
+test("compose's layout under an allow-list: the Docker host's addresses read once through the socket, unioned with AGENTRUN_DOCKER_HOST_ADDRESSES and shown in capabilities (a Desktop's gateway among them); a failed read with no setting is refused in words, with it offered", { timeout: 240_000 }, async (t) => {
   const NO_ADDRESSES = "the server runs in a container and doesn't know the Docker host's own addresses (the read through Docker's socket failed (exit 125: docker: Error response from daemon: the fake's read failed.)), so a Docker computer can't keep this server's allow-list: set AGENTRUN_DOCKER_HOST_ADDRESSES to the host's IP addresses, or AGENTRUN_BOX_ALLOW=none for no network";
-  for (const [given, available] of [
-    [{ read: { interfaces: ["127.0.0.1", "172.17.0.1", "203.0.113.7"], gateway: [] } }, true],
-    [{ fail: true }, false],
-    [{ fail: true, named: "198.51.100.9" }, true],
+  // Each case's addresses as capabilities show them, where an operator looks (undefined when Docker isn't offered).
+  for (const [given, available, shown] of [
+    [{ read: { interfaces: ["127.0.0.1", "172.17.0.1", "203.0.113.7"], gateway: [] } }, true, ["172.17.0.1", "203.0.113.7"]],
+    [{ fail: true }, false, undefined],
+    [{ fail: true, named: "198.51.100.9" }, true, ["198.51.100.9"]],
+    [{ read: { interfaces: ["192.168.65.3"], gateway: ["192.168.65.254"] }, named: "203.0.113.9" }, true, ["192.168.65.3", "192.168.65.254", "203.0.113.9"]],
   ]) {
     const data = await dataDir(t);
     const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
@@ -244,6 +246,7 @@ test("compose's layout under an allow-list: the Docker host's addresses read onc
     const offer = await docker(api);
     assert.equal(offer.available, available, JSON.stringify({ given, offer }));
     if (!available) assert.equal(offer.reason, NO_ADDRESSES);
+    assert.deepEqual(offer.host_addresses, shown, JSON.stringify({ given, offer }));
     const reads = hostReads(fake);
     assert.equal(reads.length, 1, "one read at the start");
     assert.deepEqual([reads[0][reads[0].indexOf("--network") + 1], reads[0][reads[0].indexOf("--user") + 1]], ["host", "65534:65534"]);

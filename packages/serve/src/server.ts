@@ -990,12 +990,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const hostAddresses = dockerElsewhere === undefined && boxPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
   const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
+  // The addresses found, where an operator looks: capabilities' Docker entry.
+  const hostShown = hostAddresses && hostAddresses.addresses.length > 0 ? { host_addresses: hostAddresses.addresses } : {};
   const dockerNetwork = (offer: BoxOffer): BoxOffer => {
     if (!offer.available) return offer;
     if (dockerRefused !== undefined) return { id: offer.id, available: false, state: "unavailable", reason: dockerRefused };
     if (boxNetwork.allow === "none") return { ...offer, network: "none", network_reason: boxNetwork.reason };
     const proxy = egress?.state();
-    return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };
+    return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist", ...hostShown };
   };
   // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
