@@ -4,7 +4,7 @@
 // with the same proposal, its learning run graded by the runner with the same verdict, its start's seed and given notes
 // on its launch. What differs by nature is put aside: when it happened, and the merge commit's id. Then the parts the
 // store gives on its own: the seed is the launch's, never the kept proposal's; a host's secret in a note's name reads
-// [redacted]; and what it held for its owner's OK reads as the store's run view reads it, never from the folder.
+// [redacted]; and what it held for its owner's OK reads as it stands on its folder's main, by the statuses the server gives.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,11 +85,19 @@ test("a host's secret in a note's name reads [redacted] in what the run learned 
   assert.deepEqual(comparable(body), comparable(await todayOf(golden, golden.proposal.seed, dir, shown, [secret])));
 });
 
-test("what a run held for its owner's OK reads as the store's run view reads it: the folder is never read", async (t) => {
+test("what a run held for its owner's OK reads as it stands on its folder's main, by the statuses the caller gives; with none, as its learning end says", async (t) => {
   const golden = GOLDEN.find((one) => one.id === "pending");
   const { store } = await storedAs(t, golden, { seed: golden.proposal.seed });
-  // The store's read takes no data directory: it cannot read the folder. Its held notes are the learning end's.
-  assert.equal(reads.runLearningOverStore?.length, 4, "store, run, shown, secrets: no folder");
-  const body = await runLearningOverStore(store, golden.runId, secretsShown([]), []);
-  assert.deepEqual(body.pending.map((note) => note.file), golden.saved.pending.map((note) => note.file), "held as its learning end says");
+  const held = golden.saved.pending.map((note) => note.file);
+  assert.ok(held.length > 0, "the golden run holds a note");
+  // No statuses: its held notes are the learning end's.
+  const asWritten = await runLearningOverStore(store, golden.runId, secretsShown([]), []);
+  assert.deepEqual(asWritten.pending.map((note) => note.file), held, "held as its learning end says");
+  // Its held notes approved on main since: they read learned, and nothing waits. The statuses are read once, for its agent.
+  const asked = [];
+  const statuses = async (agentId) => (asked.push(agentId), new Map(held.map((file) => [file, { status: "active", supersedes: [] }])));
+  const approved = await runLearningOverStore(store, golden.runId, secretsShown([]), [], statuses);
+  assert.ok(!approved.pending?.length, JSON.stringify(approved.pending));
+  for (const file of held) assert.ok(approved.learned.some((note) => note.file === file), `${file} reads learned`);
+  assert.equal(asked.length, 1, "one read of the folder's statuses");
 });
