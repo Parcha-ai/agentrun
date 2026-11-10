@@ -28,7 +28,7 @@ export function SecretRow({ field: f, label, writable, required = true, disabled
   const env = f.source === "env";
   const acts = writable && !env;
   return (
-    <li data-secret={f.name} data-source={f.source ?? "none"} className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-small", env && "opacity-60")}>
+    <li data-secret={f.name} data-source={f.source ?? "none"} className={cn("relative flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-small", env && "opacity-60")}>
       <span>{secretLabel(f.name, label)}{!required && <span className="ml-2 font-sans text-label text-muted-foreground">Optional</span>}</span>
       <span data-state={f.set ? "set" : required ? "missing" : "optional-missing"} className={stateSaid ? "sr-only" : note ? "text-warning-text" : f.set ? "text-success-text" : "text-muted-foreground"}>{f.set ? "Set" : "Missing"}</span>
       {f.source && <span className="text-muted-foreground">{SOURCE_WORDS[f.source]}</span>}

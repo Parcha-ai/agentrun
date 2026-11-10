@@ -148,8 +148,12 @@ describe("the schedules list", () => {
   });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
-    expect(t.text()).toContain("No triggers yet.");
+    expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
+    // The three things that can start a run, each with its own way in.
+    const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
+    expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
   });
 });
 

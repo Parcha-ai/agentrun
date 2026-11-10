@@ -85,7 +85,7 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
       </div>
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
-        : !triggers.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">No triggers yet. A schedule starts an agent's runs at the times you set; a webhook starts one on each signed request. Each run is capped.</p>
+        : !triggers.length ? <FirstTrigger go={go} />
         : (
           <ul className="border">
             {triggers.map((t) => (
@@ -108,6 +108,33 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
         )}
       {triggers && error && <ProblemCard problem={error} className="mt-4" />}
     </div>
+  );
+}
+
+
+/** A server with no trigger yet: what a trigger is, and the three things that can start a run, each with its own way
+ *  in. The page's buttons above stay; these say what each one is for. */
+function FirstTrigger({ go }: { go: (hash: string) => void }) {
+  const kinds = [
+    { Icon: CalendarClock, name: "Schedule", what: "At the times you set: a cron line, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
+    { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
+    { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
+  ];
+  return (
+    <section aria-labelledby="first-trigger" className="border border-primary/50 bg-primary/5 p-5">
+      <p className="caps text-label text-primary-text">No triggers yet</p>
+      <h2 id="first-trigger" className="mt-2 text-xl font-semibold">Start runs without being here</h2>
+      <p className="mt-1 max-w-prose text-lead text-muted-foreground">A trigger starts a run of an agent for you, and each run it starts stops at a spend cap. Pick what should start it.</p>
+      <ul className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+        {kinds.map(({ Icon, name, what, action, to }) => (
+          <li key={name} className="flex flex-col border bg-background p-4">
+            <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{name}</p>
+            <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{what}</p>
+            <Button size="sm" className="mt-4 self-start" onClick={() => go(to)}>{action}</Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -64,8 +64,10 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
     else if (reopened.current) trigger.current?.focus();
   }, [everywhere]);
   const closeEverywhere = () => { reopened.current = true; setEverywhere(false); };
+  // The window never scrolls: the outer box is its height and clips, and the page's own scrollbar is <main>'s. Both are
+  // relative, so nothing positioned inside (a menu, sr-only text) is placed in the document and stretches it.
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
+    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
       <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 md:hidden">
         <Wordmark />
         <Button size="icon" className="size-9 [&_svg]:size-[18px]" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu aria-hidden /></Button>
@@ -97,7 +99,7 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
         {banners}
-        <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
       </div>
     </div>
   );
