@@ -33,7 +33,8 @@ import { Button } from "@/components/ui/button";
 import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
-import { trackHistory } from "@/lib/back";
+import { trackHistory, undoMove } from "@/lib/back";
+import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
@@ -321,7 +322,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [error, setError] = useState<Problem | null>(null);
   const [runsTry, setRunsTry] = useState(0);
   const asked = useRef(0);
-  const go = (hash: string) => { location.hash = hash; };
+  // A page with unsaved changes (the agent builder) holds a move away and asks first (lib/useUnsavedChangesGuard).
+  const go = (hash: string) => { if (!holdsMove(hash)) location.hash = hash; };
   // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
   // One that ends while this page watches has what the page shows read again (`refreshed`).
   const [imported, setImported] = useState<ImportState | null>(null);
@@ -346,7 +348,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     })();
     return () => { live = false; };
   }, [v2]);
-  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // An address moved under a page with unsaved changes (a link, back or forward, one typed) is taken back, and the page
+  // asks first. This listener is added before trackHistory's (below), so the move is undone before that one counts it.
+  useEffect(() => {
+    const on = () => { if (holdsMove(location.hash)) undoMove(); else setWhere(route()); };
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
   // Each history entry the console moves through is numbered, so a page's back arrow knows whether it came from one (lib/back).
   useEffect(() => trackHistory(), []);
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an

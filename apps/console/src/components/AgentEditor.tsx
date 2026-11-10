@@ -6,6 +6,7 @@ import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { ConfirmDialog } from "@/components/ui/dialog";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { Field as UiField, Input, Textarea } from "@/components/ui/field";
@@ -20,6 +21,7 @@ import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
 import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
 import { type Approvals, NEVER_ASK_LINE } from "@/lib/v2";
 
@@ -99,6 +101,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
+  // The form as it opened or was last saved: a form that differs from it, or a typed revision note, is unsaved, and a
+  // move away asks first.
+  const [clean, setClean] = useState<AgentFields>(f);
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -107,10 +112,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
   useEffect(() => {
     if (!creating) return;
-    setF((x) => {
+    const follow = (x: AgentFields): AgentFields => {
       const place = x.place ?? newAgentPlace(caps.places);
       return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
-    });
+    };
+    // Defaults that arrive late are where the form opens, never an edit: the clean form takes them too.
+    setF(follow); setClean(follow);
   }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
@@ -166,7 +173,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
+    // Saved, the form as it was sent is the clean one (an edit made while the save was under way stays unsaved).
+    if (!p) setClean(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(f) : f);
   };
+  // A save under way holds nothing: a new agent's save opens its page itself.
+  const guard = useUnsavedChangesGuard(!saving && (note !== "" || !same(f, clean)));
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses);
@@ -439,6 +450,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
         {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
       </footer>
+      <ConfirmDialog open={guard.asking} title="Leave without saving?" confirm="Leave" cancel="Stay" onConfirm={guard.leave} onCancel={guard.stay}>
+        {creating ? "This new agent is not saved yet." : "Your changes to this agent are not saved."} Leave drops them; Stay keeps them here.
+      </ConfirmDialog>
     </div>
   );
 }
