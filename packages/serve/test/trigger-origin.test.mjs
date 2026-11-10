@@ -231,6 +231,24 @@ test("a trigger named with a saved key's value: its runs' Timeline row shows the
   for (const [where, text] of [["the live pages", JSON.stringify(pages)], ["a page", page], ["the stream", stream]]) assert.equal(holdsPiece(text, key), false, `${where} shows no piece of the key: ${text.slice(0, 600)}`);
 });
 
+test("a trigger named with a saved key's value titles its run without it: the run's title, read alone and in the runs list, shows the redaction mark in the key's place", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api } = await serve(t);
+  const key = ["not-a-secret", "trigger-title-key", randomBytes(6).toString("hex")].join("-");
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: "fake-project" } })).status, 204);
+  await made(api, "clock");
+  const created = await api("POST", "/triggers", { name: `nightly ${key}`, source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: "Say the time." }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.ok((await api("POST", `/triggers/${created.body.id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
+  const [firing] = await firings(api, created.body.id, 1);
+  const { title } = (await api("GET", `/runs/${firing.run_id}`)).body;
+  assert.equal(title, "Schedule nightly [redacted]");
+  const listed = (await api("GET", "/agents/clock/runs")).body.runs.find((r) => r.run_id === firing.run_id);
+  assert.equal(listed.title, "Schedule nightly [redacted]");
+  for (const [where, text] of [["the run", title], ["the list", listed.title]]) assert.equal(holdsPiece(text, key), false, `${where}'s title shows no piece of the key: ${text}`);
+  await follow(api, firing.run_id, ["completed"]);
+});
+
 test("a webhook's message to a working run is queued for it at once and taken after its turn: its entry reads the trigger's origin, after the person's, once", { timeout: 120_000, skip: MESSAGE_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });

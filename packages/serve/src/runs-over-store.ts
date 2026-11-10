@@ -362,7 +362,8 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
-  const title = given !== undefined ? given : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+  // A starter's title (a trigger's "<Source> <name>") is shown words too: cut as the input is, then as every title is below.
+  const title = given !== undefined ? String(redactedOutput(given, deps.serverSecrets())) : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
   // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
   const tooling = await toolingOf(revision);
