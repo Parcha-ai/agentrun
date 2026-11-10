@@ -259,12 +259,16 @@ describe("LiveRun, a run that moves from one wait to the next", () => {
     const { host, push, settle, reads } = await page1;
     expect(host.textContent).toContain("Sign in with your own account");
     const before = reads();
-    // The person hands back; the agent asks its question. The next page: the same status and state, new rows.
+    // The person hands back; the agent asks its question. The next page: the same status and state, new rows (the
+    // question's waiting row among them, as the server serves it after the call's result).
     moved = true;
-    push(page(3, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question")]));
+    push(page(4, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question"), { ...row(4, "waiting", "Waiting for you: Shall I go on?"), text: "Shall I go on?" } as never]));
     await settle();
     expect(reads()).toBeGreaterThan(before);
+    // The hand-over's card is gone, and the agent's question shows where the person answers it.
     expect(host.textContent).not.toContain("Sign in with your own account");
+    const asks = host.querySelector('section[aria-label="The agent asks"]');
+    expect(asks?.textContent).toContain("Shall I go on?");
   });
 
   it("an unchanged page while the run waits reads nothing again", async () => {
