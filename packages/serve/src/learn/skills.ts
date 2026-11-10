@@ -73,12 +73,12 @@ export const UNCLEAR_FRONT = "its front matter does not read one way: each line 
  *  its name, its description, its status): each key to its value in order, or undefined when it does not read one way,
  *  since another reader (a harness's YAML) could then read a key, a status among them, this one does not. It reads one
  *  way when it starts the text (`---`), closes on a `---` line (the last line or not), and each line between is blank,
- *  a comment at its left edge, `key: value` at its left edge (a key set once), a YAML explicit key (`? key`, its value on
- *  a `: value` line after it), or a line of the value above it: any indented line under a `key:` with nothing after it
- *  (its nested value, a mapping or a list among them), an indented line of a `>` or `|` block, or of a plain value that
- *  wraps (one that reads as no key of its own). A value is unquoted; a nested, block or wrapped value's lines are joined
- *  by one space. Anything else (an indented first line, an indented `key:` under a value, a list at the left edge, a
- *  key set twice) reads no way. */
+ *  a comment at its left edge, `key: value` at its left edge (a key set once), or a line of the value above it: any
+ *  indented line under a `key:` with nothing after it (its nested value, a mapping or a list among them), an indented
+ *  line of a `>` or `|` block, or of a plain value that wraps (one that reads as no key of its own), an indented comment
+ *  under a plain value being no part of it. A value is unquoted; a nested, block or wrapped value's lines are joined by
+ *  one space. Anything else (an indented first line, an indented `key:` under a value, a list at the left edge, a key
+ *  set twice, a YAML explicit key `? key`, which every writer here would have to edit in its own form) reads no way. */
 export function frontMatter(text: string): ReadonlyMap<string, string> | undefined {
   const lf = text.replace(/\r\n/g, "\n");
   if (!lf.startsWith("---\n")) return undefined;
@@ -88,10 +88,9 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
   const unquoted = (value: string) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
   const add = (key: string, more: string) => front.set(key, `${front.get(key)} ${more.trim()}`.trim());
   // The key whose `>`/`|` block, or nested value (a `key:` with nothing after it), the next indented lines are; the key
-  // whose plain value they wrap; an explicit key that waits for its `: value` line.
+  // whose plain value they wrap.
   let block: string | undefined;
   let plain: string | undefined;
-  let explicit: string | undefined;
   for (const line of lf.slice(4, end).split("\n")) {
     const indented = /^\s+\S/.test(line);
     if (block !== undefined && (indented || line.trim() === "")) {
@@ -99,16 +98,9 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
       continue;
     }
     block = undefined;
-    if (explicit !== undefined) {
-      const value = /^:(?:\s+(.*))?$/.exec(line);
-      const key = explicit;
-      explicit = undefined;
-      if (value) {
-        front.set(key, unquoted(value[1] ?? ""));
-        continue;
-      }
-    }
     if (line.trim() === "" || line.startsWith("#")) continue;
+    // An indented comment under a plain value is no part of it, and the value may wrap on after it.
+    if (indented && plain !== undefined && /^\s+#/.test(line)) continue;
     if (indented) {
       // A wrapped plain value's line, never one that reads as a key, a list item or a comment of its own.
       if (plain === undefined || /^\s+(?:#|-\s|\?\s|[^\s]*:(?:\s|$))/.test(line) || /:\s/.test(line)) return undefined;
@@ -116,14 +108,6 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
       continue;
     }
     plain = undefined;
-    const asked = /^\?\s+(.+)$/.exec(line);
-    if (asked) {
-      const key = unquoted(asked[1]!);
-      if (!key || front.has(key)) return undefined;
-      front.set(key, "");
-      explicit = key;
-      continue;
-    }
     const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
     if (!pair || front.has(pair[1]!)) return undefined;
     const value = (pair[2] ?? "").trim();
@@ -138,8 +122,8 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
   return front;
 }
 
-/** The keys a SKILL.md's or a draft README's front matter sets, in order (frontMatter's, a YAML explicit key `? key`
- *  among them); undefined for a text whose front matter does not read one way. */
+/** The keys a SKILL.md's or a draft README's front matter sets, in order (frontMatter's); undefined for a text whose
+ *  front matter does not read one way. */
 export function frontKeys(text: string): string[] | undefined {
   const front = frontMatter(text);
   return front ? [...front.keys()] : undefined;
@@ -150,26 +134,17 @@ export function frontKeys(text: string): string[] | undefined {
  *  runs. `status` is the host's (a held one). */
 export const LEARNED_KEYS: readonly string[] = ["name", "description"];
 
-/** `text`, a learned skill's SKILL.md, as a run is given it: front matter with its name and its description alone,
- *  written again whatever else its file holds (servedSkill is the one door a learned skill reaches a harness by), then its
- *  body as it is. A text with no front matter is as it is. */
+/** `text`, a learned skill's SKILL.md, as a run is given it: front matter with its name and its description alone, as
+ *  the one reader reads them (frontMatter), each quoted as JSON writes it, which every YAML reads back as that very
+ *  string (never null, a boolean, a number or a date), written again whatever else its file holds (servedSkill is the
+ *  one door a learned skill reaches a harness by), then its body as it is. A text with no front matter is as it is; one
+ *  whose front matter reads no way, which is never active and so never given, is served with both fields empty. */
 export function servedSkill(text: string): string {
-  const front = frontOf(text);
-  if (typeof front === "string") return text;
-  const lines = [`name: ${yamlString(front.value("name") ?? "")}`, `description: ${yamlString(front.value("description") ?? "")}`];
-  return `---\n${lines.join("\n")}\n---\n${front.lf.slice(front.end + 5)}`;
-}
-
-/** A plain word YAML 1.1 or 1.2 reads as no string: null, a boolean, a number in any of its spellings, infinity and
- *  NaN, or a date. */
-const COERCED = /^(?:~|null|true|false|yes|no|on|off|y|n|[-+]?(?:0|[1-9][\d_]*)(?:\.[\d_]*)?(?:e[-+]?\d+)?|[-+]?\.\d[\d_]*(?:e[-+]?\d+)?|0x[\da-f_]+|0o[0-7_]+|0b[01_]+|0[0-7_]+|[-+]?\.inf|\.nan|\d{4}-\d\d?-\d\d?(?:[tT ].*)?|[-+]?\d[\d_]*(?::[0-5]?\d)+(?:\.[\d_]*)?)$/i;
-
-/** `value` as one YAML scalar that reads back as this very string: plain when YAML reads it so (one line of text that
- *  starts with no indicator, holds no `: ` or ` #`, and is no word YAML would read as null, a boolean, a number or a
- *  date), else quoted as JSON writes it, which YAML reads as the same string. */
-function yamlString(value: string): string {
-  const plain = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(value) && !/: |\s#|:$|\s$/.test(value) && !COERCED.test(value);
-  return plain ? value : JSON.stringify(value);
+  const opened = frontOf(text);
+  if (typeof opened === "string") return text;
+  const front = frontMatter(text);
+  const lines = [`name: ${JSON.stringify(front?.get("name") ?? "")}`, `description: ${JSON.stringify(front?.get("description") ?? "")}`];
+  return `---\n${lines.join("\n")}\n---\n${opened.lf.slice(opened.end + 5)}`;
 }
 
 /** Why a `SKILL.md` for the skill `name`, or a draft's `README.md` for the workflow `name`, is out of shape; empty when

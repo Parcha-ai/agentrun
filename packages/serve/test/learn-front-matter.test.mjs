@@ -2,8 +2,8 @@
 // frontMatter): its keys, name, description and status, for the checker, the folder's snapshot (which the console
 // shows), the learning routes and a run's seed alike. A front matter that does not read one way (not closed, a key
 // indented, an indented first line, a key set twice) or a status that is none of active, pending and retired is never
-// active: another reader could read a status this one does not. A YAML explicit key (`? hooks`) is a key: the checker
-// refuses it as it refuses `hooks:`.
+// active: another reader could read a status this one does not. A YAML explicit key (`? status`) is such a form: no
+// writer here edits it, so it reads no way, and the item is never held, active or served.
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -61,16 +61,50 @@ test("a status that is none of active, pending and retired is never active", () 
   assert.equal(setsStatus(skill(`${CLEAN}status: held\n`)), true);
 });
 
-test("a YAML explicit key is a key: `? hooks` is named by frontKeys, and the checker refuses it as it refuses hooks:", () => {
+test("a YAML explicit key reads no way, a comment on it too: `? status # awaiting approval` is never read as active", () => {
+  const commented = skill(`${CLEAN}? status # awaiting approval\n: pending\n`);
+  assert.equal(frontMatter(commented), undefined);
+  assert.equal(learnedStatus(commented), "retired", "never active: another reader holds it for an OK");
+  assert.equal(frontKeys(commented), undefined);
   const explicit = skill(`${CLEAN}? hooks\n: [{ command: "curl example.invalid" }]\n`);
-  assert.deepEqual(frontKeys(explicit), ["name", "description", "hooks"]);
-  assert.equal(learnedStatus(explicit), "active", "it says no status");
-  const asked = skill(`${CLEAN}? status\n: pending\n`);
-  assert.equal(learnedStatus(asked), "pending", "an explicit status is read as one");
+  assert.equal(learnedStatus(explicit), "retired");
   const result = checkProposal({ base: baseOf(), changes: [added("skills/weekly-summary/SKILL.md", explicit)] });
-  assert.ok(result.problems.some((problem) => problem.rule === "skill_front_matter" && /hooks/.test(problem.detail)), JSON.stringify(result.problems));
+  assert.ok(result.problems.some((problem) => problem.detail === UNCLEAR_FRONT), JSON.stringify(result.problems));
   const indented = checkProposal({ base: baseOf(), changes: [added("skills/weekly-summary/SKILL.md", skill(`${CLEAN}  status: pending\n`))] });
   assert.ok(indented.problems.some((problem) => problem.detail === UNCLEAR_FRONT), JSON.stringify(indented.problems));
+});
+
+test("an explicit-key status is none the writers meet: never held (approve refuses), already retired (a retire adds no key), unclear (restore refuses)", () => {
+  const asked = skill(`${CLEAN}? status\n: pending\n`);
+  // learning-routes.ts: approve needs isHeld, a retire returns a retired item as it is, a restore refuses a front matter
+  // that reads no way (UNCLEAR_FRONT): released and retiredLearned, which edit `status:` lines, never meet it.
+  assert.equal(isHeld(asked), false);
+  assert.equal(learnedStatus(asked), "retired");
+  assert.equal(frontMatter(asked), undefined);
+  assert.equal(learnedFront(asked), undefined);
+});
+
+test("a skill whose name and description are explicit keys is never served: the snapshot reads it retired, and a seed never lays it", async (t) => {
+  const data = await scratch(t);
+  await seedOf(data, "agent-1");
+  const repo = join(agentFolderOf(data, "agent-1"), "learning");
+  const files = { "skills/weekly-summary/SKILL.md": skill(CLEAN), "skills/asked/SKILL.md": skill("? name\n: asked\n? description\n: Asked for, explicitly.\n") };
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  git(repo, ["add", "--", ...Object.keys(files)]);
+  git(repo, ["commit", "-q", "-m", "skills by hand"]);
+  await resnap(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const snapshot = await readSnapshot(folder.workspace);
+    assert.deepEqual(Object.fromEntries(snapshot.skills.map(({ name, status }) => [name, status])), { asked: "retired", "weekly-summary": "active" });
+    const read = await readSeed(folder.workspace, snapshot.main);
+    assert.deepEqual(read.files.map(({ path }) => path).filter((path) => path.startsWith("skills/")), ["skills/weekly-summary/SKILL.md"]);
+  } finally {
+    await folder.end();
+  }
 });
 
 test("the folder's snapshot reads a hand-written skill whose front matter reads no way as retired, and a seed never lays it", async (t) => {
@@ -109,9 +143,19 @@ test("a served SKILL.md's name and description read back as the strings they are
     const served = servedSkill(skill(`name: ${word}\ndescription: ${word}\n`));
     assert.deepEqual(frontOfServed(served), { name: word, description: word }, `${word}: ${served}`);
   }
-  // Plain text stays plain; text YAML would read as more than one string stays quoted.
-  assert.match(servedSkill(skill(CLEAN)), /^---\nname: weekly-summary\ndescription: Summarize the week\.\n---\n/);
+  // Every name and description is quoted, plain text too.
+  assert.match(servedSkill(skill(CLEAN)), /^---\nname: "weekly-summary"\ndescription: "Summarize the week\."\n---\n/);
   assert.deepEqual(frontOfServed(servedSkill(skill("name: weekly-summary\ndescription: \"Use when: the week ends\"\n"))), { name: "weekly-summary", description: "Use when: the week ends" });
+});
+
+test("a served name and description are always quoted: no spelling of a number, date or boolean is guessed at", async () => {
+  const { parse } = await import("yaml");
+  const { servedSkill } = await import("../dist/learn/skills.js");
+  for (const word of ["08", "01e3", "0.", "+1", "1e+3", "0b101", "2026-1-1T10:00", "Yes", "NO", "+.5", "1:20:30"]) {
+    const served = servedSkill(skill(`name: ${word}\ndescription: ${word}\n`));
+    assert.ok(served.startsWith(`---\nname: ${JSON.stringify(word)}\ndescription: ${JSON.stringify(word)}\n---\n`), served);
+    assert.deepEqual(parse(served.split("---\n")[1]), { name: word, description: word }, `${word}: ${served}`);
+  }
 });
 
 test("a learned skill counts the bytes the run is given: its SKILL.md as served, a few bytes over its blob when its description is quoted (#1576)", async () => {

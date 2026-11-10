@@ -16,7 +16,8 @@ import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learned-workflow.js";
 import { REPLAY } from "../dist/host-tools.js";
-import { localWorkspace } from "../dist/workspace/index.js";
+import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
+import { readSnapshot } from "../dist/learn/folder.js";
 import { git, resnap } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -304,7 +305,7 @@ async function pinned(t, id, files, secrets = [], extra = {}) {
   const runDir = join(await scratch(t), "run");
   mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await seedOf(data, id);
-  return { seed, pin: await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
+  return { data, seed, pin: await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
 }
 
 test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {
@@ -314,9 +315,19 @@ test("a learned workflow whose README's front matter does not read one way (not 
     ["a key indented", `---\nname: answer\ndescription: ${DESCRIPTION}\n  status: pending\n---\n`],
     ["indented first", `---\n  status: retired\nname: answer\ndescription: ${DESCRIPTION}\n---\n`],
   ]) {
-    const { seed, pin } = await pinned(t, `front-${why.replace(/\W+/g, "-")}`, readme(front));
+    const id = `front-${why.replace(/\W+/g, "-")}`;
+    const { data, seed, pin } = await pinned(t, id, readme(front));
     assert.equal(pin.workflows, undefined, `${why}: ${JSON.stringify(pin)}`);
-    assert.ok(seed.skipped.some((line) => line.startsWith("workflows/answer (")), `${why}: ${JSON.stringify(seed.skipped)}`);
+    assert.equal(seed.workflows.some((flow) => flow.name === "answer"), false, `${why}: ${JSON.stringify(seed.workflows)}`);
+    // The one reader (learn/skills.ts learnedStatus) reads it retired in the folder's snapshot, as the console shows it: the
+    // seed's read never gives its files, so the run never meets it.
+    const folder = learningWorkspace({ mode: "local", data, agentId: id });
+    try {
+      const snapshot = await readSnapshot(folder.workspace);
+      assert.deepEqual(snapshot.workflows.map(({ name, status }) => [name, status]), [["answer", "retired"]], why);
+    } finally {
+      await folder.end();
+    }
   }
   // Closed at the end of the file, with no line after: its status is read, as the description is.
   const closed = await pinned(t, "front-eof", readme(`---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: pending\n---`));
