@@ -5,6 +5,8 @@
 // it. Only what the attached Workspace's exec calls: start, read, signal, wait.
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import { readBackOf } from "@parcha/agentrun-computer";
+import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 /** The minimal environment computerd adds the call's over. */
 const BASE_ENV = { PATH: "/usr/local/bin:/usr/bin:/bin" };
@@ -64,4 +66,23 @@ export function realProcesses(computer, root) {
   };
 
   return computer;
+}
+
+/** A runner's computerForClaim(launch, store, deps) stand-in that gives the run a sandbox: the fake computer over the
+ *  run's own folder (Mode 1, a bind of it, as Docker's mount is), its process calls run for real (realProcesses), its
+ *  mount checked with the computer module's readBackOf. `made` gets each computer, `released` counts the releases. */
+export function sandboxForClaim() {
+  const made = [];
+  let released = 0;
+  return {
+    made,
+    released: () => released,
+    forClaim: async (_launch, _store, deps) => {
+      const spec = await deps.workspace.mountSpec();
+      if (spec?.kind !== "bind") throw new Error(`the fake sandbox binds a folder of this machine (Mode 1), not ${JSON.stringify(spec)}`);
+      const computer = realProcesses(fakeComputer(spec.path), spec.path);
+      made.push(computer);
+      return { computer: { kind: "sandbox", computer, check: { readBackOf } }, release: async () => void (released += 1) };
+    },
+  };
 }

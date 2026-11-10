@@ -401,6 +401,16 @@ test("a parameter's enum is a closed set: the list shows it, apply refuses a val
   assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, "focus: { type: string, enum: [auth, money], default: auth, description: x }")), []);
 });
 
+test("a repository parameter is owner/name with no trailing dot: \"acme/widgets.\" is refused at apply, \"acme/widgets\" and \"acme/my.repo\" are taken", async (t) => {
+  const { api } = await serve(t);
+  for (const name of ["code-review", "release-notes"]) {
+    const bad = await api("POST", `/templates/${name}/apply`, { parameters: { repo: "acme/widgets." } });
+    assert.equal(bad.status, 422, `${name}: ${JSON.stringify(bad.body)}`);
+    assert.deepEqual(bad.body.error.fields.map((f) => [f.field, f.reason]), [["parameters.repo", "bad_format"]]);
+    for (const repo of ["acme/widgets", "acme/my.repo"]) assert.equal((await api("POST", `/templates/${name}/apply`, { parameters: { repo } })).status, 201, `${name} ${repo}`);
+  }
+});
+
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);

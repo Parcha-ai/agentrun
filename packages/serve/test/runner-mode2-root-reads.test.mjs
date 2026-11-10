@@ -6,6 +6,8 @@
 //   - the first message's file manifest (firstMessage) lists the run's inputs/ on the disk;
 //   - the gate's file checks (runGate) read the turn's origin, turn-origin.json, on the disk: a reflect turn's write under
 //     .learning/ is refused;
+//   - a monid answer too long for the model is filed in the run's evidence/monid/ on the disk, where the run's read finds
+//     it, never in the local folder;
 //   - and nothing at all is read under the run's local folder path while the spec is built and used: every node:fs read
 //     is watched (its CommonJS functions wrapped, then synced into the ESM bindings every module imported), so any lingering
 //     local read fails the test, whoever makes it. (What the agent learned goes to the launch, read with no folder, so it
@@ -17,7 +19,7 @@
 // host other than this machine's loopback fails the test, so none reaches Archil.
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -34,6 +36,7 @@ const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { NOTE_ONLY_TEXT } = await import("../dist/tool-gate.js");
+const { CLIP, MONID_KEY_ENV } = await import("../dist/monid.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
@@ -77,12 +80,14 @@ function watchReads(folder) {
 }
 
 /** Every fetch to a host other than this machine's loopback, refused and recorded while the guard is on: no test here may
- *  reach Archil's control plane (or anything else). `off()` puts fetch back. */
-function guardFetch() {
+ *  reach Archil's control plane (or anything else). `monid`: an answer monid's API gives every request, faked here, so a
+ *  run's monid call never leaves this machine either. `off()` puts fetch back. */
+function guardFetch(monid) {
   const original = globalThis.fetch;
   const outbound = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? String(input));
+    if (monid && url.hostname === "api.monid.ai") return new Response(JSON.stringify(monid), { status: 200, headers: { "content-type": "application/json" } });
     if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
       outbound.push(`${init?.method ?? "GET"} ${url.origin}${url.pathname}`);
       throw new Error(`a test reached ${url.origin}: no call leaves this machine`);
@@ -102,13 +107,14 @@ const mountingComputer = async (_launch, _store, given) => {
 /** A claimed run in Mode 2 over the Archil fake, the run's folder on the disk holding the real files and its local path the
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
- *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). */
-async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal }) {
+ *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). `tools`: the
+ *  revision's grant; `monid`: the answer monid's faked API gives (its key then in the runner's environment). */
+async function mode2Spec(t, { harness, build, watch = false, use = async () => {}, computer = async () => ({ release: async () => {} }), signal, phase, tools = ["read", "write"], monid }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const control = archilControlFetch();
-  const guard = guardFetch();
+  const guard = guardFetch(monid);
   let spec;
   let harnessRun;
   t.after(async () => {
@@ -119,7 +125,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools: ["read", "write"] } });
+  await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools } });
   const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   // Mode 2: the server's Archil settings, and its account key sealed under the runner's seal key, as the server saves them.
@@ -142,7 +148,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   const registry = createRegistry();
   let models = createModels();
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
-  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...(monid ? { [MONID_KEY_ENV]: `not-a-secret-${"monid"}` } : {}) };
   const deps = {
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: stubRoute,
     // The run's Archil disk is the fake (Mode 2's disk, for both builders), and its control plane the fake's fetch.
@@ -154,12 +160,13 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   const watcher = watch ? watchReads(resolve(local, "..")) : undefined;
   try {
     // `signal`: the claim's, as the adapter loop hands the run (AdapterRun.signal: aborted on a lost claim or a shutdown).
-    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}) }, deps, claim);
+    // `phase`: the loop's AdapterRun.phase, a host step said on the run's timeline.
+    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}), ...(phase ? { phase } : {}) }, deps, claim);
     await use(spec);
   } finally {
     watcher?.off();
   }
-  return { spec, disk, control, outbound: guard.outbound, localReads: watcher?.seen ?? [] };
+  return { spec, disk, control, outbound: guard.outbound, localReads: watcher?.seen ?? [], local };
 }
 
 /** Every request the control plane saw (the fake is a function the claim alone holds, so each is the claim's), as method
@@ -189,6 +196,26 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
   test(`${name} in Mode 2: nothing is read under the run's local folder path while its spec is built and used`, async (t) => {
     const { localReads } = await mode2Spec(t, { harness, build, watch: true, use: async (spec) => void (await spec.gate(reflectWrite)) });
     assert.deepEqual(localReads, [], `local reads in Mode 2:\n${localReads.join("\n")}`);
+  });
+
+  test(`${name} in Mode 2: a monid answer too long for the model is filed on the run's disk, where the run's read finds it, never in the local folder`, async (t) => {
+    // A monid discover answer past CLIP: the model reads it cut, and the whole goes to the run's evidence/monid/.
+    const long = { results: [{ slug: "widgets", note: `${"w".repeat(CLIP)}-the-end` }] };
+    const { spec, disk, local, outbound } = await mode2Spec(t, { harness, build, tools: ["read", "monid.discover"], monid: long });
+    const toolOf = (name) => spec.session.tools.find((one) => one.name === name);
+    const call = (name, args) => toolOf(name).call(args, { callId: `c-${name}`, signal: new AbortController().signal });
+    assert.ok(toolOf("monid_discover"), `monid's discover is the run's tool: ${spec.session.tools.map((one) => one.name)}`);
+    const answer = await call("monid_discover", { query: "widgets" });
+    const saved = /the whole answer is in the run's files at (evidence\/monid\/\S+\.json)\]$/.exec(answer.text)?.[1];
+    assert.ok(saved, `the cut answer names where the whole is: ${answer.text.slice(-200)}`);
+    const filed = disk.files.get(`${KEY}/${saved}`);
+    assert.equal(filed && Buffer.from(filed).toString("utf8"), JSON.stringify(long), "the whole answer is on the run's disk, under the run's key");
+    assert.equal(existsSync(join(local, saved)), false, "and not in the run's local folder on this machine");
+    // The run's read opens the file (one line past its page, so it shows the line's start and says how to read on).
+    const back = await call("read", { path: saved });
+    assert.notEqual(back.isError, true, `the run's read finds it: ${back.text.slice(0, 200)}`);
+    assert.match(back.text, /^\{"results":\[\{"slug":"widgets"/, `the run's read finds it: ${back.text.slice(0, 120)}`);
+    assert.deepEqual(outbound, [], "nothing left this machine");
   });
 
   test(`${name} in Mode 2 with no computer: the run's mount credential is never minted, so Archil's control plane hears nothing, from its build to its end`, async (t) => {
@@ -222,5 +249,23 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the lost claim's token was never removed: ${JSON.stringify(callsOf(control))}`)), 20_000); });
     await Promise.race([swept, bound]).finally(() => clearTimeout(timer));
     assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed when the claim was lost, with no release yet, then the run's earlier epochs looked for");
+  });
+
+  test(`${name}: a claim that waits on its computer's image says one phase on the run's timeline, in main's words with the computer's noun`, async (t) => {
+    const { DOCKER_RECIPE_HAS } = await import("@parcha/agentrun-computer");
+    for (const [making, tag, words] of [
+      ["build", "agentrun-computer:0123456789ab", `Preparing the computer's image: building it (${DOCKER_RECIPE_HAS})…`],
+      ["pull", "registry.example/library/base:22.04", "Preparing the computer's image: pulling registry.example/library/base:22.04…"],
+    ]) {
+      const said = [];
+      // The claim's computer waits on its image once (the provider's onWait), as on a host that lacks it.
+      const waiting = async (_launch, _store, given) => (given.onImageWait?.(making, tag), { release: async () => {} });
+      await mode2Spec(t, { harness, build, computer: waiting, phase: (summary) => void said.push(summary) });
+      assert.deepEqual(said, [words], `${making}: one phase, in its words`);
+    }
+    // A claim with no image to wait on says nothing.
+    const said = [];
+    await mode2Spec(t, { harness, build, phase: (summary) => void said.push(summary) });
+    assert.deepEqual(said, []);
   });
 }
