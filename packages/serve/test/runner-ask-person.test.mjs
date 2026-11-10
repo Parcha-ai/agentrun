@@ -273,3 +273,20 @@ test("wait in the claim: the run row says it waits on the person while its claim
   }, "the answer ends the run");
   assert.notEqual(ended.summary, "Waiting for your reply", "the waiting summary is gone with the answer");
 });
+
+test("wait in the claim: a trigger's message (answers: false) delivered while the run waits is refused in the waiting words, never taken as the person's answer", async (t) => {
+  const wait = fakeWait();
+  const { server, gw } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen) });
+  const before = modelCalls(gw).length;
+  const trigger = await sendCommand(server, RUN, { kind: "steer", body: { text: "A push came in.", answers: false } });
+  const row = await until(async () => (await server.commands(RUN, 0)).find((c) => c.id === trigger.id && (c.refused !== null || c.takenAt !== null)), "the trigger's row answered");
+  assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
+  const now = await server.runs.get(RUN);
+  assert.deepEqual([now.state, now.summary], ["running", "Waiting for your reply"], "still waiting on the person");
+  assert.equal(modelCalls(gw).length, before, "the agent was not resumed");
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await until(async () => {
+    const r = await server.runs.get(RUN);
+    return r.state === "ended" && r.runner === null && r;
+  }, "the person's answer ends the run");
+});

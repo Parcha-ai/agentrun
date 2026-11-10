@@ -649,6 +649,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
+    // A message that may not answer a person (a trigger's, answers: false) accepted while the run worked and delivered
+    // once it waits in its claim on its person: never this wait's answer, refused in the words the server refuses one
+    // with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
+    if (reopen && reopen === waitTurn && (command.body as { answers?: unknown } | null)?.answers === false) return { refused: "The run is waiting on a person." };
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && session.state === "idle") {

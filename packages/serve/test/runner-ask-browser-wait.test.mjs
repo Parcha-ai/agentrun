@@ -189,3 +189,21 @@ test("the wait in the claim tells run.needs_input once, as the park did: a webho
   await until(() => got.some((m) => m.type === "run.ended" && m.data.run_id === w.runId), "run.ended");
   assert.equal(got.filter((m) => m.type === "run.needs_input" && m.data.run_id === w.runId).length, 1, "told once for the ask");
 });
+
+test("a second question in the same claim is told too: run.needs_input once for each ask while the run waits in its claim", { timeout: 180_000 }, async (t) => {
+  const got = [];
+  const receiver = createServer((req, res) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { try { got.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { /* not a message */ } res.writeHead(200).end(); }); });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (receiver.close(resolve), receiver.closeAllConnections())));
+  const w = await asking(t, "Ask twice.", { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, `http://127.0.0.1:${receiver.address().port}/hook`);
+  const needs = () => got.filter((m) => m.type === "run.needs_input" && m.data.run_id === w.runId);
+  await until(() => needs().length >= 1, "the first question's notice");
+  const first = await w.server.store.runs.get(w.runId);
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Yes." })).status, 202);
+  await until(() => needs().length >= 2, "the second question's notice");
+  const second = await w.server.store.runs.get(w.runId);
+  assert.equal(second.epoch, first.epoch, "both asks in the one claim");
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Then stop." })).status, 202);
+  await released(w, "ended");
+  assert.equal(needs().length, 2, "one notice per ask");
+});

@@ -3112,6 +3112,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its browser hand-over,
         // tools.ts), which its row's summary says (HELD_WAITS); a new ask sets it anew, so each is read and told once.
         const waitsInClaim = row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
+        // A held run past its wait (answered, working again): what was read for that wait goes, so its next ask in the same
+        // claim, whose row reads the same as the last one's, is read and told too.
+        if (row.state === "running" && row.runner !== null && !waitsInClaim) readWaits.delete(row.id);
         if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
       }
     }
