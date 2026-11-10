@@ -199,13 +199,13 @@ The journal is the run's rows of the store's `pi_entries` table.
    At `10` the follow-up completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
    can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
    mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
-   `harness-cancel` covers (on a faux adapter, not the runner) a request withdrawn as its record was written, `adapter-pi-cap-raise-crash` a runner lost
+   `adapter-pi-cap-raise-crash` covers a runner lost
    with a request out, and run-adapters' `held-worst-case.test.mjs` a request cut short.
 4. **Cancel ends the run and nothing more is sent.** `POST /v2/runs/{id}/cancel` on a working run answers `202` with
    `cancel_requested: true`; the run ends `cancelled`, a second cancel says `already_terminal: true`, and a message is
    `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runner-stop-withdraw`,
-   which ends a run on a stop or cancel row through the runner and the store; `harness-cancel` checks only the kernel's
-   cancel ordering around a request on a faux adapter, not the runner.
+   which ends a run on a stop or cancel row through the runner and the store, and `adapter-pi-cap-cancel`, a stop or
+   cancel of a run parked at its cap.
 5. **A crash or a restart resumes the run.** Restart: `Answer once <file> exists.`; once it reads `working`, SIGTERM
    the server's own PID; the runner beside it stops the run where it can resume. Start it again on the same `--data` and
    make the file: the run ends `completed` with `Now.`. Crash: with a runner of its own (core row 12), `kill -KILL` the
