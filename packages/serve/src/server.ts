@@ -38,7 +38,7 @@ import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, lear
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
@@ -137,7 +137,8 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, computerProviderFactories, computerProviderMakers, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { keyReader } from "./key-meta.js";
 // The store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server); server-lock.ts keeps only
 // the record (server.state) a stopping server's start reads, to wait for that stop rather than be refused.
 
@@ -1153,6 +1154,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
       }),
   }));
+  /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
+   *  computerReadiness): over the registry the claim reads (workspace/computer-deps.ts claimKinds, asked with what the
+   *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
+   *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
+   *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
+   *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
+   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
+  const dockerAnswers = (provider: string): true | string => {
+    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
+    return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
+  };
+  const computerReady = async (setting: { kind: string; provider?: string }) =>
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, checked.sealKey, withSecrets(process.env, "own")), dockerAnswers);
   const archil = createArchilRoutes({ store, sealKey: checked.sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1633,7 +1647,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -1669,14 +1683,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools, decisionPrice });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, offers, mcp: mcpTools })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));
@@ -1836,7 +1850,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   function workflowInputIssues(validateWorkflow: typeof import("@parcha/agentrun-dsl").validateWorkflow, revision: Revision, input: Json): InputIssue[] {
     if (revision.kind !== "workflow") return [];
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
-    return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
+    if (checked.ok) return [];
+    return checked.issues.map((i) => {
+      // An input problem has no path of its own; its message names the schema's path and why (the DSL's schemaProblems
+      // reports schema paths, never the input's data), so it is said as it is, and the field carries that path (#1926).
+      const said = !i.path && i.code === "INPUT_INVALID" && i.message ? i.message.replace(/^input:\s*/, "") : `${i.code}${i.path ? ` at ${i.path}` : ""}`;
+      const at = i.path || /^(#\/\S*?):\s/.exec(said)?.[1];
+      return { field: `input${at ? ` at ${at}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${said}` };
+    });
   }
 
   /** Where a person opens a page an answer to `req` names (a run's or an agent's console_url, console-links.ts): the

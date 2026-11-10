@@ -112,11 +112,18 @@ export const claimComputer = async (
   return computerForClaim(boxAllow === undefined ? launch : { ...launch, boxAllow }, store, deps);
 };
 
+/** The kind registry a claim composed with `options` resolves a setting against: --faux's when it is given faux, else a
+ *  test's own, else the computer package's. The one choice: computerDepsFrom makes it, and the server's start check
+ *  (server.ts computerReady) asks it with what the runner composes with, so a run's start and its claim answer alike. */
+export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">): KindRegistry {
+  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
+  return (options.faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+}
+
 /** computerForClaim and its process-wide deps, composed once; and Settings → Computers' factories from the same makers. */
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
-  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
-  const kinds = (faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const kinds = claimKinds(options);
   // The Docker provider is given its image's source, which it makes ready itself (its image(): built from the recipe
   // when Docker lacks it, or pulled by name): the owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the
   // recipe's bare tag, which no registry has.

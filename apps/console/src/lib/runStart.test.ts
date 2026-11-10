@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { curlFor, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
+import { curlFor, exampleHint, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
 
 describe("startBody", () => {
   it("starts an agentic run with its first message as content, and only the options given", () => {
@@ -108,6 +108,26 @@ describe("exampleInput", () => {
     expect(JSON.parse(e.text)).toEqual({ company: "", documents: [] });
     expect(e.from).toBe("shape");
     expect(exampleInput({ schemas: {} })).toBeNull();
+  });
+  it("with no required list (#1926), pre-fills no field, so the box never fails its own schema; the hint names what it takes", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", properties: { a: { type: "string" }, b: { type: "string", minLength: 1 } } } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({});
+    expect(e.optional).toEqual(["a", "b"]);
+    expect(exampleHint(e, "run")).toBe("The workflow's input, its required fields empty. Fill them in, then run. It also takes a, b, if you add them.");
+  });
+  it("names the optional fields it left out beside the required ones it filled", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", required: ["company"], properties: { company: { type: "string" }, note: { type: "string", minLength: 3 } } } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ company: "" });
+    expect(e.optional).toEqual(["note"]);
+    expect(exampleHint(e, "start")).toBe("The workflow's input, its required fields empty. Fill them in, then start. It also takes note, if you add it.");
+  });
+  it("an example is the example's hint, with nothing left out", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", properties: { a: { type: "string" } }, examples: [{ a: "x" }] } } };
+    const e = exampleInput(w)!;
+    expect(e.optional).toEqual([]);
+    expect(exampleHint(e, "run")).toBe("The workflow's example input. Edit it, then run.");
   });
   it("follows a local $ref to the schema it names, as the DSL resolves it", () => {
     const w = { input: { schemaId: "In" }, schemas: {
