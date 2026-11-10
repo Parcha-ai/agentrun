@@ -51,6 +51,7 @@ import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
@@ -64,7 +65,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -87,7 +88,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
-import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
+import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
@@ -2419,12 +2420,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
+    // What a stored predicate read to let the request through (SecretRequest.seen): the operation's write is refused if
+    // that changed before it lands, so a write allowed against one stored credential never lands over another.
+    let secretSeen: unknown;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
-      if (writesSecret(found.name, body)) {
+      // A segment that is not valid percent-encoding is taken as it came: the request goes on to the token's own check.
+      const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => {
+        try {
+          return part === undefined ? "" : decodeURIComponent(part);
+        } catch {
+          return part;
+        }
+      });
+      const checked: SecretRequest = { params, store };
+      if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
       }
+      secretSeen = checked.seen;
     }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
@@ -2841,7 +2855,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
-        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal);
+        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return send(res, 200, saved);
       }
@@ -2888,7 +2902,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "putMcpPrivateHosts":
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
-        await mcpServers.remove(id);
+        await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":
@@ -3215,11 +3229,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since
    *  is not read again, and a new wait comes with a new claim, so a new epoch. */
   const readWaits = new Map<string, string>();
+  /** When each held wait (a run waiting on its person with its claim held) was last read again. */
+  const heldReadAt = new Map<string, number>();
+  const HELD_WAIT_REREAD_MS = 1_000;
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
   /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
    *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
   const tellWait = async (row: RunRow): Promise<void> => {
-    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}`;
+    const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
     if (readWaits.get(row.id) === seen) return;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
@@ -3239,8 +3256,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const state of ["queued", "running", "parked"] as const) {
       for (const row of await store.runs.list({ state })) {
         open.add(row.id);
-        // A run waits on its person once its runner has let it go: parked, or running with no runner.
-        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null))) await tellWait(row).catch(() => undefined);
+        // A run waits on its person once its runner has let it go: parked, or running with no runner. Or held in its claim
+        // waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its browser hand-over,
+        // tools.ts), which its row's summary says (HELD_WAITS); a new ask sets it anew, so each is read and told once.
+        const waitsInClaim = row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
+        // A held run's next ask in the same claim reads the same row as its last (state, epoch, runner, summary), and the
+        // answer between may come and go within one read: so a held wait is read again now and then (HELD_WAIT_REREAD_MS),
+        // and told once per ask all the same, since each ask's notice is keyed to its own last row (webhooks.ts emit).
+        if (waitsInClaim && Date.now() - (heldReadAt.get(row.id) ?? 0) >= HELD_WAIT_REREAD_MS) {
+          heldReadAt.set(row.id, Date.now());
+          readWaits.delete(row.id);
+        }
+        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
       }
     }
     const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
@@ -3253,6 +3280,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         continue;
       }
       readWaits.delete(id);
+      heldReadAt.delete(id);
       if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
       if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
     }

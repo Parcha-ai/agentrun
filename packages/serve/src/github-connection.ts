@@ -7,7 +7,13 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTargetOf, mintInstallationToken } from "./github.js";
 import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
+import { registerSecretWrite } from "./secret-writes.js";
 import { isObject, type Json } from "./validate.js";
+
+// Connecting a GitHub App seals its key and webhook secret (the webhook secret signs every GitHub delivery this server
+// takes), and disconnecting drops them: each a secret write, from the owner's session alone, whatever its request.
+registerSecretWrite("connectGitHub", () => true);
+registerSecretWrite("disconnectGitHub", () => true);
 
 /** What every GitHub App Connect GitHub makes asks of the repositories it is installed on (its manifest's
  *  default_permissions): the least its templates need. A tool that needs more is warned of when a template granting it is

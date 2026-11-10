@@ -1046,3 +1046,120 @@ test("a refusal-path re-hold while coverage still runs past now holds from where
   assert.equal(rehold.from, 1_200_000, "from where coverage ends (until), not from now");
   assert.equal(rehold.seconds, (clock.now() + holdMs - 1_200_000) / 1000, "for now + holdMs - until seconds");
 });
+
+test("a wait in the claim on the person's answer (ask_person with the browser open) holds the person's time on each open session under the cap, never pausing the run; it shares a take-over's hold; drop lets it go once", async (t) => {
+  const root = await scratch(t);
+  const seen = [];
+  const { person, held } = hands(root);
+  const person2 = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: async (what, _seconds, options) => { seen.push([what, options?.pauses ?? true]); return { drop: () => {} }; } });
+  t.after(() => { person.close(); person2.close(); });
+  await person2.wait("call-1", ["ar-run-30-1"]);
+  assert.deepEqual(seen, [["keeping the browser open while you answer", false]], "held in its own words, and a refusal pauses nothing");
+  // Two sessions open: each held once; a take-over of one shares its hold.
+  const waited = await person.wait("call-2", ["ar-run-31-1", "ar-run-31-2", "ar-run-31-1"]);
+  assert.ok("lapsed" in waited);
+  assert.equal(held.taken, 2, "one hold per open session");
+  const take = await person.take("ar-run-31-1");
+  assert.ok("end" in take);
+  assert.equal(held.taken, 2, "the take-over shares the wait's hold");
+  waited.drop();
+  assert.equal(held.dropped, 1, "the session no one else needs is let go; the taken one stays held");
+  waited.drop();
+  assert.equal(held.dropped, 1, "drop lets go once");
+  take.end("given");
+  assert.equal(held.dropped, 2, "the last one out drops the shared hold");
+});
+
+test("a wait in the claim with no room under the cap is refused in the cap's words, holding nothing", async (t) => {
+  const root = await scratch(t);
+  const { person, held } = hands(root);
+  t.after(() => person.close());
+  held.refuse = "spend_cap_reached: no room for your time";
+  assert.deepEqual(await person.wait("call-3", ["ar-run-32-1"]), { refused: held.refuse });
+  assert.equal(held.taken, 0);
+});
+
+/** Whether `promise` has settled, without waiting on it. */
+const settledNow = async (promise) => Promise.race([promise.then(() => true), sleep(0).then(() => false)]);
+
+test("a wait in the claim is bounded as a hand-over's ask is: at holdMs it lapses, and the person's time to then is carried to the session's next charge", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const carried = [];
+  let taken = 0;
+  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, timers: clock.timers, holdMs, now: clock.now, carry: (tag, seconds) => carried.push([tag, seconds]), personTime: async () => { taken += 1; return { drop: () => {} }; } });
+  t.after(() => person.close());
+  const waited = await person.wait("call-4", ["ar-run-33-1"]);
+  await clock.tick(holdMs - 1);
+  assert.equal(await settledNow(waited.lapsed), false, "still waiting just before the bound");
+  await clock.tick(1);
+  assert.equal(await waited.lapsed, "the person did not answer within 15 minutes, the bound a browser hand-over waits");
+  waited.drop();
+  assert.deepEqual(carried, [["ar-run-33-1", holdMs / 1000]], "the time the wait held the session to its bound is carried to the session's next charge");
+  assert.ok(taken >= 1);
+});
+
+test("a wait in the claim that shares a take-over's session lapses in the cap's words when the take-over's re-hold is refused", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const { person, held } = hands(root, { timers: clock.timers, holdMs, now: clock.now });
+  t.after(() => person.close());
+  const tag = "ar-run-35-1";
+  const take = await person.take(tag);
+  await clock.tick(10 * 60_000);
+  const waited = await person.wait("call-6", [tag]);
+  assert.equal(held.taken, 2, "the wait holds the stretch past the take-over's, through its own bound");
+  held.refuse = "spend_cap_reached: no room for more of your time";
+  await clock.tick(5 * 60_000);
+  assert.equal(await waited.lapsed, held.refuse, "the refused re-hold ends the wait, in the cap's words");
+  waited.drop();
+  take.end("cap");
+});
+
+test("a wait in the claim lapses when a session it keeps is let go", async (t) => {
+  const root = await scratch(t);
+  const { person } = hands(root);
+  t.after(() => person.close());
+  const gone = await person.wait("call-5", ["ar-run-34-1", "ar-run-34-2"]);
+  person.sessionEnded("ar-run-99-1");
+  assert.equal(await settledNow(gone.lapsed), false, "another session's release is not this wait's");
+  person.sessionEnded("ar-run-34-2");
+  assert.match(await gone.lapsed, /browser session it kept open for the person was let go/);
+  gone.drop();
+});
+
+test("a wait in the claim taken up again (a re-claim) keeps its first start: its bound is from then, and one past its bound is refused at once", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock(100 * 60_000);
+  const holdMs = 15 * 60_000;
+  const { person, held } = hands(root, { timers: clock.timers, holdMs, now: clock.now });
+  t.after(() => person.close());
+  const since = clock.now() - 10 * 60_000;
+  const waited = await person.wait("call-7", ["ar-run-36-1"], since);
+  assert.ok("lapsed" in waited);
+  await clock.tick(5 * 60_000 - 1);
+  assert.equal(await settledNow(waited.lapsed), false, "still waiting just before its first start's bound");
+  await clock.tick(1);
+  assert.match(await waited.lapsed, /did not answer within 15 minutes/, "lapsed at its first start's bound, not 15 minutes after the re-claim");
+  waited.drop();
+  const taken = held.taken;
+  assert.deepEqual(await person.wait("call-8", ["ar-run-36-2"], clock.now() - holdMs), { refused: "the person did not answer within 15 minutes, the bound a browser hand-over waits" }, "past its bound: refused, nothing held");
+  assert.equal(held.taken, taken);
+});
+
+test("a session let go while a wait's hold is being admitted still ends the wait", async (t) => {
+  const root = await scratch(t);
+  let admit = () => {};
+  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: () => new Promise((resolve) => (admit = () => resolve({ drop: () => {} }))) });
+  t.after(() => person.close());
+  const waiting = person.wait("call-9", ["ar-run-37-1"]);
+  await sleep(5);
+  person.sessionEnded("ar-run-37-1");
+  admit();
+  const waited = await waiting;
+  assert.ok("lapsed" in waited);
+  assert.match(await Promise.race([waited.lapsed, sleep(200).then(() => "still waiting")]), /let go/, "the release that came during the admission ends the wait");
+  waited.drop();
+});
