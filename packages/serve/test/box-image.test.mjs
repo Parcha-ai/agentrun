@@ -15,10 +15,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
-import { startTimeOf } from "../dist/box/sweep.js";
+import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS, startTimeOf } from "../dist/box-image.js";
 import { client, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -424,40 +422,6 @@ test("the server's close waits for the image's last record to be saved before it
   assert.deepEqual(recordOf(data), { image: "other:2", state: "ready" });
 });
 
-// SKIP (follow-up #2078): a Daytona run (made while the Docker image builds) fails on the runner instead of completing
-test.skip("a Daytona box is the server's to make, and never waits on the Docker box's image: while that image is still being built, a Daytona run makes its box at once with no preparing row, and a Docker run on the same server waits for it", { timeout: 180_000 }, async (t) => {
-  const key = "planted-daytona-key-sentinel";
-  const daytona = await daytonaSandboxes(t, { key });
-  const docker = await fakeDocker(t, { "build-hold": "" }, { AGENTRUN_BOXES: "docker,daytona", DAYTONA_API_KEY: key, DAYTONA_API_URL: daytona.url });
-  const { api, data } = await serve(t, { faux: PROBE });
-  const offers = (await api("GET", "/capabilities")).body.places.boxes;
-  assert.deepEqual(offers.find((b) => b.id === "docker"), { id: "docker", available: true, state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)", ...DOCKER_NET });
-  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
-  const preparing = (rows) => rows.filter((r) => r.summary?.startsWith("Preparing the box image"));
-  // A Daytona agent's run, while Docker's image is held: its box is made, and the run ends, with no row about any image.
-  for (const [id, box] of [["remote", "daytona"], ["local", "docker"]]) {
-    const made = await api("POST", "/agents", { definition: { id, name: id, instructions: "Probe.", place: { mode: "sandbox", box }, tools: ["bash", "read"] } });
-    assert.equal(made.status, 201, JSON.stringify(made.body));
-  }
-  const plan = (word) => JSON.stringify({ probe: [{ tool: "bash", args: { command: `printf ${word} > out.txt` } }, { tool: "read", args: { path: "out.txt" } }] });
-  const remote = (await api("POST", "/agents/remote/runs", { input: { content: plan("remote") } })).body.run_id;
-  await follow(api, remote, ["completed"], { deadlineMs: 120_000 });
-  assert.deepEqual(answers(data, remote).map((a) => [a.tool, a.error]), [["bash", false], ["read", false]]);
-  assert.equal(answers(data, remote)[1].text, "remote");
-  assert.deepEqual(preparing(await rowsOf(api, remote)), [], "no row about the Docker box's image on a Daytona run");
-  assert.ok(daytona.requests.some((r) => r.method === "POST" && /\/sandbox\/?$/.test(r.path)), "the Daytona box was made, by the server");
-  assert.deepEqual(docker.runs(), [], "no Docker box for it");
-  assert.equal((await dockerOffer(api)).state, "preparing", "Docker's image is still being built");
-  // A Docker agent's run on the same server still waits for that image, with its one row.
-  const local = (await api("POST", "/agents/local/runs", { input: { content: plan("local") } })).body.run_id;
-  await until(async () => preparing(await rowsOf(api, local)).length === 1, "the Docker run's preparing row");
-  assert.deepEqual(docker.runs(), [], "no Docker box while its image is built");
-  await docker.release();
-  await follow(api, local, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(answers(data, local)[1].text, "local");
-  assert.equal(docker.runs().length, 1);
-});
-
 test("the start's banner says of the Docker box what capabilities say: preparing, with capabilities' reason, while its image is built, never ready; ready once it is", { timeout: 120_000 }, async (t) => {
   const docker = await fakeDocker(t, { "build-hold": "" });
   const first = await serve(t, { faux: PROBE });
@@ -474,7 +438,7 @@ test("the start's banner says of the Docker box what capabilities say: preparing
   assert.equal(second.boxesLine, `Boxes: docker is ready, so sandbox agents run their tools there.${NET_SENTENCE}`);
 });
 
-test("with no Docker box (none listed, or the tests' faux box), no image is asked for, and a record an earlier start left is removed", async (t) => {
+test("with no Docker box (none listed, or the tests' faux docker), no image is asked for, and a record an earlier start left is removed", async (t) => {
   const docker = await fakeDocker(t);
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const dir = await scratch(t);

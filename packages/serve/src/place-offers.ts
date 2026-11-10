@@ -157,21 +157,23 @@ export type PlaceOffersOptions = {
   /** The group file and this process's user and groups, which say whether a refused docker socket is a membership
    *  granted since this process started; default the system's. */
   groups?: { file: string; user: string; ids: readonly number[] };
-  /** Under --faux only: Docker answers, and nothing asks it. */
+  /** Under --faux only: Docker answers, whatever AGENTRUN_BOXES lists, and nothing asks it. */
   fauxDocker?: boolean;
 };
 
 /** Every box, in BOX_IDS order, as this server has it at its start (`env`: its environment, its secrets readable): bwrap
- *  is in no release; a box AGENTRUN_BOXES does not list is not enabled; docker by its probe; daytona and modal by their
- *  keys. Rejects only for a name in AGENTRUN_BOXES that is no box. No reason holds a key or an answer's body. */
+ *  is in no release; a box AGENTRUN_BOXES does not list is not enabled; docker by its probe (or `fauxDocker`); daytona
+ *  and modal by their keys. Rejects only for a name in AGENTRUN_BOXES that is no box. No reason holds a key or an answer's body. */
 export async function placeOffers(env: NodeJS.ProcessEnv, options: PlaceOffersOptions = {}): Promise<BoxOffer[]> {
   const enabled = enabledBoxes(env);
   const keyOf = options.keyOf ?? (async (name: string) => env[name] || undefined);
   return Promise.all(
     BOX_IDS.map(async (id): Promise<BoxOffer> => {
       if (id === "bwrap") return { id, available: false, reason: NOT_YET };
+      // The tests' faux docker stands in whatever AGENTRUN_BOXES lists, as the old faux box did.
+      if (id === "docker" && options.fauxDocker) return { id, available: true, reason: "a faux docker (tests)" };
       if (!enabled.has(id)) return { id, available: false, reason: notEnabled(id, enabled) };
-      if (id === "docker") return options.fauxDocker ? { id, available: true, reason: "a faux docker (tests)" } : probeDocker(env, options.timeoutMs ?? PROBE_TIMEOUT_MS, options.groups ?? ownGroups());
+      if (id === "docker") return probeDocker(env, options.timeoutMs ?? PROBE_TIMEOUT_MS, options.groups ?? ownGroups());
       return remoteOffer(id, keyOf);
     }),
   );

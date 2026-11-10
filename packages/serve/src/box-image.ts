@@ -1,21 +1,21 @@
 // The image a Docker box starts from, made ready at the server's start, so a run's first tool call is never a silent pull
 // or build. By default it is this server's own, built here from BOX_RECIPE (python 3.12 with git, curl, node, npm and rg,
-// and socat, the relay to the box's network proxy when it has one: box-egress.ts), tagged
+// and socat, the relay to the box's network proxy when it has one), tagged
 // `agentrun-box:<the recipe's hash>` and labelled with the whole hash (RECIPE_LABEL): built on first use, and again only
 // when the recipe changes. AGENTRUN_DOCKER_IMAGE names another image instead, which is pulled when Docker has none.
 //
-// Once docker answers its probe (boxes.ts), the server asks Docker for the image (`docker image inspect`). When Docker has
+// Once docker answers its probe (place-offers.ts), the server asks Docker for the image (`docker image inspect`). When Docker has
 // it (the built one with this recipe's hash), the box is ready. When not, the server builds or pulls it once, in the
 // background, within BUILD_TIMEOUT_MS or PULL_TIMEOUT_MS: docker is then available and preparing ("building the box
 // image (...)", "pulling <image>"), and ready once the image is in. A build or pull that fails is tried once more,
 // RETRY_AFTER_MS later, docker preparing meanwhile with why ("trying once more: <the failure>"); one that fails again, or
 // does not finish in time, makes docker unavailable with the reason, until a restart tries again. Docker's own output
 // is never in a reason, as for the probes: the reason says what kind of failure it was, and what to do. The build
-// reaches the network (the base image, apt); a box never does by Docker's network (`--network none`, run-box.ts), only,
-// with the server's host list, through its egress proxy (box-egress.ts).
+// reaches the network (the base image, apt); a box never does by Docker's network (`--network none`), only,
+// with the server's host list, through its egress proxy.
 //
 // The state is written to IMAGE_STATE_FILE in the data directory at each change, for the run's processes: a run's first
-// box create reads it there (awaitImage, from run-box.ts) and, while the image is coming, waits for it, with one row on
+// box create reads it there (awaitImage) and, while the image is coming, waits for it, with one row on
 // the run's timeline, instead of a `docker run` that pulls inside the tool call. Each record names its writer, the server
 // (its pid and start time). A server that went away mid-way (killed, or closed while the image came) leaves the file
 // saying preparing: a run that reads it once that writer is gone (writerGone),
@@ -76,7 +76,7 @@ const POLL_MS = 250;
 
 /** A process's start time, from /proc/<pid>/stat (field 22, in clock ticks since boot); undefined where it can't be read
  *  (no such process, or no /proc). With the pid, it names one process: a reused pid has another. */
-function startTimeOf(pid: number): string | undefined {
+export function startTimeOf(pid: number): string | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
@@ -227,7 +227,7 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
   const row = built ? `Preparing the box image: building it (${RECIPE_HAS})…` : `Preparing the box image: pulling ${image}…`;
   await write({ until: started + timeoutMs, row });
   const retryAfterMs = options.retryAfterMs ?? RETRY_AFTER_MS;
-  // The build's network is Docker's default, for the base image and apt; a box made from it has none of Docker's (run-box.ts).
+  // The build's network is Docker's default, for the base image and apt; a box made from it has none of Docker's.
   const attempt = (): Promise<Answer> => built
     ? buildContext(env, image, timeoutMs, controller.signal).catch((error: Error) => ({ code: (error as NodeJS.ErrnoException).code ?? error.name, stdout: "", stderr: "" }))
     : docker(env, ["pull", "--quiet", image], timeoutMs, { signal: controller.signal });
