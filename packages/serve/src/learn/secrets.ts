@@ -68,11 +68,13 @@ function places(text: string, form: string): Span[] {
 export const PRINT_MAX = 4096;
 
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
- *  any case, base64, a hex identifier in it folded) and each secret-shaped run replaced by "[redacted]": what the checker prints never holds a secret,
- *  wherever it was found, a file's name included. Every form is found in `text` as given, and overlapping finds are
- *  redacted as one, so one value never hides part of another from the search. A text that still holds a value or a
- *  shape after that (a form not found as it stands: percent encoded, split by whitespace, an NFKC variant), or that is
- *  over `max` bytes (PRINT_MAX unless the caller names more), is redacted whole, never in part. */
+ *  any case, base64, a hex identifier in it folded) and each secret-shaped run replaced by "[redacted]": what the
+ *  checker prints never holds a secret, wherever it was found, a file's name included. Every form is found in `text` as
+ *  given, and overlapping finds are redacted as one, so one value never hides part of another from the search. A text
+ *  that still holds a value or a shape after that (a form not found as it stands: percent encoded, split by whitespace,
+ *  an NFKC variant), or that is over `max` bytes (PRINT_MAX unless the caller names more), is redacted whole, never in
+ *  part. The folded finds only ever add to that: the whole-text check is first made with them left in (a value split by
+ *  a line break is still seen whole, never hidden by its hex part cut alone), and again once they are cut. */
 export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
   const given = values.filter((v) => v.length > 0);
@@ -80,11 +82,20 @@ export function redactSecrets(text: string, values: readonly string[], max = PRI
   const found = [
     ...[...forms].flatMap((form) => places(text, form)),
     ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
-    ...given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle)))),
     ...SHAPES.flatMap(([, pattern]) => spans(text, pattern)),
-  ].sort((a, b) => a[0] - b[0]);
+  ];
+  const unfolded = cutAt(text, found);
+  if (valueMatcher(given, { fold: false })(unfolded) || secretShapes(unfolded).length > 0) return "[redacted]";
+  const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
+  if (!folds.length) return unfolded;
+  const out = cutAt(text, [...found, ...folds]);
+  return valueMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
+}
+
+/** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
+function cutAt(text: string, found: readonly Span[]): string {
   const merged: Span[] = [];
-  for (const [start, end] of found) {
+  for (const [start, end] of [...found].sort((a, b) => a[0] - b[0])) {
     const last = merged.at(-1);
     if (last && start <= last[1]) last[1] = Math.max(last[1], end);
     else merged.push([start, end]);
@@ -95,8 +106,7 @@ export function redactSecrets(text: string, values: readonly string[], max = PRI
     out += `${text.slice(from, start)}[redacted]`;
     from = end;
   }
-  out += text.slice(from);
-  return valueMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
+  return out + text.slice(from);
 }
 
 /** A value shorter than this matches too much text by chance to be refused. */
@@ -132,14 +142,15 @@ const FOLD_MIN = 16;
 const folded = (text: string) => text.toLowerCase().replace(SEPARATORS, "");
 
 /** The hex identifiers of `value`, folded: each maximal run of hex digits and separators holding at least FOLD_MIN hex
- *  digits, lowercased, its separators gone. A sign-in pointer (`ctx/<uuid>`, `agentrun-<hex>`) is found so however its
- *  hex is written: uppercased, its dashes dropped or moved. Nothing else of a value is folded: a key in mixed case is
- *  found as written. */
+ *  digits and at least half of the value (its identity, a short prefix aside), lowercased, its separators gone. A
+ *  sign-in pointer (`ctx/<uuid>`, `agentrun-<hex>`) is found so however its hex is written: uppercased, its dashes
+ *  dropped or moved. Nothing else of a value is folded: a key in mixed case is found as written, and so is a key whose
+ *  hex run is only its tail (`<words>-<hex>`), whose run alone is no secret and would cut another value sharing it. */
 function foldedOf(value: string): string[] {
   const out = new Set<string>();
   for (const run of value.match(/[0-9a-f_:.-]+/gi) ?? []) {
     const digits = folded(run);
-    if (digits.length >= FOLD_MIN) out.add(digits);
+    if (digits.length >= FOLD_MIN && 2 * run.length >= value.length) out.add(digits);
   }
   return [...out];
 }
@@ -158,9 +169,10 @@ const longEnough = (value: string) => [...value].length >= MIN_SECRET;
 
 /** A matcher for `values` in a text: plain, split by whitespace, as JSON writes it, percent or form encoded, base64 or
  *  hex, and each hex identifier in a value folded: in any case, its separators dropped or moved (foldedOf). Values
- *  shorter than MIN_SECRET are left out. */
-export function valueMatcher(values: readonly string[]): (text: string) => boolean {
-  const needles = values.filter(longEnough).map(needlesOf);
+ *  shorter than MIN_SECRET are left out. `fold: false`, the matcher without the folded needles (redactSecrets' first
+ *  whole-text check). */
+export function valueMatcher(values: readonly string[], { fold = true }: { fold?: boolean } = {}): (text: string) => boolean {
+  const needles = values.filter(longEnough).map(needlesOf).map((n) => (fold ? n : { ...n, folded: [] }));
   if (!needles.length) return () => false;
   return (text) => {
     const views = [...new Set([squeeze(text), squeeze(percentDecode(text, false)), squeeze(percentDecode(text, true))])];

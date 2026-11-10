@@ -3,7 +3,9 @@
 // `agentrun-<hex>`, uppercased, its dashes dropped, both at once, or split by dashes where it had none. Each maximal run
 // of a value's hex digits and separators ([-_:.]) holding at least 16 hex digits is folded (lowercased, separators
 // gone), and looked for so in a text folded the same way. A shorter hex run is not folded, an unrelated UUID is not
-// matched, and a value with no such run (a key in mixed case) is found as written only.
+// matched, and a value with no such run (a key in mixed case) is found as written only. A run that is only a key's tail
+// (under half of it) is not folded: another value sharing it is not cut. The fold only adds cutting: a held key split by
+// a line break is still seen whole and the text redacted whole, as before the fold.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactSecrets, valueMatcher } from "../dist/learn/secrets.js";
@@ -67,4 +69,18 @@ test("a key in mixed case is found as written, never folded: its uppercased form
   const key = "Zq8xKpLmNvBw3RtYuIoPwQ";
   assert.equal(valueMatcher([key])(`use ${key}`), true);
   assert.equal(valueMatcher([key])(`use ${key.toUpperCase()}`), false);
+});
+
+test("a key whose hex run is only its tail is not folded: another value ending in the same hex is not cut", () => {
+  const held = ["not-a-secret", "cut-key-0123456789abcdef"].join("-");
+  const other = ["not-a-secret", "later-key-0123456789abcdef"].join("-");
+  assert.equal(valueMatcher([held])(`Later: ${other} ends here.`), false);
+  assert.equal(redactSecrets(`Later: ${other} ends here.`, [held]), `Later: ${other} ends here.`);
+  assert.equal(redactSecrets(`Now: ${held} ends here.`, [held]), "Now: [redacted] ends here.", "as written it still is cut");
+});
+
+test("the fold never stops the whole-text check: a held pointer split by a line break before its hex redacts the text whole", () => {
+  // Its hex alone, cut in place, would leave the rest unseen as the pointer: the whole-text check runs first.
+  const text = `Use ${PROFILE.slice(0, 8)}\n${PROFILE.slice(8)} now.`;
+  assert.equal(redactSecrets(text, [PROFILE]), "[redacted]");
 });
