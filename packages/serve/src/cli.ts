@@ -68,8 +68,9 @@ published port, or a proxy's URL), and the link printed uses it; with none, Rend
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
-timeline, messages, stop, cancel, kill and cap raise, its files and uploads, capabilities, health and usage. Every other
-address (the page, sign-in, setup, settings, MCP, triggers and their hooks, agents) is a 404, and there are no accounts.
+timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
+and usage. Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
+is a 404, and there are no accounts.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the

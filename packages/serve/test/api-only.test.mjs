@@ -35,6 +35,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
     ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
+    ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/api/store"], ["GET", "/llms.txt"],
@@ -72,6 +73,19 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   assert.equal((await send(server, "GET", "/v2/runs/run_missing")).status, 404, "a run it does not have is the route's own 404");
   assert.notEqual((await send(server, "GET", "/v2/runs/run_missing")).body.error?.message?.includes("AGENTRUN_API_ONLY"), true, "not the profile's");
   assert.equal((await send(server, "GET", "/v2/runs", { token: false })).status, 401, "and still takes the token");
+});
+
+test("an API-only server serves an agent's Archil disk, read and removed, with the token", async (t) => {
+  const server = await serve(t, { apiOnly: true, runner: false });
+  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "grep", kind: "expert", id: "9", version: 1 }, definition: { name: "Expert 9", instructions: "Answer.", skills: [], tools: [] }, input: { content: "Hi" } } });
+  assert.equal(inline.status, 202, JSON.stringify(inline.body));
+  const agent = inline.body.agent_id;
+  const read = await send(server, "GET", `/v2/agents/${agent}/archil`);
+  assert.deepEqual([read.status, read.body], [200, { on: false, archil_disk: null }], "Mode 1: no disk");
+  const removed = await send(server, "DELETE", `/v2/agents/${agent}/archil`);
+  assert.deepEqual([removed.status, removed.body], [200, { on: false, archil_disk: null, removed: null }], "nothing to remove");
+  assert.equal((await send(server, "GET", "/v2/agents/agent_missing/archil")).status, 404, "an agent it does not have is the route's own 404");
+  assert.equal((await send(server, "GET", `/v2/agents/${agent}/archil`, { token: false })).status, 401, "and takes the token");
 });
 
 const REFUSED = [

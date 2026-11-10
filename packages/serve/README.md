@@ -1953,6 +1953,7 @@ serves these routes alone:
 - a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
   `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
