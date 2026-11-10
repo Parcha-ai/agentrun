@@ -1,14 +1,13 @@
 // The guarded direct fetch, web_fetch's: one public web page as a Page, on pi-browser's
 // public-host guard. The network here is a table (no socket): every hostile target must be refused before it is dialled,
-// in the fetch itself, in an agentic run's process and in a workflow's call node, and the public page must answer.
+// in the fetch itself and in a workflow's call node (an agentic run's, on the runner: web-fetch-ssrf-runner.test.mjs), and the public page must answer.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fetchPage } from "../dist/web-fetch-direct.js";
 import { network } from "./fixtures/fake-network.mjs";
-import { answerFlow, client, follow, runDir, scratch, serve } from "./support.mjs";
+import { answerFlow, follow, runDir, serve } from "./support.mjs";
 
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 
@@ -93,28 +92,6 @@ function pagesOf(data, runId) {
     db.close();
   }
 }
-
-test("an agentic run's web_fetch, in its own process: every hostile target refused (ok false, never dialled), the public page answered", async (t) => {
-  const log = join(await scratch(t), "dialled.txt");
-  const saved = process.env.FAUX_WEB_LOG;
-  process.env.FAUX_WEB_LOG = log;
-  t.after(() => (saved === undefined ? delete process.env.FAUX_WEB_LOG : (process.env.FAUX_WEB_LOG = saved)));
-  const { api, baseUrl, data } = await serve(t, { fauxWeb: FAUX_WEB });
-  const tools = (await client(baseUrl)("GET", "/capabilities")).body.tools;
-  const listed = tools.find((tool) => tool.name === "web_fetch");
-  assert.deepEqual([listed.available, listed.nodes, listed.calls, listed.missing], [true, true, true, undefined], "no key needed");
-  assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["web_fetch"] } })).status, 201);
-  const urls = [...HOSTILE.map(([url]) => url), "http://public.example/"];
-  const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages: ${JSON.stringify(urls)}` } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["completed"]);
-  const pages = pagesOf(data, started.body.run_id);
-  assert.equal(pages.length, urls.length);
-  HOSTILE.forEach(([url], i) => assert.match(pages[i].refused ?? "", /^refused: /, `${url}: ${JSON.stringify(pages[i])}`));
-  assert.deepEqual(textless(pages.at(-1)), { ...PUBLIC, via: "direct" }, "web_fetch's Page");
-  const dialled = (await readFile(log, "utf8")).trim().split("\n");
-  assert.deepEqual(dialled, ["http://redirect.example/", "http://renamed.example/", "http://public.example/"], "only public addresses were dialled");
-});
 
 test("a workflow's call node runs web_fetch: the Page is its output, a refusal is ok false and the workflow goes on; a call to a tool outside the table is refused at save (422)", async (t) => {
   const { api } = await serve(t, { fauxWeb: FAUX_WEB });
