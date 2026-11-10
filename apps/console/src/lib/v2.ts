@@ -160,3 +160,11 @@ export type Archil = Answer<"getWorkspaceArchil">;
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
+/** One of an agent's saved browser sign-ins, as GET /v2/agents/{id} shows it: never its pointer. `held` while a run holds
+ *  its save lease (`held_by`); `unreadable`, its pointer doesn't open under this server's seal key, so runs start signed
+ *  out until it is forgotten. */
+export type SignIn = components["SignIn"];
+/** DELETE /v2/agents/{id}/sign-ins/{key}'s answer: what each vendor did with its object. */
+export type SignInForgotten = Answer<"forgetSignIn">;
+/** GET /v2/agents/{id}'s answer as served. */
+export type ServedAgent = Answer<"getAgent">;

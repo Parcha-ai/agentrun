@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
+import type { ApiError, Archil, ArchilBody, ArchilTest, ComputerKeysBody, ComputerProvider, Computers, ComputerTest, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, SessionSecrets, SignInForgotten, TemplateApplied, TemplateApply, TemplateView, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -178,6 +178,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
      *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
     restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** Forgets one of an agent's saved browser sign-ins (DELETE /agents/{id}/sign-ins/{key}): every vendor's under the key. */
+    forgetSignIn: (id: string, key: string) => call<SignInForgotten>("DELETE", `${agent(id)}/sign-ins/${encodeURIComponent(key)}`),
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),

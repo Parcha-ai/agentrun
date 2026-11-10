@@ -1,7 +1,7 @@
 import { type Place, type Places, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
-import type { AgentTool, Approvals, Computer, ToolSettings } from "./v2";
+import type { AgentTool, Approvals, Computer, ServedAgent, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
@@ -15,7 +15,9 @@ export type Definition = { version: number; approvals?: Approvals; name: string;
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
+/** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
+ *  carries (a list's agents and a write's answer have none). */
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] } & Partial<Pick<ServedAgent, "sign_ins">>;
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
