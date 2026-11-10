@@ -130,6 +130,11 @@ const RANGES = [
   ["240.0.0.0/4", "240.0.0.1"],
   ["192.0.0.0/24", "192.0.0.170"],
   ["fec0::/10", "fec0::1"],
+  ["2002::/16 6to4 of 127.0.0.1", "2002:7f00:1::1"],
+  ["2002::/16 6to4 of the metadata address", "2002:a9fe:a9fe::1"],
+  ["2001::/32 Teredo", "2001:0:4136:e378:8000:63bf:3fff:fdd2"],
+  ["2001:db8::/32 documentation", "2001:db8::1"],
+  ["100::/64 discard-only", "100::1"],
 ];
 
 test("the special-purpose ranges are private: each refused by isPrivateAddress and by publicFetch before it is dialled", async () => {
@@ -151,4 +156,25 @@ test("readPage gives the title, the text and each absolute http(s) link once", a
   const page = await readPage(PAGE, "http://public.example/");
   assert.deepEqual([page.title, page.links], ["Public", ["http://public.example/next"]]);
   assert.match(page.text, /Hello\./);
+});
+
+test("an error answer that is a bot-protection challenge is marked as one; any other error status is not", async () => {
+  const CHALLENGE = "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>";
+  const net = network({
+    answers: {
+      "http://header.example/": () => new Response("blocked", { status: 403, headers: { "content-type": "text/html", "cf-mitigated": "challenge" } }),
+      "http://page.example/": () => new Response(CHALLENGE, { status: 403, headers: { "content-type": "text/html" } }),
+      "http://busy.example/": () => new Response(CHALLENGE, { status: 503, headers: { "content-type": "text/html" } }),
+      "http://forbidden.example/": () => new Response("<html><body>Forbidden</body></html>", { status: 403, headers: { "content-type": "text/html" } }),
+      "http://missing.example/": () => new Response(CHALLENGE, { status: 404, headers: { "content-type": "text/html" } }),
+    },
+  });
+  for (const host of ["header", "page", "busy"]) {
+    const answer = await publicFetch(`http://${host}.example/`, net);
+    assert.deepEqual([answer.body, answer.challenge], [null, true], host);
+  }
+  for (const host of ["forbidden", "missing"]) {
+    const answer = await publicFetch(`http://${host}.example/`, net);
+    assert.deepEqual([answer.body, answer.challenge], [null, undefined], host);
+  }
 });

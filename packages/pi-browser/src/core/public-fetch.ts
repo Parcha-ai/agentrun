@@ -12,9 +12,11 @@ import { refusedError } from "./custody.js";
  *  included). */
 const V4_PRIVATE: ReadonlyArray<readonly [number, number]> = [[0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xe0000000, 4], [0xf0000000, 4]];
 /** ::/8 reserved by the IETF (the unspecified and loopback addresses, IPv4-compatible ones, and the NAT64 prefixes
- *  64:ff9b::/96 and 64:ff9b:1::/48), fc00::/7 unique-local, fe80::/10 link-local, fec0::/10 site-local and ff00::/8
- *  multicast. An IPv4-mapped address (::ffff:0:0/96) is checked as the IPv4 address it carries. */
-const V6_PRIVATE: ReadonlyArray<readonly [string, number]> = [["::", 8], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]];
+ *  64:ff9b::/96 and 64:ff9b:1::/48), 100::/64 discard-only, 2001::/32 Teredo and 2002::/16 6to4 (each carries an IPv4
+ *  address a relay can reach, the owner's loopback or network among them, so the whole range is refused rather than the
+ *  address it carries trusted), 2001:db8::/32 documentation, fc00::/7 unique-local, fe80::/10 link-local, fec0::/10
+ *  site-local and ff00::/8 multicast. An IPv4-mapped address (::ffff:0:0/96) is checked as the IPv4 address it carries. */
+const V6_PRIVATE: ReadonlyArray<readonly [string, number]> = [["::", 8], ["100::", 64], ["2001::", 32], ["2001:db8::", 32], ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]];
 const v4 = (ip: string) => ip.split(".").reduce((n, octet) => n * 256 + Number(octet), 0);
 /** An IPv6 address's eight 16-bit groups, read through the URL parser's canonical form; null when it does not parse
  *  (a zone index among them). */
@@ -71,12 +73,41 @@ export type PublicFetchOptions = {
 };
 
 /** The answer that ended the redirects: its URL, status and type, and its body when it is a 2xx text answer. */
-export type PublicAnswer = { url: string; status: number; contentType: string; body: string | null };
+/** A page's answer. `challenge`: an error status that is a bot-protection challenge (the host refused an automated read
+ *  and asks for a browser to prove itself), told apart from a plain refusal or a missing page. */
+export type PublicAnswer = { url: string; status: number; contentType: string; body: string | null; challenge?: true };
+
+/** How much of an error answer is read to tell a bot-protection challenge from any other refusal. */
+const CHALLENGE_PEEK_BYTES = 16 * 1024;
+/** Words a bot-protection challenge page carries (Cloudflare's "Just a moment" interstitial and its challenge platform,
+ *  Akamai, Imperva, PerimeterX, DataDome and plain captcha walls). */
+const CHALLENGE_MARKS = /just a moment\.\.\.|cf-chl|challenge-platform|cf_chl_opt|attention required!? \| cloudflare|_incapsula_resource|px-captcha|captcha-delivery|datadome|enable javascript and cookies to continue|verify you are human/i;
+
+/** Whether an error answer is a bot-protection challenge: Cloudflare says so in a header; otherwise a 403, 429 or 503
+ *  whose first bytes carry a challenge page's words. Reads at most CHALLENGE_PEEK_BYTES of the body. */
+async function isChallenge(res: Response): Promise<boolean> {
+  if ((res.headers.get("cf-mitigated") ?? "").toLowerCase() === "challenge") return true;
+  if (![403, 429, 503].includes(res.status) || !res.body) return false;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = res.body.getReader();
+  try {
+    while (size < CHALLENGE_PEEK_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return CHALLENGE_MARKS.test(Buffer.concat(chunks).subarray(0, CHALLENGE_PEEK_BYTES).toString("utf8"));
+}
 
 /**
  * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
  * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
- * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s); a host
+ * body, marked `challenge` when it is a bot-protection challenge (at most the first 16 KiB of it read to tell). Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s); a host
  * that is local by name or resolves to any private address; a port other than 80 or 443; too many redirects; a 2xx body
  * that is not text or is over the cap. `signal` ends the fetch at any point, a hop's name lookup included (it rejects
  * with the signal's reason), and an aborted hop is never dialled.
@@ -106,7 +137,7 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
         continue;
       }
       const contentType = res.headers.get("content-type") ?? "";
-      if (!res.ok) return { url: target.href, status: res.status, contentType, body: null };
+      if (!res.ok) return { url: target.href, status: res.status, contentType, body: null, ...((await isChallenge(res)) ? { challenge: true as const } : {}) };
       if (!/^(text\/|application\/(xhtml\+xml|json|xml))/i.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
       const chunks: Uint8Array[] = [];
       let size = 0;

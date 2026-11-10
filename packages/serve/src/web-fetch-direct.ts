@@ -165,7 +165,13 @@ export async function readDirect(url: unknown, options: Omit<PublicFetchOptions,
   try {
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
     const answer = await publicFetch(url, { ...options, signal });
-    if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
+    if (answer.body === null) {
+      // A bot-protection challenge is the host refusing an automated read, not a missing page: say so, and what reads it.
+      const error = answer.challenge
+        ? `the host refused an automated read (it answered ${answer.status} with a bot-protection challenge). A read through the web provider gets such pages: with a Parallel key set on this server, web_fetch reads through Parallel`
+        : `the page answered ${answer.status}`;
+      return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error });
+    }
     // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
     const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
     const page = read ?? { title: "", text: answer.body, links: [] };
