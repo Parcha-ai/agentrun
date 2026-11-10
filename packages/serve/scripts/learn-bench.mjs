@@ -140,8 +140,12 @@ async function startServer(data, templates) {
   const token = randomBytes(24).toString("base64url");
   const serve = await startServe({ data, port: 0, token, templates, drainTimeout: "5s", accounts: true, openSetup: true });
   const beside = await runnerBeside(data, {});
+  // A store handle of the bench's own on the same data (a runner's, as a test's): each step's kept learning row says what
+  // its job had cost when it answered and what looking back cost (runner/reflect-hook.ts looked), which no route serves.
+  const { openSqliteStore } = await import(dist("store/index.js"));
+  const store = await openSqliteStore({ dataDir: data, role: "runner" });
   const base = serve.baseUrl.replace(/\/+$/, "").replace(/(\/v2)?$/, "/v2");
-  return { api: apiOf(base, token), base, close: async () => { await beside.close(); await serve.close(); } };
+  return { api: apiOf(base, token), base, store, close: async () => { await store.close(); await beside.close(); await serve.close(); } };
 }
 
 /** The owner's password session: setup with a password made here, held in memory alone. */
@@ -234,6 +238,19 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     }
   }
   const verdictFiles = (learning?.verdict?.items ?? []).map((item) => item.file ?? "");
+  const total = usd(view.cost?.usd);
+  // The run's cost split: its job's own turns (what it had cost when the job answered) and its end-of-run learning turn
+  // (what looking back cost), from its kept learning row. A run that did not learn, or did not look back, spent it all on
+  // its job.
+  const kept = learns ? ((await ctx.store.learning.proposal(runId))?.proposal ?? {}) : {};
+  const looked = learns && kept.answered_at !== undefined;
+  const work = looked ? usd(kept.job_cost_usd) : total;
+  const reflect = looked ? usd(kept.look_back_usd) : total === null ? null : 0;
+  // The grade's cost as its learning says it; 0 with tokens counted is a usage with no price (LS-09): unknown, never $0.
+  const gradeTokens = learning?.tokens?.grade;
+  const counted = gradeTokens && typeof gradeTokens === "object" && Object.values(gradeTokens).some((n) => typeof n === "number" && n > 0);
+  const gradeRaw = learning ? usd(learning.cost_usd?.grade) : null;
+  const unpriced = Boolean(learning && gradeRaw === 0 && counted);
   const learned = learning ? { notes: (learning.learned ?? []).map((x) => x.name), skills: (learning.skills ?? []).map((x) => x.name), workflows: (learning.workflows ?? []).map((x) => x.name) } : null;
   const toolRows = rows.filter((r) => r.kind === "tool_use" && r.agent_label !== "learning" && r.tool_name);
   return {
@@ -242,9 +259,9 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     pass: graded && graders.every((g) => g.pass), graders,
     // The answer the graders read, its head: what a failed grader is checked against when its reason is not enough.
     answer: record.answer.slice(0, 4000),
-    cost_usd: usd(view.cost?.usd), eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
+    cost_usd: total, work_cost_usd: work, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
     learning: learning ? { state: learning.state ?? null, reason: learning.reason ?? null, detail: learning.detail ?? null } : null,
-    grade_cost_usd: learning ? usd(learning.cost_usd?.grade) : null,
+    grade_cost_usd: unpriced ? null : gradeRaw, grade_cost_unpriced: unpriced,
     learned, workflow_proposed: Boolean(learned && (learned.workflows.length || verdictFiles.some((f) => f.startsWith("workflows/")))),
     learned_workflow_calls: toolRows.filter((r) => r.tool_name === "learned_workflow").length,
     tools: [...new Set(toolRows.map((r) => r.tool_name))].sort(),
@@ -316,15 +333,19 @@ export function metricsOf(steps, learns) {
     pass_rate: rate(steps.map((s) => s.pass)),
     grader_pass_rates: graderRates,
     cost_per_run_usd: mean(steps.map((s) => s.cost_usd)),
-    cost_trend_usd_per_run: slope(steps.map((s, i) => [i, s.cost_usd])),
-    cost_first_usd: steps[0]?.cost_usd ?? null, cost_last_usd: steps.at(-1)?.cost_usd ?? null,
+    work_cost_per_run_usd: mean(steps.map((s) => s.work_cost_usd)),
+    cost_trend_usd_per_run: slope(steps.map((s, i) => [i, s.work_cost_usd])),
+    cost_first_usd: steps[0]?.work_cost_usd ?? null, cost_last_usd: steps.at(-1)?.work_cost_usd ?? null,
+    reflect_cost_per_run_usd: learns ? mean(steps.map((s) => s.reflect_cost_usd)) : null,
+    // What learning adds to each run: its end-of-run turn and its grade, where both are known.
+    learning_overhead_usd_per_run: learns ? mean(steps.map((s) => (s.reflect_cost_usd === null || s.grade_cost_usd === null ? null : s.reflect_cost_usd + s.grade_cost_usd))) : null,
     workflow_proposal_rate: learns ? rate(at((s) => s.kind === "teach").map((s) => s.workflow_proposed)) : null,
     reuse_rate: learns && firstFlow >= 0 ? rate(steps.slice(firstFlow + 1).map((s) => s.learned_workflow_calls > 0)) : null,
     staleness,
     wrong_keeps: learns && plantAt >= 0 ? plantGraders.filter((g) => !g.pass).length : null,
     plant_graders: learns && plantAt >= 0 ? plantGraders.length : null,
     grade_cost_usd: learns ? round(steps.reduce((s, x) => s + (x.grade_cost_usd ?? 0), 0)) : null,
-    grade_cost_unknown_steps: learns ? steps.filter((x) => x.learning?.state === "merged" && x.grade_cost_usd === null).length : null,
+    grade_cost_unknown_steps: learns ? steps.filter((x) => x.grade_cost_unpriced || (x.learning?.state === "merged" && x.grade_cost_usd === null)).length : null,
     eval_grader_cost_usd: steps.some((s) => s.eval_grader_cost_usd !== null) ? round(steps.reduce((s, x) => s + (x.eval_grader_cost_usd ?? 0), 0)) : null,
     approvals: steps.reduce((n, s) => n + (s.approvals?.length ?? 0), 0),
   };
@@ -396,7 +417,7 @@ async function main() {
             ok(`saving the fake ${name}`, await server.api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" } }));
           }
           await serverPins(server.api, p.pkg.pkg, p.job);
-          const done = await series({ api: server.api, pkgName: p.pkg.pkgName, models, options, owner, fakes }, p.job, p.cases, p.harness, p.arm, p.steps);
+          const done = await series({ api: server.api, store: server.store, pkgName: p.pkg.pkgName, models, options, owner, fakes }, p.job, p.cases, p.harness, p.arm, p.steps);
           results.series.push(done);
           write();
           if (done.hard_stop) { results.hard_stop = done.hard_stop; break; }
@@ -421,21 +442,22 @@ export function render(results) {
   const money = (x) => (x === null || x === undefined ? "-" : `$${x.toFixed(4)}`);
   const yes = (x) => (x === null || x === undefined ? "-" : x ? "yes" : "no");
   const out = [`Learning bench (${results.schema}), build ${String(results.bench?.sha ?? "?").slice(0, 10)}${results.hard_stop ? `, HARD STOP: ${results.hard_stop}` : ""}`, ""];
-  out.push("| Job | Harness | Arm | Steps | Follow (repeat) | Pass (all) | Cost/run | Cost trend /run | Workflow proposed (teach) | Reuse | After change: graders / skill updated / workflow updated | Wrong keeps | Grade cost |");
-  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  out.push("| Job | Harness | Arm | Steps | Follow (repeat) | Pass (all) | Work cost/run | Work cost trend /run | Learning overhead/run | Grade cost | Workflow proposed (teach) | Reuse | After change: graders / skill updated / workflow updated | Wrong keeps |");
+  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   const order = [...results.series].sort((a, b) => `${a.job}${a.harness}${a.arm}`.localeCompare(`${b.job}${b.harness}${b.arm}`));
   for (const s of order) {
     const m = s.metrics;
     const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.skill_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
     const trend = m.cost_trend_usd_per_run === null ? "-" : `${m.cost_trend_usd_per_run >= 0 ? "+" : ""}${m.cost_trend_usd_per_run.toFixed(5)}`;
-    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${money(m.cost_per_run_usd)} | ${trend} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} | ${money(m.grade_cost_usd)} |`);
+    const grade = s.arm === "off" ? "-" : `${money(m.grade_cost_usd)}${m.grade_cost_unknown_steps ? ` (+${m.grade_cost_unknown_steps} unknown)` : ""}`;
+    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${money(m.work_cost_per_run_usd)} | ${trend} | ${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
   }
   for (const s of order) {
     out.push("", `${s.job} / ${s.harness} / ${s.arm}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
     for (const x of s.steps) {
       const failed = x.graders.filter((g) => !g.pass).map((g) => g.grader);
       const kept = x.learned ? Object.entries(x.learned).filter(([, v]) => v.length).map(([k, v]) => `${k.slice(0, -1)} ${v.join(", ")}`).join("; ") : "";
-      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} cost=${money(x.cost_usd)}${x.learning ? ` learning=${x.learning.state ?? "-"} grade=${money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
+      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"} grade=${x.grade_cost_unpriced ? "unknown" : money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
     }
   }
   return out.join("\n") + "\n";
