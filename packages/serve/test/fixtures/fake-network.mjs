@@ -9,6 +9,7 @@ const NAMES = {
   "renamed.example": ["93.184.216.36"],
   "evil.example": ["127.0.0.1"],
   "mixed.example": ["93.184.216.37", "10.0.0.5"],
+  "guarded.example": ["93.184.216.38"],
 };
 
 /** `{ lookup, fetchImpl }` for publicFetch, and `dialled`, every URL fetchImpl was asked for; `onDial` sees each too. */
@@ -28,6 +29,8 @@ export function network(onDial = () => undefined) {
       if (url.href === "http://public.example/image.png") return new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { "content-type": "image/png" } });
       if (url.href === "http://redirect.example/") return new Response(null, { status: 302, headers: { location: "http://127.0.0.1:9421/v1/models" } });
       if (url.href === "http://renamed.example/") return new Response(null, { status: 301, headers: { location: "http://evil.example/" } });
+      // A host behind bot protection: its challenge page, as Cloudflare serves one to an automated read.
+      if (url.href === "http://guarded.example/") return new Response('<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script></body></html>', { status: 403, headers: { "content-type": "text/html; charset=UTF-8", server: "cloudflare" } });
       return new Response("Not here.", { status: 404, headers: { "content-type": "text/plain" } });
     },
   };

@@ -160,3 +160,13 @@ test("a workflow's call node runs web_fetch: the Page is its output, a refusal i
     assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools web_fetch, web_search, pdf_pages, llm here; this workflow also calls ${tool}\\.`));
   }
 });
+
+test("a host that answers with a bot-protection challenge is said to refuse an automated read, naming what reads such pages; a missing page is still the status it answered", async () => {
+  const guarded = await fetchPage("http://guarded.example/", network());
+  assert.equal(guarded.ok, false);
+  assert.equal(guarded.status, 403);
+  assert.match(guarded.error, /^the host refused an automated read \(it answered 403 with a bot-protection challenge\)\./);
+  assert.match(guarded.error, /with a Parallel key set on this server, web_fetch reads through Parallel/);
+  const missing = await fetchPage("http://public.example/gone", network());
+  assert.equal(missing.error, "the page answered 404");
+});
