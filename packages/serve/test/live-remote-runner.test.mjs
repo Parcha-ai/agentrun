@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { proxyLiveUpgrade, readLiveViewers, viewerAnswers } from "../dist/browser-live.js";
+import { handoverOf, proxyLiveUpgrade, putLiveViewer, readLiveViewers, viewerAnswers } from "../dist/browser-live.js";
 import { openComputerView } from "../dist/computer-live.js";
 import { LIVE_PROOF_HEADER, liveProof, liveReachOf, runnerLiveOf } from "../dist/live-reach.js";
 import { fakeHold, fakeWatch } from "./computer-live-support.mjs";
@@ -91,4 +91,16 @@ test("the viewer's socket through the server reaches the remote runner's endpoin
   assert.equal((await connect(`ws://127.0.0.1:${elsewhere}/v/${row.id}/ws`, { origin: "http://127.0.0.1" })).status, 404);
   const none = await proxyOf(t, row, undefined);
   assert.equal((await connect(`ws://127.0.0.1:${none}/v/${row.id}/ws`, { origin: "http://127.0.0.1" })).status, 404);
+});
+
+test("the browser's hand-over on a runner on another host: a viewer's link on the runner's live host names that host in its row, and a link on any other host is no hand-over", async () => {
+  const link = (host) => `http://${host}:45001/v/${"A".repeat(22)}#t=${"b".repeat(43)}`;
+  assert.equal(handoverOf(link(REMOTE), "tag-1", REMOTE)?.host, REMOTE);
+  assert.equal(handoverOf(link(REMOTE), "tag-1"), undefined, "no live host: loopback alone");
+  assert.equal(handoverOf(link("10.0.0.9"), "tag-1", REMOTE), undefined, "a host the runner did not name");
+  assert.equal(handoverOf(link("127.0.0.1"), "tag-1", REMOTE)?.host, undefined, "loopback still, with no host in its row");
+  const store = fakeLiveViewersStore();
+  const claim = store.claim("run-3");
+  assert.equal(await putLiveViewer(store, KEY, claim, handoverOf(link(REMOTE), "tag-1", REMOTE)), true);
+  assert.equal((await readLiveViewers(store, KEY, "run-3"))[0].host, REMOTE);
 });
