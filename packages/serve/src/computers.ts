@@ -56,7 +56,7 @@ export type FolderMode = "local" | "disk";
 export interface ComputerRoutesOptions {
   /** The server's one store: its sealed keys. */
   readonly store: Pick<Store, "sealedKeys">;
-  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  /** The server's seal key: there is always one (seal-key.ts bootSealKey, at the start). */
   readonly sealKey: Buffer;
   readonly kinds: KindRegistry;
   /** Each provider module's create(), by provider id (the computer package's): what a test and a claim make. */

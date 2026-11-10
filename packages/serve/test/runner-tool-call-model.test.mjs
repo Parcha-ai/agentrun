@@ -23,7 +23,8 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { runFolder } = await import("../dist/workspace/paths.js");
-const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
+const { streamingSandbox } = await import("./fixtures/streaming-sandbox.mjs");
+const { pastHeldTail } = await import("./fixtures/live-tail.mjs");
 const { routeOf } = await import("../dist/runner/model-route.js");
 after(closeOpenSessions);
 
@@ -56,15 +57,13 @@ function png(width, height) {
 /** run-1, an agentic pi run granted `tools`, its model's route carrying `like` (the catalog's facts for the model), the
  *  model playing `script`; `files` laid in the run's folder before its claim. `during(server, folder)` runs while the run
  *  goes. Its row once it rests, and the requests the model was sent. */
-async function piRun(t, { tools, like, script, files = {}, during }) {
+async function piRun(t, { tools, like, script, files = {}, during, computer }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-tool-call-model-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   let runner;
-  let ticker;
   t.after(async () => {
     await runner?.close();
-    await ticker?.close();
     await store.close().catch(() => {});
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
@@ -82,11 +81,11 @@ async function piRun(t, { tools, like, script, files = {}, during }) {
   };
   const deps = {
     env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route,
-    computerForClaim: async () => ({ release: async () => {} }),
+    // `computer`: the claim's computer for the run's folder (a run with no mounting computer has no shell, #2088).
+    computerForClaim: async () => (computer ? computer(folder) : { release: async () => {} }),
   };
-  // The run's live view: its held state (the tools running now, with their output) written to the store each tick.
-  ticker = withLiveTicker(store, createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) }), { tickMs: 50 });
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: ticker.createLoop });
+  // The run's live view is the runner's own (startRunner's ticker), its tick quick here.
+  runner = startRunner({ store, name: "runner-a", ...TIMING, live: { tickMs: 50 }, createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_name, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) }) });
   const going = during ? during(server, folder) : Promise.resolve();
   const from = Date.now();
   for (;;) {
@@ -144,15 +143,18 @@ test("an image over the calling model's limits is held to them: pi's read refuse
   assert.ok(result.text.includes("200x100, larger than 64x64"), `refused by the model's own limits: ${result.text}`);
 });
 
-// SKIP (follow-up #2078): a running tool's output does not reach the live view while it runs
-test.skip("a running tool's output reaches the run's live view while it runs, before it ends", { timeout: 60_000 }, async (t) => {
+// Its bash needs a shell: a run with no mounting computer has none (#2088), so the claim is handed a sandbox bound to the
+// run's folder (fixtures/streaming-sandbox.mjs) whose processes stream as computerd's do. (#2078's skip was this fixture.)
+test("a running tool's output reaches the run's live view while it runs, before it ends", { timeout: 60_000 }, async (t) => {
   // bash prints a chunk, then waits for the test's release file: the chunk must show in the live view before the test lets
   // it end. No sleep orders this: the release is written only once the chunk is seen.
-  const command = "echo first-chunk; while [ ! -e release ]; do sleep 0.05; done; echo last-chunk";
+  // Past the chunk, more than the tail the live view holds back while output streams (fixtures/live-tail.mjs), so the
+  // chunk shows while the bash still runs.
+  const command = `echo first-chunk; head -c ${pastHeldTail()} /dev/zero | tr '\\0' y; while [ ! -e release ]; do sleep 0.05; done; echo last-chunk`;
   let seen;
   let last;
   const { row } = await piRun(t, {
-    tools: ["bash"], script: [{ call: "bash", args: { command } }, { say: "done" }],
+    tools: ["bash"], script: [{ call: "bash", args: { command } }, { say: "done" }], computer: streamingSandbox,
     during: async (server, folder) => {
       const from = Date.now();
       try {

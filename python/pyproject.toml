@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "parcha-agentrun"
-version = "0.3.0a0"
+version = "0.3.0"
 description = "A typed Python client for a self-hosted AgentRun server: a method per operation of its API, typed from its OpenAPI document, with waiting for a run and following its timeline. Standard library only."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Parcha Labs, Inc." }]
 keywords = ["agentrun", "agent", "client", "sdk", "api"]
 dependencies = []
@@ -16,7 +17,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Typing :: Typed",
-    "Private :: Do Not Upload",
 ]
 
 [project.urls]

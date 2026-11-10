@@ -556,7 +556,8 @@ export interface RunMoment {
   readonly pausedWords?: string;
   /** The run is paused at its cap (pausedAt): raising the cap resumes it. */
   readonly paused: boolean;
-  /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next process, not this one. */
+  /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next step, not the one under
+   *  way. */
   readonly live: boolean;
   /** A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else. */
   readonly waitsOnPerson: boolean;
