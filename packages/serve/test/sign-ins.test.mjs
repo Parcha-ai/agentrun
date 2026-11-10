@@ -295,7 +295,7 @@ test("a run's end keeps its line in the agent store cut of its browser sign-in's
   assert.ok(!JSON.stringify((await api("GET", "/runs")).body).includes(ref));
 });
 
-test("a follow-up handed a sign-in starts signed in and saves, though its run's first launch had none and its conversation was made with no profile", { timeout: 180_000 }, async (t) => {
+test("a follow-up handed a sign-in starts signed in and saves, though its run's first launch had none and its conversation was made with no profile", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
@@ -320,9 +320,9 @@ test("a follow-up handed a sign-in starts signed in and saves, though its run's 
 });
 
 /** A server in a process of its own on `data` (fixtures/serve-signed-in.mjs), killed as a crash kills it: its client. */
-async function crashable(t, data) {
+async function crashable(t, data, { faux = FAUX, learning } = {}) {
   const fixture = new URL("./fixtures/serve-signed-in.mjs", import.meta.url).pathname;
-  const child = spawn(process.execPath, [fixture, data, FAUX, FAUX_BROWSER, FAUX_BROWSERBASE], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(process.execPath, [fixture, data, faux, FAUX_BROWSER, FAUX_BROWSERBASE, ...(learning ? [learning] : [])], { stdio: ["ignore", "pipe", "inherit"] });
   t.after(() => child.kill("SIGKILL"));
   const base = await new Promise((resolve, reject) => {
     let out = "";

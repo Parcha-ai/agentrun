@@ -42,6 +42,15 @@ const [{ GRADE_MAX_TOKENS, GRADE_TIMEOUT_MS }, { runModels, thinkingOf }, { mode
 ]);
 const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harness: "claude-agent", model: opts["claude-model"] } };
 
+/** The named grade model, resolved as the runner grades on it (runner/harness-loops.ts): the strong tier named so, so
+ *  the strong tier's gateway ids and price (AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL_STRONG_PRICE) apply as they do in
+ *  production. */
+async function strongOf(named) {
+  const picked = await runModels({ ...ENV, AGENT_MODEL_STRONG: named }, undefined, ["strong"]);
+  const ref = picked.byTier.get("strong");
+  return { models: picked.models, model: picked.models.getModel(ref.provider, ref.modelId) };
+}
+
 /** A profile's model, picked as the server picks an agent's own, for a completion with tools. */
 async function modelOf(profile) {
   if (profile.harness === "claude-agent") {
@@ -132,7 +141,7 @@ async function grade(c, notes, profile, tag) {
     proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text),
   });
   const items = learn.gradedItems(notes);
-  const { models, model } = opts["grade-model"] ? await modelOf({ harness: "pi", model: opts["grade-model"] }) : await modelOf(profile);
+  const { models, model } = opts["grade-model"] ? await strongOf(opts["grade-model"]) : await modelOf(profile);
   let usd = 0;
   let verdict;
   try {
