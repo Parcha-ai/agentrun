@@ -65,7 +65,9 @@ export function readLog(text, rootSuites) {
 }
 
 const unescape = (text) => text.replace(/\\(['"`\\])/g, '$1').replace(/\\n/g, '\n');
-const DECLARED = /\b(?:test|it|describe|suite)(?:\.(?:skip|only|todo))?\s*\(\s*(?:(['"])((?:\\.|(?!\1)[^\\\n])*)\1|`((?:\\.|[^`\\])*)`)/g;
+// A call on a value (`/re/.test(...)`, `t.test(...)`) declares no top-level test: read as one, a template's pattern could
+// match every name and leave every test of its suite uncredited.
+const DECLARED = /(?<![.\w$])(?:test|it|describe|suite)(?:\.(?:skip|only|todo))?\s*\(\s*(?:(['"])((?:\\.|(?!\1)[^\\\n])*)\1|`((?:\\.|[^`\\])*)`)/g;
 
 /** The top-level test names each file of a suite declares, as exact names and as patterns for template strings. */
 export function declaredNames(root, suite) {
