@@ -13,8 +13,8 @@ import { TOOL_KEYS } from "./tool-keys.js";
 import { workflowTools } from "./tools.js";
 
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
- *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the boxes' keys (boxes.ts),
- *  which only the server's box providers use. */
+ *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the remote boxes' keys
+ *  (place-offers.ts BOX_KEYS), which only the server's computer providers use. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));

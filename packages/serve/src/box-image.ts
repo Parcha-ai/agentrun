@@ -18,16 +18,16 @@
 // box create reads it there (awaitImage, from run-box.ts) and, while the image is coming, waits for it, with one row on
 // the run's timeline, instead of a `docker run` that pulls inside the tool call. Each record names its writer, the server
 // (its pid and start time). A server that went away mid-way (killed, or closed while the image came) leaves the file
-// saying preparing: a run that reads it once that writer is gone (the check box/sweep.ts makes of a box record's writer),
+// saying preparing: a run that reads it once that writer is gone (writerGone),
 // or past its deadline where the writer cannot be told (no /proc), stops waiting and fails its call in words that say to
 // restart the server, which builds or pulls the image again; never the `docker run` of an image that is not there.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { startTimeOf, writerGone } from "./box/sweep.js";
 import { BOX_KEYS, type BoxOffer } from "./place-offers.js";
 
 /** The setting that names another image for Docker boxes than this server's own. */
@@ -73,6 +73,23 @@ export const RETRY_AFTER_MS = 5_000;
 export const CLOSE_WAIT_MS = 5_000;
 /** How often a waiting run reads the file again. */
 const POLL_MS = 250;
+
+/** A process's start time, from /proc/<pid>/stat (field 22, in clock ticks since boot); undefined where it can't be read
+ *  (no such process, or no /proc). With the pid, it names one process: a reused pid has another. */
+function startTimeOf(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The record's writer is gone: no process has its pid, or the one that has it started at another time (a reused pid). */
+function writerGone(writer: ImageRecord["writer"] | undefined): boolean {
+  if (!writer || !Number.isSafeInteger(writer.pid) || writer.pid <= 0) return true;
+  return startTimeOf(writer.pid) !== writer.startTime;
+}
 
 /** The image's state: `ready`; `preparing` while the server pulls it; `unavailable`, with why. */
 export type ImageState = { state: "ready" } | { state: "preparing"; reason: string } | { state: "unavailable"; reason: string };

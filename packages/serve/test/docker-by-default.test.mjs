@@ -1,4 +1,4 @@
-// Docker by default: a server started with AGENTRUN_BOXES not set at all probes Docker as if it were listed (boxes.ts
+// Docker by default: a server started with AGENTRUN_BOXES not set at all probes Docker as if it were listed (place-offers.ts
 // enabledBoxes), and offers it when Docker answers, so a new agent lands in the Docker box with a shell (place.ts
 // newAgentPlace). Where Docker is not there, new agents run on the runner and capabilities, the start's banner and the
 // console's editor say why in words a first-time user can act on. An operator's AGENTRUN_BOXES still wins: a list probes
@@ -7,11 +7,10 @@
 // daemon is reached, nothing is pulled or built, and no box provider is called.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/place-offers.js";
+import { enabledBoxes, placeOffers } from "../dist/place-offers.js";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -73,7 +72,7 @@ test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answerin
   assert.equal("default_reason" in places, false);
   assert.ok(server.boxesLine.startsWith(ON_BY_DEFAULT), server.boxesLine);
   assert.ok(docker.calls().some((args) => args[0] === "version"), "docker was probed");
-  for (const id of ["daytona", VM_PROVIDER.id]) assert.equal(places.boxes.find((box) => box.id === id).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${id}`, "every other box stays opt-in, and its setting keeps docker");
+  for (const id of ["daytona", "modal"]) assert.equal(places.boxes.find((box) => box.id === id).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${id}`, "every other box stays opt-in, and its setting keeps docker");
   const made = await api("POST", "/agents", fresh("shelly"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.definition.place, DOCKER);
@@ -104,8 +103,8 @@ test("with AGENTRUN_BOXES not set and a Docker daemon that does not answer, the 
   const bin = join(await scratch(t), "bin");
   await mkdir(bin);
   await writeFile(join(bin, "docker"), "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n", { mode: 0o755 });
-  const registry = await boxRegistry({ PATH: bin });
-  assert.deepEqual(registry.offers().find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NO_DAEMON });
+  const offers = await placeOffers({ PATH: bin });
+  assert.deepEqual(offers.find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NO_DAEMON });
 });
 
 /** Docker's words for a socket that refused this process: the CLI's, and a bare connect's EACCES. */
@@ -132,7 +131,7 @@ test("a docker socket that refuses this process: the group file lists the user, 
   const never = await groupFile(t, ["someone"]);
   for (const words of [CLI_DENIED, CONNECT_DENIED]) {
     const bin = await deniedDocker(t, words);
-    const reasonOf = async (groups) => (await boxRegistry({ PATH: bin }, { groups })).offers().find((offer) => offer.id === "docker");
+    const reasonOf = async (groups) => (await placeOffers({ PATH: bin }, { groups })).find((offer) => offer.id === "docker");
     assert.deepEqual(await reasonOf({ file: joined, user: "manuel", ids: [100] }), { id: "docker", available: false, reason: NOT_IN_GROUP }, words);
     assert.deepEqual(await reasonOf({ file: never, user: "manuel", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, words);
     // In the group and holding it, yet refused: no restart would help, so the reason says to join (the full fix).
@@ -183,15 +182,6 @@ for (const value of ["", "none", " none "]) {
     assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   });
 }
-
-test("the published server installs the Docker box's provider: @parcha/pi-transport is a dependency at the server's version, not an optional peer", () => {
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const transport = JSON.parse(readFileSync(new URL("../../pi-transport/package.json", import.meta.url), "utf8"));
-  assert.equal(manifest.dependencies["@parcha/pi-transport"], manifest.version);
-  assert.equal(transport.version, manifest.version);
-  assert.equal(manifest.peerDependencies?.["@parcha/pi-transport"], undefined);
-  assert.equal(manifest.peerDependenciesMeta?.["@parcha/pi-transport"], undefined);
-});
 
 test("none stands alone: AGENTRUN_BOXES that names none and a box refuses the start, naming why", () => {
   assert.throws(() => enabledBoxes({ AGENTRUN_BOXES: "none,docker" }), /AGENTRUN_BOXES=none sets up no box, so it names no other: list the boxes to set up, or none alone/);

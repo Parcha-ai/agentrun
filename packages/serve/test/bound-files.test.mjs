@@ -1,140 +1,28 @@
-// A box that binds the run's work/ from this machine (Docker; the faux box stands in for it here): read, write and edit
+// A box that binds the run's work/ from this machine (Docker): read, write and edit
 // run on this machine's work/ (bound-files.ts), never as a command in the box, and bash runs in the box. A command in
 // the box can plant a link, a hard link or a swapped directory, so the file tools here take none: a link anywhere on the
 // way is refused (one to the data root's token included), a file with a second hard link is refused, and a directory
 // swapped for a link between the check and the write is refused. Where this host reaches directories by path (no
 // /proc/self/fd), or the box binds nothing, all four run in the box.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { boundFiles } from "../dist/bound-files.js";
 import { codingSource } from "../dist/coding-tools.js";
 import { workspaceTestHooks, writesHeld } from "../dist/workspace.js";
-import { fauxRoot } from "./fixtures/faux-box.mjs";
-import { follow, runDir, scratch, serve } from "./support.mjs";
+import { scratch } from "./support.mjs";
 
 // The file tools run here only where the confinement holds directory handles (Linux's /proc/self/fd); elsewhere (macOS)
 // all four run in the box, which the last test checks on every host.
 const HELD = writesHeld();
 const NEEDS_HELD = { skip: !HELD && "needs held directory handles (/proc/self/fd)" };
-const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
-const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const WORK = "/workspace";
-const harness = (message) => `<harness>\n[error] ${message}\n</harness>`;
 const LINK = (path) => `${WORK}/${path}: refused: a link is on the way to it, or it is one, and read, write and edit follow no link in this run's work/ (bash, in the box, can)`;
-const HARD = (path) => `${WORK}/${path}: refused: it has another hard link, and read, write and edit take only a file with one (bash, in the box, can)`;
-
-/** Each tool call of run `runId` and its answer, in order, from its released store. */
-function answers(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY id").all()
-      .flatMap((row) => JSON.parse(row.record).model ?? [])
-      .filter((message) => message.role === "toolResult")
-      .map((message) => ({ tool: message.toolName, error: message.isError, text: (message.content ?? []).map((c) => c.text ?? "").join("") }));
-  } finally {
-    db.close();
-  }
-}
-const execs = (data) => {
-  const file = join(fauxRoot(data), "execs.jsonl");
-  return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
-};
-
-/** A server with the faux box and an agent `boxed` in a Docker place with the four tools; `ran(plan)` runs the probe
- *  plan to its end and answers each call's answer. */
-async function boxed(t) {
-  const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX });
-  const made = await server.api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } });
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  const ran = async (plan) => {
-    const run = await server.api("POST", "/agents/boxed/runs", { input: { content: JSON.stringify({ probe: plan }) } });
-    assert.equal(run.status, 202, JSON.stringify(run.body));
-    await follow(server.api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-    return { runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(runDir(realpathSync(server.data), run.body.run_id), "work") };
-  };
-  return { ...server, ran };
-}
-
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a link bash plants in work/, to the data root's token, to a directory outside or to a file inside, is refused by read, write and edit here, and nothing outside work/ is read or written", { ...NEEDS_HELD, timeout: 90_000 }, async (t) => {
-  const server = await boxed(t);
-  const data = realpathSync(server.data);
-  const token = join(data, ".token");
-  const before = readFileSync(token, "utf8");
-  const outside = join(realpathSync(await scratch(t)), "outside");
-  await mkdir(outside);
-  await writeFile(join(outside, "secret.txt"), "not for the agent");
-  const edit = (path) => ({ tool: "edit", args: { path, edits: [{ oldText: "a", newText: "b" }] } });
-  const plan = [
-    { tool: "bash", args: { command: `ln -s ${token} tok && ln -s ${outside} out && printf inside > real.txt && ln -s real.txt alias.txt` } },
-    { tool: "read", args: { path: "tok" } },
-    { tool: "write", args: { path: "tok", content: "overwritten" } },
-    edit("tok"),
-    { tool: "read", args: { path: "out/secret.txt" } },
-    { tool: "write", args: { path: "out/new.txt", content: "planted" } },
-    edit("out/secret.txt"),
-    { tool: "read", args: { path: "alias.txt" } },
-    { tool: "read", args: { path: `${WORK}/tok` } },
-    // A plain file is read and written here, and bash sees what was written.
-    { tool: "write", args: { path: "note.txt", content: "written here" } },
-    { tool: "read", args: { path: "real.txt" } },
-    { tool: "bash", args: { command: "cat note.txt" } },
-  ];
-  const { said } = await server.ran(plan);
-  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i >= 1 && i <= 8]), JSON.stringify(said));
-  assert.equal(said[1].text, harness(LINK("tok")));
-  assert.equal(said[2].text, harness(LINK("tok")));
-  assert.equal(said[3].text, harness(`Could not edit file: tok. Error code: permission_denied. ${LINK("tok")}`));
-  assert.equal(said[4].text, harness(LINK("out/secret.txt")));
-  assert.equal(said[5].text, harness(LINK("out/new.txt")));
-  assert.equal(said[6].text, harness(`Could not edit file: out/secret.txt. Error code: permission_denied. ${LINK("out/secret.txt")}`));
-  assert.equal(said[7].text, harness(LINK("alias.txt")), "a link to a file inside work/ is refused too: bash can follow it");
-  assert.equal(said[8].text, harness(LINK("tok")), "the box's own path is the same file");
-  assert.equal(said[10].text, "inside");
-  assert.equal(said[11].text, "written here", "bash, in the box, reads what was written here");
-  for (const answer of said) {
-    assert.ok(!answer.text.includes(before) && !answer.text.includes("not for the agent"), `nothing outside work/ was read: ${answer.text}`);
-    assert.ok(!answer.text.includes(data), `no answer names the data root: ${answer.text}`);
-  }
-  assert.equal(readFileSync(token, "utf8"), before, "the token is untouched");
-  assert.deepEqual(readdirSync(outside), ["secret.txt"], "nothing was written outside");
-  assert.equal(readFileSync(join(outside, "secret.txt"), "utf8"), "not for the agent");
-  assert.equal(execs(server.data).length, 2, "the two bash calls ran in the box; read, write and edit ran nothing there");
-});
-
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a hard link bash makes in work/ is refused by read, write and edit here; a file's mode is kept by an edit, and a new one is 0644", { ...NEEDS_HELD, timeout: 90_000 }, async (t) => {
-  const server = await boxed(t);
-  const plan = [
-    { tool: "bash", args: { command: "printf one > a.txt && ln a.txt b.txt && printf 'echo hi\\n' > run.sh && chmod 755 run.sh" } },
-    { tool: "read", args: { path: "b.txt" } },
-    { tool: "write", args: { path: "b.txt", content: "two" } },
-    { tool: "edit", args: { path: "b.txt", edits: [{ oldText: "one", newText: "two" }] } },
-    { tool: "read", args: { path: "a.txt" } },
-    { tool: "edit", args: { path: "run.sh", edits: [{ oldText: "hi", newText: "there" }] } },
-    { tool: "write", args: { path: "made/new.txt", content: "new" } },
-    { tool: "bash", args: { command: "./run.sh" } },
-  ];
-  const { said, work } = await server.ran(plan);
-  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i >= 1 && i <= 4]), JSON.stringify(said));
-  assert.equal(said[1].text, harness(HARD("b.txt")));
-  assert.equal(said[2].text, harness(HARD("b.txt")));
-  assert.equal(said[3].text, harness(`Could not edit file: b.txt. Error code: permission_denied. ${HARD("b.txt")}`));
-  assert.equal(said[4].text, harness(HARD("a.txt")), "either name of the file");
-  assert.equal(readFileSync(join(work, "a.txt"), "utf8"), "one");
-  assert.equal(statSync(join(work, "b.txt")).ino, statSync(join(work, "a.txt")).ino, "the link is as bash made it");
-  assert.equal(statSync(join(work, "run.sh")).mode & 0o777, 0o755, "the edit kept the script's mode");
-  assert.equal(said[7].text.trim(), "there", "and bash runs the edited script");
-  assert.equal(statSync(join(work, "made", "new.txt")).mode & 0o777, 0o644, "as a command in the box makes one");
-  assert.equal(statSync(join(work, "made", "new.txt")).uid, process.getuid());
-});
 
 test("a directory of work/ swapped for a link between the check and the use is refused, held: nothing is written or read through it", NEEDS_HELD, async (t) => {
   const work = realpathSync(await scratch(t));

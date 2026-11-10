@@ -3,16 +3,17 @@
 // explicit runner included, since the default is this host's; one that names none keeps none, so a revision written
 // before this field keeps its id. Which boxes this server has is said in capabilities, and a revision whose box it does
 // not have saves with a warning and is refused at run time. A run runs in its revision's place, else this host's
-// default, and keeps the place it resolved to: a run request names none. Runs execute in Docker and in Daytona, for
-// now: every other box says it does not run yet. A harness's own tools in the box, when they come, are an option of
-// sandbox, never a third mode.
+// default, and keeps the place it resolved to: a run request names none. A sandbox place on a box is a sandbox computer
+// of that provider (computer-setting.ts computerOfPlace), which the run's claim starts: Docker, Daytona or Modal; bwrap
+// says it does not run yet. A harness's own tools in the box, when they come, are an option of sandbox, never a third
+// mode.
 //
 // The box is a new agent's default machine: an agentic definition that names no place is saved, at its create, with the
 // Docker box as its place wherever this server has docker (ready, or preparing), and with bash when it names no tools
 // (newAgentPlace). A revision that names no place resolves the same way at each run (defaultPlaceOf): this server's
 // default_place, so where docker is there now it runs in the Docker box, and the runner where it is not. A workflow, and a
 // revision with a tool the box refuses, run on the runner.
-import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer, VM_PROVIDER } from "./place-offers.js";
+import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
@@ -20,11 +21,11 @@ export type PlaceMode = (typeof PLACE_MODES)[number];
 
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: BoxId };
 
-/** The boxes runs execute in so far: Docker, Daytona and the VM box. */
-export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona", VM_PROVIDER.id];
+/** The boxes runs execute in: the sandbox computers of Docker, Daytona and Modal. */
+export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona", "modal"];
 
-/** The boxes this server gives runs, from what its registry set up at its start (boxes.ts): a box runs execute in
- *  that the registry has, and no other. */
+/** The boxes this server gives runs, from what it found at its start (place-offers.ts): a box runs execute in that it
+ *  has, and no other. */
 export function boxAvailability(registry: readonly BoxOffer[]): BoxOffer[] {
   return BOX_IDS.map((id) => {
     const offer = registry.find((o) => o.id === id);
@@ -96,7 +97,7 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
 
 /** `places` in capabilities: the modes a revision may name, the place a new agent is saved with and a revision that
  *  names none runs in (`default_place`, with `default_reason` when it is the runner), each box, and the hosts a box whose
- *  `network` is `allowlist` reaches (`allow`, run-box.ts boxAllowOf; empty for `none`). */
+ *  `network` is `allowlist` reaches (`allow`, box-settings.ts boxAllowOf; empty for `none`). */
 export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none") => {
   const fresh = newAgentPlace(registry);
   return { modes: [...PLACE_MODES], ...("place" in fresh ? { default_place: fresh.place } : { default_place: { mode: "runner" } as Place, default_reason: fresh.reason }), boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
@@ -117,11 +118,6 @@ export const resolvePlace = (revision: Place | undefined, fallback: Place): Plac
 
 /** Where a box has the run's work/ (bound, or seeded), and where its tools start: the same in every box. */
 export const BOX_WORK = "/workspace";
-
-/** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
- *  pulled back (run-box.ts). */
-export const REMOTE_BOXES: readonly BoxId[] = ["daytona", VM_PROVIDER.id];
-
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const listed = (options: readonly string[], value: unknown): boolean => typeof value === "string" && options.includes(value);
