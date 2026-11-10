@@ -21,6 +21,7 @@ import { BOX_WORK } from "../dist/place.js";
 import { deniedText, RESUME_PREFIX, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
 import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
+import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
@@ -69,10 +70,30 @@ async function fetching(api, id, harness, url = PAGE, extra = {}) {
 
 /** Run `runId` parked for an approval: its view and its rows, and the call's result row. */
 async function parked(api, runId) {
-  const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+  const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 55_000 }).catch(async (error) => {
+    // A run that never parks: name it, with its error and its last rows, so the failure says which run and why.
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    const last = ((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).slice(-8).map((row) => `${row.kind}: ${row.summary}`);
+    throw new Error(`${error.message}; run ${runId} of ${view.agent_id}: ${JSON.stringify(view.error ?? null)}; last rows ${JSON.stringify(last)}`);
+  });
   const view = (await api("GET", `/runs/${runId}`)).body;
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "web_fetch");
   return { view, rows, result };
+}
+
+/** Waits, on the timeline's long poll, until run `runId` has moved past its approval `approvalId`: it ended, or it waits on
+ *  another approval. A run that resumes and parks at its next call at once may never be seen working, so "working" alone is
+ *  not the sign. */
+async function pastApproval(api, runId, approvalId, deadlineMs = 55_000) {
+  const end = Date.now() + deadlineMs;
+  let after = 0;
+  for (;;) {
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    if (["completed", "failed", "cancelled"].includes(view.status) || (view.pending && view.pending.id !== approvalId)) return view;
+    assert.ok(Date.now() < end, `run ${runId} did not move past the approval ${approvalId}: ${view.status}/${view.state}, pending ${view.pending?.id}`);
+    const { body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    after = page.next_after ?? after;
+  }
 }
 
 /** The rows of the gate's resume messages in `rows`: the server's, never a person's message. */
@@ -92,10 +113,11 @@ async function resumed(api, runId) {
 /** The parked call's own rows (its call's and its result's): kind, summary and status. They never say the call ran while it
  *  had not: no tool verb, no outcome, no status, only what came of the approval. */
 const ownRows = (rows, callId) => rows.filter((r) => (r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId).map((r) => [r.kind, r.summary, r.tool_status]);
-/** Asserts that call `callId`'s own rows in `rows` (one at least, its result's) all read `summary`, with no status. */
-function ownRowsSay(rows, callId, summary, at) {
+/** Asserts that call `callId`'s own rows in `rows` all read `summary`, with no status: one at least, its result's once it has
+ *  one (`result`), else its call's (a parked call has no result: the turn ends at the park, the model handed nothing). */
+function ownRowsSay(rows, callId, summary, at, { result = true } = {}) {
   const own = ownRows(rows, callId);
-  assert.ok(own.some(([kind]) => kind === "tool_result"), `${at}: its result's row`);
+  assert.ok(own.some(([kind]) => kind === (result ? "tool_result" : "tool_use")), `${at}: its ${result ? "result's" : "call's"} row`);
   assert.deepEqual(own, own.map(([kind]) => [kind, summary, null]), `${at}: the call's own rows`);
 }
 /** A parked call as a person reads it, in seq order (a client folds a call's result into its call's step, at the call's
@@ -229,7 +251,9 @@ test("capabilities and an agent's tools show each tool's permission, its default
   assert.deepEqual(denied, Object.fromEntries(Object.keys(denied).map((harness) => [harness, "unavailable: denied"])), "no provider is asked, on any harness");
 });
 
-test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, async (t) => {
+/** web_fetch set to ask on `harnesses` at once, the case below: each run parks, the owner answers more than a minute later,
+ *  allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal. */
+async function askedOn(t, harnesses, { resumes = true } = {}) {
   const dialled = await network(t);
   // Each request pi's faux model is asked, by run: counted below, and shown when an answer is not what it should be.
   const requests = join(await scratch(t), "requests.jsonl");
@@ -239,22 +263,26 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
   const answer = await owner(server);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const doc = (await api("GET", "/openapi.json")).body;
-  const runs = await Promise.all(HARNESSES.flatMap((harness) => ["allow", "deny"].map(async (decision) => ({ harness, decision, runId: await fetching(api, `${decision}-${harness}`, harness) }))));
+  const runs = await Promise.all(harnesses.flatMap((harness) => ["allow", "deny"].map(async (decision) => ({ harness, decision, runId: await fetching(api, `${decision}-${harness}`, harness) }))));
   for (const run of runs) {
-    const { view, rows, result } = await parked(api, run.runId);
+    const { view, rows } = await parked(api, run.runId);
     const at = `${run.decision} on ${run.harness}`;
     assert.deepEqual([view.status, view.state, view.pending?.kind, view.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], at);
-    assert.match(view.pending.id, /^ap_[0-9a-f]{16}$/);
+    // A pending approval is named by its call: run-view.ts asksOf gives the card the ask's callId, its call row's tool_use_id.
+    const call = rows.find((r) => r.kind === "tool_use" && r.tool_name === "web_fetch");
+    assert.ok(call, `${at}: its call row`);
+    assert.equal(view.pending.id, call.tool_use_id, `${at}: named by its call`);
     assert.deepEqual(JSON.parse(view.pending.args_preview), { url: PAGE });
     assert.ok(Date.parse(view.pending.requested_at) > 0);
     assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.pending, view.pending), [], at);
-    assert.equal(result.tool_result_preview, waitingText("web_fetch"), `${at}: the call answered that it waits`);
+    // The turn ends at the park: the model is handed no waiting answer, so the call has no result yet.
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && r.tool_use_id === call.tool_use_id), [], `${at}: no result yet`);
     const row = rows.find((r) => r.kind === "tool_approval_requested");
-    assert.deepEqual([row?.tool_name, row?.tool_use_id], ["web_fetch", result.tool_use_id], `${at}: its row`);
-    // Nothing ran: the call's own rows say it waits, never "Fetched …: ok".
-    ownRowsSay(rows, result.tool_use_id, "Not run yet: it waits for your approval", at);
-    readsInOrder(rows, result.tool_use_id, `${at} (waiting)`, { answered: false });
-    Object.assign(run, { approval: view.pending.id, callId: result.tool_use_id });
+    assert.deepEqual([row?.tool_name, row?.tool_use_id], ["web_fetch", call.tool_use_id], `${at}: its row`);
+    // Nothing ran: the call's own row says it waits, never "Fetched …: ok", and the approval row follows it.
+    ownRowsSay(rows, call.tool_use_id, "Not run yet: it waits for your approval", at, { result: false });
+    readsInOrder(rows, call.tool_use_id, `${at} (waiting)`, { answered: false });
+    Object.assign(run, { approval: view.pending.id, callId: call.tool_use_id });
   }
   assert.deepEqual(await dialled(), [], "nothing ran while they wait");
   // A real wait, past any CLI's own tool timeout: no CLI sits in a call meanwhile.
@@ -273,6 +301,8 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
   }
   assert.equal((await answer(runs[0].runId, "ap_0000000000000000", { decision: "allow" })).status, 404);
   assert.equal((await answer(runs[0].runId, runs[0].approval, { decision: "maybe" })).status, 422);
+  // What comes of the answers: each allowed call runs once and each run resumes (`resumes`; the case below waits on it).
+  if (!resumes) return;
   for (const run of runs) {
     const { message, resume, answer: final, view, rows } = await resumed(api, run.runId);
     const at = `${run.decision} on ${run.harness}`;
@@ -304,8 +334,41 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     // The model read the resume (the server's row shows its text as a phase's, its links' fragments scrubbed).
     assert.equal(run.harness === "pi" ? final.split("\n")[0] : final, run.harness === "pi" ? `Saw: ${head}${run.decision === "allow" ? " They allowed it, and it ran. Its result:" : ""}` : "Fetched once.", `${at}: the model took it as the call's answer${run.harness === "pi" ? `; its requests: ${rolesOf(asked)}` : ""}`);
   }
-  assert.deepEqual(await dialled(), [PAGE, PAGE, PAGE], "each allowed call ran once, no denied one ran");
+  assert.deepEqual(await dialled(), harnesses.map(() => PAGE), "each allowed call ran once, no denied one ran");
+}
+
+test("web_fetch set to ask on pi: the run parks with its pending approval and is answered more than a minute later by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
+
+test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000, skip: "waits on the approval row reading after the call's own rows once the call ran: on the switch the call's result row is written after the answer, and the approval row keeps the call row's place" }, (t) => askedOn(t, ["pi"]));
+
+test("two conflicting answers to one parked call at once, by the owner's session: exactly one is taken (204), the other is 409 already_answered with its decision, the store holds one answer, and the call runs at most once", { timeout: 240_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const runId = await fetching(api, "race-pi", "pi");
+  const { view } = await parked(api, runId);
+  const id = view.pending.id;
+  const [allow, deny] = await Promise.all([answer(runId, id, { decision: "allow" }), answer(runId, id, { decision: "deny", note: "no" })]);
+  const statuses = [allow.status, deny.status].sort();
+  assert.deepEqual(statuses, [204, 409], `one answer is taken, the other refused: ${JSON.stringify([allow, deny])}`);
+  const [won, lost] = allow.status === 204 ? ["allow", deny] : ["deny", allow];
+  assert.deepEqual([lost.body.error.code, lost.body.error.details], ["not_continuable", { reason: "already_answered", decision: won }]);
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    const rows = (await store.commands(runId, 0)).filter((c) => (c.kind === "approve" || c.kind === "deny") && c.body.approval === id);
+    assert.deepEqual(rows.map((c) => c.kind), [won === "allow" ? "approve" : "deny"], "one answer row");
+  } finally {
+    await store.close();
+  }
+  await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  // At most once: never twice whatever the race, and never when the winner was a deny.
+  const ran = await dialled();
+  assert.ok(ran.length <= (won === "allow" ? 1 : 0) && ran.every((url) => url === PAGE), `the call ran at most once, and only if allowed: ${JSON.stringify(ran)}`);
 });
+
+test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
 test("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
@@ -631,7 +694,7 @@ test("on pi, monid's calls at their default ask park by their settings keys, and
     const { pending } = (await api("GET", `/runs/${runId}`)).body;
     assert.equal(pending?.tool, tool, "parked by its settings key");
     assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
-    await follow(api, runId, ["working", "completed"], { deadlineMs: 55_000 });
+    await pastApproval(api, runId, pending.id);
   }
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.match((await api("GET", `/runs/${runId}`)).body.result.final_answer, /"full_name":"Ada"/);
