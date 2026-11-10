@@ -159,7 +159,7 @@ The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact v
 `compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
 Docker socket. In this release a server in a container can't start a Docker sandbox yet (its folder and the computer
 daemon are mounted by paths only the server's container has, and it sets no host list): the server still offers the
-sandbox, so a run that uses it fails when the sandbox is created. Until the fix, change this file's
+sandbox, so a run that uses it fails when the sandbox is created. Until the fix, change `compose.yaml`'s
 `AGENTRUN_BOXES: docker` line to `none`, so agents run with file tools and `web_fetch` and no shell. For a sandbox, run the server on the host, or give the agent a Daytona or E2B computer with
 workspaces on Archil.
 

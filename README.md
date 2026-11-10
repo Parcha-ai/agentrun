@@ -113,12 +113,17 @@ page. `npx @parcha/agentrun help` lists every command; `npx @parcha/agentrun ski
 teaches your coding agent the CLI.
 
 From code, the same run with the TypeScript client (`npm install @parcha/agentrun-client`, no dependencies). The
-server prints where its API token is; with `npx @parcha/agentrun` it's `~/.agentrun/.token`:
+client reads its server and token from the environment; the server prints both when it starts (with
+`npx @parcha/agentrun`, the token is in `~/.agentrun/.token`, and the address is normally `http://127.0.0.1:7340`):
+
+```sh
+export AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2 AGENTRUN_API_KEY="$(cat ~/.agentrun/.token)"
+```
 
 ```ts
 import { AgentRun } from "@parcha/agentrun-client";
 
-const client = new AgentRun({ baseUrl: "http://127.0.0.1:7340/v2", apiKey: process.env.AGENTRUN_API_KEY });
+const client = new AgentRun(); // AGENTRUN_BASE_URL and AGENTRUN_API_KEY
 const started = await client.runs.start("notes", { input: { content: "Ask me which region to cover, then write region.md about it." }, max_cost_usd: 1 });
 let run = await client.runs.wait(started.run_id);
 if (run.pending?.kind === "question") await client.runs.message(run.run_id, { content: "Europe" });
