@@ -277,6 +277,21 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
   assert.equal(await openUrl(elsewhere.stdout), "http://127.0.0.1:7343/", "only an http(s) URL on the loopback address this command started the server on");
 });
 
+test("an API-only server's line stands for the Open line: the address is its AGENTRUN_BASE_URL line's, on the loopback address or the public URL alone", async (t) => {
+  const api = stub(["agentrun-serve on http://127.0.0.1:7345/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7345/v2\nAGENTRUN_API_KEY=$AGENTRUN_TOKEN\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused.\n", "GET /v2/health 200\n"]);
+  t.after(() => api.kill());
+  assert.equal(await openUrl(api.stdout), "http://127.0.0.1:7345/v2");
+  const published = stub(["AGENTRUN_BASE_URL=https://agents.example.com/v2\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served.\n"]);
+  t.after(() => published.kill());
+  assert.equal(await openUrl(published.stdout, "https://agents.example.com"), "https://agents.example.com/v2", "at the public URL the server was started with");
+  const elsewhere = stub(["AGENTRUN_BASE_URL=https://agents.example.com/v2\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served.\n"], { exit: true });
+  t.after(() => elsewhere.kill());
+  assert.equal(await openUrl(elsewhere.stdout), undefined, "a base URL on another host is no address this command names");
+  const early = stub(["API only (AGENTRUN_API_ONLY=1): the run routes are served.\n", "AGENTRUN_BASE_URL=http://127.0.0.1:7346/v2\n"], { exit: true });
+  t.after(() => early.kill());
+  assert.equal(await openUrl(early.stdout), undefined, "the API-only line stands for the Open line only after the base URL it names");
+});
+
 test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and setup lines among them", async (t) => {
   const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Set up this server: https://agentrun.example.com/setup#code=AbCd", "EfGh\n", "GET /v2/agents 200\n"]);
   t.after(() => server.kill());

@@ -27,6 +27,10 @@ export function openLineUrl(line, publicUrl) {
   return publicUrl !== undefined && URL.canParse(publicUrl) && url.origin === new URL(publicUrl).origin ? word : undefined;
 }
 
+/** The line an API-only server (AGENTRUN_API_ONLY=1) prints in place of its "Open " line: it has no console to open, so
+ *  the address this command names is the server's API, from the AGENTRUN_BASE_URL line before it. */
+export const API_ONLY_LINE = /^API only \(AGENTRUN_API_ONLY=1\)/;
+
 /** How many of the server's last output lines a start that fails shows. */
 export const TAIL_LINES = 20;
 
@@ -37,7 +41,9 @@ export const SAID = /^(Boxes: |Set up this server: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
- *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
+ *  once the server prints one), so this command never builds the address itself. An API-only server prints no such line:
+ *  its API-only line (API_ONLY_LINE) stands for it, and the address is its AGENTRUN_BASE_URL line's, held to the same
+ *  hosts as an "Open " line's. Resolves undefined when the output ends
  *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
  *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
  *  server never blocks on a full pipe. */
@@ -50,6 +56,8 @@ export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefor
   return new Promise((resolve) => {
     let pending = "";
     let found;
+    // The API's address, from the banner's AGENTRUN_BASE_URL line: what an API-only server's line stands for.
+    let base;
     stdout.setEncoding("utf8");
     stdout.on("data", (chunk) => {
       pending += chunk;
@@ -58,7 +66,12 @@ export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefor
         pending = pending.slice(end + 1);
         if (found !== undefined) onLine(line);
         else if ((found = openLineUrl(line, publicUrl)) !== undefined) resolve(found);
-        else keep(line);
+        else if (base !== undefined && API_ONLY_LINE.test(line)) resolve((found = base));
+        else {
+          const named = /^AGENTRUN_BASE_URL=(\S+)$/.exec(line)?.[1];
+          if (named !== undefined && openLineUrl(`Open ${named}`, publicUrl) !== undefined) base = named;
+          keep(line);
+        }
       }
     });
     stdout.on("end", () => {
