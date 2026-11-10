@@ -183,7 +183,7 @@ for (const value of ["", "none", " none "]) {
 }
 
 test("daytona and modal are offered by their computer provider's required keys, read through keyOf (the environment, else a key saved in Settings → Computers); neither vendor is asked anything", async () => {
-  const saved = { DAYTONA_API_KEY: "saved-daytona-key", MODAL_TOKEN_ID: "saved-modal-id" };
+  const saved = { DAYTONA_API_KEY: "fake-test-key", MODAL_TOKEN_ID: "saved-modal-id" };
   const asked = [];
   const keyOf = async (name) => (asked.push(name), saved[name]);
   const offers = await placeOffers({ AGENTRUN_BOXES: "daytona,modal" }, { keyOf });
@@ -193,7 +193,8 @@ test("daytona and modal are offered by their computer provider's required keys, 
   // With no keyOf, the environment alone; no key's value is in an offer.
   const fromEnv = await placeOffers({ AGENTRUN_BOXES: "modal", MODAL_TOKEN_ID: "env-id", MODAL_TOKEN_SECRET: "env-secret" });
   assert.deepEqual(fromEnv.find((offer) => offer.id === "modal"), { id: "modal", available: true, reason: "configured; not probed at start" });
-  assert.ok(!JSON.stringify([...offers, ...fromEnv]).includes("saved-") && !JSON.stringify(fromEnv).includes("env-"), "no key's value in an offer");
+  const shown = JSON.stringify([...offers, ...fromEnv]);
+  assert.ok(!shown.includes("fake-test-key") && !shown.includes("saved-modal-id") && !shown.includes("env-"), "no key's value in an offer");
 });
 
 test("what each available box reaches: docker through its egress proxy (or none, or unavailable as refused); daytona and modal never get the host list", () => {
