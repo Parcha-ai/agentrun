@@ -39,6 +39,23 @@ const closeOf = (lf: string): number => {
   return close ? 3 + close.index : -1;
 };
 
+/** YAML's double-quoted escapes, each to what it reads as (`\\x`, `\\u` and `\\U` take hex digits apart). */
+const ESCAPES: Readonly<Record<string, string>> = { "0": "\0", a: "\x07", b: "\b", t: "\t", "\t": "\t", n: "\n", v: "\v", f: "\f", r: "\r", e: "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", N: "\u0085", _: "\u00a0", L: "\u2028", P: "\u2029" };
+
+/** A scalar's value as YAML reads it: a double-quoted one with its escapes decoded (JSON's, which servedSkill writes,
+ *  and YAML's own), a single-quoted one with each `''` one `'`, a plain one as it is. So reading what servedSkill wrote
+ *  gives back the very value it quoted, and serving a skill again writes the same text (OpenCode serves a laid skill
+ *  again): never an escape quoted twice. */
+function unquote(raw: string): string {
+  const value = raw.trim();
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
+  if (!(value.length >= 2 && value.startsWith('"') && value.endsWith('"'))) return value;
+  return value.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)/g, (whole, code: string) => {
+    if (code.length > 1) return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+    return ESCAPES[code] ?? whole;
+  });
+}
+
 /** A SKILL.md's or a draft README's front matter, as the host edits it: its lines, where it closes (closeOf, in `lf`,
  *  the text with LF line ends) and each key's value, a folded or literal block value read as one line. A string is why
  *  there is none. What it says of itself (its keys, its status) is frontMatter's to read, never this. */
@@ -61,7 +78,7 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
     const words = more.filter((line) => !line.startsWith("#"));
     if (!own) return words.join(" ").trim();
     if (words.length && !/^["']/.test(own)) return [own, ...words].join(" ").trim();
-    return own.replace(/^(["'])(.*)\1$/, "$2").trim();
+    return unquote(own).trim();
   };
   return { lf, end, value };
 }
@@ -76,16 +93,17 @@ export const UNCLEAR_FRONT = "its front matter does not read one way: each line 
  *  a comment at its left edge, `key: value` at its left edge (a key set once), or a line of the value above it: any
  *  indented line under a `key:` with nothing after it (its nested value, a mapping or a list among them), an indented
  *  line of a `>` or `|` block, or of a plain value that wraps (one that reads as no key of its own), an indented comment
- *  under a plain value being no part of it. A value is unquoted; a nested, block or wrapped value's lines are joined by
- *  one space. Anything else (an indented first line, an indented `key:` under a value, a list at the left edge, a key
- *  set twice, a YAML explicit key `? key`, which every writer here would have to edit in its own form) reads no way. */
+ *  under a plain value being no part of it. A quoted value is read as YAML reads it (unquote: its escapes decoded); a
+ *  nested, block or wrapped value's lines are joined by one space. Anything else (an indented first line, an indented
+ *  `key:` under a value, a list at the left edge, a key set twice, a YAML explicit key `? key`, which every writer here
+ *  would have to edit in its own form) reads no way. */
 export function frontMatter(text: string): ReadonlyMap<string, string> | undefined {
   const lf = text.replace(/\r\n/g, "\n");
   if (!lf.startsWith("---\n")) return undefined;
   const end = closeOf(lf);
   if (end < 0) return undefined;
   const front = new Map<string, string>();
-  const unquoted = (value: string) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
+  const unquoted = unquote;
   const add = (key: string, more: string) => front.set(key, `${front.get(key)} ${more.trim()}`.trim());
   // The key whose `>`/`|` block, or nested value (a `key:` with nothing after it), the next indented lines are; the key
   // whose plain value they wrap.
