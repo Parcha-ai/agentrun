@@ -334,3 +334,23 @@ export function saidBy(child, text) {
   });
   return arriving(heard, `the line with ${text} from the server's process`).finally(() => (child.stdout.off("data", onData), child.stderr.off("data", onData)));
 }
+
+/** The webhook's store in `dir` as an earlier server, or a pruning, left it: `told` its ledger rows ({run: {ended, wait}}),
+ *  written as they stand, and its messages and tries gone (`cleared`), as later attempts push them out of the log. */
+export function leftAs(dir, { told, cleared = false } = {}) {
+  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 10_000 });
+  try {
+    if (cleared) {
+      db.prepare("DELETE FROM channel_attempts WHERE channel = 'webhook-out'").run();
+      db.prepare("DELETE FROM channel_posts WHERE channel = 'webhook-out'").run();
+    }
+    if (told) {
+      db.prepare("DELETE FROM channel_told WHERE channel = 'webhook-out'").run();
+      for (const [runId, noticed] of Object.entries(told)) {
+        for (const [kind, marker] of Object.entries(noticed)) db.prepare("INSERT INTO channel_told (channel, run_id, marker, at) VALUES ('webhook-out', ?, ?, ?)").run(runId, `${kind === "ended" ? "ended" : "wait"}:${marker}`, Date.now());
+      }
+    }
+  } finally {
+    db.close();
+  }
+}
