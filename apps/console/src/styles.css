@@ -42,7 +42,7 @@
   .report table { @apply mb-4 w-full border-collapse text-lead leading-5; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
   .report th { @apply caps text-label text-muted-foreground; }
-  .report a, .report button[data-run-file] { @apply text-primary underline underline-offset-2; }
+  .report a, .report button[data-run-file] { @apply text-primary-text underline underline-offset-2; }
   /* A run file the answer links (format.ts markdown): a button that opens it in the viewer, read as a link. */
   .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }
 }
