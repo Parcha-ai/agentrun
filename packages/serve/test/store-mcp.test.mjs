@@ -2,7 +2,8 @@
 // listed tools, prices and its credential, sealed: bytes the store never opens), and a runner reads them at its claim. A
 // run's pin is written once, under the claim, in one transaction with the claim's epoch fence (insert-if-absent): a stale
 // claim writes nothing, and a later claim reads the pin as written. A token refresh is one write that re-reads the row:
-// when another claim refreshed it first (the row changed since it was read), it is skipped and the newer row returned.
+// when another claim refreshed it first (the row changed since it was read), it is skipped and the newer row returned. A
+// conditional save (putIfCredential) writes only while the row's credential is the one its writer read.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
@@ -25,6 +26,35 @@ test("the registry: a saved server's row reads back as it was put, its sealed cr
   await store.mcp.put({ ...SERVER, name: "linear" });
   assert.deepEqual((await store.mcp.servers()).map((row) => row.name), ["github", "linear"]);
   await store.mcp.remove("github");
+  assert.equal(await store.mcp.server("github"), undefined);
+});
+
+test("a conditional write lands only while the row's credential is the one its writer read, compared and written in one statement", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const mark = (row) => (row ? { auth: row.auth, sealed: row.sealed !== null, changedAt: row.credentialChangedAt ?? null } : null);
+  // Expected absent: it inserts; once a row is there, an absent expectation writes nothing.
+  const first = await store.mcp.putIfCredential({ ...SERVER, sealed: null, auth: "none" }, null);
+  assert.equal(first.auth, "none");
+  assert.equal(await store.mcp.putIfCredential({ ...SERVER, auth: "none", sealed: null }, null), undefined, "a server expected absent is never replaced");
+  // The mark read now writes; a credential saved since (it moves the mark) refuses the older writer, and stays.
+  const read = mark(await store.mcp.server("github"));
+  clock.now += 1_000;
+  const owner = await store.mcp.put({ ...SERVER, auth: "bearer", sealed: SEALED });
+  assert.equal(await store.mcp.putIfCredential({ ...SERVER, auth: "none", sealed: null }, read), undefined, "the stale writer writes nothing");
+  const kept = await store.mcp.server("github");
+  assert.deepEqual([kept.auth, [...kept.sealed], kept.credentialChangedAt], ["bearer", [...SEALED], owner.credentialChangedAt], "the owner's credential stands");
+  // Against the row as it is now, it writes.
+  const written = await store.mcp.putIfCredential({ ...SERVER, auth: "bearer", sealed: SEALED, credentialChangedAt: kept.credentialChangedAt, prices: { create_issue: 0.02 } }, mark(kept));
+  assert.deepEqual([written.auth, written.prices, written.credentialChangedAt], ["bearer", { create_issue: 0.02 }, kept.credentialChangedAt]);
+  // A token refresh keeps the credential's time, so a writer that read the row before it still writes.
+  const before = mark(await store.mcp.server("github"));
+  const refreshed = await store.mcp.keepRefreshed("github", { seen: SEALED, sealed: Uint8Array.from([9, 9]), holder: "runner-a" });
+  assert.equal(refreshed.kept, true);
+  assert.ok(await store.mcp.putIfCredential({ ...SERVER, auth: "bearer", sealed: Uint8Array.from([9, 9]), credentialChangedAt: kept.credentialChangedAt }, before), "a refreshed token is the same credential");
+  // A removal since: expected present, nothing to replace, and nothing is inserted.
+  const gone = mark(await store.mcp.server("github"));
+  await store.mcp.remove("github");
+  assert.equal(await store.mcp.putIfCredential({ ...SERVER }, gone), undefined, "a removed server is not written back");
   assert.equal(await store.mcp.server("github"), undefined);
 });
 

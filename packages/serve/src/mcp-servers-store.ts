@@ -15,7 +15,7 @@ import {
   type Auth, authOf, canonical, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServer, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark } from "./mcp-secret-writes.js";
@@ -24,7 +24,7 @@ import { type ClientKind, issuerOf, MAX_PENDING, MCP_SETTINGS_PAGE, McpSignIns, 
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
-import { type McpCredential, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
+import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
 const SCOPE_LIST = "scopes is a list of 1 to 32 OAuth scopes.";
@@ -32,6 +32,13 @@ const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 
 /** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
 type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put">; flush: Store["flush"] };
+
+/** The row a conditional save wrote, or the refusal when it wrote nothing: the server's credential changed while the save
+ *  listed its tools (another save, a sign-in or a removal landed), and writing would drop or undo it. */
+function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpServerRow {
+  if (!saved) throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
+  return saved;
+}
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
  *  client, with its secret) sealed together by its state, the rest of its working state plain JSON the callback rebuilds.
@@ -164,13 +171,13 @@ export class McpServersOverStore {
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
    *  auth type and the URL's origin stay the same. */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: string) {
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark) {
     nameOf(name);
     const { url, auth, prices } = this.admit(body, true);
     const was = await this.store.mcp.server(name);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
-    // its credentialMark), else the one read here. Checked again before the write, after the listing's wait.
-    const against = checkedAgainst ?? credentialMark(was);
+    // its credentialMark), else the one read here. The write compares it in its own statement, after the listing's wait.
+    const against = checkedAgainst !== undefined ? checkedAgainst : credentialMark(was);
     let credential: McpCredential | undefined;
     // The sealed credential kept (no new one sent) keeps its own time (credential_changed_at); a new one moves it.
     let kept: number | null | undefined;
@@ -201,21 +208,12 @@ export class McpServersOverStore {
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // A body with no `prices` keeps the saved ones, for the tools still listed at the same address.
     const priced = prices ?? (was?.url === url.href ? pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
-    await this.unchanged(name, against);
-    const saved = await saveMcpServer(this.store, this.sealKey, {
+    const saved = changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, {
       name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(priced && Object.keys(priced).length ? { prices: priced } : {}), ...(credential ? { credential } : {}), ...(kept !== undefined ? { credentialChangedAt: kept } : {}),
-    }, { githubMcpOrigin: this.appOrigin });
+    }, against, { githubMcpOrigin: this.appOrigin }));
     await this.store.flush();
     return this.view(saved);
-  }
-
-  /** Refuses a write whose server's credential is no longer `against` (its credentialMark): another save, a sign-in or
-   *  a removal landed while this one listed the server's tools, and writing now would drop or undo it. */
-  private async unchanged(name: string, against: string) {
-    if (credentialMark(await this.store.mcp.server(name)) !== against) {
-      throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
-    }
   }
 
   /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. */
@@ -227,14 +225,13 @@ export class McpServersOverStore {
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     const prices = pricesListed((was.prices ?? undefined) as McpPrices | undefined, listed.tools);
     // It writes back the credential it read: never over one the owner saved or signed in with while it listed.
-    await this.unchanged(name, credentialMark(was));
-    const saved = await saveMcpServer(this.store, this.sealKey, {
+    const saved = changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, {
       name, url: was.url, auth: was.auth, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
       ...(Object.keys(prices).length ? { prices } : {}), ...(was.sealed !== null ? { credential: open.credential } : {}),
       // A refresh re-lists the tools; it keeps updated_at (not an owner edit) and the credential's time, and lets
       // listed_at move to now.
       updatedAt: was.updatedAt, credentialChangedAt: was.credentialChangedAt,
-    }, { githubMcpOrigin: this.appOrigin });
+    }, credentialMark(was), { githubMcpOrigin: this.appOrigin }));
     await this.store.flush();
     return {
       added: [...after.keys()].filter((tool) => !before.has(tool)),
@@ -294,10 +291,13 @@ export class McpServersOverStore {
       // Saved, signed in to again or forgotten since this sign-in started: that stands.
       if ((now ? saving(now) : null) !== entry.was) return back("changed_meanwhile");
       const prices = now?.url === entry.url ? ((now.prices ?? undefined) as McpPrices | undefined) : undefined;
-      await saveMcpServer(this.store, this.sealKey, {
+      // Written only while the row is still the one just read, in the store's one statement: a save that lands in between
+      // stands too.
+      const saved = await saveMcpServerIfCredential(this.store, this.sealKey, {
         name: entry.name, url: entry.url, auth: "oauth", protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(prices && Object.keys(prices).length ? { prices } : {}), credential: { type: "oauth", set },
-      });
+      }, credentialMark(now));
+      if (!saved) return back("changed_meanwhile");
       await this.store.flush();
       return back();
     } catch (error) {

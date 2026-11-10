@@ -63,7 +63,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openSqliteStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -2722,7 +2722,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
-        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, typeof secretSeen === "string" ? secretSeen : undefined);
+        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return send(res, 200, saved);
       }

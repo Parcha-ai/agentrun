@@ -6,7 +6,7 @@
 // into McpServers / McpSignIns, which keep their SDK tool-probe, validation and sign-in flow. The store never opens a
 // credential; only this process (and a runner) does, with the seal key.
 import {
-  type Mcp, type McpCredential, type McpOauth, type McpServerRow, openMcpCredential, type OpenedMcpCredential,
+  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpServerRow, type McpServerWrite, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -32,20 +32,41 @@ function boundedServerInfo(info: unknown): unknown {
   return Buffer.byteLength(JSON.stringify(info), "utf8") <= MCP_META_MAX_BYTES ? info : null;
 }
 
+/** A server's save: its row's fields, its credential in the clear (sealed on the way to the store). */
+type McpServerSave = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null };
+
 /** Saves a server's registry row, its credential sealed (§7): a server with a credential (bearer, headers, or an OAuth
  *  token set) seals it under the row with the url's origin inside; one with none (auth type "none") stores null. The
  *  remote server's reported info and instructions are bounded at save (untrusted). Replaces the file the registry wrote. */
 export async function saveMcpServer(
   store: { mcp: Pick<Mcp, "put"> },
   sealKey: Buffer,
-  server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; credential?: McpCredential; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null },
+  server: McpServerSave,
   /** `githubMcpOrigin`: the one origin a github_app server may have (GITHUB_MCP_ORIGIN; a test's fake). */
   { githubMcpOrigin = GITHUB_MCP_ORIGIN }: { githubMcpOrigin?: string } = {},
 ): Promise<McpServerRow> {
+  return store.mcp.put(serverWrite(sealKey, server, githubMcpOrigin));
+}
+
+/** saveMcpServer, only while the server's credential is still `expected` (its mark as the writer read it: null, no
+ *  server by that name), compared and written in one statement (Mcp.putIfCredential). Undefined, writing nothing, when
+ *  another save, a sign-in or a removal changed it since. */
+export async function saveMcpServerIfCredential(
+  store: { mcp: Pick<Mcp, "putIfCredential"> },
+  sealKey: Buffer,
+  server: McpServerSave,
+  expected: McpCredentialMark,
+  { githubMcpOrigin = GITHUB_MCP_ORIGIN }: { githubMcpOrigin?: string } = {},
+): Promise<McpServerRow | undefined> {
+  return store.mcp.putIfCredential(serverWrite(sealKey, server, githubMcpOrigin), expected);
+}
+
+/** The store's write of `server`: its credential sealed, its info and instructions bounded. */
+function serverWrite(sealKey: Buffer, server: McpServerSave, githubMcpOrigin: string): McpServerWrite {
   // A github_app row at any other address is never written: the App's tokens go to GitHub's hosted MCP alone.
   if (server.auth === "github_app" && !githubMcpUrl(server.url, githubMcpOrigin)) throw new Error(`The MCP server ${server.name} is not kept: ${GITHUB_MCP_ONLY}.`);
   const sealed = server.credential ? sealMcpCredential(sealKey, server.name, server.credential, server.url) : null;
-  return store.mcp.put({
+  return {
     name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null,
     serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions), sealed,
     ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
@@ -53,7 +74,7 @@ export async function saveMcpServer(
     // Its access token's remaining life, measured here on the clock that stamped its set: the store stamps the token's end
     // on its own clock from it, the one every claim judges the token by.
     tokenLeftMs: tokenLeftOf(server.credential),
-  });
+  };
 }
 
 /** The server's row goes. */

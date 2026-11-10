@@ -10,6 +10,7 @@
 // A server with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a refresh (each keeps
 // nothing new) stay open to a token.
 import { registerNotSecretWrite, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
+import type { McpCredentialMark } from "./store/index.js";
 import { isObject } from "./validate.js";
 
 /** Whether `operation`'s `body` writes an MCP secret by the body alone (see above). */
@@ -24,10 +25,10 @@ export function mcpWritesSecret(operation: string, body: unknown): boolean {
 type SavedRow = { auth: string; sealed: unknown; credentialChangedAt?: number | null };
 type SavedServers = { mcp: { server(name: string): Promise<SavedRow | undefined> } };
 
-/** A saved server's credential as a save's check saw it: its auth type, whether one is sealed, and when it was set (a
- *  token refresh keeps that time; a new credential or a sign-in moves it). A save allowed against one mark is refused
- *  when the row's mark differs by the time it writes (mcp-servers-store.ts save). */
-export const credentialMark = (row: SavedRow | undefined): string => (row ? JSON.stringify([row.auth, row.sealed !== null && row.sealed !== undefined, row.credentialChangedAt ?? null]) : "absent");
+/** A saved server's credential as a writer read it (McpCredentialMark): its auth type, whether one is sealed, and when it
+ *  was set. A save let through against one mark writes only while the row still has it, in the store's one statement
+ *  (Mcp.putIfCredential), so it never lands over a credential saved or signed in with after the check. */
+export const credentialMark = (row: SavedRow | undefined): McpCredentialMark => (row ? { auth: row.auth, sealed: row.sealed !== null && row.sealed !== undefined, changedAt: row.credentialChangedAt ?? null } : null);
 
 /** Whether a save of the server its path names (with no value in its body) would drop or change the credential the
  *  server holds: it holds one, and the save names another auth type, or none (a body with no auth is none). */
