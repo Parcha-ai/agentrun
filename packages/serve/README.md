@@ -1912,6 +1912,25 @@ Quotes answer `501 unsupported_here` naming the feature. Home export and import 
 `info.x-agentrun-serve.not_served` lists them). Capabilities declare each of the four false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
+### API only
+
+`AGENTRUN_API_ONLY=1` is for a server that runs behind its caller's backend and is never opened in a browser. It
+serves these routes alone:
+
+- a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
+  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
+- its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- `GET /capabilities`, `GET /health` and `GET /usage`.
+
+Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
+assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
+page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
+`false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
+
+Its routes for agents are refused too, so on an API-only server a run is launched inline (`POST /runs` with its
+definition), or on an agent made before the profile was turned on.
+
 ## Uploads
 
 A run's input files. Send one in one call, its bytes the body and its path in the query:
