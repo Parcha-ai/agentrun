@@ -52,6 +52,7 @@ import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raise
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
+import { agentPointers } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -1203,6 +1204,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
   // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
+  // The learning routes' cut: the server's secrets and agent `agentId`'s own sign-in pointers, live and forgotten.
+  const learningShown = async (agentId: string) => secretsShown([...serverSecrets(), ...(await agentPointers(signIns, agentId))]);
   const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
@@ -2773,14 +2776,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, withDefaults(settings.get()));
       }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
-      // they are now; a write as the definition's: an archived agent's too.
+      // they are now and of the agent's own sign-in pointers, live and forgotten (agentPointers); a write as the
+      // definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
         // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
         // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
         // launch, journal and learning end.
         const { counts, impact, notes } = await agentLearningOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
+        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -2788,12 +2792,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (found.name === "listLearningNotes") {
           // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
           const { notes } = await agentLearningOverStore(store, id);
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
+          return send(res, 200, await learningNotes(data, id, url.searchParams, await learningShown(id), notes));
         }
-        return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
+        return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id)));
       case "readLearningFile":
         await needAgent(id);
-        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(serverSecrets())));
+        return sendNote(res, 200, await readNote(data, id, second!, await learningShown(id)));
       case "writeLearningFile":
       case "retireLearningFile":
       case "approveLearningFile":
@@ -2801,9 +2805,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: serverSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
+        // What it refuses is what the reads cut: a note shown cut is never saved over the hidden text.
+        const refuse = [...serverSecrets(), ...(await agentPointers(signIns, id))];
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
-        const shown = secretsShown(serverSecrets());
+        const shown = secretsShown(refuse);
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
