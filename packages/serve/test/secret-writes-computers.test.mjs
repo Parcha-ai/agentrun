@@ -29,7 +29,7 @@ test("the computer and Archil key fields are marked in the document, and each ma
 });
 
 test("saveComputerKeys: every request to a computer's keys is a secret write, whatever its body: a value, a null (a removal), an empty body or none", () => {
-  assert.equal(writesSecret("saveComputerKeys", { E2B_API_KEY: "e2b-value" }), true);
+  assert.equal(writesSecret("saveComputerKeys", { E2B_API_KEY: "fake" }), true);
   assert.equal(writesSecret("saveComputerKeys", { E2B_API_KEY: null }), true);
   assert.equal(writesSecret("saveComputerKeys", {}), true);
   assert.equal(writesSecret("saveComputerKeys", undefined), true);
@@ -57,7 +57,7 @@ test("on the server: the token's PUT to a computer's keys with an empty body or 
 });
 
 test("putWorkspaceArchil: every PUT of the Archil settings is a secret write, whatever its body: the account key, the disk and region alone, an empty body or none", () => {
-  assert.equal(writesSecret("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: "archil-value" } }), true);
+  assert.equal(writesSecret("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: "fake" } }), true);
   assert.equal(writesSecret("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: null } }), true);
   assert.equal(writesSecret("putWorkspaceArchil", SETTINGS), true);
   assert.equal(writesSecret("putWorkspaceArchil", { ...SETTINGS, keys: {} }), true);
