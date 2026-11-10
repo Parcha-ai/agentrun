@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { PROVIDERS } from "@parcha/agentrun-computer";
 import { VM_PROVIDER } from "../dist/boxes.js";
 import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
@@ -193,10 +194,10 @@ test("a missing token keeps the VM box unavailable with today's reason, and its 
   assert.deepEqual(vm.clients, []);
   const made = await half.api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: PLACE, tools: ["bash"] } });
   assert.equal(made.status, 201);
-  // Its place is its computer setting's view, checked as the run's claim resolves it: the VM box is no computer provider
-  // the claim knows, so the save says so, in words that name Settings → Computers.
-  assert.deepEqual([made.body.warnings[0].field, made.body.warnings[0].reason], ["definition.computer", "not_set_up_here"]);
-  assert.match(made.body.warnings[0].message, new RegExp(`^"${VM}" is no computer provider this server knows: pick one of .* for this agent's computer in Settings → Computers\\.$`));
+  // Its place is its computer setting's view, checked as the run's claim resolves it: the VM box's provider is a remote
+  // sandbox, which this Mode 1 server can't mount the run's folder in, so the save says so and names the fix.
+  const label = PROVIDERS.find((one) => one.id === VM).label;
+  assert.deepEqual([made.body.warnings[0].field, made.body.warnings[0].reason, made.body.warnings[0].message], ["definition.computer", "not_set_up_here", `Mode 1 runs a sandbox only on Docker: a ${label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer.`]);
 });
 
 test("the relay takes a run's VM calls only for that run's own box, and never one that ends, tags or makes a box", { timeout: 180_000 }, async (t) => {

@@ -109,7 +109,7 @@ test("a sandbox place this server can't run saves with a warning that names the 
   const SANDBOXES = PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label).join(", ");
   for (const [id, body, words, box] of [
     ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), `"bwrap" is no computer provider this server knows: pick one of ${SANDBOXES} ${SETTINGS}.`, undefined],
-    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "e2b" } }), `Mode 1 runs a sandbox only on Docker: a E2B sandbox can't reach the run's folder on this machine. Pick Docker ${SETTINGS}, or another kind of computer.`, undefined],
+    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "daytona" } }), `Mode 1 runs a sandbox only on Docker: a Daytona sandbox can't reach the run's folder on this machine. Pick Docker ${SETTINGS}, or another kind of computer.`, undefined],
     ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "This agent's computer is a Docker sandbox, and this server cannot run it: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.", "docker"],
   ]) {
     const made = await api("POST", "/agents", body);
