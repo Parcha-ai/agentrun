@@ -45,6 +45,13 @@ test("every labelled tool refused before it ran reads refused in plain words: an
   ]);
 });
 
+test("a refused call names its path as the host names it (options.path), as every other call's rows do", () => {
+  const path = (value) => value.replace(/^\/data\/runs\/123\/work\//, "");
+  const rows = timelineOf([user("go"), assistant([call("w", "write", { path: "/data/runs/123/work/deny.md", content: "x" })], 0), refusedResult("w", "write", DENIED)], { settled: true, path });
+  assert.equal(rowFor(rows, "w", "tool_use"), "Refused: write deny.md");
+  assert.equal(rowFor(rows, "w", "tool_result"), `Refused: write deny.md: ${DENIED}`);
+});
+
 test("a write that ran and errored still reads failed with its error; the same words without the refusal's mark are a failure", () => {
   const rows = rowsOf([
     user("go"),

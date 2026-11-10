@@ -615,7 +615,7 @@ function createProjector(options: TimelineOptions) {
    *  read by that field, never by its words. */
   const refused = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_REFUSED] === true;
   /** A call's name on its rows: a refused one's in plain words (refusedLabel), else its label. */
-  const nameFor = (tool: string, args: Obj, view: ToolResultView, shown: ToolResultView) => (refused(view) ? refusedLabel(tool, args) : label(tool, args, shown));
+  const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(tool, shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
