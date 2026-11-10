@@ -305,17 +305,19 @@ function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signa
   });
 }
 
-/** The file an install of a harness keeps beside its directory while it runs, for every process on this data (a runner
- *  beside the server, one of its own, or one in another container on the same volume): the installing host and process,
- *  and since when. A failed install leaves why in it until the next install; one that lands removes it. */
-export const installMarkOf = (dir: string): string => join(dirname(dir), `.${basename(dir)}.installing.json`);
+/** The file an install of a harness into `dir` (`<data>/harnesses/<harness>`) keeps in the data directory while it runs,
+ *  for every process on this data (a runner beside the server, one of its own, or one in another container on the same
+ *  volume): the installing host and process, and since when. A failed install leaves why in it until the next install;
+ *  one that lands removes it. In the data directory, not `<data>/harnesses`: an earlier build left that read-only with
+ *  its flat install in it, which the install removes first (removeFlatInstall) and which a file of ours would keep. */
+export const installMarkOf = (dir: string): string => join(dirname(dirname(dir)), `.harness-install-${basename(dir)}.json`);
 type InstallMark = { readonly host: string; readonly pid: number; readonly startedAt: number } | { readonly failed: string; readonly at: number };
 
 /** The mark written whole, beside it then renamed over it: a claim reading it while it changes reads the last mark or the
  *  new one, never part of one (which would read as no install). */
 async function writeMark(dir: string, mark: InstallMark): Promise<void> {
-  await mkdir(dirname(dir), { recursive: true });
   const at = installMarkOf(dir);
+  await mkdir(dirname(at), { recursive: true });
   const next = `${at}.${process.pid}.next`;
   await writeFile(next, JSON.stringify(mark));
   await rename(next, at);

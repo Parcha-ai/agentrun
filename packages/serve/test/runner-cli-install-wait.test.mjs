@@ -6,14 +6,14 @@
 // runner beside the server and one in a process of its own read it alike. Each wait here is held open by a gate the test
 // opens once the claim is seen waiting, never by time.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
-const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, installDirOf, installMarkOf, installSettled } = await import("../dist/harness-install.js");
+const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, harnessesOf, installDirOf, installMarkOf, installSettled, removeFlatInstall } = await import("../dist/harness-install.js");
 const { CODEX_STANDIN_ENV, claudePins, codexPins } = await import("../dist/adapters.js");
 const { copyStandIn } = await import("../../run-adapters-codex/test/stand-in.mjs");
 /** Codex's stand-in confines its app-server with setpriv, and a platform with no Codex build has no binary to check. */
@@ -102,6 +102,29 @@ test("an install's mark is there from its start, before it reads its pins or wha
   pinsGiven.open();
   await installing;
   assert.equal(await settled, "installed");
+});
+
+test("an earlier build's flat install left read-only at the top of <data>/harnesses still installs: the mark is kept outside it, so the flat install is removed and the install runs", async (t) => {
+  const data = scratch(t, "install-flat");
+  const harnesses = harnessesOf(data);
+  mkdirSync(join(harnesses, "node_modules"), { recursive: true });
+  writeFileSync(join(harnesses, "package.json"), "{}");
+  chmodSync(harnesses, 0o555);
+  // The install makes it writable as it removes the flat install; a case that fails first leaves it read-only for its
+  // scratch's removal (an after hook added earlier, so run first: gone by now when it went).
+  t.after(() => existsSync(harnesses) && chmodSync(harnesses, 0o755));
+  const target = installDirOf(data, "fake");
+  const seen = [];
+  const install = new HarnessInstall(FAKE, target, async () => PINS, async (_entry, dir) => {
+    seen.push(["mark while installing", existsSync(installMarkOf(dir))]);
+    seen.push(["flat install removed", await removeFlatInstall(harnesses)]);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "whole"), "");
+  });
+  await install.ensure();
+  assert.deepEqual(seen, [["mark while installing", true], ["flat install removed", true]]);
+  assert.ok(!existsSync(join(harnesses, "package.json")) && existsSync(join(target, "whole")), "the flat install gone, the harness installed");
+  assert.ok(!installMarkOf(target).startsWith(harnesses), `the mark is outside <data>/harnesses: ${installMarkOf(target)}`);
 });
 
 test("an install of a harness already installed whole leaves no mark", async (t) => {
