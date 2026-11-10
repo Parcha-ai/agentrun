@@ -4,9 +4,10 @@
 services:
   - type: web
     name: agentrun-server
-    runtime: docker
-    dockerfilePath: ./packages/serve/docker/Dockerfile
-    dockerContext: .
+    runtime: image
+    # The release's published image (ghcr, built by release.yml from the reviewed tag): a deploy pulls it.
+    image:
+      url: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.32
     # 2 GB and a 10 GB disk at the least: Claude Code and Codex install themselves on first use onto the disk (the image
     # leaves them out), which fills 1 GB, and 512 MB is short for them.
     plan: 1c-2g
