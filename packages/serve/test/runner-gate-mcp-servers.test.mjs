@@ -11,6 +11,7 @@ import { test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { deniedText } = await import("../dist/refusal-words.js");
+const { mcpServersOf } = await import("../dist/tool-gate.js");
 
 /** The runner's gate for an OpenCode revision with `toolSettings`, over a fresh store, knowing the run's MCP `servers`. */
 async function openCodeGate(t, toolSettings, servers) {
@@ -23,6 +24,11 @@ async function openCodeGate(t, toolSettings, servers) {
   const revision = { kind: "agentic", body: { toolSettings, harness: "opencode" } };
   return adapterRunGate(store, { runId: "run-1" }, revision, dir, servers);
 }
+
+test("the MCP servers a revision grants, by their catalog names: each once, a wildcard grant too, no table tool", () => {
+  assert.deepEqual(mcpServersOf(["read", "mcp:fake/add", "mcp:fake/sub", "mcp:read/skill_file", "mcp:docs/*", "web_fetch"]), ["fake", "read", "docs"]);
+  assert.deepEqual(mcpServersOf([]), []);
+});
 
 test("OpenCode on the runner: an agent's mcp:fake/add deny refuses fake_add, its wire name, in the gate's words by the catalog name", async (t) => {
   const gate = await openCodeGate(t, { "mcp:fake/add": { permission: "deny" } }, ["fake"]);
