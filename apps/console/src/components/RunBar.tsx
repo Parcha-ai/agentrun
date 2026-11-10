@@ -1,5 +1,6 @@
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Picker } from "@/components/ui/picker";
 import { ToolBlockers } from "@/components/ToolBlockers";
@@ -19,7 +20,8 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  retry of a refused or lost start is the same request; a started run opens on its page, and a refusal is said here.
  *  `blocked`: why no run can start here (a harness the server can't run): Run is off, and sends nothing. A start refused
  *  for a box this server lacks says so, and that the fix is where the agent runs, in its settings. Files picked here are
- *  sent at once and named by the run (`file_ids`); Run waits until each is sent. */
+ *  sent at once and named by the run (`file_ids`); Run waits until each is sent. "Run with your coding agent" hands the
+ *  same run, pinned to the agent's revision, to the person's Claude Code or Codex as a prompt to copy; it sends nothing. */
 export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
   const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : null), [workflow, agent.definition.workflow]);
@@ -79,7 +81,14 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
             <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
           </div>
         </div>
-        <div className="mt-3 max-sm:mt-0"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
+        {/* Beside the files, the same run handed to the person's coding agent: its input and effort as typed when pressed. A
+            coding agent works on a computer, and a phone's run row keeps Attach, Effort and Run on one line: under 640 px
+            it is not shown. */}
+        <div className="mt-3 flex flex-wrap items-center gap-2 max-sm:mt-0">
+          <div className="min-w-0 flex-1"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
+          <CodingAgentHandoff label="Run with your coding agent" className="max-sm:hidden"
+            context={() => ({ kind: "run", agentId: agent.agent_id, revision: agent.revision, ...(built.ok ? { input: built.body.input } : {}), ...(effort ? { effort } : {}) })} />
+        </div>
       </div>
       {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run")}</p>}
       {!built.ok && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
