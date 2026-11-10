@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { draftProblems, type DraftReader, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -147,6 +147,20 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
   return found ? undefined : text;
 }
 
+/** A skill's SKILL.md or a draft's README.md at `path`, its front matter read as YAML reads it (skills.ts frontValues:
+ *  its escapes decoded, the value a harness is served): a secret's shape or the host's value there is refused as one in
+ *  its text is, though the text as stored spells it in escapes. True when it found one. */
+function frontScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
+  const place = learnedPlace(path);
+  if (!place || place.kind === "workflow") return false;
+  let found = false;
+  for (const value of frontValues(text)) {
+    for (const kind of secretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
+    if (refused(value)) found = (add("secret_value", "its front matter, read as YAML reads it, holds a value the host named as secret", path), true);
+  }
+  return found;
+}
+
 /** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a
  *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
  *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
@@ -164,7 +178,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   const readmeOf = `${path.slice(0, path.lastIndexOf("/"))}/README.md`;
   if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("skill_status", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
   const text = textOf(path, change.bytes, refused, add);
-  if (text === undefined) return;
+  if (text === undefined || frontScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     for (const { rule, detail } of draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy)) add(rule, detail, path);
@@ -204,7 +218,8 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
   for (const change of changes) {
     if (change.path === INDEX_FILE) continue;
     nameScanned(change.path, refused, add);
-    if (change.bytes) textOf(change.path, change.bytes, refused, add);
+    const text = change.bytes ? textOf(change.path, change.bytes, refused, add) : undefined;
+    if (text !== undefined) frontScanned(change.path, text, refused, add);
   }
   return problems;
 }

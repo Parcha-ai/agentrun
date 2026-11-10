@@ -45,15 +45,25 @@ const ESCAPES: Readonly<Record<string, string>> = { "0": "\0", a: "\x07", b: "\b
 /** A scalar's value as YAML reads it: a double-quoted one with its escapes decoded (JSON's, which servedSkill writes,
  *  and YAML's own), a single-quoted one with each `''` one `'`, a plain one as it is. So reading what servedSkill wrote
  *  gives back the very value it quoted, and serving a skill again writes the same text (OpenCode serves a laid skill
- *  again): never an escape quoted twice. */
-function unquote(raw: string): string {
+ *  again): never an escape quoted twice. Undefined, never a throw, for a double-quoted value with an escape that does
+ *  not decode cleanly (one YAML has not, a code point past U+10FFFF, a `\\` that ends it): what another reader makes of
+ *  it is not known, so its front matter reads no way. The decoded value is the one every check reads (frontValues). */
+function unquote(raw: string): string | undefined {
   const value = raw.trim();
   if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
   if (!(value.length >= 2 && value.startsWith('"') && value.endsWith('"'))) return value;
-  return value.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)/g, (whole, code: string) => {
-    if (code.length > 1) return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
-    return ESCAPES[code] ?? whole;
+  let clean = true;
+  const decoded = value.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[\s\S]?)/g, (whole, code: string) => {
+    if (code.length > 1) {
+      const point = Number.parseInt(code.slice(1), 16);
+      if (point > 0x10ffff) return (clean = false), whole;
+      return String.fromCodePoint(point);
+    }
+    const one = ESCAPES[code];
+    if (one === undefined) clean = false;
+    return one ?? whole;
   });
+  return clean ? decoded : undefined;
 }
 
 /** A SKILL.md's or a draft README's front matter, as the host edits it: its lines, where it closes (closeOf, in `lf`,
@@ -78,7 +88,7 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
     const words = more.filter((line) => !line.startsWith("#"));
     if (!own) return words.join(" ").trim();
     if (words.length && !/^["']/.test(own)) return [own, ...words].join(" ").trim();
-    return unquote(own).trim();
+    return unquote(own)?.trim();
   };
   return { lf, end, value };
 }
@@ -103,7 +113,6 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
   const end = closeOf(lf);
   if (end < 0) return undefined;
   const front = new Map<string, string>();
-  const unquoted = unquote;
   const add = (key: string, more: string) => front.set(key, `${front.get(key)} ${more.trim()}`.trim());
   // The key whose `>`/`|` block, or nested value (a `key:` with nothing after it), the next indented lines are; the key
   // whose plain value they wrap.
@@ -133,11 +142,21 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
       block = pair[1]!;
       front.set(block, "");
     } else {
-      front.set(pair[1]!, unquoted(value));
+      // A quoted value whose escapes do not decode cleanly reads no way.
+      const read = unquote(value);
+      if (read === undefined) return undefined;
+      front.set(pair[1]!, read);
       if (!/^["']/.test(value)) plain = pair[1]!;
     }
   }
   return front;
+}
+
+/** Every value a SKILL.md's or a draft README's front matter holds, as YAML reads it (frontMatter: escapes decoded):
+ *  what a check for secrets reads beside the text as stored, since the decoded value is the one a harness is served
+ *  (servedSkill). None for a text whose front matter does not read one way. */
+export function frontValues(text: string): string[] {
+  return [...(frontMatter(text)?.values() ?? [])];
 }
 
 /** The keys a SKILL.md's or a draft README's front matter sets, in order (frontMatter's); undefined for a text whose

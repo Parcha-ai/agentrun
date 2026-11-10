@@ -169,3 +169,62 @@ test("a learned skill counts the bytes the run is given: its SKILL.md as served,
   assert.ok(Buffer.byteLength(served) > Buffer.byteLength(text), "served, it is larger than its blob");
   assert.equal(seed.skills[0].bytes, Buffer.byteLength(served) + Buffer.byteLength(reference));
 });
+
+// A held secret a skill's double-quoted front matter spells with escapes (`\xNN`, `\uNNNN`) is the value YAML reads, and
+// what servedSkill lays: the checks and the serving read the decoded value, so the skill is refused when it is
+// proposed and never laid. An escape that does not decode cleanly (a code point past U+10FFFF, an escape YAML has
+// not) leaves the front matter reading no way: retired, refused for that item alone, and never a throw.
+const HELD = `not-a-secret-front-${process.pid}-held`;
+const escaped = (value, form) => [...value].map((ch) => (form === "x" ? `\\x${ch.charCodeAt(0).toString(16).padStart(2, "0")}` : `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`)).join("");
+const spelled = (form) => skill(`name: weekly-summary\ndescription: "Sign in with ${escaped(HELD, form)}."\n`);
+
+test("a held secret a skill's description spells in escapes is refused when proposed, by the checks and by what is never stored", async () => {
+  const { unstorable } = await import("../dist/learn/check.js");
+  for (const form of ["x", "u"]) {
+    const text = spelled(form);
+    assert.ok(!text.includes(HELD), "the stored spelling holds no plain value");
+    const result = checkProposal({ base: baseOf(), changes: [added("skills/weekly-summary/SKILL.md", text)], refuseValues: [HELD], outcome: "completed" });
+    assert.ok(result.problems.some((problem) => problem.rule === "secret_value"), `${form}: ${JSON.stringify(result.problems)}`);
+    assert.ok(unstorable([added("skills/weekly-summary/SKILL.md", text)], [HELD]).some((problem) => problem.rule === "secret_value"), `${form}: unstorable reads it decoded`);
+    assert.ok(!JSON.stringify(result.problems).includes(HELD), "no problem names the value");
+  }
+});
+
+test("a seed skill whose description spells a held secret in escapes is never chosen or laid, and no laid file holds the value", async (t) => {
+  const { chooseSkills, laySkills, secretsShown, seedFrom } = await import("../dist/learning.js");
+  const { localWorkspace } = await import("../dist/workspace/index.js");
+  const { readFileSync, readdirSync, statSync } = await import("node:fs");
+  const files = [{ path: "skills/weekly-summary/SKILL.md", text: spelled("x") }, { path: "skills/clean/SKILL.md", text: skill("name: clean\ndescription: Clean the data.\n") }];
+  const seed = await seedFrom("c".repeat(40), async () => ({ ok: true, files, refused: [], held: [] }));
+  const dir = await scratch(t);
+  const work = localWorkspace(dir);
+  const { taken, left } = await chooseSkills(work, seed, [], secretsShown([HELD]));
+  assert.deepEqual(taken.map(({ name }) => name), ["clean"], JSON.stringify({ taken: taken.map(({ name }) => name), left }));
+  await laySkills(work, taken, []);
+  const all = (at) => readdirSync(at).flatMap((entry) => (statSync(join(at, entry)).isDirectory() ? all(join(at, entry)) : [join(at, entry)]));
+  for (const file of all(dir)) assert.ok(!readFileSync(file, "utf8").includes(HELD), `${file} holds the value`);
+});
+
+test("an escape that does not decode cleanly leaves the front matter reading no way, never a throw: proposed beside a note, the skill alone is left out", async (t) => {
+  const { proposeRun } = await import("../dist/propose.js");
+  const { localWorkspace: _ } = await import("../dist/workspace/index.js");
+  for (const bad of ["\\UFFFFFFFF", "\\q"]) {
+    const text = skill(`name: weekly-summary\ndescription: "Past ${bad} the end"\n`);
+    assert.equal(frontMatter(text), undefined, bad);
+    assert.equal(learnedStatus(text), "retired", bad);
+  }
+  const data = await scratch(t);
+  const { sha } = await seedOf(data, "agent-1");
+  const note = "---\nname: Units\ndescription: Check units first\ntype: reference\n---\nCheck the units.\n";
+  const answer = [`\`\`\`note units.md\n${note}\`\`\``, `\`\`\`\`skill weekly-summary\n${skill('name: weekly-summary\ndescription: "Past \\UFFFFFFFF the end"\n')}\`\`\`\``].join("\n\n");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  let result;
+  try {
+    result = await proposeRun({ folder: folder.workspace, runDir: await scratch(t), seed: sha, turn: { answer, asked: [] }, refuse: [], outcome: "completed" });
+  } finally {
+    await folder.end();
+  }
+  assert.equal(result.state, "proposed", JSON.stringify(result));
+  assert.deepEqual([result.notes, result.skills], [1, 0], JSON.stringify(result));
+  assert.ok((result.left ?? []).some((problem) => problem.path === "skills/weekly-summary/SKILL.md" && problem.detail === UNCLEAR_FRONT), JSON.stringify(result.left));
+});

@@ -790,7 +790,8 @@ const namesIn = (files: readonly string[] | undefined): string[] => [...new Set(
 /** Which of `seed`'s learned skills a run gets, in `work`, in the seed's order: each whole while they fit their budget,
  *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
  *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
- *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`), is left out. */
+ *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`) as stored or as laid, is
+ *  left out. */
 export async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
   let ownBytes = 0;
@@ -810,7 +811,9 @@ export async function chooseSkills(work: Workspace, seed: Seed, own: readonly st
   const left: string[] = [];
   for (const skill of seed.skills) {
     if (owned.has(skill.name) || there.has(skill.name)) continue;
-    const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text));
+    // Each file as stored and as laid: a SKILL.md is laid as servedSkill writes it, its front matter's values decoded
+    // (a held secret spelled in escapes reads as the secret there), so that text is what is checked too.
+    const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text) || (path === "SKILL.md" && shown.holds(servedSkill(text))));
     if (!skill.files || secret || skill.bytes > room) {
       left.push(shown.name(skill.name));
       continue;
