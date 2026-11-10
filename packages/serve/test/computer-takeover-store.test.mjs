@@ -138,7 +138,15 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     const row = await server.runs.get("run-1");
     return row.state === "ended" && row.runner === null && row;
   }, "the run ended");
-  return { route, answer, hold, live, restart, rows, holdEntries, start, startAsking, startBrowserAsking, read, until, ended, server: () => server };
+  /** The person's take of `run`'s desktop while its first look is still in the shot, applied by the runner (its hold
+   *  pending) before the test lets the look go: the agent's second look is then parked under the person's hand. A look
+   *  let go first can meet a runner that applies the take late (it polls its commands): the second look has run by then,
+   *  the agent says done, and the run ends and lets its desktop go. */
+  const takeInFlight = async (run) => {
+    await route("takeOverRunComputer");
+    await until(async () => run.hold.state() === "pending", "the runner applied the take while the look is in the shot");
+  };
+  return { route, answer, hold, live, restart, rows, holdEntries, start, startAsking, startBrowserAsking, takeInFlight, read, until, ended, server: () => server };
 }
 
 test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, and the Timeline says both at their own times", async (t) => {
@@ -168,7 +176,7 @@ test("two hand-backs of one take-over: the first wins, the second is a 409 in wo
   const world = await setup(t);
   const run = await world.start();
   await world.until(world.live, "the desktop is live");
-  await world.route("takeOverRunComputer");
+  await world.takeInFlight(run);
   run.letGo();
   await world.until(async () => (await world.hold()) === "person", "the person holds the desktop");
 
@@ -191,7 +199,7 @@ test("a take-over survives a server restart: it is read from the store, never fr
   const world = await setup(t);
   const run = await world.start();
   await world.until(world.live, "the desktop is live");
-  await world.route("takeOverRunComputer");
+  await world.takeInFlight(run);
   run.letGo();
   await world.until(async () => (await world.hold()) === "person", "the person holds the desktop");
 
