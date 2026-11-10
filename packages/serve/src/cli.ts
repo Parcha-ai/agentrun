@@ -18,7 +18,7 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { runnerBeside } from "./runner/beside.js";
+import { besideRunnerOptions, runnerBeside } from "./runner/beside.js";
 
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
@@ -40,14 +40,16 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
                     browser, no vendor, no key), for the console's real-browser tests
   --allow-host NAME another Host name to accept (repeatable)
-  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
-                    holds); each run also reserves its harness's memory, and over either a new run is 429
+  --max-runs N      the most runs the runner beside the server holds at once, the rest waiting queued (default
+                    AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds); the capabilities'
+                    max_concurrent_runs says the same
   --documents DIR   a read-only directory of documents a workflow's pdf_pages calls read by file name (default
                     AGENTRUN_SERVE_DOCUMENTS)
   --allow-code-nodes run workflows' code nodes, in the run's process with no sandbox (default off, or
                     AGENTRUN_SERVE_CODE_NODES=1); off, a workflow with one saves with a warning and its runs are refused
-  --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
-                    Docker's 10 s grace); a run cut off resumes at the next start
+  --drain-timeout D how long the runner beside the server lets each busy run finish its turn when the server stops
+                    (default 30s; the image's is 6s, inside Docker's 10 s grace); a run still busy then is stopped and
+                    resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
                     says learning: true starts from what that agent learned and adds to it; off, no run does
   --learning-budget BYTES how much of what an agent learned its run's instructions hold (default
@@ -315,8 +317,11 @@ try {
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
 // every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
-// `agentrun runner --data DIR` processes on the same data directory instead.
+// `agentrun runner --data DIR` processes on the same data directory instead. The runner holds what the server's flags say
+// (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
+// its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
 if (!values["no-runner"]) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
@@ -324,7 +329,7 @@ if (!values["no-runner"]) {
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
@@ -349,7 +354,11 @@ const record = join(resolve(data), SERVER_FILE);
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
   close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
-  stopping: () => serve.stopping(),
+  // The stop's deadline waits out the runner's drain too: the runs it holds finish their turns for up to drainMs.
+  stopping: () => {
+    const { runs, boundMs } = serve.stopping();
+    return runnerProc ? { runs: runs + runnerProc.runner.held().length, boundMs: Math.max(boundMs, drainMs) } : { runs, boundMs };
+  },
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });

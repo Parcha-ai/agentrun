@@ -65,12 +65,12 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs the runner beside the server holds at once ([capacity](#capacity-and-health)); a run past that waits `queued` until one ends. Capabilities report the same number, capped by each harness's memory. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
-| `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
+| `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped and resumes at the next start, its turn's model request sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
@@ -258,14 +258,13 @@ container's limit when it has one (cgroup), else the machine's, less the server'
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
-it, needs a 1 GB instance for one and 2 GB for two. A start that does not fit in what is left is
-`429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
-queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
+it, needs a 1 GB instance for one and 2 GB for two. The runner beside the server holds at most `--max-runs` runs at
+once (below); a run past that waits `queued` until one ends, and is never refused for a place. A harness whose one run needs more than all the memory for runs (claude-agent
 on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses` entry, and
 its runs are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
 
-`--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
-apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
+`--max-runs N` or `AGENTRUN_MAX_RUNS` sets that count (by default, as many as pi runs fit): the runner beside the
+server claims at most that many runs at once, of any harness, and the rest wait queued. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
 (`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
 the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
 memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
