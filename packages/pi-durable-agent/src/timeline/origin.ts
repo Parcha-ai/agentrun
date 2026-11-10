@@ -2,10 +2,10 @@ import type { EntryLike } from "./timeline.js";
 import { obj, str, type Obj } from "./util.js";
 
 /** What fired a trigger: its definition's kind, never what its payload says. */
-export const TRIGGER_SOURCES = ["schedule", "webhook", "slack", "github"] as const;
+export const TRIGGER_SOURCES = ["schedule", "webhook", "slack", "github", "composio"] as const;
 export type TriggerSource = (typeof TRIGGER_SOURCES)[number];
 /** How a trigger's Timeline row names its source: "<label> <trigger>: <its first line>". */
-export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedule: "Schedule", webhook: "Webhook", slack: "Slack", github: "GitHub" };
+export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedule: "Schedule", webhook: "Webhook", slack: "Slack", github: "GitHub", composio: "Composio" };
 
 /** Who wrote a user-role message that the person did not type. The model reads the message as it reads any; only its
  *  attribution differs, so the Timeline never shows it as "You".
@@ -14,7 +14,7 @@ export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedul
  *    the server's row.
  *  - `trigger`: a trigger's firing (its first input, or its message), `trigger_id` the trigger's. `owner` is decided by
  *    the trigger's definition when it fires, never by its payload: true for a schedule (its owner wrote the words when
- *    they set it up), false for a webhook, Slack or GitHub firing, whose words come from outside. */
+ *    they set it up), false for a webhook, Slack, GitHub or Composio firing, whose words come from outside. */
 export type MessageOrigin =
   | { kind: "server"; reason: "cap_raised" | "approval" }
   | { kind: "server"; reason: "approval_declined"; said: string }

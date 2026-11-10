@@ -87,6 +87,12 @@ export type TriggerFailed = { trigger_id: string; name: string; firing_key: stri
  *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
 export type RunTrigger = { id: string; firing_key: string; name?: string };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
+/** An outside service a source's events come from only while it is turned on there (TriggerDeps.remote). Each throws an
+ *  ApiError, in words fit to show, when the service refuses. */
+export type RemoteSource = {
+  attach(source: Source, triggerId: string): Promise<Source>;
+  detach(source: Source, triggerId: string): Promise<void>;
+};
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
   /** Where the triggers and their firings live, and the agents they run as (an archived agent's turn off with it). */
@@ -94,6 +100,10 @@ export type TriggerDeps = {
   /** The refusal of a trigger of source `kind` made or turned on here, when it cannot be (the connection it needs is not
    *  there: GitHub not connected). Undefined, or no such dep, when it can. */
   unavailable?(kind: string): ApiError | undefined;
+  /** For a source whose events an outside service sends only once it is told to (a Composio trigger instance): that
+   *  service, by kind. `attach` turns the source on there while its trigger is to be on, answering the source with what
+   *  the service named it (its instance_ref); `detach` turns it off there. Undefined for a kind with none. */
+  remote?(kind: string): RemoteSource | undefined;
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
@@ -305,11 +315,15 @@ export class Triggers {
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
     const minted = await this.mint(source, id);
     const name = typeof body.name === "string" ? body.name.trim() : id;
+    // Turned on at its outside service (a Composio instance) before it is kept on; turned off there again when the store
+    // refuses it, so no instance outlives a trigger that was never made.
+    const kept = enabled ? await this.attach(source, id) : source;
     let row: TriggerRow;
     try {
-      row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(source));
+      row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(kept));
     } catch (error) {
-      throw (await this.scopeTaken(error, source, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
+      if (kept !== source) await this.detach(kept, id);
+      throw (await this.scopeTaken(error, kept, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
     }
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
@@ -402,6 +416,24 @@ export class Triggers {
     return agent?.archivedAt != null ? `The agent ${agent.name} is archived.` : undefined;
   }
 
+  /** `source` turned on at its outside service for trigger `id` (TriggerDeps.remote), with what the service named it; as
+   *  it is for a source with none. A source that still names an instance (one a turn-off by the server left there) lets
+   *  it go first. */
+  private async attach(source: Source, id: string): Promise<Source> {
+    const remote = this.deps.remote?.(source.kind);
+    if (!remote) return source;
+    if (typeof source.instance_ref === "string") await this.detach(source, id);
+    return remote.attach(withoutInstance(source), id);
+  }
+
+  /** `source`'s instance at its outside service let go, when it names one. Never refused: one the service will not let go
+   *  is said, and its events then name no trigger (answered ignored). */
+  private async detach(source: Source, id: string): Promise<void> {
+    const remote = this.deps.remote?.(source.kind);
+    if (!remote || typeof source.instance_ref !== "string") return;
+    await remote.detach(source, id).catch((error: Error) => this.deps.say({ condition: "trigger_remote_left", trigger: id, instance: String(source.instance_ref), error: error.message }));
+  }
+
   /** Refused as its connection says when a trigger of `kind` cannot be on here (unavailable). */
   private needAvailable(kind: string): void {
     const refusal = this.deps.unavailable?.(kind);
@@ -472,16 +504,27 @@ export class Triggers {
     const agentId = target ? await this.agentOf(target) : trigger.agentId;
     // Turned on, or aimed elsewhere while on: never for an archived agent (the store's own refusal is the backstop).
     if (enabled && (!trigger.enabled || target)) await this.needAgentOn(agentId);
+    // At its outside service: a source turned on, or changed while on, is attached anew before the write; the one it held
+    // there is let go once the write is in (or the new one, when the write is refused). A source turned off lets its
+    // instance go and keeps none.
+    const remote = this.deps.remote?.(trigger.source.kind) !== undefined;
+    const attached = remote && enabled && (source || !trigger.enabled) ? await this.attach(scopeSource, trigger.id) : undefined;
+    const kept = attached ?? (remote && !enabled && trigger.enabled ? withoutInstance(scopeSource) : source);
     const patch: TriggerPatch = {
       ...(agentId !== trigger.agentId ? { agentId } : {}),
-      ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}),
+      ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(kept ? { source: kept } : {}), ...(target ? { target } : {}),
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}),
       ...(settings.max_active_runs !== undefined ? { maxActiveRuns: settings.max_active_runs } : {}), ...again, enabled, nextAt: next,
     };
-    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : []).catch(async (error: unknown) => {
+    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(kept ?? scopeSource) : []).catch(async (error: unknown) => {
+      if (attached) await this.detach(attached, trigger.id);
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
-    if (!row) throw new ApiError("not_found", `no trigger ${id}`);
+    if (!row) {
+      if (attached) await this.detach(attached, trigger.id);
+      throw new ApiError("not_found", `no trigger ${id}`);
+    }
+    if (remote && trigger.enabled && (attached || !enabled)) await this.detach(trigger.source, trigger.id);
     await this.arm();
     return this.view(asTrigger(row));
   }
@@ -489,6 +532,9 @@ export class Triggers {
   async remove(id: string): Promise<void> {
     const trigger = await this.need(id);
     await this.store.triggers.remove(id);
+    // Its instance at its outside service goes with it (one a turn-off left behind too): an event in flight then names no
+    // trigger, and is answered ignored.
+    await this.detach(trigger.source, id);
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
     await this.arm();
   }
@@ -941,6 +987,12 @@ export class Triggers {
     return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
   }
 }
+
+/** `source` without the instance an outside service named for it (TriggerDeps.remote). */
+const withoutInstance = (source: Source): Source => {
+  const { instance_ref: _, ...rest } = source;
+  return rest as Source;
+};
 
 /** A trigger row as the engine reads it: its source and target of their types (create and PATCH check them). */
 const asTrigger = (row: TriggerRow): Trigger => row as Trigger;

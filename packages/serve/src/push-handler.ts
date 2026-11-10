@@ -140,7 +140,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // the same request relabeled is a duplicate there too. One no trigger takes is answered ignored, and said. When a trigger
   // that takes it holds too many firings due, the request is refused (429, Retry-After) though the rest recorded theirs:
   // the sender's retry records it there once it has room, and is the others' duplicate.
-  if (adapter.takes) {
+  if (adapter.takes && !adapter.scopeOf) {
     const fired: { created: boolean; firing: unknown }[] = [];
     let refused: unknown;
     let taken = false;
@@ -167,14 +167,24 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
     return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
   }
   // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:
-  // triggers.ts scope_taken). One no trigger takes is said; one more than one does (a file edited by hand) fires none,
-  // and is said with their ids, so no event fires twice or reaches whichever came first.
+  // triggers.ts scope_taken), when that trigger takes it (its adapter's takes: a Composio trigger's accept); one it does
+  // not take is kept by its key for its day, as an ignored request's. One no trigger takes is said; one more than one does
+  // (a file edited by hand) fires none, and is said with their ids, so no event fires twice or reaches whichever came
+  // first.
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
-    const ids = event.scope === undefined ? [] : await deps.scoped(adapter.id, event.scope);
-    if (ids.length === 1) fired.push(await deps.receive(ids[0]!, event.key, event.text, event.attrs));
+    const ids = event.scope === undefined || event.scope === "" ? [] : await deps.scoped(adapter.id, event.scope);
+    const source = ids.length === 1 && adapter.takes ? await deps.hooked(ids[0]!) : undefined;
+    const skipped = source && adapter.takes!(source, event);
+    if (skipped) {
+      deps.say({ condition: "hook_ignored", source: adapter.id, route, trigger: ids[0]!, reason: skipped, ...(event.event ? { event: event.event } : {}) });
+      await deps.ignored?.(ids[0]!, event.key);
+    } else if (ids.length === 1) fired.push(await deps.receive(ids[0]!, event.key, event.text, event.attrs));
     else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
     else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }
+  // None fired (its trigger deleted or turned off while the event was in flight, or one that does not take it): answered
+  // ignored, never a refusal, which would have the sender retry.
+  if (!fired.length) return { status: 200, body: { ok: "ignored" } };
   return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
 }

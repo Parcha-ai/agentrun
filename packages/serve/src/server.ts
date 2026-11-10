@@ -119,6 +119,8 @@ import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { COMPOSIO_NOT_CONNECTED, composioRemote } from "./composio-triggers.js";
+import type { ComposioTriggers } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinWords } from "./tool-gate.js";
@@ -352,6 +354,9 @@ export type ServeOptions = {
   store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;
   /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
   triggerAdapters?: readonly TriggerAdapter[];
+  /** The tools plane's Composio trigger half (trigger-composio.ts ComposioTriggers): which turns a Composio trigger's
+   *  instance on and off, and subscribes the project's webhook. None: a Composio trigger is refused (not connected). */
+  composioTriggers?: ComposioTriggers;
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
    *  (default https://api.github.com: github.ts GITHUB_API). */
   githubApi?: string;
@@ -1364,6 +1369,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // is a server secret while it may be in use.
   mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
+  // A Composio trigger's instance at Composio, one for the server: its subscribe is made once, whoever asks first.
+  const composioSource = options.composioTriggers ? composioRemote(options.composioTriggers, triggerSettings.get("composio"), options.publicUrl) : undefined;
   const triggers: Triggers = new Triggers({
     // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
     // (startServe's `store`).
@@ -1371,7 +1378,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clock: options.triggerClock,
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
-    unavailable: (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : undefined),
+    unavailable: (kind) =>
+      kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).")
+      : kind === "composio" && !options.composioTriggers ? new ApiError("composio_not_connected", COMPOSIO_NOT_CONNECTED)
+      : undefined,
+    // A Composio trigger's instance at Composio, turned on and off with it (composio-triggers.ts).
+    remote: (kind) => (kind === "composio" ? composioSource : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
     // (trigger-targets.ts, over the run write half and the run view): targetIssues, start, message, statusOf, runOf. The

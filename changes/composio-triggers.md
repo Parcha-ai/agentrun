@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent
+kind: feature
+---
+Composio triggers: a trigger with `source: {kind: "composio", trigger_slug, connection_ref, config?, accept?}` starts a run for each event of a Composio trigger type on a connected account. The trigger turns its instance on at Composio while it is on, and off when it is turned off or deleted; the first one subscribes the project's webhook to `/v2/hooks/composio` and seals its secret. Each event is checked by Composio's signature before its body is read, fires once per `webhook-id`, and hands its run the event's data as untrusted input; one for another user, an instance no trigger holds, or one its `accept` does not take is answered ignored. Refusals: `409 composio_not_connected`, `409 composio_no_public_url`, `424 upstream_failed`. The Composio calls themselves are the tools plane's (TP-07); until it lands, the server takes them as `startServe({composioTriggers})`. A run's Timeline names the source "Composio".

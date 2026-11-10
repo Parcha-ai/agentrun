@@ -12,11 +12,11 @@ const WEBHOOK = { kind: "trigger", trigger_id: "trg_1", source: "webhook", owner
 const SCHEDULE = { kind: "trigger", trigger_id: "trg_2", source: "schedule", owner: true };
 
 test("a trigger origin is read only in its own shape: a string id, a known source, a boolean owner", () => {
-  for (const source of ["schedule", "webhook", "slack", "github"]) for (const owner of [true, false]) {
+  for (const source of ["schedule", "webhook", "slack", "github", "composio"]) for (const owner of [true, false]) {
     const origin = { kind: "trigger", trigger_id: "trg_1", source, owner };
     assert.deepEqual(originOf(origin), origin, `${source}, owner ${owner}`);
   }
-  assert.deepEqual(timeline.TRIGGER_SOURCES, ["schedule", "webhook", "slack", "github"]);
+  assert.deepEqual(timeline.TRIGGER_SOURCES, ["schedule", "webhook", "slack", "github", "composio"]);
   assert.deepEqual(originOf({ ...WEBHOOK, extra: "dropped" }), WEBHOOK, "read as its four fields");
   for (const [bad, why] of [
     [{ ...WEBHOOK, source: "email" }, "an unknown source"],

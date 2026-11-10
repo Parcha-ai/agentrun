@@ -1849,6 +1849,29 @@ expires, so a long run's calls never carry an expired token. When that mint fail
 it expires; then the run's calls of that server are answered, unsent, that its GitHub App token expired and a new one
 could not be made, with GitHub's reason, and the next launch (a resume) mints a fresh one.
 
+### Composio triggers
+
+A trigger with `source: {kind: "composio", trigger_slug, connection_ref, config?, accept?}` starts a run for each event of
+a Composio trigger type (`SLACK_CHANNEL_MESSAGE_RECEIVED`, `GITHUB_PULL_REQUEST_EVENT`: Composio's
+`/api/v3.1/triggers_types`) on one connected account (`ca_...`), with the type's `config_schema` filled in as `config`.
+While the trigger is on, its instance is on at Composio (`instance_ref`, `ti_...`, in the trigger's view); turned off or
+deleted, the instance is turned off there, and a source changed while on swaps it for a new one. The first Composio
+trigger subscribes the project's one webhook to `https://<the server's public address>/v2/hooks/composio` and keeps its
+secret sealed, never shown; with no public address (`AGENTRUN_PUBLIC_URL`) it is `409 composio_no_public_url`, with no
+Composio connection `409 composio_not_connected`, and a refusal from Composio is `424 upstream_failed` in its words, with
+nothing kept. Composio's calls are the tools plane's (its key, its connections); this server only takes the events.
+
+`/v2/hooks/composio` takes the push handler's fixed order: Composio's `webhook-id`, `webhook-timestamp` (within 5 minutes)
+and `webhook-signature` (`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">`, keyed by the secret's
+UTF-8 bytes) are checked before the body is read as JSON, and any request that fails, or reaches a server with no
+Composio trigger yet, is the one `401`. A verified event is one firing per `webhook-id` (the same on Composio's retries),
+for the trigger whose instance it names (`metadata.trigger_id`), and its run gets the event's `data`, cut at 16 KiB,
+inside `<trigger-payload source="composio" event="<trigger_slug>" connection="ca_..." log_id="..." untrusted>`. One for
+another Composio user id than this server's, one naming no trigger's instance (one turned off while the event was in
+flight), a payload other than V3, and one the trigger's `accept` does not take (`event` is the trigger slug, `where`
+reads the event's data) are answered `200 {ok: "ignored"}` and said. Each event starts its own run
+(`max_active_runs` bounds them), and Composio bills each delivered event to the owner's plan, so it is not metered here.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
