@@ -36,6 +36,9 @@ End your reply with exactly one fenced json block and nothing after it:
 export const GRADER_CAP_USD = 0.5;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
+/** How long a run may stay queued, no runner having taken it, before the eval stops waiting on it: it fails by that
+ *  name, its state when the wait gave up, never by the run's whole timeout. */
+export const QUEUE_TIMEOUT_MS = 2 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
@@ -537,9 +540,11 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
  *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
-async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<{ status: string; rows: Json[]; waiting?: string }> {
+async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
+  // A run nobody takes stays queued: given up on after queueTimeoutMs, by name, never left to the whole deadline.
+  const queuedUntil = Date.now() + queueTimeoutMs;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
@@ -557,9 +562,13 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       const waiting = rows.findLast((row) => row.kind === "waiting");
       return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
     }
+    if (status === "queued" && Date.now() > queuedUntil) {
+      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+      return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s: no runner took it (state ${String(page.state)}), and it was cancelled` };
+    }
     if (Date.now() > deadline) {
       await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows };
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - (queuedUntil - queueTimeoutMs)) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
     }
     if (page.has_more !== true && page.unchanged === true) await sleep(250);
   }
@@ -620,6 +629,8 @@ export type EvalOptions = {
   graderModel?: string;
   /** How long one run may take (default RUN_TIMEOUT_MS). */
   runTimeoutMs?: number;
+  /** How long one run may stay queued with no runner taking it (default QUEUE_TIMEOUT_MS). */
+  queueTimeoutMs?: number;
   /** Told each step as one line (the CLI's stderr). */
   log?: (line: string) => void;
   /** Stops the eval: the run in progress is cancelled, what the eval made is cleaned up as at its end, and the eval
@@ -671,7 +682,22 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
       removeTree(scratch!);
       throw error;
     });
-    close = () => serve.close();
+    // A runner beside it on the same data (the CLI start's server-and-runner, runner/beside.ts): a server alone takes runs
+    // and leaves them queued, since on the one store a runner claims and runs each. Its runs' environment is this
+    // process's, with the server's faux when the eval gave one (server.ts fauxEnvOf), so a faux eval never reaches a model.
+    const { runnerBeside } = await import("./runner/beside.js");
+    const { fauxEnvOf } = await import("./server.js");
+    const { withoutFaux } = await import("./model.js");
+    const serveOptions = options.serve ?? {};
+    const beside = await runnerBeside(join(scratch!, "data"), serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}).catch(async (error: unknown) => {
+      await serve.close();
+      removeTree(scratch!);
+      throw error;
+    });
+    close = async () => {
+      await beside.close();
+      await serve.close();
+    };
     api = apiOf(serve.baseUrl, serve.token);
   }
   const results: CaseResult[] = [];
@@ -714,7 +740,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     server: options.server ? { kind: "remote", base_url: v2Base(options.server.baseUrl) } : { kind: "in_process" },
     grader_model: options.graderModel ?? null,
     started_at: started, finished_at: new Date().toISOString(),
-    pass: results.every((c) => c.pass), passed: results.filter((c) => c.pass).length, cases: results,
+    pass: exitCodeOf({ cases: results }) === 0, passed: results.filter((c) => c.pass).length, cases: results,
     cost_usd: { runs: runCost, graders: graderCost, total: sum([runCost, graderCost]), unknown: runs.filter((r) => r.run_id && r.cost_usd === null).length + graders.filter((g) => g.run_id && g.cost_usd === null).length },
   };
 }
@@ -799,7 +825,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
 async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string): Promise<RunResult> {
   const { api, options } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
-  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
+  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal, options.queueTimeoutMs);
   const view = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
   await settle(ctx, runId, ended.status);
@@ -823,7 +849,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const pending = isObject(view.pending) && typeof view.pending.kind === "string" ? view.pending.kind : undefined;
   const asked = ended.status === "input_required" && (pending === "question" || pending === "approval");
   const graded = ended.status === "completed" || asked;
-  const error = ended.status === "timed_out" ? `the run took longer than ${Math.round((options.runTimeoutMs ?? RUN_TIMEOUT_MS) / 1000)} s and was cancelled`
+  const error = ended.status === "timed_out" ? (ended.why ?? `the run took longer than ${Math.round((options.runTimeoutMs ?? RUN_TIMEOUT_MS) / 1000)} s and was cancelled`)
     : ended.status === "input_required" && pending === "budget" ? `the run reached its cap${one.maxCostUsd !== undefined ? ` of $${one.maxCostUsd}` : ""} and paused there`
     : asked ? `the run waited on a person (${ended.waiting}); graded as it stood`
     : !graded ? `the run ended ${ended.status}${pending ? ` (${pending})` : ""}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
@@ -856,14 +882,14 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
 async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pass: boolean; reason: string; cost_usd: number | null; run_id?: string }> {
   const { api, options } = ctx;
   const runId = await startRun(ctx, agentId, { input: { content: input } }, "starting a grader run");
-  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
+  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal, options.queueTimeoutMs);
   const view = expectOk(`reading grader run ${runId}`, await api("GET", `/runs/${runId}`));
   await settle(ctx, runId, ended.status);
   options.signal?.throwIfAborted();
   const cost = costOf(view);
   const answer = isObject(view.result) && typeof view.result.final_answer === "string" ? view.result.final_answer : "";
   const verdict = ended.status === "completed" ? verdictOf(answer) : undefined;
-  if (!verdict) return { pass: false, reason: ended.status === "completed" ? `the grader's answer was not {pass, reason}: ${answer.slice(0, 200)}` : `the grader run ended ${ended.status}`, cost_usd: cost, run_id: runId };
+  if (!verdict) return { pass: false, reason: ended.status === "completed" ? `the grader's answer was not {pass, reason}: ${answer.slice(0, 200)}` : (ended.why ? `the grader run: ${ended.why}` : `the grader run ended ${ended.status}`), cost_usd: cost, run_id: runId };
   return { ...verdict, cost_usd: cost, run_id: runId };
 }
 
@@ -917,8 +943,26 @@ async function startRun(ctx: Ctx, agentId: string, body: Json, what: string): Pr
 
 /** A run waited for, as it stands: one that ended is forgotten, any other (waiting on a person, timed out) cancelled. */
 async function settle(ctx: Ctx, runId: string, status: string): Promise<void> {
-  if (!ENDED.includes(status)) await ctx.api("POST", `/runs/${runId}/cancel`, {});
+  if (!ENDED.includes(status)) await cancelled(ctx.api, runId);
   ctx.made.runs.delete(runId);
+}
+
+/** How long a cancelled run is waited on to end: a runner takes a cancel at its next step, so the run is not ended at
+ *  the answer to the request. One still not ended past it is left as the server holds it (a queued run no runner
+ *  claims never ends), never waited on longer. */
+export const CANCEL_WAIT_MS = 30_000;
+
+/** `runId` cancelled and waited on until it has ended, at most CANCEL_WAIT_MS: so a run the eval stops has stopped by the
+ *  time the eval goes on, or exits. */
+async function cancelled(api: Api, runId: string): Promise<void> {
+  await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+  const until = Date.now() + CANCEL_WAIT_MS;
+  while (Date.now() < until) {
+    const read = await api("GET", `/runs/${runId}`).catch(() => undefined);
+    if (!read || read.status !== 200 || !isObject(read.body)) return;
+    if (ENDED.includes(String(read.body.status))) return;
+    await sleep(500);
+  }
 }
 
 /** Every trigger in `made.triggers` deleted; `strict`, one the server refuses to delete fails the case. */
@@ -934,7 +978,7 @@ async function deleteTriggers(api: Api, made: Made, strict = false): Promise<voi
  *  trigger deleted. Best effort: a cleanup that fails never hides why the eval stopped. */
 async function cleanUp(api: Api, made: Made): Promise<void> {
   for (const id of [...made.runs]) {
-    await api("POST", `/runs/${id}/cancel`, {}).catch(() => undefined);
+    await cancelled(api, id);
     made.runs.delete(id);
   }
   await deleteTriggers(api, made).catch(() => undefined);
@@ -960,6 +1004,10 @@ function removeTree(dir: string): void {
 
 const usd = (value: number) => `$${value > 0 && value < 0.01 ? value.toFixed(6) : value.toFixed(4)}`;
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
+
+/** The eval's exit code from its report (the CLI's, agentrun-serve eval-template): 0 when every case passed, 1 when
+ *  any case failed, however many passed beside it. (2: nothing ran, and 130: stopped, are the CLI's own.) */
+export const exitCodeOf = (report: Pick<Report, "cases">): 0 | 1 => (report.cases.every((c) => c.pass) ? 0 : 1);
 
 /** The report as markdown: a line per case, then each failure with every grader that failed and why. */
 export function markdownReport(report: Report): string {

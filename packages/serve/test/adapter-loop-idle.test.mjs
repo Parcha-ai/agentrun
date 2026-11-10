@@ -58,6 +58,7 @@ test("a session that reads idle once its turn is sent: the run waits for the tur
     adapter: idleOnSend("lookup"),
     session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
     input: "Find it.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
     hooks: quiet,
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...TIMING });

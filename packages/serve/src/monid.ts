@@ -15,9 +15,7 @@
 // under a cap a run is refused before it is sent unless the run's spend plus what it is held at fits. discover and
 // inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
-import { writeInWork } from "./workspace.js";
+import { localWorkspace, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
@@ -25,7 +23,7 @@ import { registerLabel, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";
-import { holdRefusal, settleOnRoot, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, settleOnRoot, writeHold } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -156,24 +154,21 @@ export function monidClient(options: MonidOptions) {
   };
 }
 
-/** `answer` as the model reads it: JSON, cut at CLIP characters, the whole then filed under `work`'s evidence/monid/
- *  (by run id, else by `label` and the time) and the cut saying where. A copy that cannot be filed (a full disk) still
- *  answers, cut and saying so: the answer may have been paid for. */
-export async function monidText(answer: MonidAnswer, work: string, label: string): Promise<string> {
+/** `answer` as the model reads it: JSON, cut at CLIP characters, the whole then filed in the run's evidence/monid/
+ *  through its Workspace (by run id, else by `label` and the time) and the cut saying where. A copy that cannot be filed
+ *  (a full disk, a link in the way, which the Workspace never writes through) still answers, cut and saying so: the
+ *  answer may have been paid for. */
+export async function monidText(answer: MonidAnswer, work: Workspace, label: string): Promise<string> {
   const text = JSON.stringify(answer);
   if (text.length <= CLIP) return text;
   const runId = typeof answer.runId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(answer.runId) ? answer.runId : undefined;
   const name = `${runId ?? `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`}.json`;
   const cut = `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; `;
   try {
-    // Never through a link a box's command planted in work/ (workspace.ts). An answer filed already keeps its file;
-    // anything else in its place (a planted link) is no filing, and the answer says it could not be saved.
-    await writeInWork(work, ["evidence", "monid"], name, text).catch(async (error: NodeJS.ErrnoException) => {
-      if (error.code !== "EEXIST" || !(await lstat(join(work, "evidence", "monid", name)).then((held) => held.isFile(), () => false))) throw error;
-    });
+    await work.write(`evidence/monid/${name}`, text);
   } catch (error) {
-    // The error's code only (ENOSPC, ENOTDIR): its message names the server's paths.
-    return `${cut}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;
+    // The Workspace's code and the port's line for it, never the error's message, which names paths.
+    return `${cut}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
   }
   return `${cut}the whole answer is in the run's files at evidence/monid/${name}]`;
 }
@@ -211,8 +206,15 @@ const SPECS: Record<Kind, { summary: string; description: string; properties: Js
  *  purpose. A crash between sending a run and recording its charge leaves the cap counting it, so a cap errs toward
  *  refusing sooner, never toward passing unseen. */
 export const MONID_RUN_ALLOWANCE_USD = 1;
-/** Each endpoint's per-call price in USD, as an inspect in this run's process quoted it. */
-const quoted = new Map<string, number>();
+/** Each run's quotes, by the environment its calls are given (one object per run: main's run process hands process.env,
+ *  the runner hands each claim its own), so one run's inspect never prices another run's call. */
+const quotesByRun = new WeakMap<NodeJS.ProcessEnv, Map<string, number>>();
+/** Each endpoint's per-call price in USD, as an inspect in the run whose calls are given `env` quoted it. */
+const quotesOf = (env: NodeJS.ProcessEnv): Map<string, number> => {
+  let quotes = quotesByRun.get(env);
+  if (!quotes) quotesByRun.set(env, (quotes = new Map()));
+  return quotes;
+};
 const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
 /** A record on the run's root, where its spend is read on every harness (cap.ts, harness-app.ts). */
 const record = (api: ToolExecutionApi, kind: string, data: Record<string, string | number | null>, context: Context) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
@@ -223,7 +225,7 @@ const record = (api: ToolExecutionApi, kind: string, data: Record<string, string
  *  allowance) and settled by its charge (TOOL_COST): a crash between the two leaves the cap counting the held figure
  *  and the run's cost unknown, never $0. pi binds it (monidTool); another harness runs it as a host tool
  *  (host-tools.ts), whose `api` commits to the run's store as pi's does. */
-export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => string): ToolRegistration {
+export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration {
   const { description, properties, required, replay } = SPECS[kind];
   return defineTool({
     name: wireName(`monid.${kind}`), description, replay,
@@ -234,7 +236,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const call = () => client[kind](args as never, context?.abortSignal);
       const label = { tool: "monid.run", charged_by: "monid", call: api.callId };
       // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
-      const quote = quoted.get(quoteKey(args));
+      const quote = quotesOf(env).get(quoteKey(args));
       const held = quote ?? MONID_RUN_ALLOWANCE_USD;
       const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
       const send = async (): Promise<MonidAnswer> => {
@@ -252,11 +254,20 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
         await (settleOnRoot(TOOL_COST, settle) ?? record(api, TOOL_COST, settle, context)).catch(() => undefined);
         return answer;
       };
-      const paid = kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
+      // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at the same figure and settled at the same charge
+      // ($0 when monid charged nothing, at its hold when it may have and did not say), in place of this process's spend.
+      const onLedger = kind === "run" ? paidLedger() : undefined;
+      const paid = onLedger
+        ? await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis, by: label.charged_by }, call, (outcome) => {
+          if (!("result" in outcome)) return null;
+          const usd = chargeOf(outcome.result);
+          return usd === undefined ? 0 : usd;
+        })
+        : kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
       if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
       const answer = paid.result;
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;
-      if (price?.currency === "USD") quoted.set(quoteKey(args), price.value);
+      if (price?.currency === "USD") quotesOf(env).set(quoteKey(args), price.value);
       const cost = money(answer.cost);
       return forModel(await monidText(answer, work(), kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
     },
@@ -264,7 +275,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
 }
 
 /** The three, as another harness's host tools. */
-export const monidTools = (env: NodeJS.ProcessEnv, work: () => string): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
+export const monidTools = (env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
 
 /** The table's entry for `monid.<kind>`: it needs MONID_API_KEY, and no workflow node names it yet. */
 export const monidTool = (kind: Kind): ToolEntry => ({
@@ -272,7 +283,9 @@ export const monidTool = (kind: Kind): ToolEntry => ({
   needs: [MONID_KEY_ENV],
   nodes: false,
   bind: async (host) => {
-    const tool = monidRegistration(kind, host.env, () => host.where.work);
+    // An answer too long for the model is filed in the run's own Workspace (in Mode 2, on the run's disk, where its read
+    // looks), else in the local folder the run works in.
+    const tool = monidRegistration(kind, host.env, () => host.workspace ?? localWorkspace(host.where.work));
     const extension = defineExtension({ name: `monid-${kind}`, tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };

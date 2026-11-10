@@ -62,7 +62,7 @@ async function cappedRun(t, script, first = {}) {
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
     cap: runCap,
-    beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => SONNET }),
+    runCap: ({ capUsd: () => capUsd, modelOf: () => SONNET }),
   }), { restartLimit: MAX_RESTARTS });
   // A lease no stall of a loaded machine outlasts: the run moves between runners here by its park's release, never by a
   // lease that ran out, and a claim lost and retaken would hand the resume to a loop these tests do not count.

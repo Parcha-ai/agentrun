@@ -36,7 +36,12 @@
  * what it says is a model request, as Codex's is: a POST to the provider's
  * `base_url` + `/responses` from `config.toml` (the drive's gateway proxy, in
  * front of a scripted model), with the provider's
- * `env_key` as its bearer key, streamed back piece by piece.
+ * `env_key` as its bearer key, streamed back piece by piece. With
+ * `FAKE_CODEX_MODEL=responses` the model drives the whole turn, as Codex's
+ * does: each step sends the thread's history and dynamic tools, and a
+ * `function_call` it answers is called (`modelTurn`). An answer that ends
+ * `response.incomplete` is a stream error retried after a backoff, as
+ * Codex 0.164's is ("Incomplete response returned, reason: ...").
  *
  * For the sandbox tier's tests (docs/workspaces.md §11.4 A6) it also plays
  * the parts of Codex the harness relies on there:
@@ -204,6 +209,92 @@ async function stream(text, onPiece) {
   throw new Error('the model stream was cut');
 }
 
+/**
+ * `FAKE_CODEX_MODEL=responses`: the turn is the provider's model's, as Codex's is. Each step sends the thread's history (its
+ * `response_item` payloads, in order) and its dynamic tools to the provider's `/responses`, then does what the answer says: a
+ * `function_call` calls that dynamic tool (its line, `item/tool/call`, its output) and asks the model again; text is said and
+ * ends the turn. A resumed thread's history is the rollout it resumed, so the model picks up where it was.
+ */
+/** Codex's stream retries (its `stream_max_retries` default), and what modelTurn returns for a turn interrupted between them. */
+const STREAM_RETRIES = 5;
+const INTERRUPTED = Symbol('interrupted');
+
+async function modelTurn(turnId) {
+  let retries = 0;
+  for (;;) {
+    const input = thread.lines.filter((l) => l.type === 'response_item').map((l) => l.payload);
+    const tools = thread.dynamicTools.map((t) => ({ type: 'function', name: t.name, description: t.description ?? '', parameters: t.inputSchema ?? { type: 'object', properties: {} } }));
+    const res = await fetch(`${modelBase()}/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/event-stream', authorization: `Bearer ${modelKey()}`, originator: 'codex_cli_rs', version: '0.160.0', session_id: thread.id },
+      body: JSON.stringify({ model: modelId(), input, tools, stream: true, store: false }),
+    });
+    if (!res.ok || !res.body) throw new Error(`the model answered ${res.status}`);
+    let text = '';
+    let call;
+    let completed = false;
+    let incomplete;
+    // The answer's text, told as it comes (Codex's item/agentMessage/delta), its item started at the first piece.
+    const itemId = `msg_${randomUUID().slice(0, 8)}`;
+    let started = false;
+    const piece = (delta) => {
+      if (!started) notify('item/started', { threadId: thread.id, turnId, item: { type: 'agentMessage', id: itemId, text: '' } });
+      started = true;
+      if (delta) notify('item/agentMessage/delta', { threadId: thread.id, turnId, itemId, delta });
+    };
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      for (let at = buffer.indexOf('\n\n'); at >= 0; at = buffer.indexOf('\n\n')) {
+        const data = buffer.slice(0, at).split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n');
+        buffer = buffer.slice(at + 2);
+        if (!data || data === '[DONE]') continue;
+        const event = JSON.parse(data);
+        if (event.type === 'response.output_text.delta') {
+          text += event.delta ?? '';
+          piece(event.delta ?? '');
+        } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') call = event.item;
+        else if (event.type === 'response.completed') completed = true;
+        else if (event.type === 'response.incomplete') incomplete = event.response?.incomplete_details?.reason ?? 'unknown';
+      }
+    }
+    if (incomplete) {
+      // As Codex 0.164 does: an incomplete response is a stream error ("Incomplete response returned, reason: ..."), retried
+      // after a backoff up to its stream retries; a turn/interrupt meanwhile ends the turn there, interrupted. The answer's
+      // item never completes: no line of it is written.
+      const message = `Incomplete response returned, reason: ${incomplete}`;
+      if (retries >= STREAM_RETRIES) throw new Error(message);
+      retries++;
+      notify('error', { threadId: thread.id, turnId, error: { message }, willRetry: true });
+      await sleep(200 * 2 ** (retries - 1));
+      if (active?.interrupted) return INTERRUPTED;
+      continue;
+    }
+    if (!completed) throw new Error('the model stream was cut');
+    if (call) {
+      const callId = call.call_id;
+      const tool = call.name;
+      let args = {};
+      try {
+        args = call.arguments ? JSON.parse(call.arguments) : {};
+      } catch {}
+      write('response_item', { type: 'function_call', name: tool, arguments: call.arguments ?? '{}', call_id: callId });
+      notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
+      const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
+      const out = result.contentItems?.map((c) => c.text).join('') ?? '';
+      write('response_item', { type: 'function_call_output', call_id: callId, output: out });
+      notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status: result.success ? 'completed' : 'failed' } });
+      continue;
+    }
+    piece('');
+    write('event_msg', { type: 'item_completed', thread_id: thread.id, turn_id: turnId, item: { type: 'AgentMessage', id: itemId, content: [{ type: 'Text', text }] } });
+    write('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+    notify('item/completed', { threadId: thread.id, turnId, item: { type: 'agentMessage', id: itemId, text } });
+    return text;
+  }
+}
+
 async function say(turnId, text) {
   const itemId = `msg_${randomUUID().slice(0, 8)}`;
   notify('item/started', { threadId: thread.id, turnId, item: { type: 'agentMessage', id: itemId, text: '' } });
@@ -248,7 +339,16 @@ async function runTurn(turnId, clientId, text) {
   // `FAKE_CODEX_TAMPER=shrink|replace`: every turn tampers (a model under danger-full-access that keeps at it).
   const tamper = /^tamper\s+(shrink|replace)$/.exec(trimmed) ?? (process.env.FAKE_CODEX_TAMPER ? [null, process.env.FAKE_CODEX_TAMPER] : null);
   const lag = process.env.FAKE_CODEX_LAG === '1';
-  if (trimmed === 'compact') {
+  if (process.env.FAKE_CODEX_MODEL === 'responses') {
+    last = await modelTurn(turnId);
+    if (last === INTERRUPTED) {
+      // `turn/interrupt` between a stream's retries: the turn ends there.
+      write('event_msg', { type: 'turn_aborted', turn_id: turnId, reason: 'interrupted' });
+      active = undefined;
+      notify('turn/completed', { threadId: thread.id, turn: { id: turnId, status: 'interrupted', error: null, items: [] } });
+      return;
+    }
+  } else if (trimmed === 'compact') {
     // Codex's compaction: the history replaced by its summary, then the turn goes on.
     write('compacted', { message: 'Summary of the conversation so far.', replacement_history: thread.lines.filter((l) => l.type === 'response_item' && l.payload?.type === 'message').map((l) => l.payload) });
     last = 'compacted';

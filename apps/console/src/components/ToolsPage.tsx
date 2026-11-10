@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
-import { PerHarness, ToolTable, toolRows } from "@/components/ToolSettings";
+import { PerHarness, PinNote, ToolTable, toolRows } from "@/components/ToolSettings";
 import { type Client, ClientError } from "@/lib/client";
 import { issuesFor, ownSettings, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import type { ApiError, ToolSettings } from "@/lib/v2";
@@ -45,6 +45,8 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
   // What the table shows: the settings read, with a change not saved yet on top.
   const own = unsaved ? unsaved(read) : read;
   const rows = toolRows(choices, gates);
+  // The tools this server pins (an MCP tool's pin bounds its calls), or whose pin doesn't read, by settings key.
+  const pinned = Object.entries(own).filter(([, s]) => s?.pin || s?.pin_broken);
   // Capabilities' word on what a tool resolves to holds only for the permission they were read with: one changed since
   // (deny: unavailable; ask: no search that can't wait) resolves once they are read again.
   const readFor = (name: string) => { const g = gates.find((x) => x.name === name); return !g || (own[name]?.permission ?? g.default_permission) === g.permission; };
@@ -114,6 +116,20 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
             </div>
           )}
         </section>
+        {pinned.length > 0 && (
+          <section aria-label="Pinned tools">
+            <h2 className="caps text-[12px] font-semibold">Pinned tools</h2>
+            <p className="mt-1 text-[13px] text-muted-foreground">A pin bounds a tool's calls for every agent on this server, its own pin beside it.</p>
+            <ul className="mt-2 border">
+              {pinned.map(([name, setting]) => (
+                <li key={name} data-pin={name} className="border-b px-3 py-2.5 last:border-b-0">
+                  <p className="font-mono text-[13px]">{name}</p>
+                  <PinNote setting={setting} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </div>
   );

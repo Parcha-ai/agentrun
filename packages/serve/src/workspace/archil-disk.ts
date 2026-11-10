@@ -31,8 +31,9 @@
 //   line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1).
 import type { Archil as ArchilClient, Disk as SdkDisk } from "disk";
 
-/** One object of a listing: its whole key, and its size in bytes. */
-export type ArchilObject = { readonly key: string; readonly size: number };
+/** One object of a listing: its whole key, its size in bytes, and its time (S3's lastModified, in ms) when the listing
+ *  gives one. */
+export type ArchilObject = { readonly key: string; readonly size: number; readonly mtimeMs?: number };
 /** One page of a listing: objects at that level, and the "<prefix>…/" directories below it (with a delimiter). */
 export type ArchilListPage = { readonly objects: readonly ArchilObject[]; readonly commonPrefixes: readonly string[]; readonly next?: string };
 export type ArchilGrepRequest = {
@@ -307,7 +308,10 @@ class SdkArchilDisk implements ArchilDisk {
       recursive: options.recursive, singlePage: true, ...(options.token === undefined ? {} : { continuationToken: options.token }),
     });
     const next = page.isTruncated ? page.nextContinuationToken : undefined;
-    return { objects: page.objects.map(({ key, size }) => ({ key, size })), commonPrefixes: page.commonPrefixes, ...(next === undefined ? {} : { next }) };
+    return {
+      objects: page.objects.map(({ key, size, lastModified }) => ({ key, size, ...(lastModified === undefined ? {} : { mtimeMs: lastModified.getTime() }) })),
+      commonPrefixes: page.commonPrefixes, ...(next === undefined ? {} : { next }),
+    };
   }
 
   async grep(request: ArchilGrepRequest): Promise<ArchilGrepAnswer> {

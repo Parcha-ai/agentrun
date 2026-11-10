@@ -60,5 +60,7 @@ const agent = await rec("learning.off-agent", "GET", "/agents/release-notes");
 await rec("learning.off-view", "GET", "/agents/release-notes/learning");
 await rec("learning.off-runs", "GET", "/agents/release-notes/runs?limit=50");
 await rec("learning.off-switch", "PUT", "/agents/release-notes/definition", { body: { definition: { ...agent.body.definition, learning: true, version: agent.body.revisions + 1 }, note: "Learning on" }, headers: { "if-match": agent.etag } });
+// The agent read again after the switch, as its page reads it (the definition save answers no `tools`).
+await rec("learning.off-agent-after", "GET", "/agents/release-notes");
 await rec("learning.off-view-after", "GET", "/agents/release-notes/learning");
 process.stdout.write("recorded\n");

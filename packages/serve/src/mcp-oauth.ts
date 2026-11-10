@@ -9,6 +9,8 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens, StoredOAuthClientInformation } from "@modelcontextprotocol/client";
 import { ApiError } from "./errors.js";
+import { hostKey } from "./mcp-meta.js";
+import { localAddresses, PRIVATE_HOSTS_PAGE, privateAllowed } from "./mcp-private-hosts.js";
 
 /** The authorization server sends the owner's browser back here; it holds no credential, so it takes none. */
 export const OAUTH_CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
@@ -19,7 +21,8 @@ export const MCP_SETTINGS_PAGE = "/#/settings/mcp";
 /** What a person is told when a sign-in no longer works. */
 export const SIGN_IN_AGAIN = "sign in again in Settings → MCP servers";
 const STATE_MS = 10 * 60_000;
-const MAX_PENDING = 64;
+/** The most sign-ins that may be in flight at once: the in-memory map evicts to it, and the store-backed one refuses past it. */
+export const MAX_PENDING = 64;
 const REQUEST_MS = 15_000;
 /** How long a token refresh's request may take: a run's start waits for it, two tries at most (mcp-servers.ts), so an
  *  authorization server that never answers holds a start's answer no more than about eight seconds, well under a
@@ -29,19 +32,35 @@ export const REFRESH_REQUEST_MS = 4_000;
 export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 /** What is sealed: the tokens and all a refresh needs. */
 export type TokenSet = { tokens: OAuthTokens; obtained_at: string; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
-type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+/** `keptFor`: the authorization server (its issuer) a client kept from an earlier sign-in was registered at; the client is
+ *  used again only when discovery finds that same one (else it is dropped, and the sign-in registers anew). */
+export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; keptFor?: string; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+
+/** The authorization server a discovery found, by its issuer (its metadata's, else its URL). */
+export const issuerOf = (state: { authorizationServerUrl?: string; authorizationServerMetadata?: { issuer?: string } } | undefined): string | undefined => state?.authorizationServerMetadata?.issuer ?? state?.authorizationServerUrl;
+
+/** Where sign-ins in flight are kept between start and callback. The default is in-memory (one server per process); the
+ *  store-backed server (mcp-servers-store.ts) passes one over store.mcpOauth, so a sign-in survives a restart and the
+ *  verifier is sealed at rest. `set` evicts what has expired (and enforces the cap) before it writes. */
+export interface PendingStore {
+  set(state: string, entry: Pending): Promise<void>;
+  take(state: string): Promise<Pending | undefined>;
+}
 
 const sdk = () => import("@modelcontextprotocol/client");
 /** How the authorization server of an MCP server off loopback is reached: every address a name resolves to, and a
  *  request dialled at the one address that was checked. Tests give their own; the default is the system resolver and
- *  undici dialled through pi-browser's pinnedLookup. */
+ *  undici dialled through pi-browser's pinnedLookup. `local`: this machine's own addresses, never dialled even for a
+ *  host the owner allows on a private network; omitted, this machine's network interfaces' (localAddresses). */
 export type OAuthNetwork = {
   lookup(host: string): Promise<string[]>;
   fetch(url: string, init: RequestInit, address: string): Promise<Response>;
+  local?(): readonly string[];
 };
 const MAX_ANSWER_BYTES = 2 ** 20;
 export const systemNetwork: OAuthNetwork = {
   lookup: async (host) => (await dns.lookup(host, { all: true })).map((one) => one.address),
+  local: localAddresses,
   // Dialled at `address` whatever the name resolves to by then (pinnedLookup answers it for every name), and read
   // whole (at most MAX_ANSWER_BYTES) before the connection closes.
   async fetch(url, init, address) {
@@ -65,38 +84,70 @@ export const systemNetwork: OAuthNetwork = {
   },
 };
 
+/** A request the address check refused before anything was sent (checked's words): no try again reaches it. */
+export class EndpointRefused extends Error {
+  override name = "EndpointRefused";
+}
+
+/** A request that provably never left: its address check outlived its time or was stopped, or its connection was refused
+ *  or never made (no route, no such name). Only such a request may be tried again: one that left may have spent a
+ *  refresh token already. */
+export class RequestUnsent extends Error {
+  override name = "RequestUnsent";
+}
+
+/** The connect-time failures (in an error or any of its causes): nothing of the request reached the server. */
+const CONNECT_FAILURES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
+function connectFailed(error: unknown): boolean {
+  for (let at = error, depth = 0; at && typeof at === "object" && depth < 5; at = (at as { cause?: unknown }).cause, depth++) {
+    if (CONNECT_FAILURES.has(String((at as { code?: unknown }).code))) return true;
+  }
+  return false;
+}
+
 /** What a sign-in's requests met, for its answer: the first refusal, else the last endpoint that failed (its status,
  *  when it answered). Never what an authorization server said: its words are not passed on. */
-type Seen = { refused?: string; failed?: { what: string; status?: number; why?: string } };
+export type Seen = { refused?: string; failed?: { what: string; status?: number; why?: string } };
+
+/** Where a sign-in's or refresh's requests may go besides a public address: `own`, this server's own addresses (where
+ *  it listens, and its public address when that is on loopback); `allowed`, the private-network hosts the owner allows
+ *  (mcp-private-hosts.ts privateOAuthHosts, read once per sign-in step or refresh). */
+export type Reach = { own?: readonly string[]; allowed?: readonly string[] };
 
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
  *  held to REQUEST_MS (a refresh's to REFRESH_REQUEST_MS), and stopped with `stop` (the server's own stop). None goes to a private or link-local address or
  *  over plain http (checked), and each is dialled at the address checked: its authorization server cannot steer this
  *  server's code, verifier, secret or refresh token to a service on this machine or its network, by its metadata or by
- *  its name's next answer. The one exception, for development and tests, is a loopback MCP server's (`mcpUrl`): its
+ *  its name's next answer. A host the owner allows (`reach.allowed`) may be on a private network, as `checked` says.
+ *  The one exception, for development and tests, is a loopback MCP server's (`mcpUrl`): its
  *  authorization server may be on the same loopback host, never another loopback address nor this server's own ports
- *  (`own`: where it listens, and its public address when that is on loopback), so it cannot reach this server. It CAN
- *  reach other ports on that same loopback host, blind (endpoint and status only), by design: development only (loopbackAllowed). */
-const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, own: readonly string[] = [], ms = REQUEST_MS) => async (input: string | URL | Request, init?: RequestInit) => {
+ *  (`reach.own`), so it cannot reach this server. It CAN reach other ports on that same loopback host, blind (endpoint
+ *  and status only), by design: development only (loopbackAllowed). */
+const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, reach: Reach = {}, ms = REQUEST_MS, sentWithin?: AbortSignal) => async (input: string | URL | Request, init?: RequestInit) => {
   // Started before the address check: its name lookup is bounded by the same timeout and the server's stop.
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
+  // Once dialled, a request with `sentWithin` (a token refresh) is held to that alone: never cut short by its own time or
+  // a stop, since it may already have spent the refresh token; one that provably never left says so (RequestUnsent).
+  const sending = sentWithin ? AbortSignal.any([sentWithin, ...(init?.signal ? [init.signal] : [])]) : signal;
+  const sent = (request: Promise<Response>): Promise<Response> =>
+    sentWithin ? request.catch((error: unknown) => Promise.reject(connectFailed(error) ? new RequestUnsent("the connection was not made", { cause: error }) : error)) : request;
   const url = new URL(input instanceof Request ? input.url : String(input));
   const what = `endpoint ${url.origin}${url.pathname}`;
-  if (loopbackAllowed(url, mcpUrl, own)) return noted(fetch(input, { ...init, redirect: "manual", signal }), what, seen);
+  if (loopbackAllowed(url, mcpUrl, reach.own ?? [])) return noted(sent(fetch(input, { ...init, redirect: "manual", signal: sending })), what, seen);
   let at: Awaited<ReturnType<typeof checked>>;
   try {
-    at = await checked(what, url.href, signal, network);
+    at = await checked(what, url.href, signal, network, reach);
   } catch (error) {
     // Its address check outlived the request's time (a name lookup that never answered), or the server stopped: the
-    // endpoint is noted, never the error's own words.
+    // endpoint is noted, never the error's own words. Nothing was sent.
     seen.failed = { what, ...(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? { why: "DNS lookup timed out" } : {}) };
-    throw error;
+    throw sentWithin ? new RequestUnsent("its address was not checked in time", { cause: error }) : error;
   }
   if ("refused" in at) {
     seen.refused ??= at.refused;
-    throw new Error(at.refused);
+    throw new EndpointRefused(at.refused);
   }
-  return noted(network.fetch(url.href, { ...init, redirect: "manual", signal }, at.address), what, seen);
+  return noted(sent(network.fetch(url.href, { ...init, redirect: "manual", signal: sending }, at.address)), what, seen);
 };
 /** `sent`'s answer, an endpoint that failed (or answered 4xx/5xx) noted in `seen`. */
 async function noted(sent: Promise<Response>, what: string, seen: Seen): Promise<Response> {
@@ -129,8 +180,12 @@ function loopbackAllowed(url: string | URL, mcpUrl: string, own: readonly string
 /** `url`, which the authorization server named as its `what`, for an MCP server off loopback: refused when it is on
  *  this machine or a private network, by name or by any address its name resolves to (pi-browser's isPrivateAddress,
  *  the check the agent's own web fetch uses), when its name does not resolve (fail closed), or when it is not https;
- *  else the address checked, the one a request to it is dialled at. */
-async function checked(what: string, url: string, signal: AbortSignal, network: OAuthNetwork): Promise<{ refused: string } | { address: string }> {
+ *  else the address checked, the one a request to it is dialled at. A host the owner allows (`reach.allowed`, compared
+ *  as hostKey keeps it) may resolve to private-network addresses, each held to privateAllowed: never loopback,
+ *  link-local, unspecified, multicast or broadcast, never this machine's (`network.local`) nor this server's own
+ *  (`reach.own`). Every address its name resolves to must pass, and the one dialled is one checked. An unlisted host
+ *  whose private addresses the list could allow is refused in words that name it and where to allow it. */
+async function checked(what: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string } | { address: string }> {
   let at: URL;
   try {
     at = new URL(url);
@@ -151,7 +206,15 @@ async function checked(what: string, url: string, signal: AbortSignal, network: 
     }
     if (!addresses.length) return { refused: `couldn't resolve the authorization server's ${what}; refused` };
   }
-  if (!addresses.length || addresses.some(isPrivateAddress)) return { refused: `the authorization server's ${what} is a private address; refused` };
+  if (!addresses.length) return { refused: `the authorization server's ${what} is a private address; refused` };
+  const inside = addresses.filter(isPrivateAddress);
+  if (inside.length) {
+    const own = [...(network.local ?? localAddresses)(), ...(reach.own ?? []).map((one) => URL.parse(one)?.hostname.replace(/^\[|\]$/g, "") ?? "")];
+    if (!inside.every((address) => privateAllowed(address, own))) return { refused: `the authorization server's ${what} is a private address; refused` };
+    const named = hostKey(at.hostname);
+    // Allowing it helps only an https endpoint: a plain-http one keeps the private-address words.
+    if (!(reach.allowed ?? []).includes(named)) return { refused: at.protocol === "https:" ? `the authorization server's ${what} is on a private network, refused: an owner can allow ${named} in ${PRIVATE_HOSTS_PAGE}` : `the authorization server's ${what} is a private address; refused` };
+  }
   if (at.protocol !== "https:") return { refused: `the authorization server's ${what} is not https; refused` };
   return { address: addresses[0]! };
 }
@@ -167,13 +230,13 @@ const raced = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
 
 /** Every endpoint discovery found, checked as `checked` does, before any is used; a loopback one passes only as
  *  loopbackAllowed lets it, for a loopback MCP server (`mcpUrl`). */
-async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwork, mcpUrl: string, own: readonly string[]): Promise<string | undefined> {
+async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwork, mcpUrl: string, reach: Reach): Promise<string | undefined> {
   const signal = AbortSignal.timeout(REQUEST_MS);
   const metadata = state.authorizationServerMetadata;
   const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
   for (const [what, url] of named) {
-    if (url && loopbackAllowed(url, mcpUrl, own)) continue;
-    const at = url ? await checked(what, url, signal, network) : undefined;
+    if (url && loopbackAllowed(url, mcpUrl, reach.own ?? [])) continue;
+    const at = url ? await checked(what, url, signal, network, reach) : undefined;
     if (at && "refused" in at) return at.refused;
   }
   return undefined;
@@ -198,7 +261,10 @@ const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? ne
 const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
-  constructor(private readonly network: OAuthNetwork = systemNetwork) {}
+  /** `pendingStore`: where sign-ins in flight are kept. Omitted, an in-memory map (the file server); the store server
+   *  passes one over store.mcpOauth. `allowed`: the private-network hosts the owner allows (privateOAuthHosts), read
+   *  at a sign-in's start and again at its callback; omitted, none. */
+  constructor(private readonly network: OAuthNetwork = systemNetwork, private readonly pendingStore?: PendingStore, private readonly allowed: () => Promise<readonly string[]> = async () => []) {}
 
   private readonly pending = new Map<string, Pending>();
   /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash:
@@ -231,16 +297,17 @@ export class McpSignIns {
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
-  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind }): Promise<string> {
+  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string }): Promise<string> {
     const now = Date.now();
-    for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
+    if (!this.pendingStore) for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
     const state = randomBytes(32).toString("base64url");
-    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
+    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const seen: Seen = {};
-    const provider = this.provider(entry, { state, redirect: (to) => void (opened = to), seen });
+    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const provider = this.provider(entry, reach, { state, redirect: (to) => void (opened = to), seen });
     try {
-      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, this.own) });
+      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, reach) });
     } catch (error) {
       // Named by the endpoint and its status, never by what the authorization server said: its answer is not passed on.
       const { OAuthError } = await sdk();
@@ -249,7 +316,8 @@ export class McpSignIns {
     }
     if (!opened) throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: its authorization server gave no page to open.`);
     if (entry.client?.client_id === provider.clientMetadataUrl) entry.kind = "metadata-document";
-    this.pending.set(state, entry);
+    if (this.pendingStore) await this.pendingStore.set(state, entry);
+    else this.pending.set(state, entry);
     return opened.href;
   }
 
@@ -262,17 +330,26 @@ export class McpSignIns {
     return entry;
   }
 
+  /** take() over the pending store (the store server), async: the callback's sign-in, by its state, once and only within
+   *  ten minutes of its start. The same refusal as take() when it is used, expired or unknown. */
+  async takePending(state: string | null): Promise<Pending> {
+    const entry = state && this.pendingStore ? await this.pendingStore.take(state) : undefined;
+    if (!entry || entry.expires <= Date.now()) throw new ApiError("bad_request", `This sign-in link was used already, is older than ${STATE_MS / 60_000} minutes, or is not this server's: start the sign-in again in Settings → MCP servers.`);
+    return entry;
+  }
+
   /** The code exchanged (with the verifier and the client the start kept) for the token set to seal. */
   async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
-    const provider = this.provider(entry, { saved: (got) => void (tokens = got) });
-    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, this.own) });
+    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const provider = this.provider(entry, reach, { saved: (got) => void (tokens = got) });
+    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, reach) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
   }
 
-  private provider(entry: Pending, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void; seen?: Seen }): OAuthClientProvider {
+  private provider(entry: Pending, reach: Reach, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void; seen?: Seen }): OAuthClientProvider {
     const metadataUrl = entry.kind === "pre-registered" ? undefined : this.metadataUrl;
     return {
       redirectUrl: `${this.base}${OAUTH_CALLBACK}`,
@@ -288,12 +365,22 @@ export class McpSignIns {
       codeVerifier: () => entry.verifier ?? "",
       // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.
       saveDiscoveryState: async (state) => {
-        const why = await discoveryRefusal(state, this.network, entry.url, this.own);
+        const why = await discoveryRefusal(state, this.network, entry.url, reach);
         if (why) {
           if (hooks.seen) hooks.seen.refused ??= why;
           throw new Error(why);
         }
         entry.discovery = state;
+        // A client kept from an earlier sign-in goes only to the authorization server it was registered at: another one
+        // (a new address at the same origin, on a host that serves several) gets a client registered anew, never this
+        // one's id or secret.
+        if (entry.keptFor !== undefined) {
+          if (issuerOf(state) !== entry.keptFor) {
+            delete entry.client;
+            entry.kind = "dynamic";
+          }
+          delete entry.keptFor;
+        }
       },
       discoveryState: () => entry.discovery,
       saveResourceUrl: (resource) => void (entry.resource = resource),
@@ -301,14 +388,17 @@ export class McpSignIns {
   }
 }
 
-/** `set` refreshed at its authorization server, the refresh token kept when none new is given. */
-export async function refreshed(set: TokenSet, mcpUrl: string, stop?: AbortSignal, network: OAuthNetwork = systemNetwork, own: readonly string[] = []): Promise<TokenSet> {
+/** `set` refreshed at its authorization server, the refresh token kept when none new is given. `reach.allowed`: the
+ *  private-network hosts the owner allows (privateOAuthHosts), read by the caller for this refresh. `stop` bounds each
+ *  request until it is dialled; with `sent`, a dialled request is held to `sent.within` alone (never cut short: it may
+ *  have spent the refresh token), one that never left throws RequestUnsent, and `sent.seen` notes an answer's status. */
+export async function refreshed(set: TokenSet, mcpUrl: string, stop?: AbortSignal, network: OAuthNetwork = systemNetwork, reach: Reach = {}, sent?: { within: AbortSignal; seen: Seen }): Promise<TokenSet> {
   const tokens = await (await sdk()).refreshAuthorization(set.discovery.authorizationServerUrl, {
     ...(set.discovery.authorizationServerMetadata ? { metadata: set.discovery.authorizationServerMetadata } : {}),
     clientInformation: set.client,
     refreshToken: set.tokens.refresh_token!,
     ...(set.resource ? { resource: set.resource } : {}),
-    fetchFn: guarded(stop, mcpUrl, network, {}, own, REFRESH_REQUEST_MS),
+    fetchFn: guarded(stop, mcpUrl, network, sent?.seen ?? {}, reach, REFRESH_REQUEST_MS, sent?.within),
   });
   const scope = tokens.scope ?? set.tokens.scope;
   const { expires_at: _, ...rest } = set;

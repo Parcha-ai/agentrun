@@ -173,6 +173,22 @@ export class JournalSessionStore {
     }
   }
 
+  /** The main transcript as a resume loads it: the log's lines as of the drive's start, and those `extend` added. */
+  lines(): readonly TranscriptLine[] {
+    return this.loaded.get(CLAUDE_STREAM) ?? [];
+  }
+
+  /**
+   * A line the harness writes into the main transcript before the CLI loads it (a dangling call's result on a resume):
+   * on the log, deduped by its `uuid` like the CLI's own, and in what `load` returns, after the lines before it.
+   */
+  extend(entry: TranscriptLine): void {
+    this.loaded.set(CLAUDE_STREAM, [...this.lines(), entry]);
+    this.held.push({ stream: CLAUDE_STREAM, entry });
+    this.note(entry);
+    this.release();
+  }
+
   async load(key: SessionKey): Promise<TranscriptLine[] | null> {
     const entries = this.loaded.get(streamOf(key));
     return entries?.length ? entries : null;

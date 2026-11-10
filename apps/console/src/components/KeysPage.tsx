@@ -1,12 +1,14 @@
 import { KeyRound, TriangleAlert } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
+import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
-import type { ApiError, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
+import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
+import type { ApiError, SecretMeta, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
 const REASON: Record<ToolKeysReenter["reason"], string> = {
   seal_key_missing: "This server was started without its seal key, so the keys saved here can't be opened.",
@@ -23,22 +25,20 @@ function checkLine(label: string, check: ToolKeyCheck | null | undefined): strin
   return `Not checked: ${check.reason}${check.at ? ` · ${when(check.at)}` : ""}`;
 }
 
-function fieldState(f: ToolKeyField): string {
-  if (f.source === "server") return "set · from the server";
-  if (f.source === "stored") return "set · saved here";
-  return f.stored_unreadable ? "saved here, can't be opened" : "not set";
-}
+/** A saved field that no longer opens, said at its row. */
+const UNREADABLE = "can't be opened: paste it again";
 
-/** The keys page's groups, in order: the model providers' keys, then the tools'. `name` is how words elsewhere name the
- *  group ("Settings → Model keys"), `label` its heading here. */
-export const KEY_GROUPS = [{ kind: "model", label: "Models", name: "Model keys" }, { kind: "tool", label: "Tools", name: "Tool keys" }] as const;
+/** The keys page's groups, in order: the model providers' keys, then the tools'. `label` is the heading here, and how
+ *  words elsewhere name the group ("Settings → Model keys"). */
+export const KEY_GROUPS = [{ kind: "model", label: "Model keys" }, { kind: "tool", label: "Tool keys" }] as const;
 
 /** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
  *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
  *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `atRest` is
  *  capabilities' `features.tool_keys.at_rest`; `onChange` follows each save and removal (the server's tools and models
  *  may change with its keys). */
-export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void }) {
+/** `writable`: this is the owner's password session (session.secrets_writable), the one that may paste a key. */
+export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [noSealing, setNoSealing] = useState(false);
@@ -71,7 +71,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
   // The model providers' keys first, then the tools': headed only when there are both (an older server has no model keys).
   const groups = KEY_GROUPS.map((g) => ({ ...g, keys: view.keys.filter((k) => (k.kind === "model") === (g.kind === "model")) })).filter((g) => g.keys.length);
   const row = (k: ToolKey) => (
-    <KeyRow key={k.id} tool={k} cantStore={cantStore} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
+    <KeyRow key={k.id} tool={k} cantStore={cantStore} writable={writable} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
       open={open?.id === k.id ? open.mode : null} problem={problem?.id === k.id ? problem : null}
       onOpen={(mode) => { setOpen(mode ? { id: k.id, mode } : null); setProblem(null); }}
       onSave={async (values) => {
@@ -98,6 +98,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
           <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
+        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
         {loadError && <ReadError inline error={loadError} onRetry={load} />}
         {reenter && (
           <section className="flex gap-3 border border-warning/50 bg-warning/5 p-4" role="alert" aria-label="Keys to enter again">
@@ -115,7 +116,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
           </p>
         )}
         {groups.map((g) => (
-          <section key={g.label} aria-label={g.name}>
+          <section key={g.label} aria-label={g.label}>
             {groups.length > 1 && <h2 className="caps mb-2 text-[12px] font-semibold text-muted-foreground">{g.label}</h2>}
             <ul className="border">{g.keys.map(row)}</ul>
           </section>
@@ -137,6 +138,7 @@ function ReadError({ error, onRetry, inline = false }: { error: ApiError; onRetr
 type RowProps = {
   tool: ToolKey;
   cantStore: boolean;
+  writable: boolean;
   again: boolean;
   open: "edit" | "remove" | null;
   problem: { title: string; error: ApiError } | null;
@@ -146,10 +148,13 @@ type RowProps = {
   onRemove: () => Promise<void>;
 };
 
-function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
-  const own = k.fields.filter((f) => f.source !== "server");
-  const setCount = k.fields.filter((f) => f.set).length;
-  const saved = k.fields.some((f) => f.source === "stored" || f.stored_unreadable);
+function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
+  // Each field's secret ("tool:<KEY>"), and each secret's field (the form's input, and whether a saved one still opens).
+  const secretOf = (f: ToolKeyField) => k.secrets.find((s) => secretLabel(s.name) === f.name);
+  const fieldOf = (s: SecretMeta) => k.fields.find((f) => f.name === secretLabel(s.name));
+  // The fields this page may set: any not set in the environment, which wins.
+  const own = k.fields.filter((f) => secretOf(f)?.source !== "env");
+  const setCount = k.secrets.filter((s) => s.set).length;
   return (
     <li className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
@@ -157,7 +162,7 @@ function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRe
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-[15px] font-semibold">{k.label}</span>
-            <Chip tone={setCount === k.fields.length ? "success" : "plain"}>{setCount === k.fields.length ? "set" : setCount ? `${setCount} of ${k.fields.length} set` : "not set"}</Chip>
+            <Chip tone={setCount === k.secrets.length ? "success" : "plain"}>{setCount === k.secrets.length ? "set" : setCount ? `${setCount} of ${k.secrets.length} set` : "not set"}</Chip>
             {again && <Chip tone="warning">enter again</Chip>}
           </p>
           <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
@@ -166,27 +171,21 @@ function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRe
             {k.harnesses.length > 0 && ` · Harnesses ${k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}`}
           </p>
           {checkLine(k.label, k.check) && <p className={`mt-1.5 text-[12px] ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
-          <ul className="mt-3 space-y-1">
-            {k.fields.map((f) => (
-              <li key={f.name} className="flex flex-wrap gap-x-3 font-mono text-[12px]">
-                <span>{f.name}</span>
-                <span className={f.stored_unreadable ? "text-warning-text" : f.set ? "text-success-text" : "text-muted-foreground"}>{fieldState(f)}</span>
-              </li>
+          {/* Paste and Replace open the key's form (a key's fields go together); Remove asks to remove what is saved here.
+              None while a form or a confirm is open. */}
+          <ul className="mt-3 space-y-1.5">
+            {k.secrets.map((s) => (
+              <SecretRow key={s.name} field={s} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
+                onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
           {!own.length && <p className="mt-3 text-[12px] text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
         </div>
-        {own.length > 0 && open === null && (
-          <div className="flex gap-2">
-            <Button size="sm" variant="primary" disabled={cantStore} onClick={() => onOpen("edit")}>{own.some((f) => f.set) ? "Change" : "Add key"}</Button>
-            {saved && <Button size="sm" variant="destructive" onClick={() => onOpen("remove")}>Remove</Button>}
-          </div>
-        )}
       </div>
       {open === "edit" && <KeyForm tool={k} fields={own} cantStore={cantStore} onSave={onSave} onCancel={() => onOpen(null)} />}
       {open === "remove" && (
         <div className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
-          <p className="min-w-0 flex-1 text-[13px]">Remove the {k.label} key saved here?{k.fields.some((f) => f.source === "server") ? " The server's own stays." : ""}</p>
+          <p className="min-w-0 flex-1 text-[13px]">Remove the {k.label} key saved here?{k.secrets.some((s) => s.source === "env") ? " The one set in the environment stays." : ""}</p>
           <Button size="sm" variant="destructive" onClick={() => void onRemove()}>Remove</Button>
           <Button size="sm" onClick={() => onOpen(null)}>Keep</Button>
         </div>

@@ -1,12 +1,15 @@
 // No migration (the lead's ruling): the server's open refuses a data directory an earlier version wrote, naming what it
-// found, with words to start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
+// found, with two choices: keep the directory with the earlier version, or start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
 // not made yet, or one holding this version's store) opens.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+const test = sqliteAdapterTests(nodeTest, "an earlier version's data directory files");
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 
@@ -50,10 +53,6 @@ const SHAPES = [
   ["triggers.json", (dir) => file(join(dir, "triggers.json")), "triggers.json"],
   ["tool-keys.json", (dir) => file(join(dir, "tool-keys.json")), "tool-keys.json"],
   ["trigger-secrets.json", (dir) => file(join(dir, "trigger-secrets.json")), "trigger-secrets.json"],
-  ["webhook.json", (dir) => file(join(dir, "webhook.json")), "webhook.json"],
-  ["webhook-outbox.json", (dir) => file(join(dir, "webhook-outbox.json")), "webhook-outbox.json"],
-  [".idempotency.json", (dir) => file(join(dir, ".idempotency.json")), ".idempotency.json"],
-  ["learning-usage.jsonl", (dir) => file(join(dir, "learning-usage.jsonl"), ""), "learning-usage.jsonl"],
   ["a home's sign-ins.json", (dir) => file(join(dir, "homes", "home-1", "sign-ins", "sign-ins.json")), join("homes", "home-1", "sign-ins", "sign-ins.json")],
   // The per-run door's token: only an earlier version's runs had a door.
   [".door-token", (dir) => file(join(dir, ".door-token"), "token"), ".door-token"],
@@ -64,11 +63,13 @@ const SHAPES = [
   ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
-test("this version's own files beside its store open: .token, .server.json, and a leftover box-image.json the cutover stopped writing", async (t) => {
+test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, and the webhook config, its outbox, the kept idempotency answers and the learning usage ledger this version still keeps beside the store", async (t) => {
   const dir = dataDir(t);
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   await store.close();
-  for (const name of [".token", ".server.json", "box-image.json"]) file(join(dir, name), "{}");
+  // This version writes these beside its store, in the same format an earlier version did, so a directory holding them is
+  // this version's own, not an earlier version's: it opens.
+  for (const name of [".token", ".server.json", "box-image.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"]) file(join(dir, name), "{}");
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
 });
@@ -81,8 +82,11 @@ for (const [what, make, named] of SHAPES) {
     await assert.rejects(openSqliteStore({ dataDir: dir, role: "server" }), (error) => {
       assert.equal(error.name, "StoreFromEarlierVersion");
       assert.ok(error.found.includes(named), `it names ${named}: ${JSON.stringify(error.found)}`);
-      assert.match(error.message, /earlier version/);
-      assert.match(error.message, /new, empty directory/);
+      assert.match(error.message, /earlier version's data/);
+      // Two choices, both in plain words: keep the directory with the earlier version, or start this version on a new
+      // directory and add the agents (and what they used) there again.
+      assert.match(error.message, /Keep this directory with the earlier version/);
+      assert.match(error.message, /or start this version on a new, empty directory and add your agents, MCP servers, keys and sign-ins there again\.$/);
       return true;
     });
     assert.deepEqual(readdirSync(dir, { recursive: true }).sort(), before, "nothing made, moved or removed");

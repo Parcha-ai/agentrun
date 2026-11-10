@@ -265,7 +265,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
 
 /** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its
  *  owner's OK (`status: pending`) supersedes nothing until it is approved: what it names stays active. The one rule the
- *  merge writes by (grade.ts mergeProposal) and its index is counted by (mergeProblems). */
+ *  merge writes by (runner/learning-loop.ts mergeChangeOf) and its index is counted by (mergeProblems). */
 export function supersededBy(notes: readonly LearnedNote[]): Map<string, string> {
   return new Map(notes.filter((note) => note.status === "active").flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
 }

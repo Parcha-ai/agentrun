@@ -16,7 +16,8 @@ import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
-import { homeOf, serialBy, writeDurable } from "./files.js";
+import { homeOf } from "./files.js";
+import { serialBy, writeDurable } from "./server-fs.js";
 
 export const SIGN_INS_DIR = "sign-ins";
 const FILE = "sign-ins.json";

@@ -44,13 +44,13 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.23.2'
+          node-version: '24.21.0'
       - name: Install OIDC-capable npm
         run: npm install --global npm@11.21.0 --ignore-scripts
       - name: The tagged commit passed CI on main
         # The merge queue ran every suite on this tree and ci.yml ran again on the commit when it reached main. The release
-        # trusts that run's verify gates instead of running the suites a third time; scripts/release-ci-gate.mjs stops the release
-        # unless they all passed. The checks below build the archives the release publishes, and still run.
+        # trusts that run's verify gate instead of running the suites a third time; scripts/release-ci-gate.mjs stops the release
+        # unless it passed. The checks below build the archives the release publishes, and still run.
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs

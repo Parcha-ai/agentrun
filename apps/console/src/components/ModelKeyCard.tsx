@@ -4,6 +4,7 @@ import { KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
 import { type Client, ClientError } from "@/lib/client";
+import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ToolKey } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
@@ -15,7 +16,7 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  problem, which no key fixes: it says so. `model` is the server's default (`models.default`): when it names a
  *  provider among the keys (AGENT_MODEL set, its provider's key missing), only that key runs it, so the card offers that
  *  one alone and names the model. `atRest` is `features.tool_keys.at_rest`. */
-export function ModelKeyCard({ v2, needs, model, atRest, onSaved }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; atRest?: "sealed" | "unavailable"; onSaved?: () => void }) {
+export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyNot = "sign_in" }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; atRest?: "sealed" | "unavailable"; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
@@ -35,7 +36,8 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved }: { v2: Client
   const offered = required ? [required] : rows;
   const cantStore = atRest === "unavailable" || noSealing;
   const picked = rows?.find((k) => k.id === pick);
-  const own = picked?.fields.filter((f) => f.source !== "server") ?? [];
+  // The fields this card may set: any not set in the environment (its secret, "model:<KEY>", says), which wins.
+  const own = picked?.fields.filter((f) => picked.secrets.find((s) => secretLabel(s.name) === f.name)?.source !== "env") ?? [];
 
   return (
     <section className="border-b bg-card px-5 py-5 md:px-8" aria-label="Model key">
@@ -57,14 +59,15 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved }: { v2: Client
           {needs !== "model" && rows && cantStore && (
             <p className="font-mono text-[13px]" role="status">This server can't store keys: it was started without a seal key. Set one where the server starts ({rows.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).</p>
           )}
-          {needs !== "model" && rows && !cantStore && (
+          {needs !== "model" && rows && !cantStore && !writable && <p className="text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {needs !== "model" && rows && !cantStore && writable && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
               {offered!.map((k) => (
                 <Button key={k.id} size="sm" variant={pick === k.id ? "solid" : "primary"} aria-pressed={pick === k.id} onClick={() => { setPick(pick === k.id ? null : k.id); setProblem(null); }}>{k.label}</Button>
               ))}
             </div>
           )}
-          {picked && !cantStore && (own.length
+          {picked && !cantStore && writable && (own.length
             ? <KeyForm key={picked.id} tool={picked} fields={own} cantStore={cantStore} onCancel={() => setPick(null)}
                 onSave={async (values) => {
                   setProblem(null);

@@ -49,7 +49,7 @@ const FAILS = {
  *  request as FAILS names; `tools` the host's tools, each run given the session's model port. Returns the requests that
  *  reached the provider, what each answer's booking read gave pi (at the seam where the loop hands it over), and the
  *  figures the run's ledger booked (its runner.turn records). */
-async function run(t, script, { fail, tools = {} } = {}) {
+async function run(t, script, { fail, tools = {}, beforeBooked } = {}) {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -89,6 +89,7 @@ async function run(t, script, { fail, tools = {} } = {}) {
       open: (sessionSpec, io) => {
         models = io.models;
         const bookedCost = async () => {
+          if (beforeBooked) await beforeBooked(costs.length, models);
           const usd = await io.bookedCost();
           costs.push(usd);
           // The ledger as this answer read it; the last answer's read is the run's whole ledger.
@@ -133,4 +134,25 @@ test("pi through the adapter: side requests between two answers (one marked side
   assert.equal(requests, 3, "three answered requests reached the provider");
   assert.deepEqual(costs, [PRICE, PRICE, PRICE], "each answer reads its own price: never unknown, never a side request's");
   assert.deepEqual(booked, [PRICE, SIDE, HOSTED, PRICE, PRICE], "the side requests stay on the run's ledger");
+});
+
+test("pi through the adapter: a side request booked after the turn's answer, last on the ledger when the answer's booking reads, is no answer's: the answer reads its own price, never the side request's", async (t) => {
+  // The host's own request beside pi's (a learned workflow's model node), admitted while pi answered and booked only as
+  // pi idles on its next answer, so its runner.turn lands after that answer's own and is the last turn on the ledger.
+  // Reading the last turn alone would book the side figure as the answer's cost; the answer reads only its own.
+  let ticket;
+  const arm = async (models) => {
+    ticket = await models.beforeRequest({ model: "side-model", side: true });
+    return "armed";
+  };
+  // Book the armed side request as the second answer ("done") hands its booking over, once its own turn is on the ledger.
+  const beforeBooked = async (answer, models) => {
+    if (answer === 1 && ticket) {
+      await models.afterRequest({ input: 10, output: 5, usd: SIDE }, ticket);
+      ticket = undefined;
+    }
+  };
+  const { costs, booked } = await run(t, [{ call: "arm" }, { say: "done" }], { tools: { arm }, beforeBooked });
+  assert.deepEqual(costs, [PRICE, PRICE], "each answer reads its own price; the second never reads the side request booked last");
+  assert.deepEqual(booked, [PRICE, PRICE, SIDE], "the side request stays on the run's ledger, last");
 });

@@ -189,8 +189,8 @@ The token is in the log of the start that made it. On a stop the server gives a 
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
-the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
-every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
+the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
+setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
@@ -220,6 +220,11 @@ the run back (its epoch bumped, the server its holder) and checkpoints its WAL i
 A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a store of store version 1), is refused
 at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
 directory (an empty folder, or a new volume).
+
+When a run's folder is on the owner's Archil disk and the run has no computer, a command runs through Archil's
+serverless exec, for at most 295 s. A known limit: a command, once sent, cannot be stopped. Stopping the call answers at
+once, but the command runs on to its own deadline, and the run's next command, or a write to its folder, waits until it
+has ended. A command not yet sent when the call is stopped is never sent.
 
 ## Upgrading from 0.1.0-beta.26
 
@@ -1061,7 +1066,10 @@ view. A session a restarted process keeps (it was still running at the vendor) g
 new process, with a new token, and nobody holding the browser. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server
 with its token in the fragment), `{state: "none"}` when the run has a browser but no session is open, and
 `{state: "off", reason}` when it has none: its agent has no `browser` tool, or its browser resolves unavailable here (the
-tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's
+tool plane's words, `a local Chrome is not set up on this server`, or for Kernel with no key, that it needs a Kernel key). The
+same view is the computer family's too, one for every kind (`browser`, `desktop`, `phone`), read through the same code:
+`GET /v2/runs/{id}/computer` answers `{state: "live", kind, viewer, hold}` (the link under `/v2/runs/{id}/computer/live/`),
+`{state: "none", kind, hold}` or `{state: "off", hold, why}`; `hold` says who drives now (`agent`, `pending` or `person`). It takes the owner's
 password session in the console: a token, which a run's process, an MCP client or a script may hold, is `403`.
 
 The viewer lives under `/v2/runs/{id}/browser/live/`. Its page, script and style are this server's own (the files of the
@@ -1562,8 +1570,8 @@ A firing starts its run once. Its key comes from the trigger and its nominal tim
 a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
-is `skipped`, with why (a webhook trigger with `accept` is the exception: [each event it takes](#webhook-triggers)
-starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
+takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1573,7 +1581,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, no
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
-upgrade of the cron library or of the time zone data) is turned off alone, at a start or when it comes due
+upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
+turned off alone, at a start or when it comes due
 (`disabled: {reason: "source_unreadable", detail}`), and every other schedule goes on firing; turning it on again takes a
 new source. A trigger's firings are driven one at a time, in order, so a firing a crash left due settles to its run
 before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, and
@@ -1584,7 +1593,8 @@ firing has left the history too, and later it is a new firing that a run the key
 ### Webhook triggers
 
 A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
-route with no token. The request is signed by the trigger's own secret under the
+route with no token. Its view carries that address as `hook_url`, at the server's public URL when it has one
+(`AGENTRUN_PUBLIC_URL`), else the path; a schedule has none. The request is signed by the trigger's own secret under the
 [Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
 with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
 server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
@@ -1597,7 +1607,10 @@ shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-w
 sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
 `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
 secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
-import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+import keeps and from every learning text. A secret replaced by a rotation, or whose trigger is deleted, is kept too,
+sealed in a retired row of its own (scope `retired:<trigger>:<n>`), never a setting and in no `GET`: a run that quoted it
+before is still cut on every later server. Retired rows are kept for good for now; dropping one once no run older than
+it is left is still to come. A secret that does not open under the seal key the server starts with is
 said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
 secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
 away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
@@ -1666,8 +1679,12 @@ Such a trigger can take every run this server has room for, starving other trigg
 `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
 again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
-opens again after it ended is that person's follow-up, not counted. Only a trigger whose firings each start a run
-takes it (`422` otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
+opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
+webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
+cap; past it a firing waits due, and past 20 due an event answers `429 rate_limited` with `Retry-After`. Without
+`max_active_runs`, a trigger with no `accept` keeps the overlap skip: an event while its last run is active is
+`skipped`. A schedule keeps the overlap skip and takes no cap, and nor does a `message_run` target, which starts no run
+(`422` for either). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,
 anyone who can comment starts runs.
 
@@ -1828,6 +1845,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
+| `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
@@ -2082,6 +2100,12 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
   `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
   idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Archiving an agent turns off every trigger that runs as it (a `start_run` of it, a `message_run` to one of its
+  runs) with the archive, in one write: `disabled: {reason: "agent_archived", detail}`, and the answer lists them in
+  `triggers_off: [{id, name}]`. From then no firing starts a run of it: one that comes due anyway (waiting on its
+  `max_active_runs`, or on a retry) is `skipped`, "The agent <name> is archived.". While it is archived, a trigger made
+  on, turned on or aimed at it is `409 agent_archived`. Unarchiving turns none on: its answer lists those still off, and
+  `PATCH /v2/triggers/{id}` `{enabled: true}` turns each on.
 - Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
 - Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
   agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the
@@ -2134,14 +2158,27 @@ send the browser to `/`, which keeps a link's `#code`.
 ## Your password
 
 AgentRun Server is for one person, who signs in to the console with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
-no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
-more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
-the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+no `AGENTRUN_PUBLIC_URL`, listening on loopback (the default), the start prints `Set your password: <url>/setup`, and the
+first visit sets it, 12 characters or more. With a public address, or listening on any other address (`0.0.0.0` in the
+image, a LAN address), the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the
+token as the Bearer): anyone who reaches the port could otherwise set the password first. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
 session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
 **Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
 cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
-this one too. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
-new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
+this one too.
+
+Sign-in tries are limited, and never for good. Each address (an IPv6 one by its /64) has ten tries in 15 minutes; past
+them each next try waits a second after the last, twice that the time after, never more than a minute. The whole server
+takes 100 wrong passwords in 15 minutes; past them every try, from any address, waits the same way after the last wrong
+one. A refused try is a 429 that says how long (`retry-after`, `retry_after_ms`). The limit counts up to 10,000 addresses
+at once; a new one past that is held by the server's budget only, and no address counted is ever dropped to make room.
+Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
+`AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
+`uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
+that is not itself a trusted proxy). Unset, that header is never read. `render.yaml` sets it to `uniquelocal`, the private
+ranges Render's proxy reaches a service from.
+
+Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
 /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
 browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
@@ -2474,13 +2511,16 @@ with the token, an archived agent's too:
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
   seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
 
-Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
+`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
+`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
+answers is cut of the server's secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
 `[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
-`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
-parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
-log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
-counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A page reads only its
+own notes' files, each once at its blob; a log page reads the snapshot alone (it keeps the newest 200 changes). A
+cursor reads at the main it names while this server still holds that snapshot, else as the first page of `main` now.
+Every write to `main` (a run's merge, a person's edit, create, retire, approve or restore) is one exec of the learning
+script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
 
 ### Approving a note that waits
@@ -2878,6 +2918,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   value under another name.
 - The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
   server has read it.
+- The browser's evidence is numbered from the highest number the run's `evidence/` holds when its browser first files
+  there, through the run's Workspace, which has no exclusive create. One browser per run files there, so two never pick
+  one number; two filing into one run's `evidence/` at the same moment could.
 
 ## Test
 

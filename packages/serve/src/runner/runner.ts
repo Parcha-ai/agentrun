@@ -12,9 +12,19 @@ import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
-import { KINDS } from "./journal-kinds.js";
+import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
+import { journalEntries } from "./journal-reader.js";
 import { type Claim, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
+import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
+import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
+
+/** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
+export const RUNNER_LOOPS = 300;
+/** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
+export const RUNNER_RENEW_EVERY_MS = 10_000;
+/** A runner's name when none is given: its host, its process and a part of a random id. */
+export const runnerName = (): string => `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
 /** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
 const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
@@ -24,9 +34,28 @@ export class ClaimLost extends Error {
   override name = "ClaimLost";
 }
 
+/** A stopped end that may withdraw a call, which the journal would not take or could not be read for: not written. */
+class EndNotWithdrawn extends Error {
+  override name = "EndNotWithdrawn";
+  constructor(runId: string, cause: unknown) {
+    super(`run ${runId}: its stopped end was not written with its withdrawal`, { cause });
+  }
+}
+
+/** The first wait after a stopped end that withdraws a call is refused; each later one doubles (RunnerOptions). */
+export const END_RETRY_BACKOFF_MS = 5_000;
+/** The longest wait between those tries: 5 min. */
+export const END_RETRY_CAP_MS = 300_000;
+/** The tries at that cap before the run ends stopped on its row alone (about an hour of retries in all; endRefused). */
+export const END_RETRY_AT_CAP = 11;
+
 export interface RunnerOptions {
   store: RunnerStore;
   createLoop: LoopFactory;
+  /** The runs' live view (live-ticker.ts): each loop's held state written to the store once a tick, by this runner's one
+   *  ticker, until close() has let every loop end. On by default where the store has a live view; its options (the tick),
+   *  or false for a test that wraps its loops in a ticker of its own or wants none. */
+  live?: false | LiveTickerOptions;
   /** This runner's name in the runs it claims (runs.runner). Default: host, pid and a random part. */
   name?: string;
   /** Most runs held at once. */
@@ -50,7 +79,27 @@ export interface RunnerOptions {
   /** How long a run's end waits for a command still with its loop before it writes its end; an answer after that is
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
+  /** How long close() lets each held run go on to its own end (a turn in flight finishes, its outcome journaled, as a
+   *  run's own process drained on the server's stop) before it stops the rest for a shutdown, to resume. Its commands
+   *  still reach it meanwhile (a person's stop ends it at once). Default 0: every loop stopped at once. */
+  drainMs?: number;
+  /** A refused stopped end that withdraws a call (endRefused): the first wait, its cap, and the tries at the cap before
+   *  the run ends on its row alone. Defaults END_RETRY_BACKOFF_MS, END_RETRY_CAP_MS, END_RETRY_AT_CAP. */
+  endRetryBackoffMs?: number;
+  endRetryCapMs?: number;
+  endRetryAtCap?: number;
   onEvent?: (event: RunnerEvent) => void;
+  /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
+   *  Date.now. */
+  now?: () => number;
+  /** The one redactor (redact.ts secretRedactor over the secrets the runner holds): every error text this runner writes
+   *  to a run's row or end, or emits, passes through it, and each loop gets it (LoopDeps.redact). Default: the one over every secret this process's environment holds (runnerSecrets), so a runner
+   *  started with none (runner/main.ts) still cuts the keys it was started with. */
+  redact?: Redact;
+  /** Called at each poll for runs (every pollMs, whether or not it holds any) and each renewal pass: the runner's own
+   *  loop is turning. The runner process writes its heartbeat from it (runner/main.ts), so a check sees a runner that is
+   *  idle and well, and not one whose loop has stopped. A throw is the caller's. */
+  onBeat?: () => void;
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
   clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
@@ -67,7 +116,8 @@ export interface Runner {
   readonly name: string;
   /** The claims this runner holds and has not lost. */
   held(): Claim[];
-  /** Stops claiming, stops every loop where it can resume, flushes and releases their runs. */
+  /** Stops claiming, lets each held run go on to its own end for up to drainMs, then stops every loop left where it can
+   *  resume, flushes and releases their runs. */
   close(): Promise<void>;
   /** As if the process froze or died: every timer stops, nothing is stopped, flushed or released (a test's crash). */
   kill(): void;
@@ -102,10 +152,10 @@ export function startRunner(options: RunnerOptions): Runner {
   const {
     store,
     createLoop,
-    name = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`,
-    loops = 300,
+    name = runnerName(),
+    loops = RUNNER_LOOPS,
     leaseMs = 30_000,
-    renewEveryMs = 10_000,
+    renewEveryMs = RUNNER_RENEW_EVERY_MS,
     stopMarginMs = 5_000,
     pollMs = 1_000,
     commandPollMs = 500,
@@ -113,15 +163,40 @@ export function startRunner(options: RunnerOptions): Runner {
     resumeBackoffMs = 5_000,
     interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
+    drainMs = 0,
+    endRetryBackoffMs = END_RETRY_BACKOFF_MS,
+    endRetryCapMs = END_RETRY_CAP_MS,
+    endRetryAtCap = END_RETRY_AT_CAP,
     onEvent = () => {},
+    redact: given = processSecretRedactor(),
+    now = Date.now,
+    onBeat = () => {},
     clock = { now: () => Date.now(), setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) },
   } = options;
+  // The one instance every run's loop gets (LoopDeps.redact), able to hold what each claim opens from the store
+  // (redact.ts holdClaimed): a stored key is cut wherever a key of the runner's environment is.
+  const redact = heldRedactor(given);
+  /** The first try whose wait is the cap (endRefused): 7 with the defaults (5 s × 2^6 = 320 s, over the 300 s cap). */
+  const endRetryCapFrom = 1 + Math.ceil(Math.log2(endRetryCapMs / endRetryBackoffMs));
+  const beat = () => {
+    try {
+      onBeat();
+    } catch {
+      // The caller's: a heartbeat it could not write never stops the runner.
+    }
+  };
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
   }
+  // The runs' live view: every loop this runner makes reports its run's held state to the one ticker, which writes it
+  // once a tick and is closed at the end of close(), after the drain and the loops' stop.
+  const { live = {} } = options;
+  const ticker = live !== false && store.live ? withLiveTicker({ live: store.live }, createLoop, live) : undefined;
+  const loopsOf: LoopFactory = ticker?.createLoop ?? createLoop;
   const emit = (event: RunnerEvent) => {
     try {
-      onEvent(event);
+      // An error's text is cut of every secret the runner holds before anyone hears it.
+      onEvent(event.type === "error" ? { ...event, message: redact(event.message) } : event);
     } catch {
       // A listener's throw is its own.
     }
@@ -131,9 +206,13 @@ export function startRunner(options: RunnerOptions): Runner {
   /** A lost claim's loop that had not settled when its run was claimed again (its place in `runs` taken by the new one):
    *  still counted against `loops` until it settles, so a loop that ignores its stop never lets the runner hold more. */
   const replaced = new Set<Held>();
+  /** The refused stopped ends this runner is trying again (endRetried): close() waits for them. */
+  const endings = new Set<Promise<void>>();
   /** Each run's ends in a row, on this runner, as interrupted on its own: its next release's backoff doubles with them. */
   const interruptedInARow = new Map<string, number>();
   let closed = false;
+  /** close() is letting its held runs go on to their own ends (drainMs): nothing is claimed, commands still reach them. */
+  let draining = false;
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
   let commandTimer: NodeJS.Timeout | undefined;
@@ -207,6 +286,7 @@ export function startRunner(options: RunnerOptions): Runner {
    *  if none lands. */
   const renewAll = async () => {
     if (killed) return;
+    beat();
     const due = [...runs.values()].filter((held) => !held.renewing && !held.fence.lost && !held.ending);
     if (due.length === 0) return;
     for (const held of due) held.renewing = true;
@@ -280,8 +360,9 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   /** One read of every held run's new command rows a tick (store.commandsOf), never one per run, each run's then handed
    *  to its loop; the next tick is set once this read is done. */
+  const delivering = () => !killed && (!closed || draining);
   const deliverAll = () => {
-    if (closed || killed) return;
+    if (!delivering()) return;
     void (async () => {
       const due = [...runs.values()].filter((held) => !(held.delivering || held.stopping || held.ending || held.fence.lost));
       if (due.length === 0) return;
@@ -292,7 +373,7 @@ export function startRunner(options: RunnerOptions): Runner {
         for (const held of due) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
       }
     })().finally(() => {
-      if (!closed && !killed) commandTimer = setTimeout(deliverAll, commandPollMs);
+      if (delivering()) commandTimer = setTimeout(deliverAll, commandPollMs);
     });
   };
 
@@ -302,17 +383,35 @@ export function startRunner(options: RunnerOptions): Runner {
    * Ends the run under `claim` in its journal, for a loop that could not write its own end: an agentrun.end entry on the
    * run's root conversation (one made for it when the run has none yet), with the run row's patch and the commands in
    * `take` keyed to that entry, so they land in its one commit or not at all. When the journal cannot take that commit,
-   * the run row alone (runs.update, the same take in its one transaction). A lost claim (Fenced) writes neither.
+   * the run row alone (runs.update, the same take in its one transaction), unless the end is a stop that may withdraw a
+   * call (one waits, or the journal could not be read to say none does): that end is never written without its withdrawal,
+   * so it throws EndNotWithdrawn and the run is left as it stands, not final, its stop untaken (endRefused retries it). A
+   * lost claim (Fenced) writes neither.
    */
-  const endRun = async (claim: Claim, data: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+    // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
+    const data = { ...given, summary: redact(given.summary) };
+    // Unknown means it may withdraw: false only once the journal was read and no call of it waits.
+    let mayWithdraw = data.state === "stopped";
     try {
       const journal = store.journal(claim);
       const [root] = (await journal.scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items;
+      if (!root) mayWithdraw = false;
       const writes: StorageWrite[] = [];
       let conversationId = root?.id;
       if (conversationId === undefined) {
         conversationId = (await journal.mintId()) as unknown as ConversationId;
         writes.push({ type: "conversation", value: { id: conversationId } } as StorageWrite);
+      }
+      // A stopped end withdraws every call still waiting for its answer (an ask with no answer), in this commit: the
+      // approval card of a run whose loop could not start reads answered, never waiting for good.
+      if (data.state === "stopped" && root) {
+        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString());
+        mayWithdraw = withdrawn.length > 0;
+        for (const answer of withdrawn) {
+          const answerId = (await journal.mintId()) as unknown as EntryId;
+          writes.push({ type: "entry", value: { id: answerId, conversationId, kind: KINDS.answer, data: answer as unknown as JsonValue } } as StorageWrite);
+        }
       }
       const id = (await journal.mintId()) as unknown as EntryId;
       writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
@@ -321,7 +420,69 @@ export function startRunner(options: RunnerOptions): Runner {
       if (result.stored !== 1) throw result.refused ?? new Error("the run's end was not stored");
     } catch (error) {
       if (isFenced(error)) throw error;
+      if (mayWithdraw) throw new EndNotWithdrawn(claim.runId, error);
       await store.runs.update(claim, { state: data.state, summary: data.summary }, take.length ? { take } : undefined);
+    }
+  };
+
+  /** Ends the run under `claim` stopped on its untaken `stop` (or cancel) row (endRun). False when that end may withdraw a
+   *  call and the journal would not take it or could not be read: the refusal is then the run's (endRefused). */
+  const endStopped = async (claim: Claim, stop: Command): Promise<boolean> => {
+    try {
+      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
+      return true;
+    } catch (error) {
+      if (!(error instanceof EndNotWithdrawn)) throw error;
+      await endRefused(claim, stop, error);
+      return false;
+    }
+  };
+
+  /** A stopped run's end, written (its stop row taken) or written row-only at the give-up: every other untaken row was
+   *  refused in that same write, which released the run (the store's rule for a write that makes a run final), said here
+   *  from what the end refused. Nothing is taken after it (its claim is spent). */
+  const releaseStopped = async (claim: Claim, stop: Command) => {
+    const reason = endedReason("stopped");
+    for (const row of await store.commands(claim.runId, 0)) {
+      if (row.id !== stop.id && row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
+    }
+    await store.flush();
+    await store.release(claim, {});
+    emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "stopped" });
+  };
+
+  /**
+   * A stopped end that may withdraw a call, refused (EndNotWithdrawn): counted on its stop row's tries, said by the run's
+   * name, and the claim released with the run still running (not final) and a backoff that doubles from
+   * endRetryBackoffMs up to endRetryCapMs; the next claim only ends it (claimMore: endRetried), never runs a turn. Once the
+   * backoff has sat at its cap for endRetryAtCap tries, the run ends stopped on its row alone, said as an error by name:
+   * a journal that never takes the end never keeps a stopped run alive. With the defaults (5 s doubling to a 5 min cap,
+   * 11 tries at the cap): 6 growing waits (5 s to 160 s, 315 s in all), then 11 of 5 min, so about an hour (3,615 s) of
+   * retries, and the 18th refusal gives up.
+   */
+  const endRefused = async (claim: Claim, stop: Command, refused: EndNotWithdrawn) => {
+    const tries = await store.retry(claim, stop.id);
+    const why = message(refused.cause);
+    if (tries >= endRetryCapFrom + endRetryAtCap) {
+      emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId} ended without withdrawing: journal unreadable or refusing (after ${tries} tries; the last: ${why})` });
+      await store.runs.update(claim, { state: "stopped", summary: redact(endedBy(stop.kind === "cancel")) }, { take: [stop.id] });
+      await releaseStopped(claim, stop);
+      return;
+    }
+    const wait = Math.min(endRetryBackoffMs * 2 ** (tries - 1), endRetryCapMs);
+    emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId}: its end with a withdrawal was refused (try ${tries}); retrying in ${wait} ms: ${why}` });
+    await store.flush();
+    await store.release(claim, { backoffUntil: now() + wait });
+    emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
+  };
+
+  /** A claim of a run whose stopped end was refused (its untaken stop row has tries): it only ends the run, with no loop,
+   *  so no turn, model request or tool runs on a run that is stopping. */
+  const endRetried = async (claim: Claim, stop: Command) => {
+    try {
+      if (await endStopped(claim, stop)) await releaseStopped(claim, stop);
+    } catch (error) {
+      emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "end (fenced)" : "end", message: message(error) });
     }
   };
 
@@ -346,16 +507,18 @@ export function startRunner(options: RunnerOptions): Runner {
       // on as any end does, made durable (a flush) before the runner says released. Any other lost claim writes nothing.
       const endedItself = !threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed");
       if (held.fence.lost && !endedItself) return;
-      // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
-      // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
-      // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
+      // A parked run brought back (a raise, an approval) whose loop threw before it could start stays parked: its waking
+      // row keeps one more try, and the run is claimable again after a backoff; after the last try that row is refused
+      // with why, and a person can raise again or stop it (#1944-5). A claim its spec refuses (ClaimRefused: a handed
+      // sign-in that won't read back, an MCP pin refused) never comes here: the loop writes that end itself, final, the run
+      // failed in the refusal's words.
       if (threw && end.state === "failed" && claim.from === "parked") return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
         // never refused as a failed run's; else the run ends failed with why. Either way its end is in the journal.
         const stop = endingRow((await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null));
         if (stop) {
-          await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
+          if (!(await endStopped(claim, stop))) return;
           end = { state: "stopped" };
         } else {
           await endRun(claim, { state: "failed", summary: end.error.message }, []);
@@ -401,16 +564,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A stop never waits on a loop that cannot start: the run ends stopped here, its stop row taken, and every other
       // untaken row refused as a stopped run's.
       // One write: the run ends stopped with its stop row taken, or neither (a final run never keeps its stop untaken).
-      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
-      // Every other untaken row was refused in that same write, and the write released the run (the store's rule for a
-      // write that makes a run final): said here, from what the end refused. Nothing is taken after it (its claim is spent).
-      const reason = endedReason("stopped");
-      for (const row of await store.commands(claim.runId, 0)) {
-        if (row.id !== stop.id && row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
-      }
-      await store.flush();
-      await store.release(claim, {});
-      emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "stopped" });
+      if (await endStopped(claim, stop)) await releaseStopped(claim, stop);
       return;
     }
     if (woke) {
@@ -439,11 +593,12 @@ export function startRunner(options: RunnerOptions): Runner {
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     // Set below, once held is made: the loop's end commit lands only after start(), well after.
     let ending: () => void = () => {};
-    const loop = createLoop({
+    const loop = loopsOf({
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
       delivered,
+      redact,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
@@ -479,7 +634,19 @@ export function startRunner(options: RunnerOptions): Runner {
       // taking a dead runner's runs over, is one transaction, not 300.
       const sentAt = clock.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
+      // A run whose untaken stop row has tries failed to apply that stop before: its claim only ends it (endRetried). Either
+      // source of tries counts: a refused stopped end (endRefused, released running) or a failed resume (resumeFailed's
+      // store.retry, released parked). One read of those claims' rows, made only when the batch has a released run.
+      const released = claims.filter((claim) => claim.from === "running" || claim.from === "parked");
+      const rows = released.length ? await store.commandsOf(released.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
+        const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
+        if (stop && stop.tries > 0 && !closed && !killed && !runs.has(claim.runId)) {
+          const ending = endRetried(claim, stop);
+          endings.add(ending);
+          void ending.finally(() => endings.delete(ending));
+          continue;
+        }
         const before = runs.get(claim.runId);
         if (closed || killed || (before && !before.fence.lost)) {
           // Closed while the batch was claimed (or a run this runner still holds, which a claim cannot be): given back.
@@ -497,7 +664,7 @@ export function startRunner(options: RunnerOptions): Runner {
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
           emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });
-          await store.runs.update(claim, { state: "failed", summary: message(error) }).catch(() => {});
+          await store.runs.update(claim, { state: "failed", summary: redact(message(error)) }).catch(() => {});
           await store.flush().catch(() => {});
           await store.release(claim, {}).catch(() => {});
         }
@@ -512,6 +679,7 @@ export function startRunner(options: RunnerOptions): Runner {
   let claiming: Promise<void> | undefined;
   const poll = () => {
     if (closed || killed) return;
+    beat();
     const claimed = claimMore();
     claiming = claimed;
     void claimed.finally(() => {
@@ -537,10 +705,21 @@ export function startRunner(options: RunnerOptions): Runner {
       if (closed || killed) return;
       closed = true;
       clearTimeout(pollTimer);
-      clearTimeout(commandTimer);
       // A claim the poll already has in flight lands first: one it makes now is given back at once (claimMore, closed),
       // all before close resolves, so nothing is claimed by this runner after it (a raise sent then wakes no claim here).
+      draining = drainMs > 0;
       await claiming;
+      // The drain: each held run goes on to its own end (an answer, a park, a person's stop: their commands still reach
+      // them), its claims renewed, for up to drainMs; a turn in flight then finishes, never cut and paid again on the
+      // resume. Whatever is still going at the bound is stopped below, for a shutdown, where it can resume.
+      const going = [...runs.values()].filter((held) => !held.fence.lost && !held.ending);
+      if (draining && going.length > 0) {
+        let bound: NodeJS.Timeout | undefined;
+        await Promise.race([Promise.all(going.map((held) => held.done)), new Promise<void>((resolve) => (bound = setTimeout(resolve, drainMs)))]);
+        clearTimeout(bound);
+      }
+      draining = false;
+      clearTimeout(commandTimer);
       const live = [...runs.values()].filter((held) => !held.fence.lost);
       for (const held of live) {
         if (!held.ending) {
@@ -551,15 +730,20 @@ export function startRunner(options: RunnerOptions): Runner {
       // Claims are renewed while the loops stop; a loop that never stops is given up when its claim would run out.
       let timeout: NodeJS.Timeout | undefined;
       const late = new Promise<void>((resolve) => (timeout = setTimeout(resolve, leaseMs - stopMarginMs)));
-      await Promise.race([Promise.all(live.map((held) => held.done)), late]);
+      await Promise.race([Promise.all([...live.map((held) => held.done), ...endings]), late]);
       clearTimeout(timeout);
       for (const held of runs.values()) held.fence.lost = true;
       stopTimers();
+      // The live view's last tick, once every loop has ended or been given up: a draining run kept its live view to the
+      // end of its loop.
+      await ticker?.close();
     },
     kill() {
       killed = true;
       closed = true;
       stopTimers();
+      // A crash writes nothing more: the live view's ticker stops at once, beside a new holder of its runs.
+      ticker?.stop();
     },
   };
 }

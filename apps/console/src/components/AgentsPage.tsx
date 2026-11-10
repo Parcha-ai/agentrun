@@ -6,6 +6,7 @@ import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
+import type { ComputerKindView, ToolSettings } from "@/lib/v2";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
 
@@ -30,6 +31,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
         onEdit: (id) => go(agentHash(id, "edit")),
         onNew: () => go("#/agents/new"),
         onRuns: (id) => go(agentHash(id, "runs")),
+        onLearning: (id) => go(agentHash(id, "learning")),
         onArchive: async (id, archive) => { try { await (archive ? v2.archiveAgent(id) : v2.unarchiveAgent(id)); load(); } catch (e) { setError(problemOf(e).message); } },
       }} />
   );
@@ -59,6 +61,22 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     }
   };
   useEffect(() => { void load(); }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The server's computers list (GET /v2/computers), for the Computer step's kinds; null until it answers, and on a server
+  // that answers none, where the step shows where runs go. Only the newest read lands.
+  const [computers, setComputers] = useState<ComputerKindView[] | null>(null);
+  const computersAsked = useRef(0);
+  useEffect(() => {
+    const n = ++computersAsked.current;
+    v2.computers().then((r) => { if (n === computersAsked.current) setComputers(r.kinds); }, () => { if (n === computersAsked.current) setComputers(null); });
+  }, [v2]);
+  // This server's tool settings, for the pins it sets on tools an agent grants: a read that fails says none (the gate holds
+  // them whatever this page says).
+  const [serverTools, setServerTools] = useState<ToolSettings | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    Promise.resolve().then(() => v2.toolSettings()).then((s) => { if (live) setServerTools(s); }, () => {});
+    return () => { live = false; };
+  }, [v2]);
   // The saved MCP servers, for the Tools step's MCP groups.
   const [mcpServers, setMcpServers] = useState<McpServer[] | null | "failed">(null);
   // Only the newest read lands: an older one's late answer (a failure most of all) never replaces it.
@@ -93,12 +111,12 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
-    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
+    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
         try {
           if (!agent) {
-            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], approvals: fields.approvals, tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], approvals: fields.approvals, tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, computer: fields.computer, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;

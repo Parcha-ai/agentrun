@@ -1,12 +1,14 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
 // starts from it. The folder is `learning/` in the agent's folder on the disk (files.ts agentFolderOf), in Claude Code's auto-memory format
 // (learn/notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
-// git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
-// repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
-// on one agent's folder waits its turn in that agent's queue in this process.
+// git with main checked out, so any reader sees its files, reached through its Workspace (learningWorkspace). Every
+// write to main is one exec of the learning script (learn/folder.ts: a run's merge, a person's write, the first commit),
+// which also writes `.agentrun/snapshot.json`, what the routes read. A run's seed is the script's read too (seedFrom over
+// learn/seed-check.ts readSeed): no git runs in this process for it. The host-git reads left below (git, readBlobs,
+// readSeed, agentFolder) are propose.ts's alone, until it reads the seed through the folder too.
 //
-// When a run of such an agent is made the server makes the folder if it is absent (one host commit on main, holding an
-// empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
+// When a run of such an agent is made the server makes the folder if it is absent (the script's init: one host commit
+// on main, holding an empty `MEMORY.md`), and reads main's commit through the script, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads under `# Learned` (learnedOf): each active note whole while they fit the server's learning
 // budget, else the index and the notes changed last, whole, while they fit; every text cut of the server's secrets, the
@@ -17,28 +19,29 @@
 // (grade.ts). The copy in the run's work is only for reading: nothing the run writes there is ever kept.
 //
 // The skills the agent wrote are in the folder too, one folder each under `skills/` (SKILLS_DIR). A run
-// gets those of its commit beside its revision's own, in `work/.agents/skills/`, read with plumbing as its notes are: a
+// gets those of its commit beside its revision's own, in `work/.agents/skills/`, read as its notes are: a
 // skill named like one of the revision's is the revision's, and the learned ones fit their own budget
 // (LEARNED_SKILLS_BUDGET) within what the revision's leave of the adapters' cap on a run's skills, so they never push the
 // revision's out of a harness's own loading (skills.ts splitSkills). One that does not fit is left out, and the pin
-// names it. A link at `skills/` or anywhere under it is never followed: the run starts with nothing learned.
+// names it. A link at `skills/` or anywhere under it is never followed: the skill it is in is left out, with a warning.
 //
-// The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
-// or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
-// nothing learned. The end-of-run turn's seed, its proposal's check, its grade and its merge reach the folder the same
-// way, and a link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
-// way (readFolder, agentFolder), and a link there is an error.
+// The host never follows a symbolic link into the folder (learn/folder.ts learningWorkspace, and the script): a link at
+// the agent's home, at its `learning/` or at `learning/.git`, or a `MEMORY.md` that is one when the script writes it, is
+// refused, and the run starts with nothing learned. Its proposal's check (agentFolder) refuses one the same way, and a
+// link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
+// way (learn/folder.ts learningWorkspace), and a link there is an error.
 import { spawn } from "node:child_process";
-import { constants, existsSync } from "node:fs";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
+import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
+import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
-import { readWorkText } from "./workspace.js";
+import { type Entry, isWorkspaceError, type Workspace, WorkspaceError, workspaceAt } from "./workspace/index.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
  *  default: a run learns when its agent's definition says `learning: true`. `off`: no run this server starts does. */
@@ -221,20 +224,20 @@ export const LEARNED_DIR = ".learning";
  *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
 export const LEARNING_TURN = "learning-turn.json";
 export type Turn = { answer: string; asked: string[]; triggered?: Triggered[] };
-/** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
- *  it learned anything.
+/** What a run's pin holds: the commit of main it was seeded from (null: the folder had no main yet, so the run learns
+ *  from an empty seed), and what it reads under `# Learned` (learnedOf), when it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
  *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
  *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
  *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
  *  secret. Every harness runs them, on the run's one model route. */
-export type Pin = { seed: string; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
-/** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
- *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
+export type Pin = { seed: string | null; section?: string; given?: NoteUsed[]; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
+/** What a run is seeded from: main's commit (null when the folder has none yet), its index and its active notes by
+ *  file, and the name of every entry at its top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
- *  first. */
-export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[]; workflows?: LearnedWorkflow[] };
+ *  first. `workflows`: its active learned workflows, by name. */
+export type Seed = { sha: string | null; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[]; workflows?: LearnedWorkflow[] };
 /** A workflow the agent learned, as a run may run it: its name, the line its README says what it does with, and its
  *  workflow.json whole. */
 export type LearnedWorkflow = { name: string; description: string; workflow: string };
@@ -314,21 +317,9 @@ const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_
 /** A skill the agent wrote, as a seed holds it: its name, its files' bytes together, and each file's text by its path
  *  inside the skill, read only when the skill could fit a run's budget at all. */
 export type LearnedSkill = { name: string; bytes: number; files?: Record<string, string> };
-/** The `status` a SKILL.md's front matter sets, quotes dropped, or undefined when it sets none. The host alone sets one
- *  (`status: pending` on a skill held for its owner's OK); the checker refuses a run's skill that does. */
-const statusOf = (text: string | undefined): string | undefined => {
-  const lf = (text ?? "").replace(/\r\n/g, "\n");
-  const end = lf.startsWith("---\n") ? lf.indexOf("\n---\n", 3) : -1;
-  const line = end < 0 ? undefined : lf.slice(4, end).split("\n").find((entry) => entry.startsWith("status:"));
-  return line?.slice("status:".length).trim().replace(/^(["'])(.*)\1$/, "$2");
-};
-
 /** A file main holds over this is not read: a note is short, and the index is read only so far (loadedIndex). */
 const FILE_CAP = 1 << 20;
 const IDENTITY = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
-/** The floor of git this server's learning needs: what its own calls need, 2.32 (GIT_CONFIG_GLOBAL, which every call
- *  sets to keep a host's global config out). A stock serverless exec image has 2.34. */
-const MIN_GIT = [2, 32] as const;
 /** How long one git call may take before it is killed: a hung call would hold its agent's queue. */
 const GIT_TIMEOUT_MS = 60_000;
 
@@ -365,7 +356,7 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
 /** The agent's learning folder, each level checked by `lstat`: its home, its `learning/` and, once there, `.git`. None
  *  may be a symbolic link or anything but a directory, or the host's git would read from, and write to, where the link
  *  points. `make`: the home and the folder are made where absent first, one level at a time, each checked after it is
- *  made (agentFolder); without it nothing is made and a missing level passes (readFolder). The one link rule. */
+ *  made (agentFolder); without it nothing is made and a missing level passes. */
 async function checkedFolder(data: string, agentId: string, make: boolean): Promise<string> {
   const home = agentFolderOf(data, agentId);
   const repo = learningRepo(data, agentId);
@@ -383,18 +374,13 @@ async function checkedFolder(data: string, agentId: string, make: boolean): Prom
 
 /** The agent's learning folder, its home and the folder made where absent (checkedFolder). A link swapped in for a part
  *  just made is caught by the check after. `<data>/disk/agents` is the operator's, as the data directory is. Every write into
- *  the folder goes through it, in the agent's queue: before anything reads or makes the repository, and again once
- *  `git init` has made `.git`; before a run's end-of-run turn reads its seed again (seedAt), before its proposal is
- *  checked against it (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a
- *  person's edit, create or retire (learning-routes.ts). A refusal throws: a run about to start starts with nothing
+ *  the folder goes through it, in the agent's queue: before a run's seed reads or makes
+ *  the repository, before its end-of-run turn reads its seed again (seedAt), before its proposal is checked against it
+ *  (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a person's edit, create,
+ *  retire, approve or restore (learning-routes.ts). A refusal throws: a run about to start starts with nothing
  *  learned (seed_failed), a run that ended drops what it learned (reflect_failed, propose_failed or grade_failed), and
  *  a person's write is an error. */
 export const agentFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, true);
-
-/** The agent's learning folder for a person's read, outside the queue: the same check as agentFolder's, and nothing
- *  made. A link or a non-directory throws as it does there; a missing level passes, so a folder never made reads as
- *  empty (mainOf finds no main). */
-export const readFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, false);
 
 /** Before every command: a `-c` flag wins over the repository's own config. No hook or fsmonitor runs, no replace ref
  *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily.
@@ -440,81 +426,19 @@ export function git(cwd: string, repo: string | undefined, args: readonly string
   });
 }
 
-export const line = (out: Buffer): string => out.toString("utf8").trim();
-
-const gitChecks = new Map<string, Promise<string | undefined>>();
-
-/** Why this host keeps no learning folder, or undefined when it can: git MIN_GIT or later on `env`'s PATH. */
-export function learningBlocker(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
-  const key = env.PATH ?? "";
-  let check = gitChecks.get(key);
-  if (!check) {
-    const floor = MIN_GIT.join(".");
-    check = new Promise<string | undefined>((resolve) => {
-      const child = spawn("git", ["--version"], { env: { PATH: key }, stdio: ["ignore", "pipe", "ignore"], timeout: GIT_TIMEOUT_MS });
-      let out = "";
-      child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
-      child.once("error", () => resolve(`learning needs git ${floor} or later on PATH, and this host has none`));
-      child.once("close", (code) => {
-        const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(out) ?? []).slice(1).map(Number);
-        if (code !== 0) resolve(`learning needs git ${floor} or later on PATH, and this host has none`);
-        else resolve(major > MIN_GIT[0] || (major === MIN_GIT[0] && minor >= MIN_GIT[1]) ? undefined : `learning needs git ${floor} or later, and this host has ${out.trim()}`);
-      });
-    });
-    gitChecks.set(key, check);
-  }
-  return check;
-}
-
 const queues = new Map<string, Promise<unknown>>();
 
 /** Runs `work` once every call queued before it on the agent's folder has finished: one at a time per agent, in this
  *  process. Everything that touches an agent's folder goes through it, so two runs made at once never both make it. */
 export const withAgentRepo = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => queued(learningRepo(data, agentId), work);
-/** Runs `work` after every grade of the agent's runs queued before it (grade.ts): one grade at a time per agent, each
- *  against main as the one before left it. Its own queue, so a grade's model call never holds a run's seed. */
-export const withAgentGrade = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => queued(`${learningRepo(data, agentId)}\0grade`, work);
 
 function queued<T>(key: string, work: () => Promise<T>): Promise<T> {
   return serialBy(queues, key, work);
 }
 
-/** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
- *  making stopped before main. A main that is there, by its ref, and names no commit git can read is an error: the
- *  repository is never made again over it. */
-export async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
-  if (!existsSync(join(repo, ".git")) || !(await git(cwd, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
-  if (!line(await git(cwd, repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]))) return undefined;
-  return line(await git(cwd, repo, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]));
-}
-
-/** Makes the agent's folder, or finishes one whose making stopped before main: `init` with no template, then the host's
- *  one commit on main, holding an empty `MEMORY.md` alone, made with plumbing. The working tree and the index show that
- *  commit's tree first (written here, never checked out; a `MEMORY.md` that is a link is refused, never written
- *  through), and main is created last, only where it is not there yet: a making that stops anywhere before leaves no
- *  main, and the next one does it all again. Called in the queue, on the folder agentFolder made and checked; `check`
- *  checks it again once `.git` is made. */
-export async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
-  const known = await mainOf(cwd, repo);
-  if (known) return known;
-  await git(cwd, undefined, ["init", "-q", "--template=", "--initial-branch=main", repo]);
-  await check();
-  const blob = line(await git(cwd, repo, ["hash-object", "-w", "--no-filters", "--stdin"], ""));
-  const tree = line(await git(cwd, repo, ["mktree"], `100644 blob ${blob}\t${INDEX_FILE}\n`));
-  await writeFile(join(repo, INDEX_FILE), "", { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW }).catch((error: NodeJS.ErrnoException) => {
-    throw error.code === "ELOOP" ? new Error(`the learning folder's ${INDEX_FILE} is a symbolic link, and the host never writes through one`) : error;
-  });
-  await git(cwd, repo, ["read-tree", tree]);
-  const commit = line(await git(cwd, repo, ["commit-tree", tree, "-m", "host: the agent's learning folder"]));
-  await git(cwd, repo, ["update-ref", "-m", "host: the agent's learning folder", "refs/heads/main", commit, ""]);
-  return commit;
-}
-
-/** Brings the folder's checked-out files in line with commit `sha` of main: host-only files, so no hook or filter runs,
- *  with the work tree named outright, the folder itself. Why it could not, when it could not. In the queue, on the
- *  folder agentFolder checked. */
-export const checkOut = (repo: string, sha: string): Promise<Error | undefined> =>
-  git(repo, repo, ["read-tree", "-u", "--reset", sha], "", { GIT_WORK_TREE: repo }).then(() => undefined, (error: Error) => error);
+/** Agent `agentId`'s learning folder (learn/folder.ts learningWorkspace), in this server's place: Mode 1's local folder
+ *  under `data`. The one point that names the place; its `end()` is called in a finally after every use. */
+export const learningFolderOf = (data: string, agentId: string): LearningFolder => learningWorkspace({ mode: "local", agentId, data });
 
 /** The blobs `oids` hold, in order, read in one `cat-file --batch`. One git cannot read throws. */
 export async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Promise<Buffer[]> {
@@ -570,114 +494,84 @@ export async function readSeed(cwd: string, repo: string, sha: string): Promise<
   return seed;
 }
 
-/** The skills commit `sha` holds under SKILLS_DIR, read with plumbing, by name. A skill is read when its folder's
- *  name and each of its files' paths are in shape, it holds a SKILL.md, and each file is a regular one (mode 100644) in
- *  UTF-8; else it is named in `skipped`. Only an active skill is a run's, one whose SKILL.md sets no status (or
- *  `active`): one held for its owner's OK (`status: pending`), or with any other status, is left out as a note that is
- *  not active is (readSeed). One over LEARNED_SKILLS_BUDGET, which no run could get, is held with its bytes and none of
- *  its files. A symbolic link or a submodule at SKILLS_DIR or anywhere under it throws, as a read
- *  git fails does: the run starts with nothing learned, and no link is ever laid in its work or followed. */
-export async function readSkills(cwd: string, repo: string, sha: string): Promise<{ skills: LearnedSkill[]; skipped: string[] }> {
-  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", SKILLS_DIR])).toString("utf8").split("\0").filter(Boolean);
-  const found = new Map<string, { path: string; oid: string; size: number }[]>();
-  const refused = new Set<string>();
-  const skipped: string[] = [];
-  for (const entry of listed) {
-    const tab = entry.indexOf("\t");
-    const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
-    const path = entry.slice(tab + 1);
-    if (path !== SKILLS_DIR && !path.startsWith(`${SKILLS_DIR}/`)) continue;
-    if (mode === "120000" || mode === "160000") throw new Error(`the learning folder's ${path} is a ${mode === "120000" ? "symbolic link" : "submodule"}, and the host never lays one in a run`);
-    if (type === "tree") continue;
-    if (path === SKILLS_DIR) {
-      skipped.push(`${path} (not a folder)`);
-      continue;
+/** What the learning folder's read at a commit gives a run's seed (the folder's script's read op, through the agent's
+ *  learning Workspace): each file of its index, its active notes and its active skills, by its path from the folder's
+ *  root, each skill it left out whole and why (`refused`, always there: a skill holding a tracked link), and every entry
+ *  at the commit's top whatever its status (`held`: the index, every note, the skills' and workflows' folders); or why
+ *  it has none: the folder cannot answer now (`unavailable`), or the commit is no longer there (`gone`). */
+export type SeedRead =
+  | { ok: true; files: readonly { path: string; text: string }[]; refused: readonly { skill: string; why: string }[]; held: readonly string[] }
+  | { ok: false; why: "unavailable" | "gone" };
+/** The read at `commit` (null: the folder has no main yet, an empty read). */
+export type SeedReader = (commit: string | null) => Promise<SeedRead>;
+/** What a seed can't tell from its read alone, as the folder's snapshot keeps it: each note file's place in main's log
+ *  (0 the newest) and each skill's by its name. Order alone: what main holds is the read's (`held`). */
+export type SeedOrder = { readonly notes: readonly { file: string; order: number }[]; readonly skills?: readonly { name: string; order: number }[] };
+
+/** A run's seed from the folder's read at `commit` (`read`): its index, its notes the one changed last first, its
+ *  skills grouped by folder, the one changed last first, each with its files while it could fit a run's budget at all
+ *  (LEARNED_SKILLS_BUDGET), else held by its size alone, and its active learned workflows by name. A path that is none (a file deeper than the folder's top, a
+ *  skill folder named out of shape) is named in `skipped`. A skill the read refused is not in it, and is said in one
+ *  `warn` line of the run. No commit yet (null, read as null) is an empty seed whose commit stays null; a read that fails
+ *  throws, saying why, and the run starts with nothing learned (or, opened again, keeps what it has). No git here: the
+ *  read is the folder's. */
+export async function seedFrom(commit: string | null, read: SeedReader, { order, warn }: { order?: SeedOrder; warn?: (line: string) => void } = {}): Promise<Seed> {
+  const got = await read(commit);
+  if (!got.ok) throw new Error(`the learning folder's read at ${commit ?? "its start"} is ${got.why}`);
+  for (const { skill, why } of got.refused) warn?.(`starts without the skill ${skill} its agent learned: ${why}`);
+  const seed: Seed = { sha: commit, notes: {}, files: [], skipped: [], recent: [], skills: [] };
+  const skills = new Map<string, Record<string, string>>();
+  const flows = new Map<string, Record<string, string>>();
+  for (const { path, text } of got.files) {
+    if (path === INDEX_FILE) seed.index = text;
+    else if (NOTE_FILE.test(path)) seed.notes[path] = text;
+    else {
+      const [top, name = "", ...rest] = path.split("/");
+      const file = rest.join("/");
+      if (top === SKILLS_DIR && SKILL_NAME.test(name) && SKILL_FILE_PATH.test(file)) (skills.get(name) ?? skills.set(name, {}).get(name)!)[file] = text;
+      else if (top === WORKFLOWS_DIR && WORKFLOW_NAME.test(name) && (file === "README.md" || file === "workflow.json")) (flows.get(name) ?? flows.set(name, {}).get(name)!)[file] = text;
+      else seed.skipped.push(path);
     }
-    const [name = "", ...rest] = path.slice(SKILLS_DIR.length + 1).split("/");
-    const file = rest.join("/");
-    const why = !SKILL_NAME.test(name) || !file ? "not in a skill's folder named in lowercase letters, digits and dashes" : !SKILL_FILE_PATH.test(file) ? "not a plain path inside a skill" : mode !== "100644" || type !== "blob" || !oid ? `mode ${mode}` : undefined;
-    if (why) {
-      refused.add(name);
-      skipped.push(`${path} (${why})`);
-    } else (found.get(name) ?? found.set(name, []).get(name)!).push({ path: file, oid, size: Number(size) });
   }
-  const skills: LearnedSkill[] = [];
-  for (const [name, files] of [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    if (refused.has(name)) continue;
-    if (!files.some(({ path }) => path === "SKILL.md")) {
-      skipped.push(`${SKILLS_DIR}/${name} (no SKILL.md)`);
+  const noteAt = new Map((order?.notes ?? []).map(({ file, order: at }) => [file, at]));
+  const skillAt = new Map((order?.skills ?? []).map(({ name, order: at }) => [name, at]));
+  const by = (at: Map<string, number>) => (a: string, b: string) => (at.get(a) ?? Number.POSITIVE_INFINITY) - (at.get(b) ?? Number.POSITIVE_INFINITY) || (a < b ? -1 : a > b ? 1 : 0);
+  seed.recent = Object.keys(seed.notes).sort(by(noteAt));
+  // Every entry at the seed's top, as main holds it (the read's `held`, a pending, superseded or retired note's file
+  // among them, so servedIndex leaves its line out of a run's index), beside what the read gave.
+  seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...got.held, ...(skills.size ? [SKILLS_DIR] : [])])];
+  seed.skills = [...skills.keys()].sort(by(skillAt)).map((name) => {
+    const files = skills.get(name)!;
+    const bytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0);
+    return bytes > LEARNED_SKILLS_BUDGET ? { name, bytes } : { name, bytes, files };
+  });
+  // The active learned workflows, by name, each with its workflow.json whole. The read gives an active one's README.md
+  // and workflow.json; its front matter is read again here: one that does not read one way (readmeFront) could hold a
+  // status another reader sees, so it is never read as active, and is named in `skipped`.
+  seed.workflows = [];
+  for (const name of [...flows.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const { "README.md": readme, "workflow.json": workflow } = flows.get(name)!;
+    if (readme === undefined || workflow === undefined) continue;
+    const front = readmeFront(readme);
+    if (!front) {
+      seed.skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
       continue;
     }
-    const bytes = files.reduce((sum, { size }) => sum + size, 0);
-    if (bytes > LEARNED_SKILLS_BUDGET) {
-      skills.push({ name, bytes });
-      continue;
-    }
-    const blobs = await readBlobs(cwd, repo, files.map(({ oid }) => oid));
-    let texts: Record<string, string>;
-    try {
-      texts = Object.fromEntries(files.map(({ path }, i) => [path, utf8.decode(blobs[i]!)]));
-    } catch {
-      skipped.push(`${SKILLS_DIR}/${name} (not UTF-8)`);
-      continue;
-    }
-    const status = statusOf(texts["SKILL.md"]);
-    if (status === undefined || status === "active") skills.push({ name, bytes, files: texts });
+    if ((front.get("status") ?? "active") !== "active") continue;
+    seed.workflows.push({ name, description: front.get("description") ?? "", workflow });
   }
-  return { skills, skipped };
+  return seed;
 }
 
-/** The workflows commit `sha` holds under WORKFLOWS_DIR, read with plumbing, by name: each a folder with a workflow.json
- *  and a README.md, each a regular file (mode 100644) of at most FILE_CAP bytes in UTF-8; else named in `skipped`. Only an
- *  active one is a run's, by the rule a skill is (readSkills): its README.md sets no status, or `active`; one held for
- *  its owner's OK, or retired, is left out. A symbolic link or a submodule under WORKFLOWS_DIR throws. */
-export async function readWorkflows(cwd: string, repo: string, sha: string): Promise<{ workflows: LearnedWorkflow[]; skipped: string[] }> {
-  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", WORKFLOWS_DIR])).toString("utf8").split("\0").filter(Boolean);
-  const found = new Map<string, Record<string, string>>();
-  const refused = new Set<string>();
-  const skipped: string[] = [];
-  for (const entry of listed) {
-    const tab = entry.indexOf("\t");
-    const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
-    const path = entry.slice(tab + 1);
-    if (path !== WORKFLOWS_DIR && !path.startsWith(`${WORKFLOWS_DIR}/`)) continue;
-    if (mode === "120000" || mode === "160000") throw new Error(`the learning folder's ${path} is a ${mode === "120000" ? "symbolic link" : "submodule"}, and the host never reads one for a run`);
-    if (type === "tree") continue;
-    const [name = "", file = "", ...more] = path.slice(WORKFLOWS_DIR.length + 1).split("/");
-    const why = !WORKFLOW_NAME.test(name) || more.length || (file !== "workflow.json" && file !== "README.md") ? "not a workflow's workflow.json or README.md" : mode !== "100644" || type !== "blob" || !oid ? `mode ${mode}` : Number(size) > FILE_CAP ? `over ${FILE_CAP} bytes` : undefined;
-    if (why) {
-      refused.add(name);
-      skipped.push(`${path} (${why})`);
-    } else (found.get(name) ?? found.set(name, {}).get(name)!)[file] = oid!;
-  }
-  const workflows: LearnedWorkflow[] = [];
-  for (const [name, oids] of [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    if (refused.has(name)) continue;
-    if (!oids["workflow.json"] || !oids["README.md"]) {
-      skipped.push(`${WORKFLOWS_DIR}/${name} (no ${oids["workflow.json"] ? "README.md" : "workflow.json"})`);
-      continue;
-    }
-    const [json, readme] = await readBlobs(cwd, repo, [oids["workflow.json"], oids["README.md"]]);
-    let texts: [string, string];
-    try {
-      texts = [utf8.decode(json!), utf8.decode(readme!)];
-    } catch {
-      skipped.push(`${WORKFLOWS_DIR}/${name} (not UTF-8)`);
-      continue;
-    }
-    // Its README read one way only, or not at all: one whose front matter is not closed, or holds a line that is no key
-    // at its left edge, could hold a status a reader other than this one sees, so it is never read as active.
-    const front = readmeFront(texts[1]);
-    if (!front) {
-      skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
-      continue;
-    }
-    const status = front.get("status");
-    if (status !== undefined && status !== "active") continue;
-    workflows.push({ name, description: front.get("description") ?? "", workflow: texts[0] });
-  }
-  return { workflows, skipped };
-}
+/** What seedFrom reads through the agent's learning folder: the script's read at a commit, or the snapshot and its
+ *  bodies when the commit is main's (learn/seed-check.ts readSeed). No git in this process. */
+export const readerOf = (ws: Workspace): SeedReader => async (commit) => {
+  const got = await readFolderSeed(ws, commit);
+  return got.ok ? { ok: true, files: got.files, refused: got.refused, held: got.held } : { ok: false, why: got.reason };
+};
+/** The places a seed can't read from its files alone, from the folder's snapshot: each note's and each skill's. */
+const orderOf = (snapshot: Snapshot | undefined): SeedOrder | undefined =>
+  snapshot ? { notes: snapshot.notes.map(({ file, order }) => ({ file, order })), skills: snapshot.skills.map(({ name, order }) => ({ name, order })) } : undefined;
 
 /** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
  *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
@@ -708,59 +602,35 @@ export function readmeFront(text: string): Map<string, string> | undefined {
   return front;
 }
 
-/** Each file's place in main's first-parent log from `sha`, by the newest commit that changed it: 0 for those the newest
- *  commit changed, and so on, so two changes in one second keep their order. A run's notes (seedOf) and a person's view
- *  of them (learning-routes.ts) are in this order, the one changed last first. */
-export async function changedOrder(cwd: string, repo: string, sha: string): Promise<Map<string, number>> {
-  const walked = (await git(cwd, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e", sha])).toString("utf8");
-  const order = new Map<string, number>();
-  walked.split("\x1e").slice(1).forEach((record, i) => {
-    const end = record.indexOf("\0");
-    if (end < 0) return;
-    for (const file of record.slice(end + 1).split("\0").map((name) => name.replace(/^\n/, "")).filter(Boolean)) if (!order.has(file)) order.set(file, i);
-  });
-  return order;
-}
-
-/** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent, and
- *  what that commit holds, its active notes in the order they changed on main, the one changed last first (then by
- *  name). In the agent's queue. */
-export function seedOf(data: string, agentId: string): Promise<Seed> {
+/** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
+ *  learning script's init), and what main holds for a run (seedFrom over the folder's read): its index, its active
+ *  notes the one changed last first, its active skills, and its active learned workflows. A skill the read refused is
+ *  said through `warn`. In the agent's queue. No git in this process: the folder's own script and file API. */
+export function seedOf(data: string, agentId: string, warn?: (line: string) => void): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
-    const check = () => agentFolder(data, agentId);
-    const repo = await check();
-    const home = agentFolderOf(data, agentId);
-    const sha = await openAgentRepo(home, repo, check);
-    const seed = await readSeed(home, repo, sha);
-    const order = await changedOrder(home, repo, sha);
-    const place = (file: string) => order.get(file) ?? Number.POSITIVE_INFINITY;
-    seed.recent = Object.keys(seed.notes).sort((a, b) => place(a) - place(b) || (a < b ? -1 : a > b ? 1 : 0));
-    const { skills, skipped } = await readSkills(home, repo, sha);
-    // A skill's place is its file changed last's; by name (readSkills' order) among skills changed in one commit.
-    const skillPlace = new Map<string, number>();
-    for (const [file, at] of order) {
-      const name = file.startsWith(`${SKILLS_DIR}/`) ? file.slice(SKILLS_DIR.length + 1).split("/")[0]! : undefined;
-      if (name !== undefined && at < (skillPlace.get(name) ?? Number.POSITIVE_INFINITY)) skillPlace.set(name, at);
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      const main = await learningInit(workspace);
+      return await seedFrom(main, readerOf(workspace), { order: orderOf(await readSnapshot(workspace)), ...(warn ? { warn } : {}) });
+    } finally {
+      await end();
     }
-    const placeOf = (skill: LearnedSkill) => skillPlace.get(skill.name) ?? Number.POSITIVE_INFINITY;
-    seed.skills = [...skills].sort((a, b) => placeOf(a) - placeOf(b) || 0);
-    seed.skipped.push(...skipped);
-    const flows = await readWorkflows(home, repo, sha);
-    seed.workflows = flows.workflows;
-    seed.skipped.push(...flows.skipped);
-    return seed;
   });
 }
 
-/** The skills the agent wrote at commit `sha` (readSkills): what a run's pin names, laid again. In the agent's queue,
- *  through agentFolder. */
-export const skillsAt = (data: string, agentId: string, sha: string): Promise<LearnedSkill[]> =>
-  withAgentRepo(data, agentId, async () => (await readSkills(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha)).skills);
+/** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again (a follow-up's
+ *  copy, the names of the notes it read). No commit (a pin of an empty seed) is the empty seed. */
+export const seedAt = async (data: string, agentId: string, sha: string | null): Promise<Seed> => {
+  const { workspace, end } = learningFolderOf(data, agentId);
+  try {
+    return await seedFrom(sha, readerOf(workspace));
+  } finally {
+    await end();
+  }
+};
 
-/** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
- *  agent's queue, through agentFolder. */
-export const seedAt = (data: string, agentId: string, sha: string): Promise<Seed> =>
-  withAgentRepo(data, agentId, async () => readSeed(agentFolderOf(data, agentId), await agentFolder(data, agentId), sha));
+/** The skills the agent wrote at commit `sha` (seedAt's): what a run's pin names, laid again. */
+export const skillsAt = async (data: string, agentId: string, sha: string | null): Promise<LearnedSkill[]> => (await seedAt(data, agentId, sha)).skills ?? [];
 /** The active notes of a seed, parsed. */
 export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
   const note = parseNoteFile(file, text);
@@ -829,15 +699,16 @@ function servedIndex(seed: Seed): string | undefined {
   return seed.index.split("\n").filter((entry) => !linkedFiles(entry).some((file) => held.has(file) && !Object.hasOwn(seed.notes, file))).join("\n");
 }
 
-/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. The index names the active notes
- *  alone (servedIndex), and each file is cut of the host's secrets (`shown`), the index a line at a time. */
-export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise<void> {
-  await rm(dir, { recursive: true, force: true });
-  await mkdir(dir, { mode: 0o700 });
+/** Lays `seed`'s index and active notes in the run's `.learning/`, through its Workspace, made fresh: whatever was there
+ *  goes. The index names the active notes alone (servedIndex), and each file is cut of the host's secrets (`shown`), the
+ *  index a line at a time. */
+export async function layLearned(work: Workspace, seed: Seed, shown: Shown): Promise<void> {
+  await work.remove(LEARNED_DIR, { recursive: true, force: true });
+  await work.mkdir(LEARNED_DIR);
   const files = Object.entries(seed.notes).map(([file, text]): [string, string] => [file, shown.text(text)]);
   const index = servedIndex(seed);
   if (index !== undefined) files.unshift([INDEX_FILE, linesShown(index, shown)]);
-  for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
+  for (const [file, text] of files) await work.write(`${LEARNED_DIR}/${file}`, text);
 }
 
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
@@ -897,43 +768,46 @@ function learnedParts(seed: Seed, options: LearnedOptions): { section: string | 
   return { section: [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n"), given };
 }
 
-/** `rel`, a folder of the run's `work`, made where absent by a plain `mkdir` (which follows no link), then checked by
- *  `lstat`: a symbolic link there, or anything but a folder, throws, and nothing is written through it. */
-async function workFolder(work: string, rel: string): Promise<void> {
-  const path = join(work, rel);
-  await mkdir(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "EEXIST") throw error;
-  });
-  const stats = await lstat(path);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error(`the run's ${rel} is not a folder, and the host never writes through a link`);
+/** The run's skills folder, `.agents/skills`, as its Workspace names it. */
+const SKILLS_PATH = RUN_SKILLS.join("/");
+
+/** The names in the run's `.agents/skills/`: none when it is not there. A link on the way, or anything else that keeps
+ *  it from being listed, throws. */
+async function runSkillNames(work: Workspace): Promise<Set<string>> {
+  try {
+    return new Set((await work.list(SKILLS_PATH)).map((entry) => entry.name));
+  } catch (error) {
+    if (isWorkspaceError(error, "NOT_FOUND")) return new Set();
+    throw error;
+  }
 }
 
-/** Lays each of `skills` in the run's `work/.agents/skills/<name>/`, a folder made new for it (one already there
- *  throws), every folder on the way checked (workFolder). Each name goes in `made` once its folder is, so a caller that
- *  fails takes back what was laid. */
-async function laySkills(work: string, skills: readonly LearnedSkill[], made: string[]): Promise<void> {
+/** Lays each of `skills` in the run's `.agents/skills/<name>/` through its Workspace, a folder made new for it (one
+ *  already there throws EXISTS); a link on the way is ESCAPE, and nothing is written through it. Each name goes in
+ *  `made` once its folder is, so a caller that fails takes back what was laid. */
+export async function laySkills(work: Workspace, skills: readonly LearnedSkill[], made: string[]): Promise<void> {
   if (!skills.length) return;
-  for (let depth = 1; depth <= RUN_SKILLS.length; depth++) await workFolder(work, RUN_SKILLS.slice(0, depth).join("/"));
+  const there = await runSkillNames(work);
   for (const { name, files = {} } of skills) {
-    await mkdir(join(work, ...RUN_SKILLS, name));
+    if (there.has(name)) throw new WorkspaceError("EXISTS", `the run's ${SKILLS_PATH}/${name} is there already`, { path: `${SKILLS_PATH}/${name}` });
+    await work.mkdir(`${SKILLS_PATH}/${name}`);
     made.push(name);
-    for (const [path, text] of Object.entries(files)) {
-      const parts = path.split("/");
-      for (let depth = 1; depth < parts.length; depth++) await workFolder(work, [...RUN_SKILLS, name, ...parts.slice(0, depth)].join("/"));
-      // A SKILL.md as a harness is given it: its name and description alone in its front matter (servedSkill).
-      await writeFile(join(work, ...RUN_SKILLS, name, ...parts), path === "SKILL.md" ? servedSkill(text) : text, { flag: "wx" });
+    // A SKILL.md as a harness is given it: its name and description alone in its front matter (servedSkill).
+    for (const [path, text] of Object.entries(files)) await work.write(`${SKILLS_PATH}/${name}/${path}`, path === "SKILL.md" ? servedSkill(text) : text);
+  }
+}
+
+/** Takes the learned skills `names` back out of the run's work: each `.agents/skills/<name>/`, unless a folder on the
+ *  way is a link (or no folder), when nothing is touched. */
+export async function takeSkills(work: Workspace, names: Iterable<string>): Promise<void> {
+  for (const name of names) {
+    try {
+      await work.remove(`${SKILLS_PATH}/${name}`, { recursive: true, force: true });
+    } catch (error) {
+      if (isWorkspaceError(error, "ESCAPE") || isWorkspaceError(error, "NOT_FOUND") || isWorkspaceError(error, "REFUSED")) return;
+      throw error;
     }
   }
-}
-
-/** Takes the learned skills `names` back out of the run's work: each `work/.agents/skills/<name>/`, unless a folder on
- *  the way is a link (or no folder), when nothing is touched. */
-async function takeSkills(work: string, names: Iterable<string>): Promise<void> {
-  for (let depth = 1; depth <= RUN_SKILLS.length; depth++) {
-    const stats = await lstat(join(work, ...RUN_SKILLS.slice(0, depth))).catch(() => undefined);
-    if (!stats?.isDirectory()) return;
-  }
-  for (const name of names) await rm(join(work, ...RUN_SKILLS, name), { recursive: true, force: true });
 }
 
 /** The learned skills' names a pin's `skills` hold, each once. */
@@ -943,16 +817,25 @@ const namesIn = (files: readonly string[] | undefined): string[] => [...new Set(
  *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
  *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
  *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`), is left out. */
-async function chooseSkills(work: string, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
+export async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
   let ownBytes = 0;
-  for (const path of own) ownBytes += (await lstat(join(work, ...RUN_SKILLS, ...path.split("/")))).size;
+  const folders = new Map<string, Promise<Entry[]>>();
+  for (const path of own) {
+    const at = `${SKILLS_PATH}/${path}`;
+    const dir = posix.dirname(at);
+    if (!folders.has(dir)) folders.set(dir, work.list(dir));
+    const entry = (await folders.get(dir)!).find((one) => one.name === posix.basename(at) && one.kind === "file");
+    if (!entry) throw new WorkspaceError("NOT_FOUND", `the revision's skill file ${at} is not in the run's work`, { path: at });
+    ownBytes += entry.size;
+  }
   let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - ownBytes));
   const owned = new Set(namesIn(own));
+  const there = await runSkillNames(work);
   const taken: LearnedSkill[] = [];
   const left: string[] = [];
   for (const skill of seed.skills) {
-    if (owned.has(skill.name) || (await lstat(join(work, ...RUN_SKILLS, skill.name)).then(() => true, () => false))) continue;
+    if (owned.has(skill.name) || there.has(skill.name)) continue;
     const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text));
     if (!skill.files || secret || skill.bytes > room) {
       left.push(shown.name(skill.name));
@@ -964,36 +847,44 @@ async function chooseSkills(work: string, seed: Seed, own: readonly string[], sh
   return { taken, left };
 }
 
-/** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
- *  (whatever was there goes), then the pin, with what the run reads under `# Learned` (learnedOf) and the learned
- *  skills it gets beside the revision's `own` skill files (chooseSkills), then those skills, last, into
- *  `work/.agents/skills/`. A write that fails leaves no `.learning/`, no learned skill and no pin, and throws. */
-export async function pinSeed(runDir: string, work: string, seed: Seed, options: LearnedOptions & { own?: readonly string[] }): Promise<Pin> {
-  const dir = join(work, LEARNED_DIR);
+/** Which of `seed`'s learned workflows a run may run (its `learned_workflow` tool), in the seed's order: each while its
+ *  line (workflowLine) fits what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). One that does not,
+ *  or holds a host secret (`shown`), is left out and named in `left`, but for one whose name is itself a secret, never
+ *  named. Main's start (pinSeed) and a runner's claim (runner/learning-seed.ts) choose them the one way. */
+export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkflow[]; left: string[] } {
+  const flows: LearnedWorkflow[] = [];
+  const left: string[] = [];
+  let room = LEARNED_WORKFLOWS_BUDGET;
+  for (const flow of seed.workflows ?? []) {
+    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name)) {
+      // Named, but for a name that is itself a secret.
+      if (!shown.holds(flow.name)) left.push(flow.name);
+      continue;
+    }
+    const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
+    if (bytes > room) left.push(flow.name);
+    else (room -= bytes), flows.push(flow);
+  }
+  return { flows, left };
+}
+
+/** Writes `seed` into the run just made in `runDir`, its files through the run's Workspace (`work`): the index and each
+ *  active note into `.learning/`, made fresh (whatever was there goes), then the pin, with what the run reads under
+ *  `# Learned` (learnedOf) and the learned skills it gets beside the revision's `own` skill files (chooseSkills), then
+ *  those skills, last, into `.agents/skills/`. A write that fails leaves no `.learning/`, no learned skill and no pin,
+ *  and throws. */
+export async function pinSeed(runDir: string, work: Workspace, seed: Seed, options: LearnedOptions & { own?: readonly string[] }): Promise<Pin> {
   const pinFile = join(runDir, LEARNING_PIN);
   const made: string[] = [];
   try {
     await learningTestHooks.beforePin?.(runDir);
-    await layLearned(dir, seed, options.shown);
+    await layLearned(work, seed, options.shown);
     const { section, given } = learnedParts(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
-    // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them):
-    // by name, each while its line fits what is left of the tool's description budget; one that does not, or holds a
-    // secret, is left out, and the pin names it.
-    const flows: LearnedWorkflow[] = [];
-    const flowsLeft: string[] = [];
-    let room = LEARNED_WORKFLOWS_BUDGET;
-    for (const flow of seed.workflows ?? []) {
-      if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description) || options.shown.holds(flow.name)) {
-        // Named, but for a name that is itself a secret.
-        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
-        continue;
-      }
-      const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
-      if (bytes > room) flowsLeft.push(flow.name);
-      else (room -= bytes), flows.push(flow);
-    }
+    // The learned workflows the run may run (chooseWorkflows), whole, in its directory before the pin names them (a
+    // reopen keeps them); the ones left out the pin names.
+    const { flows, left: flowsLeft } = chooseWorkflows(seed, options.shown);
     if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
     const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(given.length ? { given: given.map(({ file, name }) => ({ file, name })) } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).
@@ -1006,7 +897,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     // behind: it goes too, or the run's instructions would still say what it learned, of notes it has no copy of.
     await rm(pinFile, { force: true }).catch(() => undefined);
     await rm(join(runDir, LEARNED_WORKFLOWS_FILE), { force: true }).catch(() => undefined);
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await work.remove(LEARNED_DIR, { recursive: true, force: true }).catch(() => undefined);
     await takeSkills(work, made).catch(() => undefined);
     throw error;
   }
@@ -1015,7 +906,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
 /** Lays the learned skills a reopened run's pin names (`pin.skills`) again, fresh, from `read` (the skills of its seed's
  *  commit: skillsAt): what the run wrote over them, or took away, is not what it learned. Each only with the files the
  *  pin names. Throws when it cannot, a link on the way among the reasons. */
-export async function layPinnedSkills(work: string, pin: Pin, read: () => Promise<LearnedSkill[]>): Promise<void> {
+export async function layPinnedSkills(work: Workspace, pin: Pin, read: () => Promise<LearnedSkill[]>): Promise<void> {
   const names = namesIn(pin.skills);
   if (!names.length) return;
   const files = new Set(pin.skills);
@@ -1025,15 +916,15 @@ export async function layPinnedSkills(work: string, pin: Pin, read: () => Promis
 }
 
 /** Takes back a seed whose copy a server went down during (runs.ts load): the learned skills its pin names, the pin,
- *  then its `work/.learning/`. True when the pin or the copy was there. */
-export async function dropSeed(runDir: string, work: string): Promise<boolean> {
+ *  then the run's `.learning/`, through its Workspace. True when the pin or the copy was there. */
+export async function dropSeed(runDir: string, work: Workspace): Promise<boolean> {
   const pinFile = join(runDir, LEARNING_PIN);
-  const dir = join(work, LEARNED_DIR);
-  const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  const copied = await work.list(LEARNED_DIR).then(() => true, (error: unknown) => !isWorkspaceError(error, "NOT_FOUND"));
+  const there = Boolean(await lstat(pinFile).catch(() => null)) || copied;
   if (!there) return false;
   await takeSkills(work, namesIn((await readPin(runDir).catch(() => undefined))?.skills));
   await rm(pinFile, { force: true });
-  await rm(dir, { recursive: true, force: true });
+  await work.remove(LEARNED_DIR, { recursive: true, force: true });
   return there;
 }
 
@@ -1050,7 +941,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || (typeof pin.seed !== "string" && pin.seed !== null) || (pin.section !== undefined && typeof pin.section !== "string") || (pin.given !== undefined && !(Array.isArray(pin.given) && pin.given.every((entry: unknown) => isObject(entry) && typeof entry.file === "string" && typeof entry.name === "string"))) || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 
@@ -1062,14 +953,23 @@ const LEARNS = "You learn from your runs. When this run ends you are asked what 
 /** What a run that starts with no note is told in place of what it learned. */
 const NOTHING_YET = "Nothing learned yet.";
 
+/** A run's instructions with its # Learned section laid in main's position: the revision's instructions, then the heading,
+ *  LEARNS, and the section text — "Nothing learned yet." when the run learns but its section is empty (no notes yet, or a
+ *  seed that could not be read). Shared so the runner (laying launch.learning.section, read with no folder) and app.ts
+ *  (withLearned) lay the same bytes. */
+export const laidLearned = (instructions: string, section: string | undefined): string =>
+  `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section || NOTHING_YET}`;
+
 /** A run's instructions, with `# Learned` after them when its pin in `runDir` says it learns: that it learns, then what
  *  the pin says it learned, or that it has learned nothing yet. A run with no pin (its agent does not learn, its seed
  *  failed, a workflow's run) is never asked what to keep, so it is told nothing. And its skill files: the revision's
  *  `own`, then the learned ones its pin names, by their paths under `.agents/skills/` in `work`, but for a skill named
  *  like one of the revision's, which is the revision's. A learned skill the work no longer holds whole, as a harness reads
- *  it (no link on the way: workspace.ts), is left out: a learning fault never fails a run. The one path for every harness
- *  (app.ts): pi's system prompt, claude-agent's and codex's instructions, and the skills each gets. */
-export async function withLearned(runDir: string, work: string, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
+ *  it through the run's Workspace (no link on the way), is left out: a learning fault never fails a run. The one path for
+ *  every harness (app.ts): pi's system prompt, claude-agent's and codex's instructions, and the skills each gets. */
+export async function withLearned(runDir: string, given: Workspace | string, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
+  // The run's process still hands its folder's path.
+  const work = workspaceAt(given);
   const pin = await readPin(runDir);
   const section = pin?.section;
   const owned = new Set(namesIn(own));
@@ -1077,11 +977,11 @@ export async function withLearned(runDir: string, work: string, instructions: st
   const whole = new Set<string>();
   for (const name of namesIn(learned)) {
     const files = learned.filter((path) => path.startsWith(`${name}/`));
-    if (await Promise.all(files.map((path) => readWorkText(work, [...RUN_SKILLS, path].join("/")))).then(() => true, () => false)) whole.add(name);
+    if (await Promise.all(files.map((path) => work.read(`${SKILLS_PATH}/${path}`))).then(() => true, () => false)) whole.add(name);
     else process.stderr.write(`agentrun-serve: the skill ${name} its agent learned is no longer whole in the run's work, so the run goes on without it\n`);
   }
   return {
-    instructions: pin ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section ?? NOTHING_YET}` : instructions,
+    instructions: pin ? laidLearned(instructions, section) : instructions,
     skills: [...own, ...learned.filter((path) => whole.has(path.split("/")[0]!))],
   };
 }
