@@ -157,7 +157,10 @@ once without checking again (a key some harness reads would, with `why=key`).
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
 `compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
-Docker socket, so each run's `bash` gets a Docker box ([in the published image](#in-the-published-image)).
+Docker socket. In this release a server in a container can't start a Docker sandbox yet (its folder and the computer
+daemon are mounted by paths only the server's container has, and it sets no host list), so agents there get file tools
+and `web_fetch`, no shell. For a sandbox, run the server on the host, or give the agent a Daytona or E2B computer with
+workspaces on Archil.
 
 1. Start it (below).
 2. Open the console and set your password.
@@ -763,7 +766,7 @@ no computer.
 
 **What a computer reaches.** A Docker sandbox reaches the hosts of `AGENTRUN_BOX_ALLOW` (by default the package
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. A
-server that runs in a container can't give it a list yet ([in the published image](#in-the-published-image)). A
+server that runs in a container can't start a Docker sandbox yet ([in a container](#in-a-container)). A
 Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
 own network, whatever the list says.
 
