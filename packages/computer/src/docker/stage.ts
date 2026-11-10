@@ -11,10 +11,13 @@
 //
 // Each tree is in the provider's daemonCache, checked as daemonCopy checks its own (privateCacheDirectory), named by the
 // sha256 of what it holds, its directories 0755 and its files 0644 (the daemon 0755); written in a temporary directory
-// and renamed into place, and reused when one that holds the same is already there (one that differs is written again).
-// Never throws: every failure is a Result in words naming its path.
+// and renamed into place, and reused when one that holds the same is already there. A published tree is NEVER removed
+// or written over: Docker may have it mounted in a running computer, which another provider sharing daemonCache could
+// pull its daemon out from under. A name that holds a tree that does not hold the same is left as it is, and the new
+// tree is published beside it (stageTree). A source is read only when it is a regular file, opened without blocking, so
+// a named pipe at its path is refused in words, never waited on. Never throws: every failure is a Result in words.
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { privateCacheDirectory } from "../daemon-copy.js";
 import { fail, ok, type Result } from "../result.js";
@@ -58,14 +61,38 @@ function holds(at: string, entries: Entry[]): boolean {
 	}
 }
 
-/** The tree `<prefix>-<sha>` in `directory`, made when one holding `entries` is not there (see the head). */
+/**
+ * The published tree in `dir` that holds `entries`: `<name>` itself, else a sibling `<name>-<random>` one was published
+ * under when `<name>` held a tree that did not. Undefined when none does.
+ */
+function heldTree(dir: string, name: string, entries: Entry[]): string | undefined {
+	const at = join(dir, name);
+	if (holds(at, entries)) return at;
+	let siblings: string[];
+	try {
+		siblings = readdirSync(dir).filter((entry) => entry.startsWith(`${name}-`)).sort();
+	} catch {
+		return undefined;
+	}
+	return siblings.map((entry) => join(dir, entry)).find((path) => holds(path, entries));
+}
+
+/**
+ * The tree `<prefix>-<sha>` in `directory`, made when none holding `entries` is there (see the head). A published tree
+ * is never removed or written over, since Docker may have it mounted in a running computer: the whole temporary tree is
+ * renamed into place only where nothing is (publish); when another writer published first, its tree is used if it
+ * holds; and when the name holds a tree that does not (a crash, a hand edit), the new one goes beside it.
+ */
 function stageTree(directory: string, prefix: string, entries: Entry[], what: string): Result<string> {
 	const dir = privateCacheDirectory(directory);
 	if (!dir.ok) return dir;
 	const sha = shaOf(entries);
-	const at = join(dir.value, `${prefix}-${sha}`);
-	if (holds(at, entries)) return ok(at);
+	const name = `${prefix}-${sha}`;
+	const at = join(dir.value, name);
+	const held = heldTree(dir.value, name, entries);
+	if (held !== undefined) return ok(held);
 	const temp = join(dir.value, `.${prefix}-${sha}.${randomBytes(8).toString("hex")}.tmp`);
+	let published = at;
 	try {
 		mkdirSync(temp, { mode: 0o700 });
 		for (const { path, bytes, mode } of entries) {
@@ -89,24 +116,37 @@ function stageTree(directory: string, prefix: string, entries: Entry[], what: st
 		// Each directory a file is in is 0755, the top last.
 		for (const { path } of entries) for (let up = dirname(path); up !== "."; up = dirname(up)) chmodSync(join(temp, up), 0o755);
 		chmodSync(temp, 0o755);
-		// One that is there but not whole (a crash, a hand edit) is replaced; one another process just renamed in is kept.
-		if (!holds(at, entries)) {
-			rmSync(at, { recursive: true, force: true });
-			try {
-				renameSync(temp, at);
-			} catch (error) {
-				if (!["EEXIST", "ENOTEMPTY"].includes(codeOf(error) ?? "")) throw error;
-			}
-		}
+		published = publish(temp, at, entries);
 	} catch (error) {
 		return fail("invalid", `cannot stage ${what} in ${at}: ${wordsOf(error)}`);
 	} finally {
+		// Only the temporary tree, which no one else has seen, is ever removed; once renamed it is no longer here.
 		rmSync(temp, { recursive: true, force: true });
 	}
-	return holds(at, entries) ? ok(at) : fail("invalid", `${what} staged in ${at} did not hold its files, 0755 directories and its modes, once written`);
+	return holds(published, entries) ? ok(published) : fail("invalid", `${what} staged in ${published} did not hold its files, 0755 directories and its modes, once written`);
 }
 
-/** Where the tree `<prefix>-<sha>` for `entries` is, or would be, in `directory`: read only, for a read-back. */
+/**
+ * The whole temporary tree `temp` renamed into place at `at`, where nothing is: its path. When `at` is taken (another
+ * writer published first, or a tree that does not hold is there; a rename onto a directory that is not empty fails with
+ * EEXIST or ENOTEMPTY and leaves it as it was), the tree at `at` is used when it holds, and otherwise `temp` is published
+ * beside it under a fresh name. Nothing already published is ever removed or written over.
+ */
+function publish(temp: string, at: string, entries: Entry[]): string {
+	try {
+		renameSync(temp, at);
+		return at;
+	} catch (error) {
+		if (!["EEXIST", "ENOTEMPTY"].includes(codeOf(error) ?? "")) throw error;
+	}
+	if (holds(at, entries)) return at;
+	const beside = `${at}-${randomBytes(8).toString("hex")}`;
+	renameSync(temp, beside);
+	return beside;
+}
+
+/** Where the tree for `entries` is in `directory` (the published one that holds them, as stageTree would use it), or
+ *  would be: read only, for a read-back. */
 function treeAt(directory: string, prefix: string, entries: Entry[]): string {
 	let base: string;
 	try {
@@ -114,32 +154,51 @@ function treeAt(directory: string, prefix: string, entries: Entry[]): string {
 	} catch {
 		base = resolve(directory);
 	}
-	return join(base, `${prefix}-${shaOf(entries)}`);
+	const name = `${prefix}-${shaOf(entries)}`;
+	return heldTree(base, name, entries) ?? join(base, name);
+}
+
+/**
+ * The bytes of the regular file at `path`, as daemonCopy reads the daemon: opened with O_NONBLOCK, so a named pipe with
+ * no writer is not waited on, and checked to be a regular file before it is read. Anything else is refused in words;
+ * `what` names it, and `missing` is the advice when it is not there.
+ */
+function readRegular(path: string, what: string, missing: string): Result<Buffer> {
+	const notFile = () => fail("not_found", `${what} at ${path} is not a regular file: ${missing}`);
+	let fd: number;
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+	} catch (error) {
+		const code = codeOf(error);
+		return code === "ENOENT" || code === "ENOTDIR" ? fail("not_found", `${what} at ${path} is not there: ${missing}`) : fail("invalid", `${what} at ${path} cannot be read (${code ?? wordsOf(error)})`);
+	}
+	try {
+		if (!fstatSync(fd).isFile()) return notFile();
+		return ok(readFileSync(fd));
+	} catch (error) {
+		return fail("invalid", `${what} at ${path} cannot be read (${codeOf(error) ?? wordsOf(error)})`);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /** The daemon's tree's entries: computerd, 0755, read from `source`, and the egress volume's mount point. */
 function daemonEntries(source: string): Result<Entry[]> {
-	try {
-		return ok([
-			{ path: "computerd", bytes: readFileSync(source), mode: 0o755 },
-			{ path: "egress", mode: 0o755 },
-		]);
-	} catch (error) {
-		const why = codeOf(error) === "ENOENT" ? "run npm run build:daemon -w @parcha/agentrun-computer" : wordsOf(error);
-		return fail("not_found", `the daemon at ${source} cannot be read (${why})`);
-	}
+	const bytes = readRegular(source, "the daemon", "run npm run build:daemon -w @parcha/agentrun-computer");
+	if (!bytes.ok) return bytes;
+	return ok([
+		{ path: "computerd", bytes: bytes.value, mode: 0o755 },
+		{ path: "egress", mode: 0o755 },
+	]);
 }
 
 /** The proxy's tree's entries: docker/<module> (0644) and package.json (0644), read from this package's build. */
 function egressEntries(code: EgressCode): Result<Entry[]> {
 	const entries: Entry[] = [];
 	for (const [path, source] of [...CODE_FILES.map((file) => [`docker/${file}`, join(code.dir, file)]), ["package.json", code.packageJson]] as Array<[string, string]>) {
-		try {
-			entries.push({ path, bytes: readFileSync(source), mode: 0o644 });
-		} catch (error) {
-			const why = codeOf(error) === "ENOENT" ? "it is not built: run npm run build -w @parcha/agentrun-computer" : wordsOf(error);
-			return fail("not_found", `the egress proxy's code ${source} cannot be read (${why})`);
-		}
+		const bytes = readRegular(source, "the egress proxy's code", "build it: npm run build -w @parcha/agentrun-computer");
+		if (!bytes.ok) return bytes;
+		entries.push({ path, bytes: bytes.value, mode: 0o644 });
 	}
 	return ok(entries);
 }
@@ -169,10 +228,49 @@ export function egressStage(code: EgressCode, directory: string, volume: DockerV
 	return codeAt(volume, at.value);
 }
 
-/** Where the egress proxy's code staged in `directory` is, read only: for a read-back. */
+/**
+ * Where the egress proxy's code staged in `directory` is, read only: for a read-back. Its `accepts` takes a mounted
+ * subpath that is any verified copy (verifiedTree), not only the one staging would use now: two providers that
+ * published copies beside a tree that no longer held each mounted their own, and both are as create makes one.
+ */
 export function egressStaged(code: EgressCode, directory: string, volume: DockerVolume): Result<EgressCode> {
 	const entries = egressEntries(code);
-	return entries.ok ? codeAt(volume, treeAt(directory, "egress", entries.value)) : entries;
+	if (!entries.ok) return entries;
+	const found = codeAt(volume, treeAt(directory, "egress", entries.value));
+	if (!found.ok || found.value.volume === undefined) return found;
+	const accepts = (subpath: string) => subpath === found.value.volume?.root || verifiedTree(directory, "egress", entries.value, volume, subpath) !== undefined;
+	return ok({ ...found.value, volume: { ...found.value.volume, accepts } });
+}
+
+/**
+ * The daemon's tree a computer mounts at `subpath` of the volume, when it is a verified copy of the daemon at `source`
+ * (verifiedTree): its path. For the read-back of a computer mounted on a copy other than the one staging uses now.
+ */
+export function daemonVerified(source: string, directory: string, volume: DockerVolume, subpath: string): string | undefined {
+	const entries = daemonEntries(source);
+	return entries.ok ? verifiedTree(directory, "daemon", entries.value, volume, subpath) : undefined;
+}
+
+/**
+ * The tree at `subpath` of the volume when it is a published copy of `entries` in `directory`: named `<prefix>-<sha>`
+ * or `<prefix>-<sha>-<anything>` (a copy published beside one that no longer held), directly in the staging directory,
+ * and holding every entry with its bytes and modes, as heldTree checks. Its path; else undefined.
+ */
+function verifiedTree(directory: string, prefix: string, entries: Entry[], volume: DockerVolume, subpath: string): string | undefined {
+	let base: string;
+	try {
+		base = realpathSync(directory);
+	} catch {
+		base = resolve(directory);
+	}
+	const staging = subpathOf(volume, base, { orRoot: true });
+	const parts = subpath.split("/");
+	const leaf = parts.pop() ?? "";
+	if (staging === undefined || parts.join("/") !== staging || parts.includes("..") || parts.includes(".")) return undefined;
+	const name = `${prefix}-${shaOf(entries)}`;
+	if (leaf !== name && !leaf.startsWith(`${name}-`)) return undefined;
+	const path = join(base, leaf);
+	return holds(path, entries) ? path : undefined;
 }
 
 /** The staged proxy tree at `at` as an EgressCode: its own paths, and its subpath of the volume. */

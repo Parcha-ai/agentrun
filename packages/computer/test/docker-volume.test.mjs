@@ -2,7 +2,7 @@
 // Docker it drives (compose), whose files are on a named volume it has mounted at a root, mounts the daemon's copy and the
 // run's folder as that volume's subpaths, never binds of its own paths, which the Docker daemon does not have.
 import assert from "node:assert/strict";
-import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -169,7 +169,7 @@ test("compose: an allowlist's proxy mounts its code from a copy staged below the
 	assert.deepEqual(listed.ok && listed.value.map((info) => info.network), [{ allow: ["pypi.org"] }]);
 });
 
-test("compose: the staged code is reused when it holds the same bytes, and written again when a file of it was changed", async () => {
+test("compose: the staged code is reused when it holds the same bytes; one a file of which was changed is left as it is, and a new copy is published beside it", async () => {
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
 	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
@@ -183,11 +183,79 @@ test("compose: the staged code is reused when it holds the same bytes, and writt
 	assert.equal(subpathOf(again.calls()), first, "the same copy, by its content");
 	assert.equal(statSync(join(at, "docker", CODE_FILES[0])).ino, before.ino, "not written again");
 	assert.deepEqual(readdirSync(join(paths.root, "cache")).filter((entry) => entry.startsWith(".egress-")), [], "no temporary directory is left");
-	// A copy someone changed is written again before a proxy mounts it.
+	// A copy someone changed may still be mounted in a running proxy: it is never removed or written over. A new copy is
+	// published beside it, the proxy mounts that one, and later creates reuse it.
 	writeFileSync(join(at, "docker", CODE_FILES[0]), "tampered");
 	const third = withVolume(paths);
 	assert.equal((await third.provider.create(spec)).ok, true);
-	assert.ok(readFileSync(join(at, "docker", CODE_FILES[0])).equals(readFileSync(join(BUILT, CODE_FILES[0]))), "the build's bytes again");
+	assert.equal(readFileSync(join(at, "docker", CODE_FILES[0]), "utf8"), "tampered", "the changed copy is left as it is");
+	assert.equal(statSync(join(at, "docker", CODE_FILES[0])).ino, before.ino);
+	const beside = subpathOf(third.calls());
+	assert.match(beside, new RegExp(`^${first}-[0-9a-f]{16}$`));
+	assert.ok(readFileSync(join(paths.root, beside, "docker", CODE_FILES[0])).equals(readFileSync(join(BUILT, CODE_FILES[0]))), "the new copy holds the build's bytes");
+	const fourth = withVolume(paths);
+	assert.equal((await fourth.provider.create(spec)).ok, true);
+	assert.equal(subpathOf(fourth.calls()), beside, "the copy beside it is reused");
+	const computer = fourth.names().find((name) => !name.endsWith("-egress"));
+	assert.deepEqual(await fourth.provider.network({ id: "", name: computer }), { ok: true, value: { allow: ["pypi.org"] } }, "and the read-back holds the proxy to it");
+});
+
+test("compose: computers mounted on two different verified copies, published beside a tree that no longer held, are both attached and read back; one on the changed tree is not", async () => {
+	const paths = layout();
+	const fake = withVolume(paths);
+	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
+	const first = await fake.provider.create(spec);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	const cache = join(paths.root, "cache");
+	const trees = () => readdirSync(cache).filter((entry) => /^(daemon|egress)-[0-9a-f]{64}/.test(entry)).sort();
+	const [daemonTree, egressTree] = trees();
+	// Both trees change under the first computer (a hand edit), so the next create publishes copies beside them.
+	writeFileSync(join(cache, daemonTree, "computerd"), "changed");
+	writeFileSync(join(cache, egressTree, "docker", CODE_FILES[0]), "changed");
+	const second = await fake.provider.create(spec);
+	assert.equal(second.ok, true, JSON.stringify(second));
+	const besides = trees().filter((entry) => entry.split("-").length === 3);
+	assert.equal(besides.length, 2, JSON.stringify(trees()));
+	// A second provider that repaired the same trees at the same moment published copies of its own, under other names:
+	// the third computer is mounted on those.
+	const third = await fake.provider.create(spec);
+	assert.equal(third.ok, true, JSON.stringify(third));
+	for (const tree of besides) {
+		const other = `${tree.slice(0, tree.lastIndexOf("-"))}-ffffffffffffffff`;
+		cpSync(join(cache, tree), join(cache, other), { recursive: true });
+		for (const [path, mode] of [["", 0o755], ["docker", 0o755], ["egress", 0o755], ["computerd", 0o755], ["package.json", 0o644], ...CODE_FILES.map((file) => [`docker/${file}`, 0o644])]) {
+			try {
+				chmodSync(join(cache, other, path), mode);
+			} catch {
+				// Not in this tree.
+			}
+		}
+	}
+	const moved = (subpath) => subpath.replace(/-[0-9a-f]{16}$/, "-ffffffffffffffff");
+	fake.alter(third.value.name, (computer) => {
+		for (const mount of computer.HostConfig.Mounts) if (mount.Target === "/opt/agentrun") mount.VolumeOptions.Subpath = moved(mount.VolumeOptions.Subpath);
+	});
+	fake.alter(`${third.value.name}-egress`, (proxy) => {
+		for (const mount of proxy.HostConfig.Mounts) if (mount.Target === "/code") mount.VolumeOptions.Subpath = moved(mount.VolumeOptions.Subpath);
+	});
+	// A fresh provider, over the same Docker, takes both copies: each is verified, byte for byte and mode for mode.
+	const fresh = new DockerProvider(fake.options);
+	for (const computer of [second.value, third.value]) {
+		const attached = await fresh.attach({ id: computer.name });
+		assert.equal(attached.ok, true, `${computer.name}: ${JSON.stringify(attached)}`);
+		assert.deepEqual(attached.value.spec.network, { allow: ["pypi.org"] });
+		assert.deepEqual(await fresh.network(computer), { ok: true, value: { allow: ["pypi.org"] } });
+	}
+	const listed = await fresh.list({});
+	assert.deepEqual(listed.ok && Object.fromEntries(listed.value.map((info) => [info.ref.name, info.network.allow ? "allow" : "other"])), {
+		[first.value.name]: "other",
+		[second.value.name]: "allow",
+		[third.value.name]: "allow",
+	});
+	// The first computer is mounted on the trees that changed: not a verified copy, so attach refuses it.
+	const refused = await fresh.attach({ id: first.value.name });
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
 });
 
 test("without the volume option, create binds the daemon's copy and the run's folder as before", async () => {

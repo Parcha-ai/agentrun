@@ -54,7 +54,7 @@ import {
 	policyWords,
 	RELAY_FLAG,
 } from "./docker/egress.js";
-import { daemonStage, egressStage, egressStaged } from "./docker/stage.js";
+import { daemonStage, daemonVerified, egressStage, egressStaged } from "./docker/stage.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
@@ -270,8 +270,9 @@ export class DockerProvider implements ComputerProvider {
 	get #code(): EgressCode {
 		const volume = this.#volume;
 		if (volume === undefined) return this.#built;
-		if (this.#staged !== undefined) return this.#staged;
 		const found = egressStaged(this.#built, this.#daemonCache, volume);
+		// What create staged is what it runs; a read-back takes any verified copy (egressStaged's accepts) either way.
+		if (this.#staged?.volume !== undefined) return { ...this.#staged, volume: { ...this.#staged.volume, ...(found.ok && found.value.volume?.accepts ? { accepts: found.value.volume.accepts } : {}) } };
 		return found.ok ? found.value : { ...this.#built, volume: { name: volume.name } };
 	}
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
@@ -666,6 +667,16 @@ export class DockerProvider implements ComputerProvider {
 		return ok(path);
 	}
 
+	/** With the volume option: the daemon's staged directory a computer mounts at /opt/agentrun, by its subpath in
+	 *  HostConfig.Mounts, when it is a verified copy of this provider's daemon (stage.ts daemonVerified); else undefined. */
+	#mountedDaemon(report: DockerInspect): string | undefined {
+		const volume = this.#volume;
+		if (volume === undefined) return undefined;
+		const [mount] = (report.HostConfig?.Mounts ?? []).filter((entry) => entry.Target === DAEMON_DIR_IN_COMPUTER && entry.Type === "volume" && entry.Source === volume.name);
+		const subpath = (mount?.VolumeOptions as { Subpath?: unknown } | undefined)?.Subpath;
+		return typeof subpath === "string" ? daemonVerified(this.#daemonPath, this.#daemonCache, volume, subpath) : undefined;
+	}
+
 	/**
 	 * The --mount value that puts `path` of this host at `dst`: a bind of it, or, with the volume option, its subpath of
 	 * the volume (never the root); a path outside the volume is refused in words, and nothing is made.
@@ -766,10 +777,12 @@ export class DockerProvider implements ComputerProvider {
 		} as ComputerSpec;
 		found.push(...this.#checkSpec({ ...spec, mount: undefined }).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const user = userOf(config.User) ?? String(config.User);
-		// The copy create binds for this provider's daemon: the same bytes, from any process, have the same path.
+		// The copy create binds for this provider's daemon: the same bytes, from any process, have the same path. With the
+		// volume option, the staged directory the computer mounts when it is a verified copy (another provider may have
+		// published one beside a tree that no longer held), else the one staging uses now.
 		const daemon = this.#daemon();
 		if (!daemon.ok) return daemon;
-		const expected = this.#expected(host.value, deadline, user, daemon.value, proxy.value);
+		const expected = this.#expected(host.value, deadline, user, this.#mountedDaemon(report) ?? daemon.value, proxy.value);
 		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !("other" in network) || !line.startsWith("network:")));
 		let kind: AttachedComputer["spec"]["kind"];
 		if (report.State?.Running === true) {
