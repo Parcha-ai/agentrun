@@ -1,0 +1,18 @@
+# Learning bench job: one competitor (Quillforge, as evals/learned-preference) over eight weekly runs, its pages pasted
+# as captured (no live web). 01 teaches "skip junior job posts"; every week has a junior post MONITOR.md would count as
+# news (a first role in a new country or function). 05 changes the preferences: report junior posts again, and leave
+# out partnership announcements instead (news until then: 02 and 04 report them). 06-08 check the new rule.
+template: market-monitor
+parameters: { competitors: "Quillforge (quillforge.example)", lookback_days: 7 }
+grants: []
+fakes: {}
+harnesses: [pi, claude-agent]
+steps:
+  - { id: "01", kind: teach }   # week of 2026-09-21
+  - { id: "02", kind: repeat }  # week of 2026-09-28
+  - { id: "03", kind: repeat }  # week of 2026-10-05
+  - { id: "04", kind: repeat }  # week of 2026-10-12
+  - { id: "05", kind: change }  # week of 2026-10-19
+  - { id: "06", kind: repeat }  # week of 2026-10-26
+  - { id: "07", kind: repeat }  # week of 2026-11-02
+  - { id: "08", kind: repeat }  # week of 2026-11-09
