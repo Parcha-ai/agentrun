@@ -149,15 +149,27 @@ export function solidPng(w, h, [r, g, b]) {
 /**
  * A desktop provider in the computer module's shape, for the runner's own composition (main.ts runnerComputers' `load`):
  * it makes one desktop, whose watch (provider.watch(ref, handlers, options)) hands the viewer one PNG frame and records
- * every input. `record` holds what it was asked.
+ * every input. `record` holds what it was asked. With `holdShot: n`, the n-th screenshot waits inside the shot until
+ * `letGo()` (`inShot` resolves once it is there), so an agent's look is in flight for as long as the test likes.
  */
-export function fakeDesktopProvider() {
+export function fakeDesktopProvider({ holdShot } = {}) {
   const shotPng = solidPng(64, 40, [200, 200, 200]);
-  const record = { created: [], released: [], watched: 0, acks: 0, inputs: [], closed: 0 };
+  const record = { created: [], released: [], watched: 0, acks: 0, inputs: [], closed: 0, shots: 0 };
   const inputWaiters = [];
+  let inside;
+  const inShot = new Promise((resolve) => (inside = resolve));
+  let letGo;
+  const goOn = new Promise((resolve) => (letGo = resolve));
   const client = {
     async call(method) {
-      if (method === "screen.shot") return { ok: true, value: { id: "shot", data: shotPng.toString("base64"), eof: true, size: shotPng.length, width: 64, height: 40 } };
+      if (method === "screen.shot") {
+        record.shots += 1;
+        if (record.shots === holdShot) {
+          inside();
+          await goOn;
+        }
+        return { ok: true, value: { id: `shot-${record.shots}`, data: shotPng.toString("base64"), eof: true, size: shotPng.length, width: 64, height: 40 } };
+      }
       if (method === "input.actions") return { ok: true, value: { done: 0 } };
       return { ok: false, error: { code: "unsupported", message: `the fake desktop has no ${method}` } };
     },
@@ -198,6 +210,8 @@ export function fakeDesktopProvider() {
   };
   return {
     record,
+    inShot,
+    letGo: () => letGo(),
     /** The runner's provider loader (computerProviderMakers' load): this desktop, whatever provider id it is asked for. */
     load: async () => provider,
     /** The next input the watch is given. */

@@ -1,20 +1,20 @@
 // A desktop's live view on the real runner path: a run of an agent whose computer is a desktop is claimed by the runner
 // beside the server, composed as the CLI's runner composes it (runner/main.ts runnerComputers), its desktop made at the
 // claim through the provider loader (a fake desktop: no vendor, no network), and its view opened there under the run's
-// claim (computer-live.ts openClaimView). The run's second model turn waits until the test lets it go, its desktop up
-// meanwhile. GET /computer is live with kind desktop and its link under /computer/live, for the owner's session alone;
-// the computer viewer's page is served there under LIVE_CSP, and its socket is proxied to the runner's endpoint from this
-// server's origin with the owner's cookie. Take over is a take-over row the runner applies to the run's hold; input
-// reaches the desktop's watch; Hand back gives it back; the run then ends, which closes the view. The token is in the
-// owner's GET alone.
+// claim (computer-live.ts openClaimView). The agent looks at its desktop (desktop_screen, the tool the desktop brings);
+// its second look waits inside the shot until the test lets it go. GET /computer is live with kind desktop and its link
+// under /computer/live, for the owner's session alone; the computer viewer's page is served there under LIVE_CSP, and its
+// socket is proxied to the runner's endpoint from this server's origin with the owner's cookie. Take over is a take-over
+// row the runner applies to the run's hold: pending while the agent's look is in flight, then the person's, the agent's
+// next look parked meanwhile; input reaches the desktop's watch; Hand back gives it back, the parked look runs, and the
+// run ends, which closes the view. The token is in the owner's GET alone.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fakeDesktopProvider } from "./computer-live-support.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
 import { agent, call, clientOwnerSession, follow, serve, withEnv } from "./support.mjs";
 
-const FAUX = new URL("./fixtures/faux-held.mjs", import.meta.url).pathname;
-const HELD = Symbol.for("agentrun.test.held");
+const FAUX = new URL("./fixtures/faux-desktop-look.mjs", import.meta.url).pathname;
 /** Until `check()` holds, bounded; each try after the next turn of the timers. */
 async function until(check, what, ms = 30_000) {
   for (const deadline = Date.now() + ms; !(await check());) {
@@ -27,14 +27,12 @@ const next = async (ws, type) => JSON.parse((await ws.until((m) => m.type === "t
 test("a runner run's desktop registers its live view: GET /computer is live with kind desktop for the owner alone, the viewer's page and socket reach the runner's endpoint, and Take over, input and Hand back go through the run's hold", { timeout: 120_000 }, async (t) => {
   // The desktop's provider key, as the server and its runner read it: a stand-in, which only the fake desktop is given.
   withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key" }, ["E2B_API_KEY"]);
-  // The run's model turn waits on this until the test lets it go (fixtures/faux-held.mjs).
-  let letGo;
-  globalThis[HELD] = new Promise((resolve) => (letGo = resolve));
-  t.after(() => (letGo(), delete globalThis[HELD]));
-  const desktop = fakeDesktopProvider();
+  // The agent's second look waits inside the shot until the test lets it go.
+  const desktop = fakeDesktopProvider({ holdShot: 2 });
+  t.after(() => desktop.letGo());
   const server = await serve(t, { accounts: true, openSetup: true, faux: FAUX, computers: { load: desktop.load } });
   const owner = await clientOwnerSession(server);
-  const made = await server.api("POST", "/agents", agent("desk", { tools: ["read"], computer: { kind: "desktop", provider: "e2b" } }));
+  const made = await server.api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b" } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const started = await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -81,25 +79,29 @@ test("a runner run's desktop registers its live view: GET /computer is live with
   assert.deepEqual([frame.data.readUInt16BE(0), frame.data.readUInt16BE(2)], [1280, 800], "the screen's own pixels");
   ws.sendJson({ type: "ack" });
 
-  // Take over, once the run's journal says its desktop is up (its first turn committed): a take-over row the runner applies
-  // to the run's hold, then the person's.
+  // Take over while the agent's second look is in the shot (its first turn committed, so the run's journal says its desktop
+  // is up): a take-over row the runner applies to the run's hold, pending until the look ends, then the person's.
+  await desktop.inShot;
   await until(async () => (await server.api("GET", `/runs/${runId}`)).body.computer?.state === "ready", "the run's journal says its desktop is up");
   ws.sendJson({ type: "take" });
+  assert.deepEqual(await next(ws, "status"), { type: "status", drive: "pending" });
+  desktop.letGo();
   assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
   assert.equal((await get(path, { cookie: owner.cookie })).json.hold, "person");
   const typed = desktop.nextInput();
   ws.sendJson({ type: "key", action: "char", key: "q", code: "KeyQ", text: "q", modifiers: 0 });
   assert.deepEqual(await typed, [{ type: "type", text: "q" }]);
-  // Hand back: the agent drives again; let go, the run ends, and its view with it.
+  // The agent's next look is parked while the person holds the desktop.
+  assert.equal(desktop.record.shots, 2, "no look while the person drives");
+  // Hand back: the agent drives again, its parked look runs, and the run ends, and its view with it.
   ws.sendJson({ type: "give" });
   const given = await next(ws, "hold");
   assert.deepEqual([given.held, given.reason], [false, "given"]);
-  assert.equal((await get(path, { cookie: owner.cookie })).json.hold, "agent");
-  letGo();
   assert.equal((await next(ws, "ended")).reason, "released");
   await follow(server.api, runId, ["completed"]);
   assert.notEqual((await get(path, { cookie: owner.cookie })).json.state, "live", "no viewer once the run ended");
   assert.deepEqual(desktop.record.released, [["desk-1", "delete"]]);
+  assert.equal(desktop.record.shots, 3, "the parked look ran after the hand-back");
 
   // The token is in the owner's GET alone.
   for (const p of [`/runs/${runId}`, `/runs/${runId}/timeline`, "/runs"]) assert.ok(!JSON.stringify((await server.api("GET", p)).body).includes(token), p);
