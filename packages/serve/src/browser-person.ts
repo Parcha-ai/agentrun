@@ -603,8 +603,11 @@ export function personHands(options: {
   /** On the runner's path, before settle reads ask `id`: its answer read from the journal, or, once it lapsed with none,
    *  its expiry written there at the expiry's time (the first answer stands, whoever's it is). */
   const refresh = async (id: string): Promise<void> => {
-    if (!journal || settled.has(id) || (await readJournal(id))) return;
+    if (!journal || settled.has(id)) return;
+    // The ask's waiting entry first, whatever its answer: an ask answered while no process held it (the person answered
+    // during a restart) is taken up from it, so settle reads that answer rather than finding no ask.
     await loadAsk(id);
+    if (await readJournal(id)) return;
     const ask = adopt(id);
     if (ask && Date.now() >= ask.expiresAt) await answerInJournal(id, ask.tag, "expired", new Date(ask.expiresAt).toISOString());
   };

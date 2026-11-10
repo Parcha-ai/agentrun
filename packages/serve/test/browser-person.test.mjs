@@ -787,6 +787,23 @@ test("on the runner's path an ask writes no file under the run's folder: its wai
   assert.deepEqual(rows, ["You took over the browser", "You handed the browser back"]);
 });
 
+test("on the runner's path an ask answered while no process held it (a restart) is taken up with its answer: the next process's wait hears it at once, never pending", async (t) => {
+  const root = await scratch(t);
+  const journal = [];
+  const before = journalHands(root, journal);
+  const tag = "ar-run-78-1";
+  const { interactionId: id } = await before.person.handoff.request(ask(78, tag));
+  before.person.close();
+  // The person's answer lands while the run has no process: the next one only polls the ask's outcome, as pi-browser's
+  // resumed wait does, and never asks again.
+  journal.push({ state: "done", id, session: tag, at: T0 });
+  const after = journalHands(root, journal);
+  t.after(() => after.person.close());
+  assert.equal(await after.person.handoff.outcome(id), "done", "the answer already in the journal");
+  assert.deepEqual(after.rows, ["You handed the browser back"], "its one row");
+  assert.equal(answers(journal).length, 1, "nothing more written");
+});
+
 test("on the runner's path an ask that lapsed is answered by its expiry in the journal, at the expiry's time, and the wait hears expired", async (t) => {
   const root = await scratch(t);
   const journal = [];

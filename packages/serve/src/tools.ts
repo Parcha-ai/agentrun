@@ -256,30 +256,90 @@ const UPLOAD_MIME: Readonly<Record<string, string>> = {
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xml": "application/xml", ".zip": "application/zip",
 };
 
+/** A downloads manifest row (pi-browser's downloads/manifest.json), as downloadsInto reads and writes it. */
+type DownloadRow = { name: string; path: string; sizeBytes: number; sha256: string; session?: unknown; remote?: { name?: unknown } & Record<string, unknown> } & Record<string, unknown>;
+/** A downloads manifest's rows, the well-formed ones (each under downloads/, with its size and digest); none for a manifest
+ *  that is not one. */
+const downloadRows = (bytes: Uint8Array | undefined): DownloadRow[] => {
+  if (!bytes) return [];
+  let parsed: { schema?: unknown; files?: unknown };
+  try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as typeof parsed; } catch { return []; }
+  return Array.isArray(parsed.files) ? (parsed.files as DownloadRow[]).filter((row) => typeof row?.path === "string" && /^downloads\/[^/]+$/.test(row.path) && typeof row.sha256 === "string" && Number.isSafeInteger(row.sizeBytes)) : [];
+};
+/** How much of a file in the run's Workspace is read at once to hash it: Workspace reads are bounded (64 MiB), and a
+ *  download may be up to pi-browser's 100 MiB. */
+const HASH_CHUNK = 8 * 1024 * 1024;
+/** Whether `path` in `work` is a file of `size` bytes whose sha256 is `sha256`, hashed in bounded reads. */
+async function holds(work: Workspace, path: string, size: number, sha256: string): Promise<boolean> {
+  const there = await work.stat(path).catch(() => undefined);
+  if (there?.kind !== "file" || there.size !== size) return false;
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256");
+  for (let offset = 0; offset < size; offset += HASH_CHUNK) hash.update(await work.read(path, { offset, length: Math.min(HASH_CHUNK, size - offset) }));
+  return hash.digest("hex") === sha256;
+}
+
 /** pi-browser's browser_downloads (`fetch`, which copies a session's downloads into the folder on this machine its call
- *  names, `call.workspace`), then each file its manifest lists, and the manifest last, filed into the run's Workspace
- *  `work` where it lacks them or holds other bytes: the run's own read finds them there. A Workspace that already holds
- *  that manifest (the run's local folder in Mode 1, the same folder) is left as it is. */
-export function downloadsInto<A, P, C extends { workspace?: string }, O extends { isError?: boolean }>(fetch: (args: A, port: P, call: C) => Promise<O>, work: Workspace, manifestPath: string): (args: A, port: P, call: C) => Promise<O> {
+ *  names, `call.workspace`, choosing each one's name against that folder), then each file its manifest lists filed into
+ *  the run's Workspace `work`, where the run's own read finds it, and the manifest after them. A file already there with
+ *  the same bytes is left; one there with other bytes (the run's own, or an earlier runner's download) is never replaced:
+ *  the download takes the next name, as pi-browser's own naming does (`<name>-<digest>.<ext>`), and the manifest and the
+ *  call's answer name where it is. A file the run moved or deleted since is filed again. The run's local folder itself (Mode
+ *  1: `work` is that same folder) is left as pi-browser wrote it. */
+export function downloadsInto<A, P, C extends { workspace?: string }, O extends { isError?: boolean; content?: unknown; details?: unknown }>(fetch: (args: A, port: P, call: C) => Promise<O>, work: Workspace, manifestPath: string): (args: A, port: P, call: C) => Promise<O> {
   return async (args, port, call) => {
     const out = await fetch(args, port, call);
     if (out.isError || !call.workspace) return out;
-    const { readFile } = await import("node:fs/promises");
-    const local = await readFile(join(call.workspace, manifestPath)).catch(() => undefined);
-    if (!local) return out;
-    const filed = await work.read(manifestPath).catch(() => undefined);
-    if (filed && Buffer.from(filed).equals(local)) return out;
-    const rows = (JSON.parse(local.toString("utf8")) as { files?: Array<{ path?: unknown; sizeBytes?: unknown }> }).files ?? [];
-    for (const row of rows) {
-      if (typeof row.path !== "string" || !/^downloads\/[^/]+$/.test(row.path)) continue;
+    const { readFile, realpath } = await import("node:fs/promises");
+    const spec = await work.mountSpec().catch(() => undefined);
+    if (spec?.kind === "bind" && (await realpath(spec.path).catch(() => spec.path)) === (await realpath(call.workspace).catch(() => call.workspace))) return out;
+    const local = downloadRows(await readFile(join(call.workspace, manifestPath)).catch(() => undefined));
+    if (!local.length) return out;
+    const filedRows = downloadRows(await work.read(manifestPath).catch(() => undefined));
+    // Where each of this call's local files is in the run's Workspace, by its local path.
+    const placed = new Map<string, DownloadRow>();
+    for (const row of local) {
+      // The same download filed before (same bytes, same session's file), still there: where it is.
+      const known = filedRows.find((each) => each.sha256 === row.sha256 && each.session === row.session && each.remote?.name === row.remote?.name);
+      if (known && (await holds(work, known.path, known.sizeBytes, known.sha256))) { placed.set(row.path, known); continue; }
       const bytes = await readFile(join(call.workspace, row.path)).catch(() => undefined);
       if (!bytes) continue;
-      const there = await work.stat(row.path).catch(() => undefined);
-      if (there?.kind === "file" && there.size === bytes.byteLength && Buffer.from(await work.read(row.path)).equals(bytes)) continue;
-      await work.write(row.path, bytes);
+      // Its name, or the next free one: a name holding other bytes takes the download's digest, longer until it is free.
+      const name = row.path.slice("downloads/".length);
+      const dot = name.lastIndexOf(".");
+      const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+      let target = row.path;
+      for (const digits of [8, 16, 32, 64]) {
+        const there = await work.stat(target).catch(() => undefined);
+        if (!there || (await holds(work, target, row.sizeBytes, row.sha256))) break;
+        target = `downloads/${stem}-${row.sha256.slice(0, digits)}${ext}`;
+      }
+      if (!(await holds(work, target, row.sizeBytes, row.sha256))) await work.write(target, bytes);
+      placed.set(row.path, { ...row, path: target, name: target.slice("downloads/".length) });
     }
-    await work.write(manifestPath, local);
-    return out;
+    // The run's manifest: every row it had, with this call's in their places (a path a row names now is that row's).
+    const ours = [...placed.values()];
+    const kept = filedRows.filter((each) => !ours.some((row) => row.path === each.path || (row.sha256 === each.sha256 && row.session === each.session && row.remote?.name === each.remote?.name)));
+    await work.write(manifestPath, `${JSON.stringify({ schema: "pi-browser.downloads.v1", files: [...kept, ...ours] }, null, 2)}\n`);
+    // The call's answer names where each file is in the run's Workspace.
+    const moved = [...placed].filter(([from, row]) => from !== row.path);
+    if (!moved.length) return out;
+    const at = new Map(moved);
+    const relocate = (result: unknown): unknown => {
+      if (!result || typeof result !== "object") return result;
+      const r = result as Record<string, unknown>;
+      const each = (list: unknown) => (Array.isArray(list) ? list.map((entry) => {
+        const row = entry && typeof entry === "object" ? at.get(String((entry as { path?: unknown }).path)) : undefined;
+        return row ? { ...(entry as object), name: row.name, path: row.path } : entry;
+      }) : list);
+      return { ...r, ...("fetched" in r ? { fetched: each(r.fetched) } : {}), ...("already_fetched" in r ? { already_fetched: each(r.already_fetched) } : {}) };
+    };
+    const content = Array.isArray(out.content) ? out.content.map((part: { type?: unknown; text?: unknown }) => {
+      if (part?.type !== "text" || typeof part.text !== "string") return part;
+      try { return { ...part, text: JSON.stringify(relocate(JSON.parse(part.text))) }; } catch { return part; }
+    }) : out.content;
+    const details = out.details && typeof out.details === "object" && "downloads" in (out.details as object) ? { ...(out.details as object), downloads: relocate((out.details as { downloads: unknown }).downloads) } : out.details;
+    return { ...out, content, details };
   };
 }
 
