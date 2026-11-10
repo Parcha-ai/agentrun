@@ -34,6 +34,7 @@
           "arm": { "enum": ["on", "off"] },
           "agents": { "type": "array", "items": { "type": "string" }, "description": "on: the one agent; off: one per step." },
           "hard_stop": { "type": ["string", "null"] },
+          "error": { "type": ["string", "null"], "description": "Why the series stopped early when the server refused it (an agent not runnable on the harness, say); its steps so far are kept." },
           "steps": {
             "type": "array",
             "items": {

@@ -383,9 +383,22 @@ export function metricsOf(steps, learns) {
 }
 
 async function series(ctx, job, cases, harness, arm, steps) {
-  const { api, options } = ctx;
   const learns = arm === "on";
-  const out = { job: job.name, template: job.template, harness, arm, agents: [], hard_stop: null, steps: [] };
+  const out = { job: job.name, template: job.template, harness, arm, agents: [], hard_stop: null, error: null, steps: [] };
+  try {
+    await seriesSteps(ctx, job, cases, harness, learns, steps, out);
+  } catch (error) {
+    // The series stops where the server refused it, said why; the steps it ran are kept, and the bench goes on.
+    out.error = String(error?.message ?? error).slice(0, 600);
+    ctx.options.log(`${job.name} ${harness} ${arm}: series stopped: ${out.error}`);
+  }
+  out.metrics = metricsOf(out.steps, learns);
+  return out;
+}
+
+async function seriesSteps(ctx, job, cases, harness, learns, steps, out) {
+  const { api, options } = ctx;
+  const arm = learns ? "on" : "off";
   let agentId = learns ? await agentFor(ctx, job, harness, true) : null;
   if (agentId) out.agents.push(agentId);
   for (const one of steps) {
@@ -397,8 +410,6 @@ async function series(ctx, job, cases, harness, arm, steps) {
     options.log(`${job.name} ${harness} ${arm} step ${one.id} (${one.kind}): ${result.status}, ${result.pass ? "pass" : "FAIL"}${result.cost_usd === null ? "" : ` $${result.cost_usd}`}`);
     out.steps.push(result);
   }
-  out.metrics = metricsOf(out.steps, learns);
-  return out;
 }
 
 // ---- main ------------------------------------------------------------------------------------------------------------
@@ -410,7 +421,10 @@ async function main() {
     "pi-model": { type: "string" }, "claude-model": { type: "string" }, "eval-grader-model": { type: "string" }, dry: { type: "boolean", default: false }, "run-timeout-s": { type: "string", default: "900" },
     serve: { type: "string" }, render: { type: "string" },
   } });
-  if (values.render) return void process.stdout.write(render(JSON.parse(readFileSync(values.render, "utf8"))));
+  if (values.render) {
+    const files = values.render.split(",").map((file) => JSON.parse(readFileSync(file, "utf8")));
+    return void process.stdout.write(render({ ...files[0], series: files.flatMap((f) => f.series), hard_stop: files.map((f) => f.hard_stop).find(Boolean) ?? null }));
+  }
   const jobsDir = resolve(values.jobs);
   const names = values.job ? values.job.split(",") : readdirSync(jobsDir, { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(jobsDir, e.name, "job.yaml"))).map((e) => e.name).sort();
   const arms = values.arms.split(",");
@@ -485,7 +499,7 @@ export function render(results) {
     out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
   }
   for (const s of order) {
-    out.push("", `${s.job} / ${s.harness} / ${s.arm}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
+    out.push("", `${s.job} / ${s.harness} / ${s.arm}${s.error ? ` (SERIES STOPPED: ${s.error.slice(0, 200)})` : ""}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
     for (const x of s.steps) {
       const failed = x.graders.filter((g) => !g.pass).map((g) => g.grader);
       const kept = x.learned ? Object.entries(x.learned).filter(([, v]) => v.length).map(([k, v]) => `${k.slice(0, -1)} ${v.join(", ")}`).join("; ") : "";
