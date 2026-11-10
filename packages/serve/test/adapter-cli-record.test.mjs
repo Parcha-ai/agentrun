@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -14,7 +14,7 @@ const { callsOf, journalRecords, messagesOf } = await import("../dist/runner/jou
 /** A lease no stall of a loaded machine outlasts: no case here is about the lease. On a short one (600 ms) a stall of the
  *  box while the call ran let the claim lapse unrenewed, the runner took the run back, and the reopened session ended the
  *  cut call interrupted, never done. */
-const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const STEADY = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** A CLI stand-in: each turn says "Looking.", calls `tool` through the gate, then says what the tool answered. Like a
