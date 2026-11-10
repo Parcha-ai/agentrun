@@ -15,7 +15,7 @@ import {
   type Auth, authOf, canonical, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark } from "./mcp-secret-writes.js";
@@ -270,9 +270,13 @@ export class McpServersOverStore {
     }
   }
 
-  async remove(name: string): Promise<void> {
+  /** DELETE. `checkedAgainst`: the credential the secret-write gate let a token's removal through against (one with
+   *  none: removing it drops no secret); the row goes only while it is still that, in the store's one statement, so a
+   *  credential saved meanwhile is never dropped by it. */
+  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<void> {
     await this.need(name);
-    await removeMcpServer(this.store, name);
+    if (checkedAgainst === undefined) await removeMcpServer(this.store, name);
+    else if (checkedAgainst === null || !(await removeMcpServerIfCredential(this.store, name, checkedAgainst))) changedMeanwhile(name, undefined);
     await this.store.flush();
   }
 

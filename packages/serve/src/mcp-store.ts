@@ -99,6 +99,11 @@ export async function removeMcpServer(store: { mcp: Pick<Mcp, "remove"> }, name:
   await store.mcp.remove(name);
 }
 
+/** The server's row goes, only while its credential is still `expected` (Mcp.removeIfCredential). False when it is not. */
+export async function removeMcpServerIfCredential(store: { mcp: Pick<Mcp, "removeIfCredential"> }, name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean> {
+  return store.mcp.removeIfCredential(name, expected);
+}
+
 /** Every saved server's row, by name (its credential stays sealed). */
 export async function listMcpServers(store: { mcp: Pick<Mcp, "servers"> }): Promise<McpServerRow[]> {
   return store.mcp.servers();

@@ -3,8 +3,9 @@
 // - a save that would drop a saved MCP server's credential (auth none over a bearer) is refused to the token, and the
 //   credential stays; the owner's session drops it;
 // - a token's save let through against no credential never lands over one the owner saved while it listed (412);
-// - removing an MCP server is refused to the token, and the server stays; the console removes it, its request made as the
-//   page makes it (the session's cookie, same origin, JSON, no token);
+// - removing an MCP server that holds a credential is refused to the token, and the server stays; the console removes it,
+//   its request made as the page makes it (the session's cookie, same origin, JSON, no token); one with none is the
+//   token's to remove;
 // - a sign-in's start is refused to the token, with no state cookie handed back;
 // - every operation on a secret's route (MCP servers, GitHub, sign-ins, tool keys, computers, the workspace, a trigger's
 //   secret) is in the one gate's registry, or said on purpose to write none, with why.
@@ -100,13 +101,24 @@ test("a secret write's path segment that is not valid percent-encoding is answer
   assert.equal(odd.json?.error?.message, gate.SECRET_WRITE_REFUSAL);
 });
 
-test("removing an MCP server is the owner's alone: the token is refused and the server stays; the console removes it as the page does", async (t) => {
+test("removing an MCP server that holds a credential is the owner's alone: the token is refused and the server stays; the console removes it as the page does", async (t) => {
   const { page, token } = await withSavedServer(t);
   const refused = await token("DELETE", "/settings/mcp-servers/fake");
   assert.equal(refused.status, 403, refused.text);
   assert.ok(await savedAuth(page), "still saved");
   const removed = await page("DELETE", "/settings/mcp-servers/fake");
   assert.ok(removed.status >= 200 && removed.status < 300, `the console's remove: ${removed.status} ${removed.text}`);
+  assert.equal(await savedAuth(page), undefined, "removed");
+});
+
+test("a server saved with no credential is the token's to remove (an eval's fake): it drops no secret", async (t) => {
+  const server = await serve(t);
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const page = await asPage(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const removed = await asToken(server)("DELETE", "/settings/mcp-servers/fake");
+  assert.equal(removed.status, 204, removed.text);
   assert.equal(await savedAuth(page), undefined, "removed");
 });
 
@@ -135,7 +147,7 @@ test("every operation on a secret's route is in the one gate's registry, or said
   }
   assert.deepEqual(unregistered, [], `unregistered operations on a secret's route: ${unregistered.join(", ")}`);
   assert.deepEqual(noReason, [], `operations registered as no secret write without a reason: ${noReason.join(", ")}`);
-  for (const operation of ["startMcpOAuth", "deleteMcpServer", "connectGitHub", "disconnectGitHub", "forgetSignIn"]) assert.equal(gate.writesSecret(operation, undefined), true, `${operation} is a secret write whatever its request`);
+  for (const operation of ["startMcpOAuth", "connectGitHub", "disconnectGitHub", "forgetSignIn"]) assert.equal(gate.writesSecret(operation, undefined), true, `${operation} is a secret write whatever its request`);
 });
 
 /** Whether an operation decides by its body (a predicate that says yes to some body): one with a request body. */

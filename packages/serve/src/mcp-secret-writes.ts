@@ -5,8 +5,8 @@
 //   holds (another auth type, or none), read from the store.
 // - A sign-in's start always writes one: its callback seals whatever token set the sign-in it started returns, so who
 //   starts it decides whose credential the server's runs use.
-// - Removing a server drops its credential; the private-network OAuth hosts count whole, since they widen where a sign-in
-//   sends its code and tokens.
+// - Removing a server that holds a credential drops it (read from the store); the private-network OAuth hosts count whole,
+//   since they widen where a sign-in sends its code and tokens.
 // A server with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a refresh (each keeps
 // nothing new) stay open to a token.
 import { registerNotSecretWrite, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
@@ -15,7 +15,7 @@ import { isObject } from "./validate.js";
 
 /** Whether `operation`'s `body` writes an MCP secret by the body alone (see above). */
 export function mcpWritesSecret(operation: string, body: unknown): boolean {
-  if (operation === "putMcpPrivateHosts" || operation === "startMcpOAuth" || operation === "deleteMcpServer") return true;
+  if (operation === "putMcpPrivateHosts" || operation === "startMcpOAuth") return true;
   if (operation !== "saveMcpServer" || !isObject(body) || !isObject(body.auth)) return false;
   const { token, headers } = body.auth;
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
@@ -44,11 +44,20 @@ export async function mcpSaveDropsSecret(body: unknown, request: SecretRequest):
   return type !== was.auth;
 }
 
+/** Whether removing the server its path names drops a credential: it holds a sealed one. A server saved with none (an
+ *  eval's fake, say) is the token's to remove; the removal lands only while that is still so (request.seen). */
+export async function mcpDeleteDropsSecret(_body: unknown, request: SecretRequest): Promise<boolean> {
+  const [name] = request.params;
+  if (!name) return false;
+  const was = await (request.store as SavedServers).mcp.server(name);
+  request.seen = credentialMark(was);
+  return !!was && was.sealed !== null && was.sealed !== undefined;
+}
+
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
-for (const operation of MCP_SECRET_OPERATIONS) {
-  registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), operation === "saveMcpServer" ? mcpSaveDropsSecret : undefined);
-}
+const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveDropsSecret, deleteMcpServer: mcpDeleteDropsSecret };
+for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
 // A preview keeps nothing, so it is never a secret write; its body's fields are marked secret in the document, so it is
 // registered all the same.
 registerSecretWrite("previewMcpServer", () => false);

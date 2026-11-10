@@ -653,6 +653,9 @@ export interface Mcp {
    *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
   rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
   remove(name: string): Promise<void>;
+  /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
+   *  deleted in one statement. False, deleting nothing, when it is not (or the server is gone). */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;

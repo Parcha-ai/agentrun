@@ -2870,7 +2870,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "putMcpPrivateHosts":
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer":
-        await mcpServers.remove(id);
+        await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":

@@ -29,7 +29,7 @@ test("the table: true only for a body that carries an MCP secret value, or the p
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", scopes: ["read"] }, true, "no client: the same"],
     ["previewMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "bearer", token: TOKEN } }, false, "a preview keeps nothing"],
     ["putMcpPrivateHosts", { hosts: [] }, true, "the private-network hosts, whatever the body"],
-    ["deleteMcpServer", undefined, true, "a delete drops the server's credential"],
+    ["deleteMcpServer", undefined, false, "a delete is decided by the stored server (below), not its request"],
     ["refreshMcpServer", {}, false, "a refresh carries none"],
     ["createAgent", { auth: { type: "bearer", token: TOKEN } }, false, "not an MCP operation"],
   ]) assert.equal(mcpWritesSecret(operation, body), writes, `${operation}: ${why}`);
@@ -68,4 +68,16 @@ test("a save that would drop or change a saved server's credential is a secret w
     ["open", { url, auth: { type: "none" } }, false, "a server with no credential has none to drop"],
     ["new-one", { url, auth: { type: "none" } }, false, "a new server has none to drop"],
   ]) assert.equal(await gate.writesSecretFor("saveMcpServer", body, { params: [name], store }), writes, `${name}: ${why}`);
+});
+
+test("removing a saved server is a secret write when it holds a credential, read from the store; one with none is not, and the check keeps what it read", async () => {
+  const gate = await import("../dist/secret-writes.js");
+  await import("../dist/mcp-servers-store.js");
+  const rows = { held: { auth: "bearer", sealed: "sealed-bytes", credentialChangedAt: 5 }, open: { auth: "none", sealed: null, credentialChangedAt: null } };
+  const store = { mcp: { server: async (name) => rows[name] } };
+  for (const [name, writes, seen] of [["held", true, { auth: "bearer", sealed: true, changedAt: 5 }], ["open", false, { auth: "none", sealed: false, changedAt: null }], ["gone", false, null]]) {
+    const request = { params: [name], store };
+    assert.equal(await gate.writesSecretFor("deleteMcpServer", undefined, request), writes, name);
+    assert.deepEqual(request.seen, seen, `${name}: the removal lands only while the row is still this`);
+  }
 });

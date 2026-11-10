@@ -918,6 +918,13 @@ class SqliteStore implements Store {
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
       },
+      removeIfCredential: async (name, expected) => {
+        const [result] = await db.write([{
+          sql: `DELETE FROM mcp_servers WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"} RETURNING name`,
+          params: [name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt])],
+        }]);
+        return result!.rows.length === 1;
+      },
       servers: async () => {
         const at = clock();
         return (await db.all<McpServerRecord>(`SELECT ${mcpServerColumnsAt(at)} FROM mcp_servers ORDER BY name`, ...at.params)).map((row) => mcpServerOf(row));
