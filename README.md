@@ -1,13 +1,13 @@
 # AgentRun
 
-**AgentRun is an open-source server for AI agents. Agents on it keep running through restarts, work on real computers,
-and learn from every run.**
+**AgentRun is an open-source platform that supercharges your agents. It adds self-improvement, durable execution and a
+control plane on top of your favorite agent harness. Your agents become smarter, more fault tolerant and use fewer
+tokens with every run.**
 
-You bring the harness, the agent loop that talks to the model and calls tools: Claude Code, Codex, OpenCode or pi.
-AgentRun does everything around it. It keeps every run in one store, so a crash doesn't lose it. It gives the agent a
-computer to work on, holds it to your approvals and a spend cap, and keeps what it learned in a git folder that the
-next run starts from. Run it on your laptop with one command, in one container, or as a server with runners.
-Apache-2.0.
+Bring your agent on the harness it runs best on: Claude Code, Codex, OpenCode or pi. AgentRun does everything around
+it. It keeps every run in one store, so a crash doesn't lose it. It gives the agent a computer to work on, holds it to
+your approvals and a spend cap, and keeps what it learned in a git folder that the next run starts from. Run it on your
+laptop with one command, in one container, or as a server with runners. Apache-2.0.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun)
 

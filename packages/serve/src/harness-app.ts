@@ -45,7 +45,7 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
 import type { McpGateway } from "./mcp-gateway.js";
-import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, paidHolds, takePaidRefusal, typicalCost, useSpend, wrapUpDue, wrapUpWords } from "./cap.js";
+import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, paidHolds, SPEND_CAP_REACHED, takePaidRefusal, typicalCost, useSpend, wrapUpDue, wrapUpWords } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -319,7 +319,8 @@ export function adapterRun(
       // Only this request's: another one refused (a side call) leaves a note taken for a request still to be admitted.
       if (noted) wrap.taken = undefined;
       refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
-      return answer;
+      // The cap's refusal carries its code (the runner's Refusal.code), so the error it ends the node with says it.
+      return capRefused ? { ...answer, code: SPEND_CAP_REACHED } : answer;
     }
     inFlight.admitted(answer?.holdUsd);
     const side = (request as { side?: unknown }).side === true;
@@ -1022,8 +1023,9 @@ export function adapterRun(
           if (why && wrap.pending && wrap.pending.turn === undefined) wrap.pending = undefined;
           return why;
         },
-        stop: (reason, message) => {
-          const error = new Error(message ?? reason);
+        stop: (reason, message, code) => {
+          // A refusal's code rides on the error (the cap's `spend_cap_reached`): the model proxy writes it in its refusal.
+          const error = Object.assign(new Error(message ?? reason), code === undefined ? {} : { code });
           if (reason === "model_error" && !halted) {
             halted = error;
             void session?.interrupt();

@@ -44,7 +44,7 @@ import { reflects, type Reflect } from "./learning-run.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
-import { runReflect, runTimeline } from "./store-reads/journal.js";
+import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -79,6 +79,28 @@ const STATUS_OF: Record<Exclude<RunReadState, "running">, Status> = { completed:
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 
 const iso = (ms: number): string => new Date(ms).toISOString();
+
+/** What a view last served of each run's answer, by store and run: the answer it read (`input`), the digest of the values
+ *  it was redacted of (`key`) and what that gave (`out`), so a second view of the same answer and values reads nothing
+ *  again (main's runs.ts servedOnce: a console polls a run's view, and an answer can be large). Newest SERVED_KEPT runs of
+ *  each store. */
+const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: string }>>();
+const SERVED_KEPT = 32;
+function servedOnce(store: Store, runId: string, input: string, values: readonly string[]): string {
+  let served = servedByStore.get(store);
+  if (!served) servedByStore.set(store, (served = new Map()));
+  const key = wholeAnswerFor(values).key;
+  const last = served.get(runId);
+  if (last && last.key === key && last.input === input) return last.out;
+  const out = redactedAnswer(input, values);
+  served.delete(runId);
+  served.set(runId, { input, key, out });
+  for (const oldest of served.keys()) {
+    if (served.size <= SERVED_KEPT) break;
+    served.delete(oldest);
+  }
+  return out;
+}
 
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's. */
 const answerOf = (rows: readonly TimelineEvent[]): string | null => rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
@@ -177,7 +199,9 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const terminal = row.state !== "running";
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
-  const timeline = withAsks(await runTimeline(store, runId, context, { settled: terminal, redact: (text) => redacted(text, values) }));
+  // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
+  const timelineOptions = { settled: terminal, redact: (text: string) => redacted(text, values) };
+  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values)));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const ended = await runLearningEnd(store, runId);
@@ -215,7 +239,11 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
 
-  const meta: RunViewMeta = { ...(launch?.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
+  // The run's cap as it stands: its newest raise's (the agentrun.raise entries the runner's loop holds it to, adapter-loop
+  // capNow), else its launch's; a raise taken shows in the run's cost.cap_usd and its budget card, never the old cap.
+  const raisedCapUsd = records.entries.findLast((entry) => entry.kind === KINDS.raise && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && (entry.data as { capUsd: number }).capUsd > 0)?.data as { capUsd: number } | undefined;
+  const capUsd = launch?.maxCostUsd === undefined ? undefined : Math.max(launch.maxCostUsd, raisedCapUsd?.capUsd ?? 0);
+  const meta: RunViewMeta = { ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
@@ -293,7 +321,8 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
   const usd = imported ? (stored ?? null) : costView(run.rows, stored, undefined);
   const soFar = usd === null && !imported ? soFarOf(run.rows) : undefined;
-  const cap = run.launch?.maxCostUsd;
+  // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
+  const cap = run.view.meta.max_cost_usd;
   const bound = cap === undefined ? {} : { overshoot_bound_usd: 0 };
   return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...bound, ...(soFar ?? {}) };
 }
@@ -307,7 +336,9 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
   const shownWords = (text: string): string => withoutLoopback(redacted(text, values));
-  const servedAnswer = (text: string | null): string | null => (text ? redactedAnswer(text, values) : text);
+  // The answer row's text is the answer as served (whole, through redactedAnswer, once per held value set, when the row
+  // was cut; else the rows' redactor over what was never cut): served again through redactedAnswer once per that set.
+  const servedAnswer = (text: string | null): string | null => (text ? servedOnce(store, runId, text, values) : text);
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it, served as runs.ts serves it (servedOutput): each string in it cut of the

@@ -70,6 +70,39 @@ test("a claude-agent run reads the same rows and final answer over the store as 
   assert.deepEqual(view.cost, { usd: 0.42, basis: "estimate", charge_state: null, cap_usd: null });
 });
 
+test("a CLI record's rows are dated by when each entry was written; an entry with no time of its own reads the run's start, never epoch 0", async (t) => {
+  const { store } = await storeOn(t);
+  const cli = await claimed(store, { harness: "codex", runId: "run-1" });
+  const j = store.journal(cli);
+  const at = (ms) => new Date(ms).toISOString();
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Build it.", at: T0 + 1_000 }),
+    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "bash", input: { command: "make" }, replaySafe: false, at: T0 + 2_000 }),
+    entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "done", output: "build ok", at: T0 + 3_000 }),
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Built.", at: T0 + 4_000 }),
+  ], context);
+  const dated = shownAt(await runTimeline(store, "run-1", context, { settled: true }));
+  assert.deepEqual(dated, [["user_message", at(T0 + 1_000)], ["tool_use", at(T0 + 2_000)], ["tool_result", at(T0 + 3_000)], ["final_answer", at(T0 + 4_000)]]);
+
+  // A record written before its entries carried `at`: no row reads 1970; each reads the run's start.
+  const old = await claimed(store, { harness: "codex", runId: "run-2" });
+  const k = store.journal(old);
+  await commitWrites(k, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await k.mintId(), "agentrun.message", { role: "person", text: "Build it." }),
+    entry(await k.mintId(), "agentrun.message", { role: "model", text: "Built." }),
+  ], context);
+  const started = at((await store.runs.get("run-2")).startedAt);
+  for (const [kind, when] of shownAt(await runTimeline(store, "run-2", context, { settled: true }))) {
+    assert.notEqual(Date.parse(when), 0, `${kind}: never epoch 0`);
+    assert.equal(when, started, `${kind}: the run's start`);
+  }
+});
+
+/** Each row's kind and time, its timestamp and created_at checked to agree. */
+const shownAt = (rows) => rows.map((row) => (assert.equal(row.created_at, row.timestamp, row.kind), [row.kind, row.timestamp]));
+
 test("a codex run's calls read their end status and output: a success ok, a failure as an error with its output", async (t) => {
   const { store } = await storeOn(t);
   const cli = await claimed(store, { harness: "codex", runId: "run-1" });

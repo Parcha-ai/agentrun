@@ -316,7 +316,8 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
 
   const broken = await api("POST", "/templates/broken/apply", { parameters: {} });
   assert.equal(broken.status, 422, JSON.stringify(broken.body));
-  assert.deepEqual(broken.body.error.fields.map((f) => [f.field, f.message]), [["triggers.1.source.at", "at is in the past"]]);
+  assert.deepEqual(broken.body.error.fields.map((f) => f.field), ["triggers.1.source.at"]);
+  assert.match(broken.body.error.fields[0].message, /^Pick a time in the future: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ has already passed\.$/, "in words, never the raw field name");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.id), [id], "the broken package's first trigger was never made");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "nor its agent");
   assert.deepEqual((await api("GET", "/agents?archived=true")).body.agents, [], "every trigger is checked before the agent is made, so a refused one archives nothing");
@@ -409,6 +410,18 @@ test("a repository parameter is owner/name with no trailing dot: \"acme/widgets.
     assert.deepEqual(bad.body.error.fields.map((f) => [f.field, f.reason]), [["parameters.repo", "bad_format"]]);
     for (const repo of ["acme/widgets", "acme/my.repo"]) assert.equal((await api("POST", `/templates/${name}/apply`, { parameters: { repo } })).status, 201, `${name} ${repo}`);
   }
+});
+
+test("a parameter with a documented default takes it when apply leaves it out: kyb's risk appetite is medium, inbound-lead posts nowhere", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t);
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.deepEqual([listed.find((x) => x.name === "kyb").parameters.risk_appetite.default, listed.find((x) => x.name === "inbound-lead").parameters.post_to.default], ["medium", "none"]);
+  const kyb = await api("POST", "/templates/kyb/apply", { parameters: {} });
+  assert.equal(kyb.status, 201, JSON.stringify(kyb.body));
+  assert.match((await api("GET", `/agents/${kyb.body.agent_id}`)).body.definition.instructions, /Risk appetite: medium\./);
+  const lead = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech" } });
+  assert.equal(lead.status, 201, JSON.stringify(lead.body));
 });
 
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {

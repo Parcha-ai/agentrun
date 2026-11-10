@@ -117,7 +117,8 @@ Each row: entry point, then what makes it pass.
     Playground (`#/playground`: send a run, then "Open this run" to follow it live), Runs plus a state filter
     (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, and a workflow run's
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
-    `default-src 'self'`, so any violation is a finding.
+    `default-src 'self'` (plus the Keys page's provider icons from Google's favicon service), so any violation is a
+    finding.
 
 ## Subsystems
 
