@@ -17,7 +17,7 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
@@ -345,16 +345,18 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const seeded = await deps.seedFor(entry.agent.id);
   if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
-  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
-  // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
-  // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
-  // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+  // The run's input goes to the note selector (learning.ts NoteSelector; byRecency, the default, reads none of it).
+  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
+  // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
+  // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
+  // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
+  const { section, given } = learnedParts(seeded.seed, options);
+  return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
@@ -476,7 +478,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (givenOf,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody);
+  const learning = await learningStartFor(deps, entry, revision, rbody, input);
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),

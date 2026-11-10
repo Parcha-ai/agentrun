@@ -712,8 +712,36 @@ export async function layLearned(work: Workspace, seed: Seed, shown: Shown): Pro
 }
 
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
- *  tool; the host's secrets, which every text is cut of. */
-export type LearnedOptions = { budget: number; read: boolean; shown: Shown };
+ *  tool; the host's secrets, which every text is cut of; and which of its notes it is given (`select`, byRecency when
+ *  none) for the run it starts (`run`: what the selector may read of it, its input). */
+export type LearnedOptions = { budget: number; read: boolean; shown: Shown; select?: NoteSelector; run?: RunInput };
+
+/** What a note selector may read of the run it chooses for: the input it was started with. */
+export type RunInput = { readonly input?: unknown };
+/** What a note selector chooses from: the agent's active notes, newest first, each with the UTF-8 bytes it takes whole
+ *  (its block and the blank line before it); the bytes the served index takes (0 when there is none); whether every index
+ *  line names an active note (none names one main does not hold whole); and the learning budget. */
+export type NoteCandidates = {
+  readonly notes: readonly { readonly note: LearnedNote; readonly bytes: number }[];
+  readonly indexBytes: number;
+  readonly indexComplete: boolean;
+  readonly budget: number;
+};
+/** A selector's choice: the notes the run reads whole, in the order it reads them (a subset of the candidates), and
+ *  whether it reads the index first. Without the index, the notes are all it is given. */
+export type NoteSelection = { readonly whole: readonly LearnedNote[]; readonly index: boolean };
+/** The port that chooses which of an agent's notes a run gets (learnedOf). It chooses only: the seed, the pin, the cut of
+ *  the host's secrets and the section's words stay learnedParts'. A selector keeps the budget: its whole notes, and the
+ *  index when it serves it, fit `budget`, past which only the index may go (as loadedIndex bounds it). */
+export type NoteSelector = (candidates: NoteCandidates, run: RunInput) => NoteSelection;
+
+/** The default selector, by recency: every note whole while all fit the budget and the index names no note main does
+ *  not hold whole; else the index, then the newest notes that fit what it leaves, each whole. */
+export const byRecency: NoteSelector = ({ notes, indexBytes, indexComplete, budget }) => {
+  if (indexComplete && notes.reduce((sum, { bytes }) => sum + bytes, 0) <= budget) return { whole: notes.map(({ note }) => note), index: false };
+  let left = budget - indexBytes;
+  return { whole: notes.filter(({ bytes }) => bytes <= left && ((left -= bytes), true)).map(({ note }) => note), index: true };
+};
 /** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
  *  that can read it. */
 const KEPT = "Follow a note when it applies to what you are doing.";
@@ -739,32 +767,40 @@ export function learnedOf(seed: Seed, options: LearnedOptions): string | undefin
 }
 
 /** The notes a run's # Learned section names (learnedOf): each given whole, and each an index line names by its file;
- *  every active note when all are given whole. A run "was given" these; whether it applied one is not measured. */
+ *  every active note when all are given whole. A run "was given" these; of them, it "read" those whose file it opened
+ *  (store-reads/learning.ts notesReadOf). Whether it applied one given whole is not measured. */
 export function givenOf(seed: Seed, options: LearnedOptions): NoteUsed[] {
   return learnedParts(seed, options).given.map(({ file, name }) => ({ file, name }));
 }
 
-function learnedParts(seed: Seed, options: LearnedOptions): { section: string | undefined; given: LearnedNote[] } {
-  const { budget, read, shown } = options;
+/** What a run of `seed` reads under `# Learned` (learnedOf) and the notes that names (givenOf), from one choice of the
+ *  selector, so the section and the given notes never come from two choices. */
+export function learnedParts(seed: Seed, options: LearnedOptions): { section: string | undefined; given: LearnedNote[] } {
+  const { budget, read, shown, select = byRecency, run = {} } = options;
   const active = new Map(activeOf(seed).map((note) => [note.file, note]));
   const notes = (seed.recent ?? [...active.keys()].sort()).flatMap((file) => active.get(file) ?? []);
   const index = servedIndex(seed);
   const lines = index === undefined ? [] : loadedIndex(index).split("\n").filter((entry) => entry.trim() !== "");
   if (!notes.length && !lines.length) return { section: undefined, given: [] };
-  const blocks = notes.map((note) => wholeNote(note, shown));
+  const blocks = new Map(notes.map((note) => [note, wholeNote(note, shown)]));
   // Each part's bytes, and the blank line before it.
   const size = (text: string) => Buffer.byteLength(text) + 2;
-  // Each line's first link, in any spelling (`./x.md` is x.md: linkedFiles, as servedIndex reads it), names an active note.
-  const named = lines.every((entry) => active.has(linkedFiles(entry)[0] ?? ""));
-  if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return { section: [WHOLE_INTRO, ...blocks].join("\n\n"), given: notes };
   const shownIndex = lines.map(shown.text).join("\n");
-  let left = budget - (shownIndex ? size(shownIndex) : 0);
-  const kept = notes.map((note, i) => ({ note, block: blocks[i]! })).filter(({ block }) => size(block) <= left && ((left -= size(block)), true));
-  const whole = kept.map(({ block }) => block);
+  // Which notes the run reads whole, and whether it reads the index (the selector's one choice). Each line's first link,
+  // in any spelling (`./x.md` is x.md: linkedFiles, as servedIndex reads it), names an active note when indexComplete.
+  const choice = select({
+    notes: notes.map((note) => ({ note, bytes: size(blocks.get(note)!) })),
+    indexBytes: shownIndex ? size(shownIndex) : 0,
+    indexComplete: lines.every((entry) => active.has(linkedFiles(entry)[0] ?? "")),
+    budget,
+  }, run);
+  const chosen = new Set(choice.whole);
+  const whole = choice.whole.filter((note) => blocks.has(note)).map((note) => blocks.get(note)!);
+  if (!choice.index) return { section: [WHOLE_INTRO, ...whole].join("\n\n"), given: notes.filter((note) => chosen.has(note)) };
   // Given: each note whole here, and each the index names by its file, by any of a line's links (a hand-edited line may
   // name more than one; linkedFiles, as servedIndex reads them).
   const indexed = new Set(lines.flatMap((entry) => linkedFiles(entry).filter((file) => active.has(file))));
-  const given = notes.filter((note) => indexed.has(note.file) || kept.some((k) => k.note === note));
+  const given = notes.filter((note) => indexed.has(note.file) || chosen.has(note));
   return { section: [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n"), given };
 }
 
