@@ -4,6 +4,8 @@
 // forgotten with its tombstone opening, reads back, and the run goes on.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { specFor } from "./runner-spec-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -50,6 +52,25 @@ test("a runner-path run handed a sign-in that won't read back is refused at its 
       assert.ok(!error.message.includes(gone));
       return true;
     },
+  );
+});
+
+test("a run whose mark column holds the JSON text null (no writer writes it; never the column's SQL NULL) is refused at its claim as one that won't read back", async (t) => {
+  await assert.rejects(
+    specFor(t, {
+      body: { tools: ["read", "browser"] },
+      before: async (_server, _key, dir) => {
+        const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 10_000 });
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          db.prepare("UPDATE runs SET sign_in_handed = 'null' WHERE id = ?").run("run-1");
+          db.exec("COMMIT");
+        } finally {
+          db.close();
+        }
+      },
+    }),
+    (error) => error.name === "ClaimRefused" && error.message === UNREADABLE_SIGN_IN,
   );
 });
 

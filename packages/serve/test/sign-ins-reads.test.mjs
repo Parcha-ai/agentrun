@@ -9,15 +9,15 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { forgetSignIn, saveSignIn } from "../dist/sign-ins-store.js";
-import { WITHHELD_SIGN_IN } from "../dist/run-view.js";
-import { answerFlow, flowAgent, follow } from "./support.mjs";
+import { WITHHELD_SIGN_IN, WITHHELD_TITLE } from "../dist/run-view.js";
+import { agent, answerFlow, flowAgent, follow } from "./support.mjs";
 import { forgotten, holdsNone, marked, overStore, pointerOf, reads, reserved, runSaying, saved, server, sha, written } from "./custody-support.mjs";
 
 /** That `view`, `lists` and `timeline` withhold what the run said: no answer, the title and Timeline rows withheld. */
 function withheld({ view, lists, timeline }, ...needles) {
   assert.equal(view.result?.final_answer ?? null, null, JSON.stringify(view.result));
-  assert.equal(view.title, WITHHELD_SIGN_IN);
-  for (const row of lists) assert.equal(row.title, WITHHELD_SIGN_IN);
+  assert.equal(view.title, WITHHELD_TITLE);
+  for (const row of lists) assert.equal(row.title, WITHHELD_TITLE);
   assert.deepEqual(timeline.rows, []);
   holdsNone({ view, lists, timeline }, "Hold, then echo", ...needles);
 }
@@ -94,7 +94,10 @@ test("a forgotten sign-in still cuts what its runs said; under another seal key 
   const failed = (await runSaying(first, "Browse.")).runId;
   marked(first, failed, [sha(pointer)]);
   written(first, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", `The browser died holding ${pointer}.`, failed);
-  const plain = (await runSaying(first, "Browse.")).runId;
+  // A run handed none: one of an agent with no browser, so its runner hands it nothing (a run of alpha's is handed alpha's
+  // saved sign-in at its claim, and is then rightly withheld under another key).
+  assert.equal((await first.api("POST", "/agents", agent("beta"))).status, 201);
+  const plain = (await runSaying(first, "Browse.", { agentId: "beta" })).runId;
   written(first, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", "The browser died.", plain);
   // Forgotten once its runs ended: kept sealed, for cutting alone.
   await forgotten(first);
@@ -114,7 +117,8 @@ test("a forgotten sign-in still cuts what its runs said; under another seal key 
   for (const error of [two.view.error, ...two.lists.map((row) => row.error)]) assert.equal(error.message, WITHHELD_SIGN_IN);
   holdsNone({ two }, pointer);
   // A run handed none is read as any run's.
-  for (const error of [(await reads(rotated, plain)).view.error, ...(await reads(rotated, plain)).lists.map((row) => row.error)]) assert.equal(error.message, "The browser died.");
+  const handedNone = await reads(rotated, plain, "beta");
+  for (const error of [handedNone.view.error, ...handedNone.lists.map((row) => row.error)]) assert.equal(error.message, "The browser died.");
   // The right key back: shown again, cut.
   await cut(await reserved(t, rotated, seal));
 });
