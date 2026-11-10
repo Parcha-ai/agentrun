@@ -229,6 +229,10 @@ export interface McpGatewayOptions {
    *  Only the runner's MCP claim step (runner/mcp-claim.ts), which keeps that object current, passes it. Without it, the
    *  credentials are copied at construction and a client sends the headers it connected with. */
   liveCredentials?: true;
+  /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
+   *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent. Only the
+   *  runner's MCP claim step passes it, with liveCredentials: a github_app token whose App was disconnected or replaced. */
+  beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
 }
 
 /** What a call with no call id answers where a gate must know it by one: nothing was sent. */
@@ -404,6 +408,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** A call the gate let go: a priced one under the run's cap and booked, an unpriced one marked not metered. */
   const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
+    // The credential's custody checked first: one the claim drops now is refused below, unsent.
+    await options.beforeCall?.(server, signal);
     const why = unsendable(server, tool);
     if (why) return said(why, true);
     const { url, prices, tools: pinnedTools } = pins.get(server)!;

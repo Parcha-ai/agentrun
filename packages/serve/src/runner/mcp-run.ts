@@ -134,6 +134,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     pin,
     credentials: step.credentials,
     liveCredentials: true,
+    beforeCall: step.beforeCall,
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),

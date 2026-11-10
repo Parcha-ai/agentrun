@@ -18,6 +18,9 @@ export interface GithubAppAccess {
   readonly target: { readonly installation?: number; readonly repo: string } | undefined;
   /** Revokes an installation token this access minted (best effort): one dropped at release or on a disconnect. */
   readonly revoke?: (token: string) => Promise<void>;
+  /** Whether the App is still the one this access mints with (its id and key): read before each call, so a disconnect
+   *  or a new App stops a run's token at its next call, not at its next mint. */
+  readonly same?: () => Promise<boolean>;
 }
 
 /** A timer the step arms: the refresh before expiry, the expiry itself. */
@@ -111,6 +114,15 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
         return put({ headers: { authorization: `Bearer ${kept.token}` } });
       }
       await mint(name, put, false);
+    },
+    /** Before a call of `name`: the token held for it, when the App it was minted under is gone or replaced, is dropped
+     *  and revoked, and the server's calls refused in words. */
+    async check(name: string): Promise<void> {
+      const kept = held.get(name);
+      if (!kept || !access?.same || (await access.same().catch(() => true))) return;
+      if (released || held.get(name) !== kept) return;
+      drop(name);
+      kept.put({ unopened: GITHUB_UNUSABLE.disconnected });
     },
     /** Every token dropped and revoked, and every timer stopped: the loop ended, or the claim is lost. */
     release(): void {

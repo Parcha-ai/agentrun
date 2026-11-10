@@ -93,6 +93,9 @@ export interface McpClaimStep {
   fresh(): Promise<void>;
   /** Drop every credential held: the loop ended, or the claim is lost. */
   release(): void;
+  /** Before each call of `server` (the gateway's beforeCall): a github_app token whose App was disconnected or replaced
+   *  since it was minted is dropped, revoked, and the call refused in words. */
+  beforeCall(server: string, signal: AbortSignal): Promise<void>;
 }
 
 type OAuthCredential = McpCredential & { type: "oauth"; set: TokenSet; expired?: true };
@@ -301,7 +304,10 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   await fresh();
-  return { pin, credentials, secrets, fresh, release };
+  const beforeCall = async (server: string): Promise<void> => {
+    if (!released) await github.check(server);
+  };
+  return { pin, credentials, secrets, fresh, release, beforeCall };
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */
