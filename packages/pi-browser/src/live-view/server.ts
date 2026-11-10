@@ -15,6 +15,14 @@ export type LiveViewOptions = {
   /** Where the host mounts `handle` and `upgrade`, e.g. `https://host.example/live`. Its origin is the viewer's own origin, which an upgrade's Origin
    *  header must equal. Absent: the live view starts its own server on 127.0.0.1 (never 0.0.0.0), on an ephemeral port, at the first `open`. */
   baseUrl?: string;
+  /** With no `baseUrl`: the address its own server listens on, and the host the viewer's link names, for a host whose
+   *  viewer is reached from another machine (its own proxy, never a person's browser directly). Absent: 127.0.0.1 for
+   *  both. A host that listens off loopback gives `admit` too. */
+  listen?: { readonly bind: string; readonly host: string };
+  /** Asked of every page request and upgrade before anything else is read of it: false is a 403. The host's own check
+   *  that the request comes from its own proxy (a signed header, say). Absent: every request is asked only what it is
+   *  asked today. */
+  admit?: (req: IncomingMessage) => boolean;
   /** The screencast and input (stream.ts); the default is the package's own. A test passes a fake. */
   stream?: StreamFactory;
   /** The person/model mutex. Absent, the package's own process-wide registry (`drivingGates`, core/driving.ts), the one the toolset's model calls use, so a
@@ -133,6 +141,11 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     const page = /^\/v\/([^/]+)$/.exec(rel);
     const upgradeRoute = /^\/v\/([^/]+)\/ws$/.exec(rel);
     if (!page && !upgradeRoute && rel !== "/viewer.js" && rel !== "/viewer.css") return false;
+    if (options.admit && !options.admit(req)) {
+      res.writeHead(403, { ...securityHeaders(), "Content-Length": 0 });
+      res.end();
+      return true;
+    }
     const reply = (status: number, type: string, body: string): true => { res.writeHead(status, { ...securityHeaders(), "Content-Type": type, "Content-Length": Buffer.byteLength(body) }); res.end(req.method === "HEAD" ? undefined : body); return true; };
     if (req.method !== "GET" && req.method !== "HEAD") return reply(405, "text/plain", "method not allowed");
     if (upgradeRoute) return reply(426, "text/plain", "upgrade required");
@@ -152,6 +165,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     const deny = (status: string): true => { socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); return true; };
     // A browser always sends its page's origin on a WebSocket; another tab's script cannot forge it. Anything but the viewer's own is refused.
     if (origin === null || req.headers.origin !== origin) return deny("403 Forbidden");
+    if (options.admit && !options.admit(req)) return deny("403 Forbidden");
     const entry = ID.test(match[1]!) ? byId.get(match[1]!) : undefined;
     if (!entry || entry.released) return deny("404 Not Found");
     if (entry.pending.size >= maxPending) return deny("503 Service Unavailable");
@@ -328,8 +342,10 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       const s = createServer((req, res) => { if (!handle(req, res)) { res.writeHead(404, { "Content-Length": 0 }); res.end(); } });
       s.on("upgrade", (req, socket, head) => { if (!upgrade(req, socket, head)) socket.destroy(); });
       s.once("error", reject);
-      // Loopback only, never 0.0.0.0: the host that wants more mounts the handler on its own server.
-      s.listen(0, "127.0.0.1", () => { s.unref(); server = s; origin = `http://127.0.0.1:${(s.address() as AddressInfo).port}`; resolve(); });
+      // Loopback unless the host names another address (`listen`, with its `admit`): the host that wants more mounts the
+      // handler on its own server.
+      const at = options.listen ?? { bind: "127.0.0.1", host: "127.0.0.1" };
+      s.listen(0, at.bind, () => { s.unref(); server = s; origin = `http://${at.host}:${(s.address() as AddressInfo).port}`; resolve(); });
     });
     return starting;
   };

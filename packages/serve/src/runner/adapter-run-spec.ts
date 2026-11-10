@@ -17,6 +17,7 @@ import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentru
 import type { Approvals } from "../approvals.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
+import { runnerLiveOf } from "../live-reach.js";
 import type { PinnedModel, Tier } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
@@ -616,6 +617,7 @@ export function buildToolHost(opts: {
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
 }): ToolHost {
+  const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
   return {
     // The run's directory and its per-claim environment. `coding` is the runner's: the hands come from runTools, not from
@@ -641,6 +643,8 @@ export function buildToolHost(opts: {
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
+    // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its browser's viewer answers there.
+    ...(liveAt ? { liveAt } : {}),
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,

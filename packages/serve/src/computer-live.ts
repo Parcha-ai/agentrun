@@ -28,6 +28,7 @@ import type { Duplex } from "node:stream";
 import { type ActionMapper, createActionMapper, type InputAction, redactWords, type Result, type ScreenFrame, type ScreenWatch, type ScreenWatchHandlers, type ViewerEvent, type WatchOptions } from "@parcha/agentrun-computer";
 import { acceptWebSocket, CLOSE_CODES, encodeFrame, tokenMatches, type WsConn } from "@parcha/pi-browser/live-view";
 import type { LiveViewerStore } from "./browser-live.js";
+import { provenFor, type RunnerLive } from "./live-reach.js";
 import { type ComputerCallStore, computerHoldOf, handBackComputer, takeOverComputer } from "./computer-commands.js";
 import { type ComputerHoldChange, onComputerHold } from "./runner/computer-journal.js";
 import { sealColumn, sealedAt } from "./store/seal.js";
@@ -142,6 +143,9 @@ export type OpenComputerView = {
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
   bufferedOf?: (conn: WsConn) => number;
   sockets?: (socket: Duplex) => void;
+  /** A runner on another host than its server (live-reach.ts runnerLiveOf): the endpoint listens on its address, its row
+   *  names its host, and it takes no request without the server's proof. Absent: loopback, as on the server's machine. */
+  at?: RunnerLive;
 };
 
 /** Why a view was not opened: a stale claim (nothing written), a tag or a kind it does not take, or a failure in words. */
@@ -163,16 +167,20 @@ export type ClaimViewArgs = {
 
 /** The runner's opener for computerForClaim's openComputerView dep (runner/main.ts runnerComputers): the view of a run's
  *  desktop or phone under its claim, on the store the claim was given, held through viewerHoldOf over tl-places' calls on
- *  that store and the run's own hold beneath. With no seal key no token can be sealed, and no view is opened. */
-export const openClaimView = (args: ClaimViewArgs): Promise<OpenedComputerView> => {
+ *  that store and the run's own hold beneath, answering where the runner does (`at`: another host than the server's;
+ *  absent, loopback). With no seal key no token can be sealed, and no view is opened. */
+export const claimViewOpener = (at?: RunnerLive) => (args: ClaimViewArgs): Promise<OpenedComputerView> => {
   if (!args.sealKey) return Promise.resolve({ ok: false, refused: "failed", message: "this runner has no seal key, so no viewer's token can be handed over" });
   const claim = args.claim as Claim;
   const store = args.store as LiveViewerStore & ComputerCallStore;
   return openComputerView({
     store, sealKey: args.sealKey, claim, kind: args.kind, input: args.input, tag: args.tag, watch: args.watch,
     hold: viewerHoldOf(PLACES, store, claim.runId, args.hold as RunnersHold),
+    ...(at ? { at } : {}),
   });
 };
+/** The opener on the server's own machine: loopback. */
+export const openClaimView = claimViewOpener();
 
 /** What a viewer sends: its hello, its hands, its acks, its focus lost, and its events. */
 type ViewerMessage = { type: "hello"; token: string } | { type: "take" } | { type: "give" } | { type: "ack" } | { type: "blur" } | { type: "text"; text: string } | ViewerEvent;
@@ -578,8 +586,10 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     socket.on("error", () => socket.destroy());
     const deny = (status: string): void => void socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     const path = (req.url ?? "/").split("?")[0]!;
-    // The server proxies the viewer's socket here with this endpoint's own origin; anything else is refused.
+    // The server proxies the viewer's socket here with this endpoint's own origin; anything else is refused. Off loopback,
+    // only with the server's proof for this viewer (live-reach.ts), before any WebSocket.
     if (req.headers.origin !== origin) return deny("403 Forbidden");
+    if (input.at && !provenFor(req, input.at, id)) return deny("403 Forbidden");
     if (path !== `/v/${id}/ws` || closed) return deny("404 Not Found");
     if (pending.size >= limits.maxPending) return deny("503 Service Unavailable");
     const conn = acceptWebSocket(req, socket, head, { maxPayload: MAX_MESSAGE_BYTES });
@@ -604,6 +614,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   const server: Server = createServer((req, res) => {
     // The server's check that this viewer still answers (browser-live.ts viewerAnswers): its page's path, 200 while open.
     const path = (req.url ?? "/").split("?")[0];
+    if (input.at && !provenFor(req, input.at, id)) return void res.writeHead(403, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end();
     const ok = (req.method === "GET" || req.method === "HEAD") && path === `/v/${id}` && !closed;
     res.writeHead(ok ? 200 : 404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end();
   });
@@ -617,16 +628,16 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, LOOPBACK, () => {
+      server.listen(0, input.at?.bind ?? LOOPBACK, () => {
         server.off("error", reject);
         resolve();
       });
     });
     server.unref();
     const port = (server.address() as AddressInfo).port;
-    origin = `http://${LOOPBACK}:${port}`;
+    origin = `http://${input.at?.host ?? LOOPBACK}:${port}`;
     const sealed = sealColumn(sealKey, sealedAt.liveViewer(claim.runId, kind, tag), token);
-    put = await store.liveViewers.put(claim, { kind, tag, port, id, sealed }).catch(() => false);
+    put = await store.liveViewers.put(claim, { kind, tag, ...(input.at ? { host: input.at.host } : {}), port, id, sealed }).catch(() => false);
   } catch (error) {
     // Nothing is left of an open that failed: no subscription, and nothing listening.
     closed = true;

@@ -13,7 +13,8 @@ import { SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import { openClaimView } from "../computer-live.js";
+import { claimViewOpener } from "../computer-live.js";
+import { runnerLiveOf } from "../live-reach.js";
 import type { KeyEnv } from "../key-meta.js";
 import { computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { createDispatchLoop } from "./dispatch.js";
@@ -107,7 +108,8 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  of a desktop or a phone (computer-live.ts openClaimView) with it: runnerLoop's, runnerBeside's and a test's in-process
  *  runner's. `own`: a test's kind registry and provider loader, in place of the computer package's. */
 export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load"> = {}) =>
-  computerDepsFrom({ env, store, sealKey, openComputerView: openClaimView, ...own });
+  // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
+  computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...own });
 
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's

@@ -271,6 +271,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
     // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
+    // An earlier build of this version made the viewer table with no host (a runner on another host than its server,
+    // live-reach.ts): the server adds the column, nullable, so its rows read as the server's own machine's.
+    if (role === "server" && !(await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('computer_viewers') WHERE name = 'host'"))) {
+      await connection.write([{ sql: "ALTER TABLE computer_viewers ADD COLUMN host TEXT" }], { full: true });
+    }
     if (role === "server") {
       await connection.write([
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
@@ -1027,9 +1032,9 @@ class SqliteStore implements Store {
           const at = now();
           const fence = claimFence(claim, storeNow(d, () => at));
           const changed = await tx.runCounted(
-            `INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
-              ON CONFLICT (run_id, kind, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
-            viewer.kind, viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
+            `INSERT INTO computer_viewers (run_id, kind, tag, host, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
+              ON CONFLICT (run_id, kind, tag) DO UPDATE SET host = excluded.host, port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
+            viewer.kind, viewer.tag, viewer.host ?? null, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
           );
           return changed > 0;
         }),
@@ -1046,12 +1051,12 @@ class SqliteStore implements Store {
       // The server's read: only the run's epoch, under a live lease on the store's clock, written by the run's runner.
       of: async (runId) => {
         const live = clock();
-        const rows = await db.all<{ kind: ViewerKind; tag: string; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
-          `SELECT v.kind, v.tag, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
+        const rows = await db.all<{ kind: ViewerKind; tag: string; host: string | null; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
+          `SELECT v.kind, v.tag, v.host, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
             WHERE v.run_id = ? AND v.epoch = r.epoch AND r.claimed_until >= ${live.sql} AND v.runner = r.runner ORDER BY v.at DESC, v.tag`,
           runId, ...live.params,
         );
-        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
+        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, ...(row.host !== null ? { host: row.host } : {}), port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
       },
     };
 

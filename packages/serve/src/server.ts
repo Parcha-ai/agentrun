@@ -47,6 +47,7 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { liveReachOf } from "./live-reach.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
@@ -1054,6 +1055,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]);
+  // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
+  // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
+  const reach = sealKey ? liveReachOf(env, sealKey) : undefined;
+  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1244,7 +1249,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId) } : {}),
+    ...(sealKey ? { liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers) } : {}),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -2627,10 +2632,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           viewer: async () => {
             if (sealKey === undefined) return undefined;
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id);
+              const link = await liveViewerLink(store, sealKey, run.id, answers);
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id);
+            return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => computerOf(kept, env, family),
           hold: () => hold,
@@ -3166,7 +3171,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; });
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;

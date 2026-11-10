@@ -899,7 +899,9 @@ export type ViewerKind = "browser" | "desktop" | "phone";
 
 /** One open computer session's viewer as the store keeps it: one row per (run, computer kind, session tag), its token
  *  sealed (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
-export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+/** `host`: where the viewer answers when its runner is on another host than the server (live-reach.ts); none, the
+ *  server's own machine (loopback). */
+export type LiveViewerRow = { kind: ViewerKind; tag: string; host?: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
 
 /** The computer sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
  *  reads them. The rows go with the run's end (its end commit), a take or reclaim of the run (a newer epoch, in the
@@ -907,7 +909,7 @@ export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: s
 export interface LiveViewers {
   /** The runner's put under its claim, upsert on (run_id, kind, tag), `at` stamped by the store: false when the claim is
    *  stale (its epoch moved on, or its lease ran out), and nothing written. */
-  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; host?: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
   /** The runner's drop, fenced by its claim's epoch: with no kind every row of the run; a kind with no tag that kind's
    *  rows; a kind and a tag that one row. */
   drop(claim: Claim, kind?: ViewerKind, tag?: string): Promise<void>;

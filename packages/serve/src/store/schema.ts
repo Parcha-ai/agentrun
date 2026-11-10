@@ -397,6 +397,7 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
+    host TEXT,
     PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 
