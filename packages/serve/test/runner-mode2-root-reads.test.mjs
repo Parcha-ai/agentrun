@@ -209,3 +209,14 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.deepEqual(outbound, [], "nothing left this machine");
   });
 }
+
+// The claim itself goes to computerForClaim, not only its run and epoch: a desktop's or a phone's live view is put under
+// it (computer-live.ts openClaimView), and its row names the runner the server reads it by.
+for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
+  test(`${name} hands computerForClaim the claim itself, so a live view's row names this runner`, async (t) => {
+    const seen = [];
+    await mode2Spec(t, { harness, build, computer: async (launch) => (seen.push(launch), { release: async () => {} }) });
+    assert.equal(seen.length, 1, "the claim's one computer");
+    assert.deepEqual([seen[0].claim?.runId, seen[0].claim?.runner, seen[0].claim?.epoch], [RUN, "runner-a", seen[0].epoch]);
+  });
+}
