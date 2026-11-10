@@ -29,9 +29,12 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   }
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (workspace/computer-deps.ts computerDepsFrom), from that same environment.
+  // (workspace/computer-deps.ts computerDepsFrom), from that same environment; a Docker computer's mounts by where this
+  // process's Docker has the data directory (box-paths.ts), read once.
   const runs = env ?? runEnv(process.env);
-  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key });
+  const { dockerPathsForRuns } = await import("../box-paths.js");
+  const { hostAddressesOnce } = await import("../docker-host-addresses.js");
+  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
   return { runner, close: async () => { await runner.close(); await store.close(); seal.release(); } };

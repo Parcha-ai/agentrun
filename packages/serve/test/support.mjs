@@ -13,6 +13,8 @@ import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
+import { dockerPathsForRuns } from "../dist/box-paths.js";
+import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
@@ -314,9 +316,10 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
     throw error;
   }
   // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
-  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
+  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows; a Docker computer's
+  // mounts by where the Docker has the data directory, as the CLI's runner reads it (box-paths.ts dockerPathsForRuns).
   const sealKey = seal.key;
-  const computers = computerDepsFrom({ env, store, sealKey });
+  const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
   let runner;
   try {
     runner = startRunner({

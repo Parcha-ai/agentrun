@@ -157,11 +157,9 @@ once without checking again (a key some harness reads would, with `why=key`).
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
 `compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
-Docker socket. In this release a server in a container can't start a Docker sandbox yet (its folder and the computer
-daemon are mounted by paths only the server's container has, and it sets no host list): the server still offers the
-sandbox, so a run that uses it fails when the sandbox is created. Until the fix, change `compose.yaml`'s
-`AGENTRUN_BOXES: docker` line to `none`, so agents run with file tools and `web_fetch` and no shell. For a sandbox, run the server on the host, or give the agent a Daytona or E2B computer with
-workspaces on Archil.
+Docker socket, so each run's Docker sandbox is a container beside the server's, its run's folder mounted from that
+volume ([in the published image](#in-the-published-image)). It takes Docker Engine 26 or later, which mounts a
+volume's subpath.
 
 1. Start it (below).
 2. Open the console and set your password.
@@ -670,8 +668,8 @@ never runs; the box's first process is a `sleep` of its lifetime.
 
 ### In the published image
 
-The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker boxes on the Docker of the host it runs on, through
-that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
+The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker sandboxes on the Docker of the host it runs on,
+through that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
 has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives the image's `node` user the socket's group
 (`DOCKER_GID`), so the server never runs as root.
 
@@ -681,27 +679,32 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   it root. A box never gets it.
 - **A box is a container beside the server's.** It is made as on a Linux host (`--network none`, every capability dropped,
   no new privileges, the server's uid, the box limits).
-- **No host list from a container yet.** A Docker sandbox's egress proxy refuses the Docker host's own addresses, so it
-  must know them, and a provider that runs in a container (`/.dockerenv`, `/run/.containerenv` or a container's cgroup)
-  can't read them from its own interfaces. The computer package's Docker provider takes them as its
-  `egress.hostAddresses` option (IP addresses, the host's public ones and any NAT'd or elastic IP;
-  [its README](../computer/README.md)), but this server sets no such option and has no setting for it. So in a
-  container, a Docker sandbox asked for a host list (`AGENTRUN_BOX_ALLOW`, whose default is a list) is refused before
-  anything is made: "this provider runs in a container (…), so this provider's own interfaces are not the Docker
-  host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for
-  network none or open". With `AGENTRUN_BOX_ALLOW=none` a sandbox asks for no network, which this check does not
-  refuse.
 - **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
-  (`docker inspect`), and takes the named volume that holds the data directory. A box mounts that run's `work/` from it,
-  and the run's egress proxy's directory (`<data>/box-egress/<16 hex>/`, read-only), as the volume's subpaths
-  (`--mount type=volume,...,volume-subpath=disk/agents/<key>/runs/<run>/work`), never the rest. The run's files and the box's are the same
+  (`docker inspect`), and takes the named volume that holds the data directory. A run's sandbox mounts that run's folder
+  from it, and the sandbox's own daemon (copied to `<volume mount>/.agentrun/computerd`, read-only), as the volume's
+  subpaths (`--mount type=volume,...,volume-subpath=...`), never the rest. The run's files and the sandbox's are the same
   files, as on a host.
+- **The host's own addresses.** A sandbox's egress proxy refuses the Docker host's own addresses, which the server in a
+  container can't see on its interfaces. At its start it reads them once through the socket: one container on the
+  host's network (`--network host`, with `host.docker.internal` added for Docker Desktop and OrbStack, whose listing is
+  the VM's), from the proxy's own image, as nobody (`65534:65534`), every capability dropped, no new privileges, a
+  read-only root, 64 MiB and 32 processes, removed at its exit, bounded to 60 s. To those it adds
+  `AGENTRUN_DOCKER_HOST_ADDRESSES` (a comma list of IP addresses, checked at the start), for what no interface shows,
+  such as a NAT'd or elastic public address. The union is in capabilities' docker entry (`host_addresses`) and the
+  `event=docker_host_addresses` line. With none known under an allow-list (the read failed, nothing set), docker is
+  unavailable at the start, saying so and naming the setting or `AGENTRUN_BOX_ALLOW=none`; under `none` nothing is read.
 - **Any other layout** (the data directory not on a read-write named volume of the server's own container, the socket of
   another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name) makes
   docker unavailable at the start, its reason in capabilities and the `event=box_paths` line: `run AgentRun in a
   container with docker compose up from compose.yaml (its named data volume is how boxes reach a run's files)`. On an
-  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`.
+  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`. A daemon of another
+  machine makes it unavailable too, whether `DOCKER_HOST` names it or the current Docker context does (`DOCKER_CONTEXT`,
+  else the saved current one, read once with `docker context inspect`): that daemon has none of this machine's paths.
+  Another machine's is `ssh://`, or `tcp://` to a host that isn't loopback; `unix://`, `npipe://` (Docker Desktop on
+  Windows) and `tcp://` to loopback are this machine's. An agent that
+  names a Docker computer is refused at its run's start in those words, and one with no computer runs on the runner,
+  with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
 
@@ -771,8 +774,9 @@ Docker sandbox where this server's Docker answers, else no computer; in Mode 2, 
 no computer.
 
 **What a computer reaches.** A Docker sandbox reaches the hosts of `AGENTRUN_BOX_ALLOW` (by default the package
-registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. A
-server that runs in a container can't start a Docker sandbox yet ([in a container](#in-a-container)). A
+registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
+server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
+([in the published image](#in-the-published-image)). A
 Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
 own network, whatever the list says.
 

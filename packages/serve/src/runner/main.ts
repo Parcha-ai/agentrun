@@ -9,6 +9,10 @@
 // lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { dockerPathsForRuns } from "../box-paths.js";
+import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { HARNESS_TABLE_ENV } from "../harness-table.js";
+import { FAUX_PREFIX } from "../model.js";
 import { bootSealKey } from "../seal-key.js";
 import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
@@ -102,6 +106,17 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
   return out;
 }
 
+/** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
+ *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a
+ *  run without --faux, as the server's own withoutFaux keeps it from the server), then `switches`, the ones this start
+ *  enabled (server.ts fauxEnvOf). Deleted from runEnv's result, never spread: its secrets are non-enumerable and a spread
+ *  drops them. */
+export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = runEnv(env);
+  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV) delete out[name];
+  return Object.assign(out, switches);
+}
+
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
  *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
@@ -111,8 +126,9 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
-  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.
-  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
+  // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
+  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
