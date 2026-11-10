@@ -226,7 +226,11 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // keys runs the next run with no restart, as one set where AgentRun starts does.
   const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, claimed);
-  const env: NodeJS.ProcessEnv = withModelKeys({ ...deps.env, [DATA_ENV]: deps.data }, claimed);
+  // Built from the runner's environment itself, never a spread of it: a spread drops every secret the launcher's pipe
+  // handed the runner (runEnv makes them readable by name only), so a run on a server started through its launcher would
+  // reach its model with no key. The data directory goes on as a plain variable, which a spawn may carry.
+  const env: NodeJS.ProcessEnv = withModelKeys(deps.env, claimed);
+  Object.defineProperty(env, DATA_ENV, { value: deps.data, enumerable: true, writable: true, configurable: true });
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
