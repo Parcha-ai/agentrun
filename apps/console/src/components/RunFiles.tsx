@@ -23,9 +23,11 @@ function ViewToggle({ view, onView }: { view: View; onView: (view: View) => void
 }
 
 /** The run's FILES tab: what it wrote, in the server's path order, each opened in the viewer. Files in dot and cache
- *  folders (`hiddenFile`: .git, __pycache__, node_modules…) wait behind "Show hidden", and the count is of what it lists. */
-export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: RunFile) => void }) {
-  const [showHidden, setShowHidden] = useState(false);
+ *  folders (`hiddenFile`: .git, __pycache__, node_modules…) wait behind "Show hidden", and the count is of what it lists.
+ *  `hidden`: whether they show, held by the run page when it gives it (so its tab's count follows the list). */
+export function RunFiles({ files, onOpen, hidden: held }: { files: RunFile[]; onOpen: (file: RunFile) => void; hidden?: [boolean, (show: boolean) => void] }) {
+  const own = useState(false);
+  const [showHidden, setShowHidden] = held ?? own;
   const hidden = files.filter((f) => hiddenFile(f.path)).length;
   const listed = showHidden ? files : files.filter((f) => !hiddenFile(f.path));
   const total = listed.reduce((n, f) => n + f.size_bytes, 0);
@@ -34,7 +36,7 @@ export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: R
       <div className="mb-2 flex items-center gap-3">
         <p className="caps flex items-center gap-2 text-[11px] text-muted-foreground"><Folder className="size-3.5" aria-hidden /> Files · {listed.length} {listed.length === 1 ? "file" : "files"} ({bytes(total)})</p>
         {hidden > 0 && (
-          <button type="button" className="caps ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" aria-pressed={showHidden} onClick={() => setShowHidden((v) => !v)}>
+          <button type="button" className="caps ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" aria-pressed={showHidden} onClick={() => setShowHidden(!showHidden)}>
             {showHidden ? "Hide" : "Show"} {hidden} hidden
           </button>
         )}

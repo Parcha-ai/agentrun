@@ -18,31 +18,55 @@ export type TriggerReadsValue = { gone: ReadonlySet<string>; ask: (id: string) =
 export const TriggerReads = createContext<TriggerReadsValue>({ gone: new Set(), ask: () => {} });
 
 /** The app's read of the triggers (the whole list, GET /v2/triggers, not paged): read when `on` and again whenever `deps`
- *  change, and once more for each id a chip asks about. `known` holds the names and kinds; `reads.gone` the asked ids the
- *  fresh read didn't hold. */
+ *  change, and once more when chips ask about ids the names lack. `known` holds the names and kinds; `reads.gone` the
+ *  asked ids the newest read didn't hold, of those asked before it began. Every read answers every asked id, so one
+ *  found once and deleted later reads gone after the next read that lacks it. Asks made while a read is out wait for one
+ *  more read, so a page of many runs whose triggers are gone sends one read, not one per id. Only the newest read begun
+ *  lands: one that answers late never puts an older list back. */
 export function useTriggerKnown(v2: { listTriggers: () => Promise<{ triggers: Trigger[] }> }, on: boolean, deps: readonly unknown[]): { known: ReadonlyMap<string, TriggerKnown>; reads: TriggerReadsValue } {
   const [known, setKnown] = useState<ReadonlyMap<string, TriggerKnown>>(new Map());
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
+  // Ids a chip asked about, and of those the ones still waiting for a read begun after they were asked.
   const asked = useRef(new Set<string>());
+  const waiting = useRef(new Set<string>());
+  const asking = useRef(false);
+  // Reads are numbered as they begin; an answer lands only when no later one has landed.
+  const begun = useRef(0);
+  const landed = useRef(0);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const take = (triggers: Trigger[]) => setKnown(new Map(triggers.map((t) => [t.id, { name: t.name, kind: t.source.kind }])));
+  const read = useCallback((answered?: () => void) => {
+    const n = ++begun.current;
+    // Ids asked before this read began: it answers them.
+    const these = [...waiting.current];
+    return v2.listTriggers().then((r) => {
+      if (!mounted.current || n < landed.current) return;
+      landed.current = n;
+      for (const id of these) waiting.current.delete(id);
+      setKnown(new Map(r.triggers.map((t) => [t.id, { name: t.name, kind: t.source.kind }])));
+      const held = new Set(r.triggers.map((t) => t.id));
+      setGone(new Set([...asked.current].filter((id) => !held.has(id) && !waiting.current.has(id))));
+    }, () => {
+      // A failed read retries nothing on its own: its ids stop waiting, and the next read (a page change) answers them.
+      for (const id of these) waiting.current.delete(id);
+    }).finally(answered);
+  }, [v2]);
+  // One read for every id waiting now; ids asked while it is out wait for the next.
+  const readAsked = useCallback(() => {
+    if (asking.current || !waiting.current.size) return;
+    asking.current = true;
+    void read(() => { asking.current = false; if (mounted.current) readAsked(); });
+  }, [read]);
   useEffect(() => {
-    if (!on) return;
-    let live = true;
-    v2.listTriggers().then((r) => { if (live) take(r.triggers); }, () => {});
-    return () => { live = false; };
-  }, [v2, on, ...deps]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (on) void read();
+  }, [read, on, ...deps]); // eslint-disable-line react-hooks/exhaustive-deps
   const ask = useCallback((id: string) => {
     if (!on || asked.current.has(id)) return;
     asked.current.add(id);
-    // A read that fails asks nothing more of this id now; the next page change reads the list again.
-    v2.listTriggers().then((r) => {
-      if (!mounted.current) return;
-      take(r.triggers);
-      if (!r.triggers.some((t) => t.id === id)) setGone((g) => new Set(g).add(id));
-    }, () => {});
-  }, [v2, on]);
+    waiting.current.add(id);
+    // Asks made in one render are read together: the read starts once this task's asks are in.
+    void Promise.resolve().then(readAsked);
+  }, [on, readAsked]);
   return { known, reads: { gone, ask } };
 }
 

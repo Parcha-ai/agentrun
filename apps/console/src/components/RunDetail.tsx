@@ -86,6 +86,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // Once the page's steps scroll, a phone's header goes compact (RunHeader's `compact`), and whole again back near the
   // top: in past 24 px, out under 4, so a scroll that rests near the line doesn't flicker it.
   const [compact, setCompact] = useState(false);
+  // Another tab is another page of the run, at its top (Graph has no scroll of its own): the header is whole again.
+  useEffect(() => setCompact(false), [tab]);
+  // Whether the Files tab shows files in hidden folders: held here, so the tab's count follows the list.
+  const showHidden = useState(false);
   // The kind of trigger that started the run, from its own trigger row (served `trigger.source`): its chip says
   // "Schedule deleted", not only "Trigger deleted", once the trigger is gone.
   const triggerKind = run.trigger ? rows.find((r) => r.trigger?.id === run.trigger!.id)?.trigger?.source : undefined;
@@ -135,7 +139,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.filter((f) => !hiddenFile(f.path)).length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${showHidden[0] ? files.length : files.filter((f) => !hiddenFile(f.path)).length}`], ...(browser ? [["browser", browser.state === "live" ? "Watch live" : "Browser"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} compact={compact} triggerKind={triggerKind} />
@@ -179,7 +183,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
-          {tab === "files" && <RunFiles files={files} onOpen={show} />}
+          {tab === "files" && <RunFiles files={files} onOpen={show} hidden={showHidden} />}
           {tab === "browser" && browser && <BrowserPanel runId={run.run_id} browser={browser} opens={browserOpens} followUp={view.canMessage && view.messageMode === "follow_up"} />}
         </div>
       </div>}
