@@ -14,6 +14,7 @@ import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mj
 const { openPostgresStore, StoreOwned } = await import("../dist/store/index.js");
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const TOKEN = `ar_test_${"p".repeat(40)}`;
 const SEAL = Buffer.alloc(32, 7).toString("base64");
 
@@ -107,4 +108,43 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
   const read = await api("GET", `/runs/${run.body.run_id}`);
   assert.equal(last.status, "completed", `the run ended ${last.status}: ${JSON.stringify(read.body)} ${err.join("\n")}`);
   assert.ok(JSON.stringify(rows).includes("On Say hello.: done."), `the faux model's answer: ${JSON.stringify(rows)}`);
+});
+
+test("under its launcher (the store URL handed over its pipe, out of every environment), a server's own runner beside it opens the same Postgres store and runs what the server's API started", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const env = {
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    HOME: root,
+    XDG_CONFIG_HOME: join(root, "config"),
+    TMPDIR: process.env.TMPDIR ?? root,
+    AGENTRUN_ACCOUNTS: "0",
+    AGENTRUN_TOKEN: TOKEN,
+    AGENTRUN_SEAL_KEY: SEAL,
+    AGENTRUN_STORE_URL: PG_URL,
+    AGENTRUN_STORE_SCHEMA: schema,
+  };
+  const server = spawn("sh", [LAUNCHER, "--data", data, "--port", "0", "--faux", FAUX], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => server.once("exit", resolve));
+  t.after(async () => {
+    if (server.exitCode !== null || server.signalCode !== null) return;
+    server.kill("SIGTERM");
+    await exited;
+  });
+  const out = await printed(server, /^Open /m);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
+  assert.equal(existsSync(join(data, "store.sqlite")), false, "no SQLite store in the data directory");
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "healthy on its Postgres store");
+  const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
+  assert.equal((await api("POST", "/agents", agent("plain", { place: { mode: "runner" } }))).status, 201);
+  const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed", "cancelled"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", `the run ended ${last.status}`);
+  // Run on the Postgres store: the run's row there is the one the beside-runner ended.
+  const store = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  t.after(() => store.close());
+  assert.equal((await store.runs.get(run.body.run_id))?.state, "ended", "the run's row on Postgres has ended");
 });

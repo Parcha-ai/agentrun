@@ -23,6 +23,7 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
 import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { client as pgClient, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -267,11 +268,36 @@ test.skip("started by its launcher, no process of its user holds a secret in its
   assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
 });
 
-// SKIP (follow-up #2078): the launcher's store URL names db.invalid, which the store now tries to open as Postgres, so the server exits at start
-test.skip("started by its launcher with a store URL that holds a database password, no process of its user holds the URL in its environment or command line, and its store opens", { timeout: 120_000 }, async (t) => {
+test("started by its launcher with a store URL that holds a database password, no process of its user holds the URL in its environment or command line, and its store opens", { ...postgresOnly("a store URL names a Postgres store, which the server opens"), timeout: 120_000 }, async (t) => {
   const password = `nak-store-${process.pid}-${Date.now().toString(36)}`;
   const token = `nak-token-${process.pid}-${"t".repeat(32)}`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_STORE_URL: `postgres://agentrun:${password}@db.invalid:5432/agentrun` });
+  // A login of the case's own on the test Postgres, its password one no other text holds, so the store really opens on
+  // it and the password is looked for everywhere. Its sessions, its schema, its grant and itself go after the case.
+  const role = `nak_${process.pid}_${Date.now().toString(36)}`;
+  const schema = await freshSchema();
+  const database = new URL(PG_URL).pathname.slice(1);
+  const admin = await pgClient();
+  t.after(async () => {
+    const c = await pgClient();
+    try {
+      await c.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1", [role]);
+      await c.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await c.query(`REVOKE CREATE ON DATABASE ${database} FROM ${role}`).catch(() => undefined);
+      await c.query(`DROP ROLE IF EXISTS ${role}`);
+    } finally {
+      await c.end();
+    }
+  });
+  try {
+    await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
+    await admin.query(`GRANT CREATE ON DATABASE ${database} TO ${role}`);
+  } finally {
+    await admin.end();
+  }
+  const url = new URL(PG_URL);
+  url.username = role;
+  url.password = password;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_STORE_URL: url.href, AGENTRUN_STORE_SCHEMA: schema });
   assert.equal((await api("POST", "/agents", { definition: { id: "store-url", version: 1, name: "store-url", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201, "its store opens");
   assert.ok(!read(`/proc/${root}/environ`).toString().split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the server's environment");
   noSecretAnywhere(root, password);

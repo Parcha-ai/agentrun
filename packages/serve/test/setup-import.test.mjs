@@ -483,11 +483,11 @@ test("a server stopped while setup still lists a home's session files exits at o
   assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
 });
 
-// SKIP (follow-up #2078): the store now opens Postgres from AGENTRUN_STORE_URL, so the value the test plants for it as a launcher secret is refused at start
-test.skip("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
+test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
-  // of the server's has one. The seal key is one a server takes: 32 bytes in base64.
-  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter(Boolean);
+  // of the server's has one. The seal key is one a server takes: 32 bytes in base64. All but the store's URL, which names
+  // the server's store itself (store/open.ts): this server's is SQLite in its data directory.
+  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter((name) => name && name !== "AGENTRUN_STORE_URL");
   const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : `not-a-secret-${name.toLowerCase()}-${randomBytes(8).toString("hex")}`]));
   const KEY = Object.values(keys).join(" ");
   const root = await scratch(t);
