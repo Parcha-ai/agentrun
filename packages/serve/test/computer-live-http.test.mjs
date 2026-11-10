@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fakeDesktopProvider } from "./computer-live-support.mjs";
+import { onComputerHold } from "../dist/runner/computer-journal.js";
 import { connect } from "./fixtures/ws-client.mjs";
 import { agent, call, clientOwnerSession, follow, serve, withEnv } from "./support.mjs";
 
@@ -83,8 +84,14 @@ test("a runner run's desktop registers its live view: GET /computer is live with
   // is up): a take-over row the runner applies to the run's hold, pending until the look ends, then the person's.
   await desktop.inShot;
   await until(async () => (await server.api("GET", `/runs/${runId}`)).body.computer?.state === "ready", "the run's journal says its desktop is up");
+  // The runner applies the take-over row to the run's hold while the look is in flight: pending, said in this process
+  // (onComputerHold, the in-process runner's), and only then does the look end.
+  const applied = new Promise((resolve) => {
+    const off = onComputerHold(runId, (change) => change.state === "pending" && (off(), resolve()));
+  });
   ws.sendJson({ type: "take" });
   assert.deepEqual(await next(ws, "status"), { type: "status", drive: "pending" });
+  await applied;
   desktop.letGo();
   assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
   assert.equal((await get(path, { cookie: owner.cookie })).json.hold, "person");
