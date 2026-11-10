@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { sweep } from "../janitor.js";
+import { PROVIDERS } from "../kinds.js";
 import type { MountKind } from "../mount.js";
 import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
@@ -95,8 +96,10 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
+	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared).
+	const declared = options.declared ?? PROVIDERS.find((entry) => entry.id === provider.id)?.capabilities;
 	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
@@ -243,6 +246,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need}`;
 			} else if (need === "vendor-agent" && !Array.isArray(capabilities.vendorAgentPorts)) {
 				return `the provider does not declare ${need} (capabilities().vendorAgentPorts): no vendor's agent runs beside its computers' programs`;
+			} else if (need === "secrets" && planted === undefined) {
+				return "the provider takes no secret: its conformance module's ENV names no key, token or secret";
 			}
 		}
 		return undefined;
@@ -396,6 +401,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();
+				},
+				declared,
+				async planted() {
+					if (planted === undefined) return t.skip("no provider with planted secrets was given: the provider takes no secret, or its module lists none in ENV");
+					return await planted();
 				},
 				async runFolder(kind) {
 					const none = `the run was given no run folder for mount kind ${kind}`;

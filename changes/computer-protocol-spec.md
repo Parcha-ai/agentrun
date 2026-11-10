@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+The computer protocol is published as a spec, `spec/computer/`: the wire, the stdio binding, kinds, groups and the Core and Full levels, and the provider contract. Its JSON Schema (each method's params and result) and its constants (the limits, the JSON-RPC codes, the groups and the key table) are generated from `protocol.ts` by `node scripts/generate-computer-spec.mjs`, whose `--check` a test runs. `hello` now carries `protocol`, the protocol's version (`PROTOCOL_VERSION`, 0.1), apart from the daemon's own `version`: computerd sends it, the phone and browser clients send it, and a computer that speaks another protocol version is refused as drift. Two conformance cases join Core: `health.declared` (the provider's declaration, its `capabilities()` and `hello` agree, at this protocol version) and `health.no-key-in-errors` (a provider built with planted secrets answers every refusal path with none of them in its words; skipped for a provider that takes no secret). `runConformance` takes `declared` and `planted`, and the CLI builds both from a provider's module.

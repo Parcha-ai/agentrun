@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { DaemonClient, epochOf } from "../dist/index.js";
-import { MAX_OUTPUT_BYTES } from "../dist/protocol.js";
+import { MAX_OUTPUT_BYTES, PROTOCOL_VERSION } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
@@ -364,7 +364,7 @@ export function fakeComputers({
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
-			const value = { version, os: "linux", kind, arch: "amd64", groups, ...hello };
+			const value = { protocol: PROTOCOL_VERSION, version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
 			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));

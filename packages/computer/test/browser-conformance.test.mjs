@@ -28,7 +28,8 @@ const VENDORS = {
 			return new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fake.fetch, sleep: async () => {} });
 		},
 		env: { AGENTRUN_COMPUTER_LIVE_BROWSERBASE: "1", COMPUTER_BROWSERBASE_API_KEY: BROWSERBASE_KEY, COMPUTER_BROWSERBASE_API_URL: BROWSERBASE_URL },
-		creates: (fake) => fake.only("POST", "/v1/sessions").length,
+		// The creates the vendor took: health.no-key-in-errors asks one more with a planted key, which it refuses (401).
+		creates: (fake) => fake.only("POST", "/v1/sessions").filter((call) => call.headers["X-BB-API-Key"] === BROWSERBASE_KEY).length,
 		live: (fake) => [...fake.sessions.values()].filter((s) => s.status === "RUNNING").length,
 	},
 	kernel: {
@@ -38,7 +39,7 @@ const VENDORS = {
 			return new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fake.fetch, sleep: async () => {} });
 		},
 		env: { AGENTRUN_COMPUTER_LIVE_KERNEL: "1", COMPUTER_KERNEL_API_KEY: KERNEL_KEY, COMPUTER_KERNEL_API_URL: KERNEL_URL },
-		creates: (fake) => fake.only("POST", "/browsers").length,
+		creates: (fake) => fake.only("POST", "/browsers").filter((call) => call.headers.Authorization === `Bearer ${KERNEL_KEY}`).length,
 		live: (fake) => [...fake.browsers.values()].filter((b) => b.deletedAt === undefined).length,
 	},
 };

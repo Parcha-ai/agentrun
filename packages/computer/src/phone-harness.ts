@@ -27,6 +27,7 @@ import {
 	type InputActionsResult,
 	MAX_CHUNK_BYTES,
 	MAX_UI_NODES,
+	PROTOCOL_VERSION,
 	type Rect,
 	type ScreenWatchResult,
 	type UiNode,
@@ -973,7 +974,7 @@ class AdbClient implements ComputerClient {
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
 		const reported = abi.value.trim();
-		this.#hello = { version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
+		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
 		return ok(this.#hello);
 	}
 

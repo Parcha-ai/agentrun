@@ -4,7 +4,7 @@
 // a ref, a list, an error's words or a report.
 import { randomBytes } from "node:crypto";
 import type { CallOptions } from "./client.js";
-import type { ComputerClient, DaemonMethod, DaemonMethods, Group, HelloResult } from "./protocol.js";
+import { type ComputerClient, type DaemonMethod, type DaemonMethods, type Group, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import type { ComputerCapabilities, ComputerSpec, Refusal } from "./provider.js";
 import { checkLifetime } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
@@ -178,7 +178,7 @@ export function checkBrowser(spec: ComputerSpec, capabilities: ComputerCapabilit
 }
 
 /** hello for a browser: the provider's version, linux, kind browser and its groups. The vendor reports no arch. */
-export const browserHello = (version: string, groups: Group[]): HelloResult => ({ version, os: "linux", kind: "browser", arch: "unknown", groups: [...groups] });
+export const browserHello = (version: string, groups: Group[]): HelloResult => ({ protocol: PROTOCOL_VERSION, version, os: "linux", kind: "browser", arch: "unknown", groups: [...groups] });
 
 /**
  * The client of a browser's connection: it answers hello, and ping from the vendor's own read of the session (gone

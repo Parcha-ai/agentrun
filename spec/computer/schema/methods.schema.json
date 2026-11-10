@@ -1,0 +1,2819 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentrun.ai/spec/computer/0.1/methods.schema.json",
+  "title": "AgentRun computer protocol 0.1: methods",
+  "$comment": "Generated from packages/computer/src/protocol.ts (DaemonMethods) by node scripts/generate-computer-spec.mjs. Each property of DaemonMethods is a method: its params and its result.",
+  "$ref": "#/definitions/DaemonMethods",
+  "definitions": {
+    "App": {
+      "title": "App",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "name": {
+          "type": "string",
+          "title": "name"
+        },
+        "version": {
+          "type": "string",
+          "title": "version"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "AppsInstallParams": {
+      "title": "AppsInstallParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "A file already in the computer (files.write first).",
+          "type": "string",
+          "title": "path"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "AppsLaunchParams": {
+      "description": "apps.launch and apps.terminate.",
+      "title": "AppsLaunchParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "AppsListResult": {
+      "title": "AppsListResult",
+      "type": "object",
+      "properties": {
+        "apps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/App"
+          },
+          "title": "apps"
+        },
+        "foreground": {
+          "description": "The id of the app in front, or null.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "title": "foreground"
+        }
+      },
+      "required": [
+        "apps",
+        "foreground"
+      ]
+    },
+    "ComputerKind": {
+      "description": "What a computer is (its machine kind): the shape its tools take. Kind sets which groups are Core.",
+      "title": "ComputerKind",
+      "enum": [
+        "android",
+        "browser",
+        "desktop",
+        "ios",
+        "linux"
+      ],
+      "type": "string"
+    },
+    "ComputerOs": {
+      "description": "The platform a computer runs, which the key table and exec need.",
+      "title": "ComputerOs",
+      "enum": [
+        "android",
+        "ios",
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "type": "string"
+    },
+    "DaemonErrorKind": {
+      "description": "error.data.kind in the daemon's error replies.",
+      "title": "DaemonErrorKind",
+      "enum": [
+        "aborted",
+        "denied",
+        "exists",
+        "invalid",
+        "is_dir",
+        "limit",
+        "not_dir",
+        "not_found",
+        "timeout",
+        "unsupported"
+      ],
+      "type": "string"
+    },
+    "DaemonMethods": {
+      "description": "Every method the daemon answers: its params and its result.",
+      "type": "object",
+      "properties": {
+        "hello": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/HelloParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/HelloResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "hello"
+        },
+        "ping": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/PingParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/PingResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "ping"
+        },
+        "exec.run": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ExecRunParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ExecRunResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "exec.run"
+        },
+        "files.read": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesReadParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/FilesReadResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.read"
+        },
+        "files.write": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesWriteParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/FilesWriteResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.write"
+        },
+        "files.stat": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesStatParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/FileStat",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.stat"
+        },
+        "files.list": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesListParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/FilesListResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.list"
+        },
+        "files.mkdir": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesMkdirParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.mkdir"
+        },
+        "files.move": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesMoveParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.move"
+        },
+        "files.remove": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/FilesRemoveParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "files.remove"
+        },
+        "tar.pull.begin": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/TarPullBeginParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/TarPullBeginResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "tar.pull.begin"
+        },
+        "tar.pull.read": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/TarPullReadParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/TarPullReadResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "tar.pull.read"
+        },
+        "tar.pull.end": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/TarPullEndParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "tar.pull.end"
+        },
+        "tar.push.begin": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/TarPushBeginParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/TarPushBeginResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "tar.push.begin"
+        },
+        "tar.push.write": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/TarPushWriteParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "tar.push.write"
+        },
+        "tar.push.end": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/TarPushEndParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/TarPushEndResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "tar.push.end"
+        },
+        "process.start": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessStartParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ProcessStartResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.start"
+        },
+        "process.read": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessReadParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ProcessReadResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.read"
+        },
+        "process.write": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessWriteParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.write"
+        },
+        "process.signal": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessSignalParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ProcessSignalResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.signal"
+        },
+        "process.resize": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessResizeParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.resize"
+        },
+        "process.list": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessListParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ProcessListResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.list"
+        },
+        "process.wait": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ProcessWaitParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ProcessExit",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "process.wait"
+        },
+        "screen.shot": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ScreenShotParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ScreenShotResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "screen.shot"
+        },
+        "screen.read": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ScreenReadParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ScreenReadResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "screen.read"
+        },
+        "screen.watch": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/ScreenWatchParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/ScreenWatchResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "screen.watch"
+        },
+        "input.actions": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/InputActionsParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/InputActionsResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "input.actions"
+        },
+        "apps.list": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/Empty",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/AppsListResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "apps.list"
+        },
+        "apps.install": {
+          "description": "The installed app.",
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/AppsInstallParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/App",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "apps.install"
+        },
+        "apps.launch": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/AppsLaunchParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "apps.launch"
+        },
+        "apps.terminate": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/AppsLaunchParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/Empty",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "apps.terminate"
+        },
+        "apps.ui_tree": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/Empty",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/UiTreeResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "apps.ui_tree"
+        },
+        "deadline.extend": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/DeadlineExtendParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/DeadlineExtendResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "deadline.extend"
+        },
+        "mount.sync": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/Empty",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/MountSyncResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "mount.sync"
+        }
+      },
+      "required": [
+        "apps.install",
+        "apps.launch",
+        "apps.list",
+        "apps.terminate",
+        "apps.ui_tree",
+        "deadline.extend",
+        "exec.run",
+        "files.list",
+        "files.mkdir",
+        "files.move",
+        "files.read",
+        "files.remove",
+        "files.stat",
+        "files.write",
+        "hello",
+        "input.actions",
+        "mount.sync",
+        "ping",
+        "process.list",
+        "process.read",
+        "process.resize",
+        "process.signal",
+        "process.start",
+        "process.wait",
+        "process.write",
+        "screen.read",
+        "screen.shot",
+        "screen.watch",
+        "tar.pull.begin",
+        "tar.pull.end",
+        "tar.pull.read",
+        "tar.push.begin",
+        "tar.push.end",
+        "tar.push.write"
+      ]
+    },
+    "DeadlineExtendParams": {
+      "description": "Moves init's own deadline. Init refuses an earlier one. Typed now; the daemon answers it from the X11 shim's PR on.",
+      "title": "DeadlineExtendParams",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "ISO time.",
+          "type": "string",
+          "title": "at"
+        }
+      },
+      "required": [
+        "at"
+      ]
+    },
+    "DeadlineExtendResult": {
+      "title": "DeadlineExtendResult",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "The deadline init holds after the call, ISO time.",
+          "type": "string",
+          "title": "at"
+        }
+      },
+      "required": [
+        "at"
+      ]
+    },
+    "Empty": {
+      "title": "Empty",
+      "type": "object"
+    },
+    "ExecRunParams": {
+      "title": "ExecRunParams",
+      "type": "object",
+      "properties": {
+        "argv": {
+          "description": "The program and its arguments. Never a shell: a shell is the caller's choice ([\"sh\", \"-c\", \"...\"]).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "argv"
+        },
+        "cwd": {
+          "description": "Absolute, or relative to the user's home. Default: the daemon's working directory.",
+          "type": "string",
+          "title": "cwd"
+        },
+        "env": {
+          "description": "Added over a minimal default (PATH, HOME, USER, LOGNAME); nothing else of the daemon's environment is passed.",
+          "$ref": "#/definitions/Record<string,string>",
+          "title": "env"
+        },
+        "user": {
+          "description": "A user name, or uid[:gid]. A daemon that cannot switch users answers `denied`.",
+          "type": "string",
+          "title": "user"
+        },
+        "timeoutMs": {
+          "type": "number",
+          "title": "timeoutMs"
+        },
+        "maxOutput": {
+          "description": "Bytes kept of each stream; default and most MAX_OUTPUT_BYTES.",
+          "type": "number",
+          "title": "maxOutput"
+        }
+      },
+      "required": [
+        "argv",
+        "timeoutMs"
+      ]
+    },
+    "ExecRunResult": {
+      "title": "ExecRunResult",
+      "type": "object",
+      "properties": {
+        "exitCode": {
+          "description": "null when a signal ended the program.",
+          "type": [
+            "null",
+            "number"
+          ],
+          "title": "exitCode"
+        },
+        "signal": {
+          "description": "The signal that ended it, without SIG, such as \"KILL\".",
+          "type": "string",
+          "title": "signal"
+        },
+        "stdout": {
+          "description": "base64.",
+          "type": "string",
+          "title": "stdout"
+        },
+        "stderr": {
+          "description": "base64.",
+          "type": "string",
+          "title": "stderr"
+        },
+        "timedOut": {
+          "type": "boolean",
+          "title": "timedOut"
+        },
+        "truncated": {
+          "type": "boolean",
+          "title": "truncated"
+        }
+      },
+      "required": [
+        "exitCode",
+        "stderr",
+        "stdout",
+        "timedOut",
+        "truncated"
+      ]
+    },
+    "FileEntry": {
+      "title": "FileEntry",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "path"
+        },
+        "type": {
+          "$ref": "#/definitions/FileType",
+          "title": "type"
+        },
+        "size": {
+          "type": "number",
+          "title": "size"
+        },
+        "mode": {
+          "description": "The permission bits, with setuid, setgid and sticky: 0o7777.",
+          "type": "number",
+          "title": "mode"
+        },
+        "mtimeMs": {
+          "type": "number",
+          "title": "mtimeMs"
+        },
+        "uid": {
+          "type": "number",
+          "title": "uid"
+        },
+        "gid": {
+          "type": "number",
+          "title": "gid"
+        },
+        "target": {
+          "description": "A symlink's target, as written.",
+          "type": "string",
+          "title": "target"
+        }
+      },
+      "required": [
+        "gid",
+        "mode",
+        "mtimeMs",
+        "path",
+        "size",
+        "type",
+        "uid"
+      ]
+    },
+    "FileStat": {
+      "title": "FileStat",
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/FileType",
+          "title": "type"
+        },
+        "size": {
+          "type": "number",
+          "title": "size"
+        },
+        "mode": {
+          "description": "The permission bits, with setuid, setgid and sticky: 0o7777.",
+          "type": "number",
+          "title": "mode"
+        },
+        "mtimeMs": {
+          "type": "number",
+          "title": "mtimeMs"
+        },
+        "uid": {
+          "type": "number",
+          "title": "uid"
+        },
+        "gid": {
+          "type": "number",
+          "title": "gid"
+        },
+        "target": {
+          "description": "A symlink's target, as written.",
+          "type": "string",
+          "title": "target"
+        }
+      },
+      "required": [
+        "gid",
+        "mode",
+        "mtimeMs",
+        "size",
+        "type",
+        "uid"
+      ]
+    },
+    "FileType": {
+      "title": "FileType",
+      "enum": [
+        "dir",
+        "file",
+        "other",
+        "symlink"
+      ],
+      "type": "string"
+    },
+    "FilesListParams": {
+      "title": "FilesListParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "A directory; a symlink to one is followed. Symlinks below it are listed, never entered.",
+          "type": "string",
+          "title": "path"
+        },
+        "depth": {
+          "description": "Default 1, most MAX_LIST_DEPTH.",
+          "type": "number",
+          "title": "depth"
+        },
+        "offset": {
+          "description": "Skip this many entries: pass the count already read to get the next page.",
+          "type": "number",
+          "title": "offset"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "FilesListResult": {
+      "title": "FilesListResult",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "description": "In walk order: each directory's entries by name, a directory before what it holds.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FileEntry"
+          },
+          "title": "entries"
+        },
+        "truncated": {
+          "description": "More entries follow: list again with offset + entries.length.",
+          "type": "boolean",
+          "title": "truncated"
+        }
+      },
+      "required": [
+        "entries",
+        "truncated"
+      ]
+    },
+    "FilesMkdirParams": {
+      "title": "FilesMkdirParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "path"
+        },
+        "parents": {
+          "description": "Make missing parents, and accept a directory already there.",
+          "type": "boolean",
+          "title": "parents"
+        },
+        "mode": {
+          "description": "Default 0o755.",
+          "type": "number",
+          "title": "mode"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "FilesMoveParams": {
+      "title": "FilesMoveParams",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "title": "from"
+        },
+        "to": {
+          "type": "string",
+          "title": "to"
+        },
+        "overwrite": {
+          "description": "Replace what is at `to`, as rename(2) does: a file, or an empty directory.",
+          "type": "boolean",
+          "title": "overwrite"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "FilesReadParams": {
+      "description": "Paths are absolute; the daemon cleans them. A relative path is `invalid`.",
+      "title": "FilesReadParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "path"
+        },
+        "offset": {
+          "type": "number",
+          "title": "offset"
+        },
+        "length": {
+          "description": "Default and most MAX_CHUNK_BYTES; more is refused as `limit`.",
+          "type": "number",
+          "title": "length"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "FilesReadResult": {
+      "title": "FilesReadResult",
+      "type": "object",
+      "properties": {
+        "data": {
+          "description": "base64.",
+          "type": "string",
+          "title": "data"
+        },
+        "eof": {
+          "type": "boolean",
+          "title": "eof"
+        },
+        "size": {
+          "description": "The file's size when it was read.",
+          "type": "number",
+          "title": "size"
+        }
+      },
+      "required": [
+        "data",
+        "eof",
+        "size"
+      ]
+    },
+    "FilesRemoveParams": {
+      "title": "FilesRemoveParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "path"
+        },
+        "recursive": {
+          "description": "Remove a directory and everything in it. A symlink is removed, never followed.",
+          "type": "boolean",
+          "title": "recursive"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "FilesStatParams": {
+      "title": "FilesStatParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "path"
+        },
+        "follow": {
+          "description": "Follow a symlink at path. Default false: a symlink is reported as one.",
+          "type": "boolean",
+          "title": "follow"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "FilesWriteParams": {
+      "title": "FilesWriteParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "title": "path"
+        },
+        "data": {
+          "description": "base64; the request line holds at most 1 MiB.",
+          "type": "string",
+          "title": "data"
+        },
+        "offset": {
+          "description": "Write here without truncating. With neither offset nor append, the file is replaced.",
+          "type": "number",
+          "title": "offset"
+        },
+        "append": {
+          "type": "boolean",
+          "title": "append"
+        },
+        "mode": {
+          "description": "Set when given (0o7777 bits), else 0o644 for a new file.",
+          "type": "number",
+          "title": "mode"
+        },
+        "parents": {
+          "description": "Make missing parent directories.",
+          "type": "boolean",
+          "title": "parents"
+        }
+      },
+      "required": [
+        "data",
+        "path"
+      ]
+    },
+    "FilesWriteResult": {
+      "title": "FilesWriteResult",
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "number",
+          "title": "size"
+        }
+      },
+      "required": [
+        "size"
+      ]
+    },
+    "Group": {
+      "description": "What a computer offers, as one flat list: capabilities().groups, repeated in hello.groups. A sub-flag such as\ninput.touch is its own entry. Each is optional unless kind makes it Core. cdp, stream and downloads are the\nprovider's, not computerd's: cdp a browser's CDP target (ComputerConnection.cdp), stream a live view of the screen\n(provider.stream()), downloads the files a browser saved; a daemon's hello never lists them.",
+      "title": "Group",
+      "enum": [
+        "apps",
+        "apps.install",
+        "apps.ui_tree",
+        "cdp",
+        "downloads",
+        "exec",
+        "files",
+        "input.keys",
+        "input.pointer",
+        "input.touch",
+        "processes",
+        "screen",
+        "stream"
+      ],
+      "type": "string"
+    },
+    "HelloParams": {
+      "title": "HelloParams",
+      "type": "object",
+      "properties": {
+        "client": {
+          "description": "Who is asking, for the daemon's log: a name and version.",
+          "type": "string",
+          "title": "client"
+        }
+      },
+      "required": [
+        "client"
+      ]
+    },
+    "HelloResult": {
+      "title": "HelloResult",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "description": "The protocol version this computer speaks: PROTOCOL_VERSION.",
+          "type": "string",
+          "title": "protocol"
+        },
+        "version": {
+          "description": "The daemon's own version (with daemon none, the provider's).",
+          "type": "string",
+          "title": "version"
+        },
+        "os": {
+          "$ref": "#/definitions/ComputerOs",
+          "title": "os"
+        },
+        "kind": {
+          "$ref": "#/definitions/ComputerKind",
+          "title": "kind"
+        },
+        "arch": {
+          "description": "Go's name for the architecture: amd64, arm64.",
+          "type": "string",
+          "title": "arch"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Group"
+          },
+          "title": "groups"
+        },
+        "display": {
+          "description": "The DISPLAY a desktop's screen and input methods drive, such as \":99\"; absent on any other computer.",
+          "type": "string",
+          "title": "display"
+        }
+      },
+      "required": [
+        "arch",
+        "groups",
+        "kind",
+        "os",
+        "protocol",
+        "version"
+      ]
+    },
+    "InputAction": {
+      "title": "InputAction",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "move",
+              "title": "type"
+            },
+            "at": {
+              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "title": "at"
+            }
+          },
+          "required": [
+            "at",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "down",
+                "up"
+              ],
+              "type": "string",
+              "title": "type"
+            },
+            "button": {
+              "enum": [
+                "left",
+                "middle",
+                "right"
+              ],
+              "type": "string",
+              "title": "button"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "click",
+              "title": "type"
+            },
+            "at": {
+              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "title": "at"
+            },
+            "button": {
+              "enum": [
+                "left",
+                "middle",
+                "right"
+              ],
+              "type": "string",
+              "title": "button"
+            },
+            "count": {
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "type": "number",
+              "title": "count"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "keys"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "drag",
+              "title": "type"
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+                "type": "array",
+                "items": [
+                  {
+                    "type": "number",
+                    "title": "x"
+                  },
+                  {
+                    "type": "number",
+                    "title": "y"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "title": "path"
+            },
+            "button": {
+              "enum": [
+                "left",
+                "middle",
+                "right"
+              ],
+              "type": "string",
+              "title": "button"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "keys"
+            }
+          },
+          "required": [
+            "path",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "scroll",
+              "title": "type"
+            },
+            "at": {
+              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "title": "at"
+            },
+            "dx": {
+              "type": "number",
+              "title": "dx"
+            },
+            "dy": {
+              "type": "number",
+              "title": "dy"
+            },
+            "unit": {
+              "enum": [
+                "clicks",
+                "px"
+              ],
+              "type": "string",
+              "title": "unit"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "keys"
+            }
+          },
+          "required": [
+            "type",
+            "unit"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "key",
+              "title": "type"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "keys"
+            },
+            "repeat": {
+              "type": "number",
+              "title": "repeat"
+            }
+          },
+          "required": [
+            "keys",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hold",
+              "title": "type"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "keys"
+            },
+            "ms": {
+              "type": "number",
+              "title": "ms"
+            }
+          },
+          "required": [
+            "keys",
+            "ms",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "type",
+              "title": "type"
+            },
+            "text": {
+              "type": "string",
+              "title": "text"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tap",
+              "title": "type"
+            },
+            "at": {
+              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "title": "at"
+            },
+            "count": {
+              "enum": [
+                1,
+                2
+              ],
+              "type": "number",
+              "title": "count"
+            }
+          },
+          "required": [
+            "at",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "long_press",
+              "title": "type"
+            },
+            "at": {
+              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "title": "at"
+            },
+            "ms": {
+              "type": "number",
+              "title": "ms"
+            }
+          },
+          "required": [
+            "at",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "swipe",
+              "title": "type"
+            },
+            "path": {
+              "type": "array",
+              "items": {
+                "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+                "type": "array",
+                "items": [
+                  {
+                    "type": "number",
+                    "title": "x"
+                  },
+                  {
+                    "type": "number",
+                    "title": "y"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "title": "path"
+            },
+            "ms": {
+              "type": "number",
+              "title": "ms"
+            }
+          },
+          "required": [
+            "path",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pinch",
+              "title": "type"
+            },
+            "at": {
+              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "title": "at"
+            },
+            "scale": {
+              "type": "number",
+              "title": "scale"
+            },
+            "ms": {
+              "type": "number",
+              "title": "ms"
+            }
+          },
+          "required": [
+            "at",
+            "scale",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "button",
+              "title": "type"
+            },
+            "name": {
+              "enum": [
+                "app_switch",
+                "back",
+                "home"
+              ],
+              "type": "string",
+              "title": "name"
+            }
+          },
+          "required": [
+            "name",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "wait",
+              "title": "type"
+            },
+            "ms": {
+              "type": "number",
+              "title": "ms"
+            }
+          },
+          "required": [
+            "ms",
+            "type"
+          ]
+        }
+      ]
+    },
+    "InputActionsParams": {
+      "title": "InputActionsParams",
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InputAction"
+          },
+          "title": "actions"
+        }
+      },
+      "required": [
+        "actions"
+      ]
+    },
+    "InputActionsResult": {
+      "title": "InputActionsResult",
+      "type": "object",
+      "properties": {
+        "done": {
+          "description": "How many actions ran.",
+          "type": "number",
+          "title": "done"
+        },
+        "failed": {
+          "description": "The action that failed, and why; absent when every action ran.",
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "number",
+              "title": "index"
+            },
+            "kind": {
+              "$ref": "#/definitions/DaemonErrorKind",
+              "title": "kind"
+            },
+            "message": {
+              "type": "string",
+              "title": "message"
+            }
+          },
+          "required": [
+            "index",
+            "kind",
+            "message"
+          ],
+          "title": "failed"
+        }
+      },
+      "required": [
+        "done"
+      ]
+    },
+    "MountSyncResult": {
+      "description": "mount.sync: asks the computer's resident Archil sync server (its socket, ARCHIL_SYNC_SOCKET) for one sync of\n/workspace, coalesced with any in flight, and answers its exit code: 0 is every write so far durable. A computer with\nno Archil mount has no server: not_found.",
+      "title": "MountSyncResult",
+      "type": "object",
+      "properties": {
+        "exitCode": {
+          "type": "number",
+          "title": "exitCode"
+        }
+      },
+      "required": [
+        "exitCode"
+      ]
+    },
+    "PingParams": {
+      "title": "PingParams",
+      "type": "object"
+    },
+    "PingResult": {
+      "title": "PingResult",
+      "type": "object"
+    },
+    "ProcessExit": {
+      "title": "ProcessExit",
+      "type": "object",
+      "properties": {
+        "running": {
+          "type": "boolean",
+          "title": "running"
+        },
+        "exitCode": {
+          "description": "null while running, or when a signal ended it.",
+          "type": [
+            "null",
+            "number"
+          ],
+          "title": "exitCode"
+        },
+        "signal": {
+          "description": "The signal that ended it, without SIG: \"TERM\", \"KILL\".",
+          "type": [
+            "null",
+            "string"
+          ],
+          "title": "signal"
+        }
+      },
+      "required": [
+        "exitCode",
+        "running",
+        "signal"
+      ]
+    },
+    "ProcessInfo": {
+      "title": "ProcessInfo",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "pid": {
+          "type": "number",
+          "title": "pid"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "argv"
+        },
+        "argvClipped": {
+          "description": "argv was cut to its first arguments to keep the listing small.",
+          "type": "boolean",
+          "title": "argvClipped"
+        },
+        "pty": {
+          "type": "boolean",
+          "title": "pty"
+        },
+        "startedAt": {
+          "description": "Milliseconds since the epoch.",
+          "type": "number",
+          "title": "startedAt"
+        },
+        "endedAt": {
+          "type": [
+            "null",
+            "number"
+          ],
+          "title": "endedAt"
+        },
+        "running": {
+          "type": "boolean",
+          "title": "running"
+        },
+        "exitCode": {
+          "description": "null while running, or when a signal ended it.",
+          "type": [
+            "null",
+            "number"
+          ],
+          "title": "exitCode"
+        },
+        "signal": {
+          "description": "The signal that ended it, without SIG: \"TERM\", \"KILL\".",
+          "type": [
+            "null",
+            "string"
+          ],
+          "title": "signal"
+        }
+      },
+      "required": [
+        "argv",
+        "argvClipped",
+        "endedAt",
+        "exitCode",
+        "id",
+        "pid",
+        "pty",
+        "running",
+        "signal",
+        "startedAt"
+      ]
+    },
+    "ProcessListParams": {
+      "title": "ProcessListParams",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Where the page starts: the page before's next, or 0 (the default) for the first page.",
+          "type": "number",
+          "title": "from"
+        }
+      }
+    },
+    "ProcessListResult": {
+      "title": "ProcessListResult",
+      "type": "object",
+      "properties": {
+        "processes": {
+          "description": "In start order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProcessInfo"
+          },
+          "title": "processes"
+        },
+        "truncated": {
+          "description": "More follow: list again with from: next.",
+          "type": "boolean",
+          "title": "truncated"
+        },
+        "next": {
+          "description": "Where the page after this one starts. A process dropped from the table between pages moves no other past it.",
+          "type": "number",
+          "title": "next"
+        }
+      },
+      "required": [
+        "next",
+        "processes",
+        "truncated"
+      ]
+    },
+    "ProcessReadParams": {
+      "title": "ProcessReadParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "stream": {
+          "$ref": "#/definitions/ProcessStream",
+          "description": "\"stdout\" or \"stderr\"; \"pty\" for a process started with one; \"log\" for one started with a log.",
+          "title": "stream"
+        },
+        "offset": {
+          "description": "Bytes since the process started. Pass the last read's nextOffset.",
+          "type": "number",
+          "title": "offset"
+        },
+        "maxBytes": {
+          "description": "Default and most MAX_CHUNK_BYTES; more is refused as `limit`.",
+          "type": "number",
+          "title": "maxBytes"
+        },
+        "waitMs": {
+          "description": "When nothing past offset is there yet, wait up to this long (most MAX_READ_WAIT_MS) for bytes or the end.",
+          "type": "number",
+          "title": "waitMs"
+        }
+      },
+      "required": [
+        "id",
+        "offset",
+        "stream"
+      ]
+    },
+    "ProcessReadResult": {
+      "title": "ProcessReadResult",
+      "type": "object",
+      "properties": {
+        "data": {
+          "description": "base64.",
+          "type": "string",
+          "title": "data"
+        },
+        "nextOffset": {
+          "type": "number",
+          "title": "nextOffset"
+        },
+        "dropped": {
+          "description": "Bytes before offset the ring no longer held: the read began at the ring's start instead. Once an ended process's\nring is let go, every byte from offset on.",
+          "type": "number",
+          "title": "dropped"
+        },
+        "exited": {
+          "description": "The process has ended and nothing is left past nextOffset.",
+          "type": "boolean",
+          "title": "exited"
+        },
+        "size": {
+          "description": "The stream's bytes so far: every byte since the process started, kept in the ring or dropped. For \"log\", the log's.",
+          "type": "number",
+          "title": "size"
+        },
+        "capped": {
+          "description": "\"log\" only: output came past the log's PROCESS_LOG_BYTES and was not written to it.",
+          "type": "boolean",
+          "title": "capped"
+        },
+        "logError": {
+          "description": "\"log\" only: a write to the log failed or wrote short (a full disk), so the log stopped there for good and holds\nonly the output before it: why. Nothing after it is written, so the file stays a true prefix.",
+          "type": "string",
+          "title": "logError"
+        }
+      },
+      "required": [
+        "data",
+        "dropped",
+        "exited",
+        "nextOffset",
+        "size"
+      ]
+    },
+    "ProcessResizeParams": {
+      "title": "ProcessResizeParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "cols": {
+          "type": "number",
+          "title": "cols"
+        },
+        "rows": {
+          "type": "number",
+          "title": "rows"
+        }
+      },
+      "required": [
+        "cols",
+        "id",
+        "rows"
+      ]
+    },
+    "ProcessSignal": {
+      "title": "ProcessSignal",
+      "enum": [
+        "HUP",
+        "INT",
+        "KILL",
+        "TERM"
+      ],
+      "type": "string"
+    },
+    "ProcessSignalParams": {
+      "title": "ProcessSignalParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "signal": {
+          "$ref": "#/definitions/ProcessSignal",
+          "description": "INT to a process started with a pty is ^C: it goes to the terminal's foreground process group (the job a shell\nruns in the foreground, or the program when it runs none), and is refused as denied when that group is outside\nthe program's session. Every other signal, and INT without a pty, goes to the program's process group. A signal\nto a process that has ended does nothing.",
+          "title": "signal"
+        }
+      },
+      "required": [
+        "id",
+        "signal"
+      ]
+    },
+    "ProcessSignalResult": {
+      "title": "ProcessSignalResult",
+      "type": "object",
+      "properties": {
+        "note": {
+          "description": "Set only for INT on a terminal: when it found no foreground group (the program let go of it, or is ending) and went\nto the program's own group, or when the foreground group had no process left in the program's session by the time\nthe guard came to signal it (it ended, and its id may have gone to a group in another session) and INT was not\nsent: why.",
+          "type": "string",
+          "title": "note"
+        }
+      }
+    },
+    "ProcessStartParams": {
+      "title": "ProcessStartParams",
+      "type": "object",
+      "properties": {
+        "argv": {
+          "description": "The program and its arguments, never a shell string.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "argv"
+        },
+        "cwd": {
+          "type": "string",
+          "title": "cwd"
+        },
+        "env": {
+          "description": "Added over the same minimal default as exec.run's.",
+          "$ref": "#/definitions/Record<string,string>",
+          "title": "env"
+        },
+        "user": {
+          "type": "string",
+          "title": "user"
+        },
+        "pty": {
+          "description": "Run in a terminal of this size: one \"pty\" stream, and the program's own session with it as the controlling terminal.",
+          "$ref": "#/definitions/PtySize",
+          "title": "pty"
+        },
+        "stdin": {
+          "description": "Keep stdin open for process.write. Without it (and without a pty), stdin is /dev/null.",
+          "type": "boolean",
+          "title": "stdin"
+        },
+        "log": {
+          "description": "An absolute path for a new file the daemon writes the first PROCESS_LOG_BYTES of the output to, stdout and stderr\n(or the terminal's) as they come, and read as the \"log\" stream. The daemon makes the missing directories and the\nfile itself (mode 0644, its own); a link at the path or at any directory on its way is refused as `denied`, a\nfile already there as `exists`, and nothing is started.",
+          "type": "string",
+          "title": "log"
+        },
+        "waitGroup": {
+          "description": "The process runs until its program and every process left in its process group (with a pty, its session) have\nended, and reports the program's own exit. A signal goes to what is left of the group once the program is gone.",
+          "type": "boolean",
+          "title": "waitGroup"
+        },
+        "orphans": {
+          "description": "\"keep\": when the process ends, what it started outside it runs on, to the computer's end, instead of being ended.",
+          "const": "keep",
+          "type": "string",
+          "title": "orphans"
+        }
+      },
+      "required": [
+        "argv"
+      ]
+    },
+    "ProcessStartResult": {
+      "title": "ProcessStartResult",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The daemon's name for the process, such as \"p1\".",
+          "type": "string",
+          "title": "id"
+        },
+        "pid": {
+          "description": "The program's pid in the computer.",
+          "type": "number",
+          "title": "pid"
+        }
+      },
+      "required": [
+        "id",
+        "pid"
+      ]
+    },
+    "ProcessStream": {
+      "title": "ProcessStream",
+      "enum": [
+        "log",
+        "pty",
+        "stderr",
+        "stdout"
+      ],
+      "type": "string"
+    },
+    "ProcessWaitParams": {
+      "title": "ProcessWaitParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "timeoutMs": {
+          "description": "How long to wait for the end, up to a day; 0 asks without waiting. On timeout, running is true.",
+          "type": "number",
+          "title": "timeoutMs"
+        }
+      },
+      "required": [
+        "id",
+        "timeoutMs"
+      ]
+    },
+    "ProcessWriteParams": {
+      "title": "ProcessWriteParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "data": {
+          "description": "base64, to stdin or the terminal.",
+          "type": "string",
+          "title": "data"
+        },
+        "close": {
+          "description": "Close stdin after the data. A terminal has no stdin to close: send \"\\x04\" or signal HUP.",
+          "type": "boolean",
+          "title": "close"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "PtySize": {
+      "description": "A terminal's size in characters.",
+      "title": "PtySize",
+      "type": "object",
+      "properties": {
+        "cols": {
+          "type": "number",
+          "title": "cols"
+        },
+        "rows": {
+          "type": "number",
+          "title": "rows"
+        }
+      },
+      "required": [
+        "cols",
+        "rows"
+      ]
+    },
+    "Record<string,string>": {
+      "title": "Record<string,string>",
+      "type": "object"
+    },
+    "ScreenReadParams": {
+      "description": "One shot is held; it is dropped at eof or at the next shot.",
+      "title": "ScreenReadParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "offset": {
+          "type": "number",
+          "title": "offset"
+        }
+      },
+      "required": [
+        "id",
+        "offset"
+      ]
+    },
+    "ScreenReadResult": {
+      "title": "ScreenReadResult",
+      "type": "object",
+      "properties": {
+        "data": {
+          "description": "base64.",
+          "type": "string",
+          "title": "data"
+        },
+        "eof": {
+          "type": "boolean",
+          "title": "eof"
+        }
+      },
+      "required": [
+        "data",
+        "eof"
+      ]
+    },
+    "ScreenShotParams": {
+      "title": "ScreenShotParams",
+      "type": "object",
+      "properties": {
+        "region": {
+          "description": "Only this part of the screen; its coordinates stay those of the full screenshot.",
+          "type": "array",
+          "items": [
+            {
+              "type": "number",
+              "title": "x"
+            },
+            {
+              "type": "number",
+              "title": "y"
+            },
+            {
+              "type": "number",
+              "title": "w"
+            },
+            {
+              "type": "number",
+              "title": "h"
+            }
+          ],
+          "minItems": 4,
+          "maxItems": 4,
+          "title": "region"
+        }
+      }
+    },
+    "ScreenShotResult": {
+      "title": "ScreenShotResult",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The shot's id, for screen.read.",
+          "type": "string",
+          "title": "id"
+        },
+        "size": {
+          "description": "The PNG's bytes; data holds at most MAX_CHUNK_BYTES of it. The PNG is 8-bit and non-interlaced (gray, RGB, palette,\ngray and alpha, or RGBA), as the conformance suite decodes it.",
+          "type": "number",
+          "title": "size"
+        },
+        "data": {
+          "description": "base64; read the rest with screen.read.",
+          "type": "string",
+          "title": "data"
+        },
+        "eof": {
+          "type": "boolean",
+          "title": "eof"
+        },
+        "width": {
+          "description": "The image's pixels: the input coordinate space (never downscaled).",
+          "type": "number",
+          "title": "width"
+        },
+        "height": {
+          "type": "number",
+          "title": "height"
+        },
+        "scale": {
+          "description": "Device pixels per logical point: 1 on Xvfb; a phone reports its own.",
+          "type": "number",
+          "title": "scale"
+        },
+        "cursor": {
+          "description": "Where the pointer is, with input.pointer.",
+          "type": "array",
+          "items": [
+            {
+              "type": "number",
+              "title": "x"
+            },
+            {
+              "type": "number",
+              "title": "y"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "title": "cursor"
+        }
+      },
+      "required": [
+        "data",
+        "eof",
+        "height",
+        "id",
+        "scale",
+        "size",
+        "width"
+      ]
+    },
+    "ScreenWatchParams": {
+      "description": "The live view's frames (screen.watch): the next frame after the caller's ack, once the screen changed. `after` is\nthe seq of the last frame the caller has whole, 0 for none; an older one gets the newest frame at once.",
+      "title": "ScreenWatchParams",
+      "type": "object",
+      "properties": {
+        "after": {
+          "type": "number",
+          "title": "after"
+        },
+        "waitMs": {
+          "description": "The longest wait for a change, in ms, 0 to 10000; default 2000.",
+          "type": "number",
+          "title": "waitMs"
+        },
+        "maxWidth": {
+          "description": "The frame's width at most (scaled down, never up); default 1280.",
+          "type": "number",
+          "title": "maxWidth"
+        },
+        "quality": {
+          "description": "JPEG quality, 1 to 100; default 60.",
+          "type": "number",
+          "title": "quality"
+        }
+      },
+      "required": [
+        "after"
+      ]
+    },
+    "ScreenWatchResult": {
+      "description": "changed false: no change within waitMs, and no frame. A frame carries its bytes as screen.shot carries its PNG: the\nfirst MAX_CHUNK_BYTES in data, the rest through screen.read by id.",
+      "title": "ScreenWatchResult",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "number",
+          "title": "seq"
+        },
+        "changed": {
+          "type": "boolean",
+          "title": "changed"
+        },
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "size": {
+          "type": "number",
+          "title": "size"
+        },
+        "data": {
+          "description": "base64.",
+          "type": "string",
+          "title": "data"
+        },
+        "eof": {
+          "type": "boolean",
+          "title": "eof"
+        },
+        "format": {
+          "description": "jpeg from computerd; png from a phone client that encodes its own frames.",
+          "enum": [
+            "jpeg",
+            "png"
+          ],
+          "type": "string",
+          "title": "format"
+        },
+        "frameWidth": {
+          "description": "The frame's pixels.",
+          "type": "number",
+          "title": "frameWidth"
+        },
+        "frameHeight": {
+          "type": "number",
+          "title": "frameHeight"
+        },
+        "width": {
+          "description": "The screen's pixels: the input coordinate space.",
+          "type": "number",
+          "title": "width"
+        },
+        "height": {
+          "type": "number",
+          "title": "height"
+        },
+        "cursor": {
+          "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+          "type": "array",
+          "items": [
+            {
+              "type": "number",
+              "title": "x"
+            },
+            {
+              "type": "number",
+              "title": "y"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "title": "cursor"
+        }
+      },
+      "required": [
+        "changed",
+        "height",
+        "seq",
+        "width"
+      ]
+    },
+    "TarPullBeginParams": {
+      "title": "TarPullBeginParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "A file (one entry, its name) or a directory (entries relative to it).",
+          "type": "string",
+          "title": "path"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "TarPullBeginResult": {
+      "title": "TarPullBeginResult",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "TarPullEndParams": {
+      "title": "TarPullEndParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Ending a pull that is not open is fine.",
+          "type": "string",
+          "title": "id"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "TarPullReadParams": {
+      "title": "TarPullReadParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "maxBytes": {
+          "description": "Default and most MAX_CHUNK_BYTES; more is refused as `limit`.",
+          "type": "number",
+          "title": "maxBytes"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "TarPullReadResult": {
+      "title": "TarPullReadResult",
+      "type": "object",
+      "properties": {
+        "data": {
+          "description": "base64: maxBytes of the archive, fewer only at its end.",
+          "type": "string",
+          "title": "data"
+        },
+        "eof": {
+          "type": "boolean",
+          "title": "eof"
+        }
+      },
+      "required": [
+        "data",
+        "eof"
+      ]
+    },
+    "TarPushBeginParams": {
+      "title": "TarPushBeginParams",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "The directory to extract into; made, with its parents, when missing.",
+          "type": "string",
+          "title": "path"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "TarPushBeginResult": {
+      "title": "TarPushBeginResult",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "TarPushEndParams": {
+      "title": "TarPushEndParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "TarPushEndResult": {
+      "title": "TarPushEndResult",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "description": "How many entries were extracted.",
+          "type": "number",
+          "title": "entries"
+        }
+      },
+      "required": [
+        "entries"
+      ]
+    },
+    "TarPushWriteParams": {
+      "title": "TarPushWriteParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "data": {
+          "description": "base64. Send the next write after this one's reply: writes are extracted in the order they arrive.",
+          "type": "string",
+          "title": "data"
+        }
+      },
+      "required": [
+        "data",
+        "id"
+      ]
+    },
+    "UiNode": {
+      "title": "UiNode",
+      "type": "object",
+      "properties": {
+        "role": {
+          "description": "The platform's class as given: \"android.widget.Button\", \"XCUIElementTypeButton\".",
+          "type": "string",
+          "title": "role"
+        },
+        "id": {
+          "description": "resource-id or accessibilityIdentifier.",
+          "type": "string",
+          "title": "id"
+        },
+        "text": {
+          "description": "Visible text or value.",
+          "type": "string",
+          "title": "text"
+        },
+        "label": {
+          "description": "content-desc or accessibilityLabel.",
+          "type": "string",
+          "title": "label"
+        },
+        "bounds": {
+          "description": "In screenshot pixels (iOS points times scale).",
+          "type": "array",
+          "items": [
+            {
+              "type": "number",
+              "title": "x"
+            },
+            {
+              "type": "number",
+              "title": "y"
+            },
+            {
+              "type": "number",
+              "title": "w"
+            },
+            {
+              "type": "number",
+              "title": "h"
+            }
+          ],
+          "minItems": 4,
+          "maxItems": 4,
+          "title": "bounds"
+        },
+        "enabled": {
+          "type": "boolean",
+          "title": "enabled"
+        },
+        "clickable": {
+          "type": "boolean",
+          "title": "clickable"
+        },
+        "focused": {
+          "type": "boolean",
+          "title": "focused"
+        },
+        "selected": {
+          "type": "boolean",
+          "title": "selected"
+        },
+        "checked": {
+          "type": "boolean",
+          "title": "checked"
+        },
+        "scrollable": {
+          "type": "boolean",
+          "title": "scrollable"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UiNode"
+          },
+          "title": "children"
+        }
+      },
+      "required": [
+        "bounds",
+        "children",
+        "enabled",
+        "role"
+      ]
+    },
+    "UiTreeResult": {
+      "title": "UiTreeResult",
+      "type": "object",
+      "properties": {
+        "root": {
+          "$ref": "#/definitions/UiNode",
+          "title": "root"
+        },
+        "nodes": {
+          "description": "How many nodes the tree holds, at most MAX_UI_NODES.",
+          "type": "number",
+          "title": "nodes"
+        },
+        "truncated": {
+          "type": "boolean",
+          "title": "truncated"
+        }
+      },
+      "required": [
+        "nodes",
+        "root",
+        "truncated"
+      ]
+    }
+  }
+}

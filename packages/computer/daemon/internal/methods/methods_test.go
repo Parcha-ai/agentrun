@@ -83,10 +83,11 @@ func TestHello(t *testing.T) {
 	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil {
 		t.Fatalf("hello failed: %+v", r)
 	}
-	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Kind != "linux" || hello.Arch != runtime.GOARCH || strings.Join(hello.Groups, ",") != "exec,files,processes" {
+	if hello.Protocol != methods.ProtocolVersion || hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Kind != "linux" || hello.Arch != runtime.GOARCH || strings.Join(hello.Groups, ",") != "exec,files,processes" {
 		t.Fatalf("hello %+v", hello)
 	}
-	// The protocol's hello has exactly these fields: capabilities is now groups, and kind is new.
+	// The protocol's hello has exactly these fields: capabilities is now groups, kind is new, and protocol names the
+	// protocol's version apart from the daemon's.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(r.Result, &fields); err != nil {
 		t.Fatal(err)
@@ -96,7 +97,7 @@ func TestHello(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	if strings.Join(names, ",") != "arch,groups,kind,os,version" {
+	if strings.Join(names, ",") != "arch,groups,kind,os,protocol,version" {
 		t.Fatalf("hello's fields %v", names)
 	}
 }
