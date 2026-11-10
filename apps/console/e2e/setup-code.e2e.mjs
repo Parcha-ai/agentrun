@@ -30,7 +30,7 @@ if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? 
 const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
-const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22})$/gm;
+const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/gm;
 
 const checks = [];
 const check = (what, ok, detail = "") => { checks.push(ok); console.log(`${ok ? "ok  " : "FAIL"} ${what}${detail ? `: ${detail}` : ""}`); };

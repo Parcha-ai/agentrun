@@ -57,6 +57,7 @@ describe("ModelKeyCard", () => {
     let saved = 0;
     const card = await open({ needs: "key", atRest: "sealed", onSaved: () => { saved++; } }, v2);
     expect(card.host.textContent).toContain("Add a model key to run agents");
+    expect(card.host.textContent).toContain("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
     const offered = [...card.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent);
     expect(offered).toEqual(["Anthropic", "OpenAI", "OpenRouter"]);
     expect(card.input("ANTHROPIC_API_KEY")).toBeNull();
@@ -78,6 +79,8 @@ describe("ModelKeyCard", () => {
     const offered = [...card.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent);
     expect(offered).toEqual(["Anthropic"]);
     expect(card.host.textContent).toContain("anthropic/claude-sonnet-5-5");
+    // Only that provider's key runs the default, so the card recommends no other.
+    expect(card.host.textContent).not.toContain("We recommend an OpenRouter key");
     const any = await (async () => { act(() => root!.unmount()); root = undefined; return open({ needs: "key", model: null, atRest: "sealed" }, v2); })();
     expect([...any.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent)).toEqual(["Anthropic", "OpenAI", "OpenRouter"]);
   });

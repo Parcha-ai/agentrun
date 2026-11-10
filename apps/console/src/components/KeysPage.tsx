@@ -30,6 +30,9 @@ const UNREADABLE = "can't be opened: paste it again";
 
 /** The keys page's groups, in order: the model providers' keys, then the tools'. `label` is the heading here, and how
  *  words elsewhere name the group ("Settings → Model keys"). */
+/** The word on a model key, said wherever the console asks for one: an OpenRouter key runs every model, Jev included. */
+export const KEY_ADVICE = "We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.";
+
 export const KEY_GROUPS = [{ kind: "model", label: "Model keys" }, { kind: "tool", label: "Tool keys" }] as const;
 
 /** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
@@ -118,6 +121,7 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
         {groups.map((g) => (
           <section key={g.label} aria-label={g.label}>
             {groups.length > 1 && <h2 className="caps mb-2 text-[12px] font-semibold text-muted-foreground">{g.label}</h2>}
+            {g.kind === "model" && <p className="mb-2 text-[13px] text-muted-foreground">{KEY_ADVICE}</p>}
             <ul className="border">{g.keys.map(row)}</ul>
           </section>
         ))}

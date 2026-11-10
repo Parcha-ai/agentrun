@@ -19,6 +19,14 @@ your machine or your own server, or with us when hosted AgentRun opens.
 
 ## Start it
 
+**On Render, in one click**: [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml).
+
+- Needs a card on your Render workspace: the 1 CPU / 2 GB instance (about $25 a month) and a 10 GB disk (about $2.50 a month), at Render's prices when this was written.
+- In the form, paste OPENROUTER_API_KEY. We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone. The other keys are optional.
+- When it's live, open its URL and paste AGENTRUN_TOKEN from the service's Environment tab to set your password.
+
+**On this machine**:
+
 ```text
 Ask your coding agent: "Read agentrun.ai/SKILL.md and set up AgentRun for me"
 npx @parcha/agentrun
@@ -31,36 +39,26 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
 
 ## Run it on a server
 
-1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker compose` on your own Linux machine
-   or server (Docker Engine 26 or later), with your own model key. An OpenRouter key with a credit limit caps what your
-   agents can spend.
+**Free, with docker compose**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker compose` on your own Linux machine
+or server (Docker Engine 26 or later), with your own model key. An OpenRouter key with a credit limit caps what your
+agents can spend.
 
-   ```sh
-   curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
-   export OPENROUTER_API_KEY=...
-   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
-   docker compose up -d
-   docker compose logs agentrun | grep Open
-   ```
+```sh
+curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
+export OPENROUTER_API_KEY=...
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+docker compose up -d
+docker compose logs agentrun | grep Open
+```
 
-   The `.env` beside `compose.yaml` keeps the socket's group for every later `docker compose` command, in any shell.
+The `.env` beside `compose.yaml` keeps the socket's group for every later `docker compose` command, in any shell.
 
-   Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
-   Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
-   run's files. `compose.yaml` gives the server this host's Docker socket, and the Docker socket is root on this host:
-   whatever can reach it, the server included, can do anything on this machine. For a provider's own key, export
-   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead; any OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL`
-   and `AGENT_MODEL_API_KEY`, with its model named in `AGENT_MODEL`.
-
-2. **About $27.50 a month**: deploy it to Render in one click: a 2 GB instance (`1c-2g`, $25 a month) with a 10 GB disk ($2.50), always on, with a URL. Take no less: Claude Code and Codex install themselves on first use onto the disk, which fills 1 GB, and 512 MB is short for them. 2 GB holds 10 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
-
-   [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
-   then set `OPENROUTER_API_KEY` in the service's Environment (or another provider's key, or a gateway's
-   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY` with its model in `AGENT_MODEL`). Render generates the token,
-   `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
-   With a public address (`AGENTRUN_PUBLIC_URL`, or on Render its own `RENDER_EXTERNAL_URL`), or listening on any address but
-   loopback (the container), the first visit asks for a setup code. Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints
-   (`Set up this server: https://<your service>.onrender.com/setup#code=<code>`). The server's API token (AGENTRUN_TOKEN) works here too.
+Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
+Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
+run's files. `compose.yaml` gives the server this host's Docker socket, and the Docker socket is root on this host:
+whatever can reach it, the server included, can do anything on this machine. For a provider's own key, export
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead; any OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL`
+and `AGENT_MODEL_API_KEY`, with its model named in `AGENT_MODEL`.
 
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
 a run may reach, and the container.
