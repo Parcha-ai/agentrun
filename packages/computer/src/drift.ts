@@ -1,6 +1,8 @@
 // The drift check for a Docker computer: what the computer reports of itself after create, from docker inspect and the
 // daemon's hello, against what was declared. Pure: no Docker call. Each mismatch is one sentence; none is an empty list.
+import { join } from "node:path";
 import { EGRESS_MOUNT, EGRESS_SOCKET, type EgressCode, egressNameOf, egressOf, policyWords, RELAY_FLAG, sameAllow } from "./docker/egress.js";
+import { type DockerVolume, engineOf, subpathOf } from "./docker/volume.js";
 import { type MountReadBack, WORKSPACE } from "./mount.js";
 import type { ComputerKind, Group, HelloResult } from "./protocol.js";
 import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
@@ -80,11 +82,14 @@ export interface DockerInfo {
 	PidsLimit?: boolean;
 	CPUCfsQuota?: boolean;
 	CPUCfsPeriod?: boolean;
+	ServerVersion?: string;
 }
 
 /** A Docker host as the provider reads it: its architecture in Go's names, its security modules, and what it lacks. */
 export interface DockerHost {
 	arch: string;
+	/** The Docker Engine's major version (docker info's ServerVersion), when it reads as one. */
+	engine?: number;
 	apparmor: boolean;
 	selinux: boolean;
 	/** Each enforcement the host lacks, in words; a computer is refused on a host with any. */
@@ -124,7 +129,8 @@ export function hostOf(info: DockerInfo | null | undefined): DockerHost {
 	}
 	const machine = typeof info?.Architecture === "string" ? info.Architecture : "";
 	const remap = named("userns") !== undefined ? "userns" : named("rootless") !== undefined ? "rootless" : undefined;
-	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems, ...(remap ? { remap } : {}) };
+	const engine = engineOf(info?.ServerVersion);
+	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems, ...(remap ? { remap } : {}), ...(engine === undefined ? {} : { engine }) };
 }
 
 /** What the daemon must report: the provider's version, kind and groups, and the host's architecture. */
@@ -152,6 +158,20 @@ export interface DriftExpected extends HelloExpected {
 	egressCode?: EgressCode;
 	/** For a computer with an allowlist: the Docker host's own addresses its proxy must refuse (its --local holds each). */
 	hostAddresses?: readonly string[];
+	/** The provider's volume option: the daemon and the run's folder are then that volume's subpaths, not binds. */
+	volume?: DockerVolume;
+}
+
+/**
+ * How create mounts a path of this host at `target`: a bind of it, or, with the provider's volume option, the volume's
+ * subpath, as HostConfig.Mounts records it (Docker keeps `volume-nocopy` and the subpath under VolumeOptions). Undefined
+ * for a path outside the volume, which create never mounts.
+ */
+export function mountAsked(path: string, target: string, readonly: boolean, volume: DockerVolume | undefined): Record<string, unknown> | undefined {
+	if (volume === undefined) return { Type: "bind", Source: path, Target: target, ...(readonly ? { ReadOnly: true } : {}) };
+	const subpath = subpathOf(volume, path);
+	if (subpath === undefined) return undefined;
+	return { Type: "volume", Source: volume.name, Target: target, ...(readonly ? { ReadOnly: true } : {}), VolumeOptions: { NoCopy: true, Subpath: subpath } };
 }
 
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
@@ -312,11 +332,20 @@ const mountWords = (mount: InspectMount) => `a ${mount.RW === true ? "read-write
  * What is mounted at /workspace, read back from inspect: a read-write bind is the run's folder; nothing is undefined;
  * anything else (read-only, a volume, two mounts) is reported in words, never as a bind it might be.
  */
-export function mountOf(inspected: DockerInspect | null | undefined): MountReadBack | undefined {
+export function mountOf(inspected: DockerInspect | null | undefined, volume?: DockerVolume): MountReadBack | undefined {
 	const at = (inspected?.Mounts ?? []).filter((mount) => mount.Destination === WORKSPACE);
 	const [only] = at;
 	if (only === undefined) return undefined;
-	if (at.length === 1 && only.Type === "bind" && only.RW === true && typeof only.Source === "string") return { kind: "bind", path: only.Source };
+	if (volume === undefined && at.length === 1 && only.Type === "bind" && only.RW === true && typeof only.Source === "string") return { kind: "bind", path: only.Source };
+	// With the provider's volume option, the folder is the volume's subpath, read read-write from HostConfig.Mounts, and
+	// reported as the path below the root create was given.
+	if (volume !== undefined && at.length === 1 && only.Type === "volume" && only.Name === volume.name && only.RW === true) {
+		const asked = (inspected?.HostConfig?.Mounts ?? []).filter((mount) => mount.Target === WORKSPACE);
+		const subpath = (asked[0]?.VolumeOptions as { Subpath?: unknown } | undefined)?.Subpath;
+		if (asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === volume.name && typeof subpath === "string" && subpath !== "" && !subpath.split("/").includes("..")) {
+			return { kind: "bind", path: join(volume.root, subpath) };
+		}
+	}
 	return { other: `${at.map(mountWords).join(", ")} at ${WORKSPACE}` };
 }
 
@@ -388,15 +417,26 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
 	// In create's order: the daemon read-only, then the run's folder read-write at /workspace when one was asked for, then
 	// the egress volume read-only for an allowlist.
+	// With the provider's volume option the daemon and the folder are the volume's subpaths (mountAsked).
+	const shared = expected.volume;
+	const daemonAsked = mountAsked(expected.daemonPath, DAEMON_IN_COMPUTER, true, shared);
+	const folderAsked = bound === undefined ? undefined : mountAsked(bound, WORKSPACE, false, shared);
+	if (daemonAsked === undefined) found.push(`daemon mount: ${expected.daemonPath} is not below the volume root ${shared?.root}, so create never mounts it`);
+	if (bound !== undefined && folderAsked === undefined) found.push(`workspace mount: ${bound} is not below the volume root ${shared?.root}, so create never mounts it`);
 	const asked: Array<Record<string, unknown>> = [
-		{ Type: "bind", Source: expected.daemonPath, Target: DAEMON_IN_COMPUTER, ReadOnly: true },
-		...(bound === undefined ? [] : [{ Type: "bind", Source: bound, Target: WORKSPACE }]),
+		...(daemonAsked === undefined ? [] : [daemonAsked]),
+		...(folderAsked === undefined ? [] : [folderAsked]),
 		...(allowed ? [{ Type: "volume", Source: volume, Target: EGRESS_MOUNT, ReadOnly: true }] : []),
 	];
 	const hostMounts = host.Mounts ?? [];
+	// An object (VolumeOptions) is the same when it holds the same fields; any other value, exactly.
+	const same = (value: unknown, want: unknown): boolean =>
+		typeof want === "object" && want !== null
+			? typeof value === "object" && value !== null && Object.entries(value).every(([key, item]) => (key in want ? same(item, (want as Record<string, unknown>)[key]) : blank(item))) && Object.keys(want).every((key) => key in value)
+			: value === want;
 	const sameMount = (made: Record<string, unknown> | undefined, want: Record<string, unknown>) =>
 		made !== undefined &&
-		Object.entries(made).every(([key, value]) => (key in want ? want[key] === value : blank(value))) &&
+		Object.entries(made).every(([key, value]) => (key in want ? same(value, want[key]) : blank(value))) &&
 		Object.keys(want).every((key) => made[key] !== undefined);
 	if (hostMounts.length !== asked.length || !asked.every((want, i) => sameMount(hostMounts[i], want))) mismatch("HostConfig.Mounts", asked, host.Mounts);
 	for (const [field, value] of Object.entries(host)) {
@@ -424,14 +464,20 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	const mounts = inspected?.Mounts ?? [];
 	const daemon = mounts.filter((mount) => mount.Destination === DAEMON_IN_COMPUTER);
 	const [only] = daemon;
-	if (daemon.length !== 1 || only?.Type !== "bind" || only.Source !== expected.daemonPath || only.RW !== false || !["", "rprivate", undefined].includes(only.Propagation)) {
-		found.push(`daemon mount: declared ${expected.daemonPath} bound read-only at ${DAEMON_IN_COMPUTER}, read back ${show(daemon)}`);
+	// A bind shows its source; the volume's subpath shows as the volume (its subpath is HostConfig.Mounts', checked above).
+	const fits = (mount: InspectMount | undefined, path: string, rw: boolean) =>
+		mount !== undefined &&
+		mount.RW === rw &&
+		(shared === undefined ? mount.Type === "bind" && mount.Source === path && ["", "rprivate", undefined].includes(mount.Propagation) : mount.Type === "volume" && mount.Name === shared.name);
+	const how = (path: string, rw: boolean, at: string) => `declared ${path} ${shared === undefined ? "bound" : `mounted from the volume ${shared.name}`} ${rw ? "read-write" : "read-only"} at ${at}`;
+	if (daemon.length !== 1 || !fits(only, expected.daemonPath, false)) {
+		found.push(`daemon mount: ${how(expected.daemonPath, false, DAEMON_IN_COMPUTER)}, read back ${show(daemon)}`);
 	}
 	if (bound !== undefined) {
 		const workspace = mounts.filter((mount) => mount.Destination === WORKSPACE);
 		const [one] = workspace;
-		if (workspace.length !== 1 || one?.Type !== "bind" || one.Source !== bound || one.RW !== true || !["", "rprivate", undefined].includes(one.Propagation)) {
-			found.push(`workspace mount: declared ${bound} bound read-write at ${WORKSPACE}, read back ${show(workspace)}`);
+		if (workspace.length !== 1 || !fits(one, bound, true)) {
+			found.push(`workspace mount: ${how(bound, true, WORKSPACE)}, read back ${show(workspace)}`);
 		}
 	}
 	// The egress volume itself, its name, type and mode, is the network's read-back above.

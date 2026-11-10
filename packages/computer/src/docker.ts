@@ -25,6 +25,7 @@ import {
 	helloDrift,
 	hostOf,
 	inspectDrift,
+	mountAsked,
 	mountOf,
 	networkOf,
 	samePolicy,
@@ -53,6 +54,7 @@ import {
 	RELAY_FLAG,
 } from "./docker/egress.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
+import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
@@ -125,6 +127,15 @@ export interface DockerProviderOptions {
 	/** The image its computers start from, which image() makes ready: a recipe, built once, or an image by name, pulled
 	 *  when Docker has none. Default the provider's own recipe, DOCKER_RECIPE (src/docker/image.ts). */
 	image?: ImageSource;
+	/**
+	 * For a provider whose paths are not the Docker daemon's: one in a container of that Docker's own, given its socket
+	 * (compose), with its files on the named volume `name`, which this process has mounted at `root`. The daemon's copy
+	 * (daemonCache) and a spec's run folder are then mounted as that volume's subpaths (`volume-subpath`, Docker Engine 26
+	 * and later), never binds of this process's paths, which the daemon does not have, and never the volume's root.
+	 * daemonCache must be at or below `root` (refused here when it is not), and a run folder below it (refused by check);
+	 * an older engine is refused by check and create. Without it, every path is bound as it is (src/docker/volume.ts).
+	 */
+	volume?: { name: string; root: string };
 }
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
@@ -196,7 +207,7 @@ const INSPECT_BATCH = 50;
 const LIST_FORMAT =
 	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},' +
 	'"Config":{"Labels":{{json .Config.Labels}},"User":{{json .Config.User}},"Cmd":{{json .Config.Cmd}}},' +
-	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}},"Mounts":{{json .Mounts}}}';
+	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}},"Mounts":{{json .HostConfig.Mounts}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}},"Mounts":{{json .Mounts}}}';
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
  *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
@@ -213,7 +224,8 @@ const EGRESS_POLL_MS = 100;
 /** Only the fields hostOf reads, as JSON. */
 const INFO_FORMAT =
 	'{"Architecture":{{json .Architecture}},"SecurityOptions":{{json .SecurityOptions}},"MemoryLimit":{{json .MemoryLimit}},' +
-	'"SwapLimit":{{json .SwapLimit}},"PidsLimit":{{json .PidsLimit}},"CPUCfsQuota":{{json .CPUCfsQuota}},"CPUCfsPeriod":{{json .CPUCfsPeriod}}}';
+	'"SwapLimit":{{json .SwapLimit}},"PidsLimit":{{json .PidsLimit}},"CPUCfsQuota":{{json .CPUCfsQuota}},"CPUCfsPeriod":{{json .CPUCfsPeriod}},' +
+	'"ServerVersion":{{json .ServerVersion}}}';
 
 interface Ran {
 	exitCode: number;
@@ -233,6 +245,8 @@ export class DockerProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #daemonPath: string;
 	readonly #daemonCache: string;
+	/** The volume option: the daemon's copy and a run folder are its subpaths (src/docker/volume.ts). */
+	readonly #volume: DockerVolume | undefined;
 	readonly #docker: string;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
@@ -246,9 +260,14 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE } }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE }, volume }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
+		this.#volume = volume === undefined ? undefined : volumeOf(volume);
+		// The daemon's copy is mounted from the volume, so it must be there: the caller puts daemonCache below the root.
+		if (this.#volume !== undefined && subpathOf(this.#volume, this.#daemonCache, { orRoot: true }) === undefined) {
+			throw new Error(`${outsideWords(this.#volume, this.#daemonCache, "the provider's daemonCache")}: pass a daemonCache below it`);
+		}
 		this.#docker = docker;
 		const unusable = imageSourceProblem(image);
 		if (unusable !== undefined) throw new Error(`the provider's image: ${unusable}`);
@@ -306,7 +325,25 @@ export class DockerProvider implements ComputerProvider {
 			if (host?.remap !== undefined) allowed.push({ field: "network", message: remapAllowWords(host.remap) });
 			if (typeof this.#elsewhere === "string" && this.#egress.hostAddresses === undefined) allowed.push({ field: "network", message: elsewhereWords(this.#elsewhere) });
 		}
-		return [...this.#checkSpec(spec), ...remapped, ...allowed, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		return [...this.#checkSpec(spec), ...remapped, ...allowed, ...this.#volumeRefusals(spec, host), ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
+	}
+
+	/** With the volume option: a run folder not below the volume's root, an allowlist (its proxy's code is bound from this
+	 *  package's build, a path the Docker daemon does not have either), and, once the host is read, an engine that cannot
+	 *  mount a volume's subpath. */
+	#volumeRefusals(spec: ComputerSpec, host: DockerHost | undefined): Refusal[] {
+		const volume = this.#volume;
+		if (volume === undefined) return [];
+		const refusals: Refusal[] = [];
+		if (isAllow(spec?.network)) {
+			refusals.push({ field: "network", message: `an allowlist is not taken with the provider's volume option yet: its egress proxy's code is bound from this package's build, which the Docker daemon does not have; ask for "none" or "open"` });
+		}
+		const path = spec?.mount?.kind === "bind" ? spec.mount.path : undefined;
+		if (typeof path === "string" && subpathOf(volume, path) === undefined) refusals.push({ field: "mount", message: outsideWords(volume, path, "mount.path") });
+		if (host !== undefined && (host.engine === undefined || host.engine < VOLUME_SUBPATH_ENGINE)) {
+			refusals.push({ field: "host", message: `${OLD_ENGINE} (this host's engine reads ${host.engine ?? "no version"})` });
+		}
+		return refusals;
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
@@ -357,6 +394,12 @@ export class DockerProvider implements ComputerProvider {
 		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
 		const daemon = this.#daemon();
 		if (!daemon.ok) return daemon;
+		// How the daemon's copy and the run's folder are mounted, known before anything is made.
+		const daemonMount = this.#mountOf(daemon.value, DAEMON_IN_COMPUTER, true);
+		if (!daemonMount.ok) return daemonMount;
+		const folder = bound === undefined ? undefined : this.#mountOf(bound, WORKSPACE, false);
+		if (folder !== undefined && !folder.ok) return folder;
+		const folderMount = folder?.value;
 		// An allowlist: the list as the proxy reads it, and the proxy's code, built.
 		const allow = typeof spec.network === "object" ? (allowOf(spec.network.allow) as { list: string[] }).list : undefined;
 		if (allow !== undefined) {
@@ -367,6 +410,9 @@ export class DockerProvider implements ComputerProvider {
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		// With the volume option, an engine that cannot mount a volume's subpath, now that the host is read.
+		const engine = this.#volumeRefusals(spec, host.value).filter(({ field }) => field === "host");
+		if (engine.length > 0) return fail("refused", engine.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		// Under remapped ids the egress volume and the proxy's code belong to host ids the computer's user is not.
 		if (allow !== undefined && host.value.remap !== undefined) return fail("refused", `network: ${remapAllowWords(host.value.remap)}`);
 		// The proxy refuses the Docker host's own addresses only when it knows them: this machine's, when it is that host.
@@ -419,9 +465,10 @@ export class DockerProvider implements ComputerProvider {
 		// Memory and swap together are the memory: swap never adds to it.
 		const memory = `${memoryMb}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
-		args.push("--mount", `type=bind,src=${daemon.value},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
-		// The run's folder, read-write at /workspace; HOME and the default workdir stay /work.
-		if (bound !== undefined) args.push("--mount", `type=bind,src=${bound},dst=${WORKSPACE}`);
+		// The daemon's copy, read-only, and the run's folder, read-write at /workspace (HOME and the default workdir stay
+		// /work): binds of this host's paths, or, with the volume option, the volume's subpaths.
+		args.push("--mount", daemonMount.value, "--entrypoint", DAEMON_IN_COMPUTER);
+		if (folderMount !== undefined) args.push("--mount", folderMount);
 		// The proxy's volume, read-only: the computer reaches its socket and cannot replace it. Its image was pulled before
 		// the volume was made, so this run never pulls.
 		if (allow !== undefined) args.push("--mount", `type=volume,src=${egressNameOf(name)},dst=${EGRESS_MOUNT},readonly`, "--pull", "never");
@@ -559,7 +606,10 @@ export class DockerProvider implements ComputerProvider {
 	#expected(host: DockerHost, deadline: string, user: string, daemonPath: string, proxy?: DockerInspect | null): DriftExpected {
 		const { arch, apparmor, selinux } = host;
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath, deadline, user, proxy, egressCode: this.#code, hostAddresses: this.#hostLocal() };
+		return {
+			version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath, deadline, user, proxy, egressCode: this.#code, hostAddresses: this.#hostLocal(),
+			...(this.#volume === undefined ? {} : { volume: this.#volume }),
+		};
 	}
 
 	/**
@@ -581,6 +631,18 @@ export class DockerProvider implements ComputerProvider {
 			return fail("invalid", `the daemon's copy ${copied.value} has a comma, a double quote or a line break in its path, which a Docker mount cannot hold: give the provider another daemonCache`);
 		}
 		return copied;
+	}
+
+	/**
+	 * The --mount value that puts `path` of this host at `dst`: a bind of it, or, with the volume option, its subpath of
+	 * the volume (never the root); a path outside the volume is refused in words, and nothing is made.
+	 */
+	#mountOf(path: string, dst: string, readonly: boolean): Result<string> {
+		const volume = this.#volume;
+		if (volume === undefined) return ok(`type=bind,src=${path},dst=${dst}${readonly ? ",readonly" : ""}`);
+		const subpath = subpathOf(volume, path);
+		if (subpath === undefined) return fail("refused", `mount: ${outsideWords(volume, path, readonly ? "the daemon's copy" : "mount.path")}`);
+		return ok(volumeMount(volume, subpath, dst, readonly));
 	}
 
 	/** The egress proxy container's inspect for a computer that shows any part of an allowlist, null when it is gone;
@@ -655,7 +717,7 @@ export class DockerProvider implements ComputerProvider {
 			found.push(`deadline: the label ${DEADLINE_LABEL} reads ${JSON.stringify(deadline)}, not the ISO time create writes`);
 		} else if (at > Date.now() + this.capabilities().maxLifetimeMs + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
 		// The run's folder as the computer has it. The folder on the host is not checked again: it is what is bound.
-		const mount = mountOf(report);
+		const mount = mountOf(report, this.#volume);
 		if (mount !== undefined && "other" in mount) found.push(`mount: ${mount.other}, which this provider never makes`);
 		const bind = mount !== undefined && "kind" in mount && mount.kind === "bind" ? mount : undefined;
 		const spec = {
@@ -810,7 +872,7 @@ export class DockerProvider implements ComputerProvider {
 				if (!read.ok) return read;
 				for (const proxy of read.value) proxies.set(nameOf(proxy), proxy);
 			}
-			infos.push(...computers.map((report) => infoOf(report, egressShaped(report) ? (proxies.get(egressNameOf(nameOf(report))) ?? null) : undefined, this.#code, local)));
+			infos.push(...computers.map((report) => infoOf(report, egressShaped(report) ? (proxies.get(egressNameOf(nameOf(report))) ?? null) : undefined, this.#code, local, this.#volume)));
 		}
 		return ok(infos);
 	}
@@ -996,13 +1058,13 @@ function filterProblem(labels: unknown): string | undefined {
 
 /** A computer as list() reports it. The deadline counts only as the provider writes it, an ISO time; an allowlist's
  *  proxy must refuse each of `local`, the Docker host's own addresses. */
-function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, code: EgressCode, local: readonly string[]): ComputerInfo {
+function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, code: EgressCode, local: readonly string[], volume?: DockerVolume): ComputerInfo {
 	const labels = { ...(report.Config?.Labels ?? {}) };
 	const written = labels[DEADLINE_LABEL];
 	const at = written === undefined ? Number.NaN : Date.parse(written);
 	const deadline = Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
 	const state = report.State?.Running === true ? "running" : "stopped";
-	const mount: MountReadBack | undefined = mountOf(report);
+	const mount: MountReadBack | undefined = mountOf(report, volume);
 	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report, proxy, code, local), ...(mount === undefined ? {} : { mount }) };
 }
 

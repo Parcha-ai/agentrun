@@ -864,6 +864,43 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
   that path, read-write, `rprivate`, and no other mount.
 
+### A provider in a container: the `volume` option
+
+A provider that runs in a container of the Docker it drives, given that Docker's socket (the server under
+`docker compose`), has paths the Docker daemon does not: its files are on a named volume the daemon mounted into its
+container. A bind of its daemon copy or of a run folder names a path that exists only inside that container, so every
+`docker run` would fail. The `volume` option says where its files are:
+
+```ts
+// The server's container has the named volume agentrun_agentrun-data mounted at /data.
+const docker = new DockerProvider({
+	daemonPath: "dist/computerd-linux-amd64",
+	daemonCache: "/data/computer-cache", // at or below volume.root
+	volume: { name: "agentrun_agentrun-data", root: "/data" },
+});
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } });
+```
+
+- `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
+  has it mounted, an absolute path. Without the option, nothing changes: every path is bound as it is.
+- With it, the daemon's copy and the run's folder are mounted as the volume's subpaths, never binds of this process's
+  paths and never the volume's root: `--mount type=volume,src=<name>,dst=/opt/agentrun/computerd,volume-subpath=<copy
+  below root>,volume-nocopy,readonly`, and `--mount type=volume,src=<name>,dst=/workspace,volume-subpath=<folder below
+  root>,volume-nocopy`. `volume-nocopy`: Docker never copies the image's files at the destination into the volume.
+- `daemonCache` must be at or below `root`; the provider throws in words when it is made with one that is not. A run
+  folder must be below `root`; `check` and `create` refuse one that is not, or the root itself, in words, before any
+  `docker run`.
+- `volume-subpath` takes Docker Engine 26 or later (API 1.45). The provider reads the engine with `docker info`
+  (`host().engine`); `create` refuses an older one, or one that reports no version, in words before anything is made,
+  and `check` does too once the host is read.
+- `attach` and `list` read the run's folder back from the volume's subpath (`HostConfig.Mounts`) as the path below
+  `root` that `create` was given, `{ kind: "bind", path }`. The drift check holds the daemon's and the folder's mounts to
+  the volume, its subpaths, read-only and read-write, and no bind.
+- The run folder is still checked for the computer's user as above: the provider reads it at its own path.
+- **No allowlist with the option, yet.** The egress proxy's code is bound from this package's build, a path the Docker
+  daemon does not have either, so `check` refuses a network allowlist on a provider with the `volume` option, in words,
+  before anything is made. `none` and `open` are as before.
+
 ### The image: `ensureImage`
 
 The provider owns the image its computers start from and makes it ready in its own process. There is no state file and
