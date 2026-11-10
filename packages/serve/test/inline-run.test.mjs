@@ -6,7 +6,7 @@
 // an agent made with POST /agents.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { follow, serve } from "./support.mjs";
+import { answerFlow, follow, serve } from "./support.mjs";
 
 const DEFINITION = { name: "Expert 42", description: "Answers questions.", instructions: "Answer.", skills: [], tools: [] };
 const external = (version = 7, id = "42") => ({ source: "grep", kind: "expert", id, version });
@@ -66,6 +66,17 @@ test("a first use makes the agent and its revision and starts the run; a reuse o
     assert.deepEqual([refused.status, refused.body.error?.code], [403, "forbidden"], `${method} ${path}: ${JSON.stringify(refused.body)}`);
     assert.match(refused.body.error.message, /managed by its source/);
   }
+});
+
+test("a new version's first workflow run is titled with that version's name, not the name before it", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { runner: false });
+  const flow = (version, name) => inline({ external: external(version, "flow"), definition: { name, workflow: answerFlow() }, input: { question: "What is six times seven?" } });
+  const first = await api("POST", "/runs", flow(1, "Flow v1"));
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  assert.equal(first.body.title, "Flow v1: What is six times seven?");
+  const next = await api("POST", "/runs", flow(2, "Flow v2"));
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal(next.body.title, "Flow v2: What is six times seven?", "the new version's name, which its first run brings the agent up to");
 });
 
 test("two first uses at once make one agent and one revision", { timeout: 120_000 }, async (t) => {
