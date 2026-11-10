@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useStat
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError, problemOf } from "@/lib/client";
 import { BY_THE_MINUTE, METERED } from "@/lib/computers";
@@ -62,8 +63,8 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
 
   if (!view) return loadError
     ? <div className="m-8 border p-4" role="alert">
-        <p className="font-mono text-[13px] text-destructive-text">The computers could not be read: {loadError.code}: {loadError.message}</p>
-        <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+        <p className="font-mono text-body text-destructive-text">The computers could not be read: {loadError.code}: {loadError.message}</p>
+        <Button size="sm" onClick={load} className="mt-3">Try again</Button>
       </div>
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading the computers" rows={3} /></div>;
 
@@ -96,11 +97,11 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div>
-          <p className="caps text-[11px] text-muted-foreground">Settings</p>
+          <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Computers</h1>
-          <p className="mt-2 text-[14px] text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
+          <p className="mt-2 text-lead text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
-        {!writable && <p role="status" className="border bg-card p-4 text-[13px]">{WHY_NOT_WORDS[whyNot]}</p>}
+        {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
         {view.kinds.map((k) => (
           <KindSection key={k.kind} kind={k}>
             {k.providers.map((p) => {
@@ -126,14 +127,14 @@ function KindSection({ kind: k, children }: { kind: ComputerKindView; children: 
   return (
     <section aria-label={label}>
       <h2 className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="caps text-[12px] font-semibold">{label}</span>
-        {gives && <span className="text-[12px] text-muted-foreground">{gives}</span>}
+        <span className="caps text-small font-semibold">{label}</span>
+        {gives && <span className="text-small text-muted-foreground">{gives}</span>}
         {!k.offered && <Chip tone="muted">Not offered here</Chip>}
       </h2>
-      {!k.offered && k.why && <p className="mb-2 font-mono text-[12px] text-muted-foreground">{k.why}</p>}
+      {!k.offered && k.why && <p className="mb-2 font-mono text-small text-muted-foreground">{k.why}</p>}
       {k.providers.length
         ? <ul className="border">{children}</ul>
-        : <p className="border p-4 text-[13px] text-muted-foreground">{k.kind === "none" ? "Nothing to set up." : "No provider serves it on this server."}</p>}
+        : <p className="border p-4 text-body text-muted-foreground">{k.kind === "none" ? "Nothing to set up." : "No provider serves it on this server."}</p>}
     </section>
   );
 }
@@ -163,12 +164,12 @@ function ProviderRow({ kind, provider: p, writable, serves, tested, testing, ope
         <Monitor className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
-            <span data-provider className="font-mono text-[15px] font-semibold">{p.name}</span>
+            <span data-provider className="font-mono text-prose font-semibold">{p.name}</span>
             {p.ready ? <Chip tone="success">Ready</Chip> : <Chip>Not ready</Chip>}
-            {p.metered && <span data-metered className="text-[12px] text-muted-foreground">Metered</span>}
+            {p.metered && <span data-metered className="text-small text-muted-foreground">Metered</span>}
           </p>
-          {!p.ready && p.why && <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">{p.why}</p>}
-          {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-[12px] text-muted-foreground">{METERED}</p>}
+          {!p.ready && p.why && <p className="mt-1.5 font-mono text-small text-muted-foreground">{p.why}</p>}
+          {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-small text-muted-foreground">{METERED}</p>}
           {p.secrets.length > 0 && (
             <ul className="mt-3 space-y-1.5">
               {/* SecretRow says a secret by its KEY (secretLabel); the PUT takes the KEY too. A row's buttons wait while its
@@ -181,9 +182,9 @@ function ProviderRow({ kind, provider: p, writable, serves, tested, testing, ope
             </ul>
           )}
           {tested && (
-            <p data-test className={`mt-2 text-[12px] ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>
+            <p data-test className={`mt-2 text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>
           )}
-          <p className="mt-2 text-[12px] text-muted-foreground">{p.secrets.length ? "" : "No key. "}Serves: {serves.join(", ")}</p>
+          <p className="mt-2 text-small text-muted-foreground">{p.secrets.length ? "" : "No key. "}Serves: {serves.join(", ")}</p>
         </div>
         <div className="flex gap-2">
           <Button size="sm" onClick={onTest} disabled={testing}>{testing ? "Testing…" : "Test connection"}</Button>
@@ -192,12 +193,12 @@ function ProviderRow({ kind, provider: p, writable, serves, tested, testing, ope
       {writable && pasting && <ComputerKeyForm provider={p.name} name={pasting} set={p.secrets.some((secret) => keyOf(secret.name) === pasting && secret.set)} onSave={onSave} onCancel={() => onOpen(null)} />}
       {writable && removing && (
         <div data-confirm className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
-          <p className="min-w-0 flex-1 text-[13px]">Remove {removing} saved on this server?</p>
+          <p className="min-w-0 flex-1 text-body">Remove {removing} saved on this server?</p>
           <Button size="sm" variant="destructive" onClick={() => void onRemove(removing)}>Remove</Button>
           <Button size="sm" onClick={() => onOpen(null)}>Cancel</Button>
         </div>
       )}
-      {problem && <p role="alert" className="mt-4 border border-destructive/50 px-3 py-2 font-mono text-[12px] text-destructive-text">{problem}</p>}
+      {problem && <p role="alert" className="mt-4 border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
     </li>
   );
 }
@@ -226,14 +227,13 @@ function ComputerKeyForm({ provider, name, set, onSave, onCancel }: { provider: 
   return (
     <form ref={form} autoComplete="off" onSubmit={(e) => void submit(e)} onInput={() => setTyped(!!valueOf())} className="mt-4 space-y-4 border bg-card p-4" aria-label={`${provider} ${name}`}>
       <label className="block">
-        <span className="caps mb-2 block text-[12px] font-semibold">{name}</span>
-        {set && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">A new value replaces the one saved.</span>}
-        <input type="password" name={name} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
-          className="w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong" />
-        {invalid?.field && <span className="mt-2 block font-mono text-[12px] text-destructive-text" role="alert">{invalid.field}</span>}
+        <span className="caps mb-2 block text-small font-semibold">{name}</span>
+        {set && <span className="-mt-1 mb-2 block text-small text-muted-foreground">A new value replaces the one saved.</span>}
+        <Input type="password" name={name} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" />
+        {invalid?.field && <span className="mt-2 block font-mono text-small text-destructive-text" role="alert">{invalid.field}</span>}
       </label>
-      {invalid?.message && <p className="font-mono text-[12px] text-destructive-text" role="alert">{invalid.message}</p>}
-      <p className="text-[12px] text-muted-foreground">Kept sealed on this server. It is never shown again, here or anywhere.</p>
+      {invalid?.message && <p className="font-mono text-small text-destructive-text" role="alert">{invalid.message}</p>}
+      <p className="text-small text-muted-foreground">Kept sealed on this server. It is never shown again, here or anywhere.</p>
       <div className="flex gap-2">
         <Button type="submit" size="sm" variant="solid" disabled={!typed || busy}>{busy ? "Saving" : "Save"}</Button>
         <Button type="button" size="sm" onClick={() => { clear(); onCancel(); }}>Cancel</Button>

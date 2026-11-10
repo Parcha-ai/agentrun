@@ -1,7 +1,7 @@
 // A trigger source's sealed settings (trigger-adapter.ts `settings`): the trigger kernel's one store of them. One file
 // per adapter, DIR/trigger-settings-<adapter>.json, holding each scope's fields (the server's, or one trigger's, by its
-// id) sealed under the seal key (tool-keys.ts), each bound to its adapter, scope and field by its AAD. With no seal key
-// none is kept, never in the clear. A file that does not read is never written over: nothing is made or removed until
+// id) sealed under the seal key (tool-keys.ts), each bound to its adapter, scope and field by its AAD. There is always a
+// seal key (seal-key.ts), so none is kept in the clear. A file that does not read is never written over: nothing is made or removed until
 // it is fixed. A value that does not open under this server's seal key is said once, kept sealed as it is, and reads as
 // unset.
 import { readFileSync } from "node:fs";
@@ -58,7 +58,7 @@ export class SealedSettings {
   /** Why the file does not read: nothing is made, rotated or removed, nothing it holds is read, and it is never written over. */
   private readonly unreadable?: string;
 
-  constructor(data: string, private readonly adapterId: string, private readonly spec: SettingsSpec, private readonly key: Buffer | undefined, say: (fields: Record<string, string>) => void) {
+  constructor(data: string, private readonly adapterId: string, private readonly spec: SettingsSpec, private readonly key: Buffer, say: (fields: Record<string, string>) => void) {
     this.file = join(data, settingsFile(adapterId));
     const read = sealedIn(this.file);
     if ("unreadable" in read) {
@@ -67,12 +67,8 @@ export class SealedSettings {
       return;
     }
     this.sealed = read.sealed;
-    if (!this.key && Object.values(this.sealed).some((fields) => Object.keys(fields).length)) {
-      say({ condition: "trigger_settings_no_seal_key", adapter: adapterId, file: this.file, effect: `this server was handed no ${SEAL_KEY_ENV}: none of its sealed settings is read` });
-    }
     for (const [scope, fields] of Object.entries(this.sealed)) {
       for (const [field, value] of Object.entries(fields)) {
-        if (!this.key) continue;
         try {
           (this.opened[scope] ??= {})[field] = unseal(this.key, Buffer.from(value, "base64"), aad(adapterId, scope, field)).toString("utf8");
         } catch {
@@ -107,7 +103,7 @@ export class SealedSettings {
 
   private put(scope: string, field: string, value: string): void {
     this.writable();
-    this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
+    this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
     const was = this.opened[scope]?.[field];
     if (was !== undefined && was !== value) this.retire(field, was);
     (this.opened[scope] ??= {})[field] = value;
@@ -154,7 +150,7 @@ export class SealedSettings {
     else for (const secret of this.secretsOf(field, value)) this.retired.add(secret);
   }
 
-  /** Why nothing can be written here (no seal key, or a file that does not read), as the refusal a write would throw;
+  /** Why nothing can be written here (a file that does not read), as the refusal a write would throw;
    *  undefined when one can be. */
   unwritable(): ApiError | undefined {
     try {
@@ -167,7 +163,6 @@ export class SealedSettings {
 
   private writable(): void {
     if (this.unreadable) throw new ApiError("store_unreadable", `${settingsFile(this.adapterId)} in the data directory does not read (${this.unreadable}); it is never written over, so no ${this.adapterId} trigger's secret is made or rotated. Fix it or move it away, then restart.`);
-    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no ${this.adapterId} trigger's secret: it never keeps one in the clear.`);
   }
 
   private write(sealed: Sealed): void {
