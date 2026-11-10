@@ -258,13 +258,14 @@ const UPLOAD_MIME: Readonly<Record<string, string>> = {
 
 /** A downloads manifest row (pi-browser's downloads/manifest.json), as downloadsInto reads and writes it. */
 type DownloadRow = { name: string; path: string; sizeBytes: number; sha256: string; session?: unknown; remote?: { name?: unknown } & Record<string, unknown> } & Record<string, unknown>;
-/** A downloads manifest's rows, the well-formed ones (each under downloads/, with its size and digest); none for a manifest
- *  that is not one. */
-const downloadRows = (bytes: Uint8Array | undefined): DownloadRow[] => {
-  if (!bytes) return [];
-  let parsed: { schema?: unknown; files?: unknown };
-  try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as typeof parsed; } catch { return []; }
-  return Array.isArray(parsed.files) ? (parsed.files as DownloadRow[]).filter((row) => typeof row?.path === "string" && /^downloads\/[^/]+$/.test(row.path) && typeof row.sha256 === "string" && Number.isSafeInteger(row.sizeBytes)) : [];
+/** A downloads manifest's rows, the well-formed ones (each under downloads/, with its size and digest); undefined for a
+ *  document that is no pi-browser downloads manifest (not JSON, not an object, `null`, another schema). */
+const downloadRows = (bytes: Uint8Array): DownloadRow[] | undefined => {
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { return undefined; }
+  const doc = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { schema?: unknown; files?: unknown }) : undefined;
+  if (doc?.schema !== "pi-browser.downloads.v1" || !Array.isArray(doc.files)) return undefined;
+  return (doc.files as DownloadRow[]).filter((row) => row && typeof row === "object" && typeof row.path === "string" && /^downloads\/[^/]+$/.test(row.path) && typeof row.sha256 === "string" && Number.isSafeInteger(row.sizeBytes));
 };
 /** How much of a file in the run's Workspace is read at once to hash it: Workspace reads are bounded (64 MiB), and a
  *  download may be up to pi-browser's 100 MiB. */
@@ -293,9 +294,14 @@ export function downloadsInto<A, P, C extends { workspace?: string }, O extends 
     const { readFile, realpath } = await import("node:fs/promises");
     const spec = await work.mountSpec().catch(() => undefined);
     if (spec?.kind === "bind" && (await realpath(spec.path).catch(() => spec.path)) === (await realpath(call.workspace).catch(() => call.workspace))) return out;
-    const local = downloadRows(await readFile(join(call.workspace, manifestPath)).catch(() => undefined));
+    const localBytes = await readFile(join(call.workspace, manifestPath)).catch(() => undefined);
+    const local = localBytes ? downloadRows(localBytes) ?? [] : [];
     if (!local.length) return out;
-    const filedRows = downloadRows(await work.read(manifestPath).catch(() => undefined));
+    // The run's own manifest: none yet, or one pi-browser's naming kept. A document there that is no manifest (the run's
+    // own, or one it broke) is never replaced: the call is refused in words that say what to do, as pi-browser refuses one.
+    const filedBytes = await work.read(manifestPath).catch(() => undefined);
+    const filedRows = filedBytes ? downloadRows(filedBytes) : [];
+    if (!filedRows) throw new Error(`${manifestPath} in the run's files exists but is not a pi-browser downloads manifest; fix or move it, then call browser_downloads again.`);
     // Where each of this call's local files is in the run's Workspace, by its local path.
     const placed = new Map<string, DownloadRow>();
     for (const row of local) {

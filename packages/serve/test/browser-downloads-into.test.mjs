@@ -94,3 +94,17 @@ test("in Mode 1 (the run's Workspace is its local folder) the files and the mani
   await downloadsInto(browserDownloads({ "report.txt": Buffer.from("r") }), work, MANIFEST)({}, {}, { workspace: local });
   assert.ok(readFileSync(join(local, MANIFEST)).equals(before), "the browser's own manifest, byte for byte");
 });
+
+test("a manifest in the run's Workspace that is no manifest (null, another document) is never replaced: the call is refused in words that say what to do, and the next call after it is fixed files", async (t) => {
+  const { local, disk, work } = await mode2(t);
+  mkdirSync(join(disk, "downloads"), { recursive: true });
+  const files = { "report.txt": Buffer.from("the report") };
+  for (const broken of ["null", "[]", "{\"schema\":\"something-else\",\"files\":[]}", "not json"]) {
+    writeFileSync(join(disk, MANIFEST), broken);
+    await assert.rejects(downloadsInto(browserDownloads(files), work, MANIFEST)({}, {}, { workspace: local }), /downloads\/manifest\.json in the run's files exists but is not a pi-browser downloads manifest; fix or move it/, broken);
+    assert.equal(readFileSync(join(disk, MANIFEST), "utf8"), broken, `${broken}: left as it was`);
+  }
+  rmSync(join(disk, MANIFEST));
+  await downloadsInto(browserDownloads(files), work, MANIFEST)({}, {}, { workspace: local });
+  assert.equal(readFileSync(join(disk, "downloads", "report.txt"), "utf8"), "the report", "filed once the run's manifest is gone");
+});
