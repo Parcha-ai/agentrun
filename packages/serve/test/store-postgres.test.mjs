@@ -552,6 +552,8 @@ test("the server applies each migration once, in one transaction, recording its 
   await second.close();
   const rows = await sql(schema, "SELECT version, name, sha256 FROM schema_migrations ORDER BY version");
   assert.deepEqual(rows.map((row) => [Number(row.version), row.name, row.sha256]), migrations.map((m) => [m.version, m.name, m.sha256]), "each applied once");
+  // store_meta keeps the version the last migration set: each migration after the first sets its own.
+  assert.deepEqual((await sql(schema, "SELECT schema_version FROM store_meta WHERE singleton = 1")).map((row) => Number(row.schema_version)), [migrations.at(-1).version], "store_meta at the last migration's version");
 });
 
 test("a migration that fails leaves nothing of it: the schema's version is unchanged and its tables absent", ONLY, async (t) => {
