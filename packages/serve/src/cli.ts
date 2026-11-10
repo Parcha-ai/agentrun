@@ -17,9 +17,11 @@ import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
-import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
+import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
+import { runnerBeside } from "./runner/beside.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -53,6 +55,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     notes changed last, whole, while they fit
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
+  --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
+                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -126,7 +130,7 @@ if (process.argv[2] === "validate-template") {
 // 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
 // ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
 if (process.argv[2] === "eval-template") {
-  const { CaseError, evalTemplate, markdownReport } = await import("./template-eval.js");
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
@@ -185,7 +189,7 @@ if (process.argv[2] === "eval-template") {
     stop.signal.throwIfAborted();
     if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(markdownReport(report));
-    process.exit(report.pass ? 0 : 1);
+    process.exit(exitCodeOf(report));
   } catch (error) {
     if (stop.signal.aborted) {
       console.error("agentrun-serve eval-template: stopped; no report.");
@@ -230,6 +234,7 @@ try {
       learning: { type: "string" },
       "grade-model": { type: "string" },
       "learning-budget": { type: "string" },
+      "no-runner": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -287,8 +292,9 @@ const onBoxImage = (state: ImageState) => {
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
+let serveOptions: ServeOptions;
 try {
-  serve = await startServe({
+  serve = await startServe(serveOptions = {
     onBoxImage,
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
@@ -300,6 +306,24 @@ try {
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(1);
+}
+// The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
+// every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
+// `agentrun runner --data DIR` processes on the same data directory instead.
+let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+if (!values["no-runner"]) {
+  try {
+    // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
+    // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
+    // model up in pi-ai's own catalog and every run fails on its first request. Assigned onto runEnv's result, never spread:
+    // its secrets are non-enumerable and a spread drops them.
+    const { runEnv } = await import("./runner/main.js");
+    runnerProc = await runnerBeside(data, { env: Object.assign(runEnv(process.env), fauxEnvOf(serveOptions)) });
+  } catch (error) {
+    console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+    await serve.close();
+    process.exit(1);
+  }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
@@ -317,7 +341,7 @@ const record = join(resolve(data), SERVER_FILE);
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), serve.close()),
+  close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
   stopping: () => serve.stopping(),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),

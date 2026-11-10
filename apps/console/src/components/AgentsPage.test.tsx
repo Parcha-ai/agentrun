@@ -6,6 +6,9 @@ import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 
+/** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
+const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
+
 // The agent page keeps what it shows true to the server: an action's committed write is never reported as failed, a
 // revision another tab saved is never hidden under an old form, and a failed reload never takes the editor away.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -22,7 +25,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 async function open(v2: Record<string, unknown>) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditPage, { v2: v2 as never, caps: caps as never, agentId: "calc", go: () => {} })));
+  act(() => root!.render(createElement(AgentEditPage, { v2: withoutComputers(v2) as never, caps: caps as never, agentId: "calc", go: () => {} })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -93,7 +96,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const page = (agentId: string | null) => createElement(AgentEditPage, { v2: v2 as never, caps: { ...caps, ...(provider ? { decisionProvider: provider } : {}) } as never, agentId, go: (hash: string) => { went = hash; } });
+    const page = (agentId: string | null) => createElement(AgentEditPage, { v2: withoutComputers(v2) as never, caps: { ...caps, ...(provider ? { decisionProvider: provider } : {}) } as never, agentId, go: (hash: string) => { went = hash; } });
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
     act(() => root!.render(page(null)));
@@ -156,7 +159,7 @@ describe("AgentEditPage, a new agent", () => {
     const v2 = { createAgent: async () => agentAt("r1", "Answer.") };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditPage, { v2: v2 as never, caps: caps as never, agentId: null, go: (h: string) => went.push(h) })));
+    act(() => root!.render(createElement(AgentEditPage, { v2: withoutComputers(v2) as never, caps: caps as never, agentId: null, go: (h: string) => went.push(h) })));
     const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
       Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
       el.dispatchEvent(new Event("input", { bubbles: true }));

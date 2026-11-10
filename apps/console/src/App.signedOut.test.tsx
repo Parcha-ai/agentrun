@@ -23,7 +23,7 @@ function server({ accounts = true } = {}) {
     const u = new URL(url, "http://serve.test");
     const method = init?.method ?? "GET";
     s.asked.push(`${method} ${u.pathname}`);
-    if (u.pathname === "/v2/auth/session") return accounts ? json(200, { password_set: true, signed_in: s.signedIn }) : json(404, { error: { code: "not_found", message: "no accounts", retryable: false } });
+    if (u.pathname === "/v2/auth/session") return accounts ? json(200, { accounts: true, password_set: true, signed_in: s.signedIn, secrets_writable: s.signedIn }) : json(200, { accounts: false, secrets_writable: false, secrets_reason: "token" });
     if (s.hold && (u.pathname === "/v2/runs/r1" || u.pathname === "/v2/runs/r1/timeline" || u.pathname === "/v2/runs/r1/browser")) { s.hold = false; return new Promise<Response>((done) => { s.release = done; }); }
     if (u.pathname === "/v2/auth/sign-in" && method === "POST") {
       const { password } = JSON.parse(String(init?.body ?? "{}")) as { password?: string };

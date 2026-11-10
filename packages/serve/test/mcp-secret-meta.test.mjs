@@ -30,6 +30,7 @@ test("the shape: pasted is console, a sign-in is sign-in, none is unset; never a
   assert.deepEqual((await r.get("gh")).auth, { type: "headers", headers: ["x-api-key"] }, "the header names stay");
   assert.deepEqual((await r.get("lin")).secret, { name: "mcp:lin", set: true, source: "sign-in", changed_at: iso(T0) });
   assert.deepEqual((await r.get("pub")).secret, { name: "mcp:pub", set: false, source: null, changed_at: null });
+  assert.deepEqual([(await r.get("pub")).credential, (await r.get("pub")).auth], [null, { type: "none" }], "none: no credential and no header names");
   assert.ok(!JSON.stringify(await r.list()).includes(TOKEN), "no value anywhere in a read");
 });
 
@@ -56,4 +57,12 @@ test("changed_at moves with a new credential only: a save that keeps the sealed 
   clock.now += 60_000;
   await r.save("fake", { url: fake.url, auth: { type: "bearer", token: NEXT } });
   assert.equal((await r.get("fake")).secret.changed_at, iso(clock.now), "a new credential moves it");
+});
+
+test("the document's MCP server read takes its secret from the one SecretMeta schema, not a copy", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const doc = openapiDocument(() => undefined);
+  const read = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
+  const view = read.$ref ? doc.components.schemas[read.$ref.split("/").pop()] : read;
+  assert.equal(view.properties.secret.$ref, "#/components/schemas/SecretMeta");
 });

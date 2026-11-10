@@ -4,6 +4,7 @@
 // value, even in a body the save then refuses), or an OAuth client_secret at a sign-in's start. The private-network
 // OAuth hosts count whole: they widen where a sign-in sends its code and tokens. A server with no credential, a save that
 // keeps the sealed one (prices, tools, url), a preview (it keeps nothing) and every other MCP route stay open to a token.
+import { registerSecretWrite } from "./secret-writes.js";
 import { isObject } from "./validate.js";
 
 /** Whether `operation`'s `body` writes an MCP secret (see above). */
@@ -15,3 +16,10 @@ export function mcpWritesSecret(operation: string, body: unknown): boolean {
   const { token, headers } = body.auth;
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
 }
+
+/** MCP's operations the one gate reads: the predicate above decides each request. */
+export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts"] as const;
+for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body));
+// A preview keeps nothing, so it is never a secret write; its body's fields are marked secret in the document, so it is
+// registered all the same.
+registerSecretWrite("previewMcpServer", () => false);

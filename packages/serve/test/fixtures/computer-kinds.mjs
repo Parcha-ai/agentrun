@@ -11,7 +11,7 @@ export const tools = (kind) => TOOLS[kind];
 
 /**
  * Fake provider modules' create(), by provider id (the factories computer-keys.ts's testConnection takes), each
- * recording the options it was made with. testConnection answers by the key: "good-..." passes, "down-..." is
+ * recording the options it was made with. testConnection answers by the key: "good-..." (and the export fake "fake-test-key") passes, "down-..." is
  * unreachable, anything else unauthorized, its message echoing the key so the test sees it scrubbed. No browserbase:
  * serve has no module for it yet.
  */
@@ -22,7 +22,7 @@ export function fakeFactories() {
     const key = options.apiKey ?? options.tokenSecret ?? "good-docker";
     return {
       async testConnection() {
-        if (key.startsWith("good-")) return { ok: true, value: { detail: `${providerId}: 2 computers` } };
+        if (key.startsWith("good-") || key === "fake-test-key") return { ok: true, value: { detail: `${providerId}: 2 computers` } };
         if (key.startsWith("down-")) return { ok: false, error: { code: "unreachable", message: `connect ECONNREFUSED for ${key}` } };
         return { ok: false, error: { code: "unauthorized", message: `401 for key ${key}` } };
       },

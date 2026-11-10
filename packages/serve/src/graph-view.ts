@@ -40,7 +40,7 @@ type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Recor
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const at = (state: unknown, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), state);
-/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (runs.ts servedGraph), so the
+/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (graph-served.ts servedGraphView), so the
  *  whole label is what redaction sees: a key saved since an earlier poll is still found in it. */
 const labelOf = (item: unknown): string | undefined => {
   if (typeof item === "string") return item;

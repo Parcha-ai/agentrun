@@ -18,10 +18,10 @@ const FAKE = "not-a-real-key-0123456789";
 const COPY = "Runs keep their folders on this Archil disk. The server never mounts it; computers that support it mount a run's folder.";
 const IMAGE = `example/exec@sha256:${"a".repeat(64)}`;
 
-type Key = Archil["keys"][number];
-const keys = (set: boolean, source: Key["source"] = set ? "console" : null): Key[] => [{ name: "ARCHIL_API_KEY", set, source, changed_at: source === "console" ? "2026-11-09T01:00:00.000Z" : null }];
-const off: Archil = { on: false, keys: keys(false) };
-const on: Archil = { on: true, diskId: "dsk-test-1", region: "aws-us-east-1", s3Url: "https://s3.example.test", keys: keys(true) };
+/** Archil's one secret as served, "workspace:archil"; the page says it as ARCHIL_API_KEY, the name the PUT takes. */
+const secret = (set: boolean, source: Archil["secret"]["source"] = set ? "console" : null): Archil["secret"] => ({ name: "workspace:archil", set, source, changed_at: source === "console" ? "2026-11-09T01:00:00.000Z" : null });
+const off: Archil = { on: false, secret: secret(false) };
+const on: Archil = { on: true, diskId: "dsk-test-1", region: "aws-us-east-1", s3Url: "https://s3.example.test", secret: secret(true) };
 
 type Call = { method: string; path: string; type: string | null; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -72,11 +72,13 @@ describe("Settings → Workspace", () => {
     const { host } = await open(v2);
     expect(host.querySelector("h1")?.textContent).toBe("Workspace");
     expect(host.textContent).toContain(COPY);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    // Archil's on or off is one mark, not the key row's state (SecretRow's own data-state).
+    expect(host.querySelectorAll("[data-archil-state]")).toHaveLength(1);
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
     // One key, said by the name the write takes, never the server's full secret name.
-    expect([...host.querySelectorAll("li[data-secret]")].map((li) => li.getAttribute("data-secret"))).toEqual(["ARCHIL_API_KEY"]);
-    expect(host.querySelector('li[data-secret="ARCHIL_API_KEY"] > span')?.textContent).toBe("ARCHIL_API_KEY");
-    expect(host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!.textContent).toContain("Missing");
+    expect([...host.querySelectorAll("li[data-secret]")].map((li) => li.getAttribute("data-secret"))).toEqual(["workspace:archil"]);
+    expect(host.querySelector('li[data-secret="workspace:archil"] > span')?.textContent).toBe("ARCHIL_API_KEY");
+    expect(host.querySelector('li[data-secret="workspace:archil"]')!.textContent).toContain("Missing");
     expect(host.textContent).not.toMatch(/workspace:|computer:/);
     // No key input until Paste.
     expect(host.querySelectorAll('input[type="password"]')).toHaveLength(0);
@@ -86,22 +88,22 @@ describe("Settings → Workspace", () => {
   it("says Archil is on with its disk and region, and fills the fields from the server", async () => {
     const { v2 } = server([on]);
     const { host, input } = await open(v2);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("On");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("On");
     expect(host.querySelector("[data-disk]")?.textContent).toBe("dsk-test-1 · aws-us-east-1");
     expect(input("diskId").value).toBe("dsk-test-1");
     expect(input("region").value).toBe("aws-us-east-1");
     expect(input("s3Url").value).toBe("https://s3.example.test");
     expect(input("image").value).toBe("");
-    const row = host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!;
+    const row = host.querySelector('li[data-secret="workspace:archil"]')!;
     expect(row.textContent).toContain("Set");
     expect(row.textContent).toContain("Pasted here");
     expect(row.textContent).toContain("Changed");
   });
 
   it("greys a key the server's environment holds, with nothing to paste over or remove", async () => {
-    const { v2 } = server([{ ...on, keys: keys(true, "env") }]);
+    const { v2 } = server([{ ...on, secret: secret(true, "env") }]);
     const { host, button } = await open(v2);
-    const row = host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!;
+    const row = host.querySelector('li[data-secret="workspace:archil"]')!;
     expect(row.getAttribute("data-source")).toBe("env");
     expect(row.textContent).toContain("Set in the environment");
     expect(button(/^(Paste|Replace|Remove)$/, row)).toBeUndefined();
@@ -110,7 +112,7 @@ describe("Settings → Workspace", () => {
   it("saves the fields and the key pasted, as a password, and leaves no key in the page", async () => {
     const { v2, calls } = server([off, on]);
     const { host, input, click, type, submit } = await open(v2);
-    await click(/^Paste$/, host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!);
+    await click(/^Paste$/, host.querySelector('li[data-secret="workspace:archil"]')!);
     expect(input("ARCHIL_API_KEY").getAttribute("type")).toBe("password");
     await type("diskId", "dsk-test-1");
     await type("region", "aws-us-east-1");
@@ -118,7 +120,7 @@ describe("Settings → Workspace", () => {
     await type("ARCHIL_API_KEY", FAKE);
     await submit();
     expect(calls.filter((c) => c.method === "PUT")).toEqual([{ method: "PUT", path: "/v2/workspace/archil", type: "application/json", body: { diskId: "dsk-test-1", region: "aws-us-east-1", s3Url: "https://s3.example.test", keys: { ARCHIL_API_KEY: FAKE } } }]);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("On");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("On");
     expect(host.innerHTML).not.toContain(FAKE);
     expect([...host.querySelectorAll("input")].map((i) => i.value)).not.toContain(FAKE);
   });
@@ -126,11 +128,11 @@ describe("Settings → Workspace", () => {
   it("keeps the key with the settings it saves with: its row is in the form, and Paste or Remove never saves", async () => {
     const { v2, calls } = server([on]);
     const { host, click } = await open(v2);
-    const row = host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!;
+    const row = host.querySelector('li[data-secret="workspace:archil"]')!;
     expect(row.closest("form")).toBe(host.querySelector("form"));
     await click(/^Replace$/, row);
     await click(/^Cancel$/, host.querySelector("form")!);
-    await click(/^Remove$/, host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!);
+    await click(/^Remove$/, host.querySelector('li[data-secret="workspace:archil"]')!);
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
 
@@ -149,7 +151,7 @@ describe("Settings → Workspace", () => {
     ] } };
     const { v2 } = server([off], () => json(422, refusal));
     const { host, input, click, type, submit } = await open(v2);
-    await click(/^Paste$/, host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!);
+    await click(/^Paste$/, host.querySelector('li[data-secret="workspace:archil"]')!);
     await type("ARCHIL_API_KEY", " ");
     await type("diskId", "dsk-test-1");
     await type("region", "aws-us-east-1");
@@ -159,7 +161,7 @@ describe("Settings → Workspace", () => {
     expect(said("s3Url")).toBe("s3Url is the disk's S3 endpoint, an https URL");
     expect(said("ARCHIL_API_KEY")).toBe("ARCHIL_API_KEY is a non-empty string, or null to remove it");
     expect(input("diskId").value).toBe("dsk-test-1");
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
   });
 
   it("tests Archil: the server's detail, or its why as given", async () => {
@@ -184,19 +186,19 @@ describe("Settings → Workspace", () => {
   });
 
   it("removes the key after asking: the fields as they are, and the key null", async () => {
-    const { v2, calls } = server([on], () => json(200, { ...on, keys: keys(false) }));
+    const { v2, calls } = server([on], () => json(200, { ...on, secret: secret(false) }));
     const { host, click } = await open(v2);
-    await click(/^Remove$/, host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!);
+    await click(/^Remove$/, host.querySelector('li[data-secret="workspace:archil"]')!);
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
     const confirm = host.querySelector("[data-confirm-key]")!;
     expect(confirm.textContent).toContain("Remove ARCHIL_API_KEY saved on this server?");
     await click(/^Remove$/, confirm);
     expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ diskId: "dsk-test-1", region: "aws-us-east-1", s3Url: "https://s3.example.test", keys: { ARCHIL_API_KEY: null } });
-    expect(host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!.textContent).toContain("Missing");
+    expect(host.querySelector('li[data-secret="workspace:archil"]')!.textContent).toContain("Missing");
   });
 
   it("turns Archil off only after a confirm, with DELETE, and keeps the key", async () => {
-    const { v2, calls } = server([on], (c) => json(200, c.method === "DELETE" ? { on: false, keys: keys(true) } : on));
+    const { v2, calls } = server([on], (c) => json(200, c.method === "DELETE" ? { on: false, secret: secret(true) } : on));
     const { host, click } = await open(v2);
     await click(/^Turn off$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
@@ -204,8 +206,8 @@ describe("Settings → Workspace", () => {
     expect(confirm.textContent).toContain("Turn Archil off?");
     await click(/^Turn off$/, confirm);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/workspace/archil", type: "application/json", body: undefined }]);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
-    expect(host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!.textContent).toContain("Set");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
+    expect(host.querySelector('li[data-secret="workspace:archil"]')!.textContent).toContain("Set");
   });
 
   it("off the owner's password session, says once how to change keys and has no key input; the disk fields save without keys", async () => {
@@ -214,7 +216,7 @@ describe("Settings → Workspace", () => {
     expect([...host.querySelectorAll("[role=status]")].map((s) => s.textContent)).toEqual([SIGN_IN_TO_CHANGE]);
     expect(host.querySelectorAll('input[type="password"]')).toHaveLength(0);
     expect(button(/^(Paste|Replace|Remove)$/)).toBeUndefined();
-    expect(host.querySelector('li[data-secret="ARCHIL_API_KEY"]')!.textContent).toContain("Set");
+    expect(host.querySelector('li[data-secret="workspace:archil"]')!.textContent).toContain("Set");
     await submit();
     expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ diskId: "dsk-test-1", region: "aws-us-east-1", s3Url: "https://s3.example.test" });
   });
@@ -238,6 +240,6 @@ describe("Settings → Workspace", () => {
     expect(host.querySelector("[role=alert]")?.textContent).toContain("Archil's settings could not be read: internal: the store is busy");
     await click(/^Try again$/);
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
-    expect(host.querySelector("[data-state]")?.textContent).toBe("Off");
+    expect(host.querySelector("[data-archil-state]")?.textContent).toBe("Off");
   });
 });

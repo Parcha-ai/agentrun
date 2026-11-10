@@ -10,10 +10,16 @@ import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { DatabaseSync } from "node:sqlite";
-import { openStoreReader } from "@parcha/pi-durable-agent";
+import { MessageChannel } from "node:worker_threads";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { listRuns } from "../dist/store-reads/runs.js";
+import { answerStoreCall, importStoreProxy } from "../dist/import-proxy.js";
+import { StoreBusy, StoreConstraint } from "../dist/store/index.js";
+import { launchBody } from "../dist/run-launch.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
+import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 import { call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -32,14 +38,29 @@ async function machine(t) {
   return { sessionsHome: { home, temp: join(root, "tmp") } };
 }
 
-const agentsIn = (data) => {
-  const reader = openStoreReader(data);
+// The server's store, read as a runner (a WAL reader that coexists with the server's exclusive owner), so the tests read
+// what the import wrote without opening the old agent store against the data directory. Opened and closed per read, so each
+// read sees what the running import has committed by then.
+const readStore = (data) => openSqliteStore({ dataDir: data, role: "runner" });
+const agentsOf = async (data) => {
+  if (!existsSync(join(data, "store.sqlite"))) return [];
+  const store = await readStore(data);
   try {
-    return reader.listAgents().length;
+    return await store.agents.list();
   } finally {
-    reader.close();
+    await store.close();
   }
 };
+const runsOf = async (data) => {
+  if (!existsSync(join(data, "store.sqlite"))) return [];
+  const store = await readStore(data);
+  try {
+    return await listRuns(store, {}, ctx);
+  } finally {
+    await store.close();
+  }
+};
+const agentsIn = async (data) => (await agentsOf(data)).length;
 
 test("before its owner is set, a server on this machine says at once that it can import (202 while it counts), then how many projects and sessions", { timeout: 60_000 }, async (t) => {
   const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
@@ -66,7 +87,7 @@ test("setting the password without the box imports nothing", async (t) => {
     const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body });
     assert.deepEqual([made.status, made.json], [201, { signed_in: true }], made.text);
     await sleep(500);
-    assert.equal(agentsIn(server.data), 0, `nothing imported for ${JSON.stringify(body)}`);
+    assert.equal(await agentsIn(server.data), 0, `nothing imported for ${JSON.stringify(body)}`);
     assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404, "nothing to a browser that is not signed in");
     // The owner's first page reads it: no import asked is an answer, never a 404 the browser logs as an error.
     const none = await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } });
@@ -84,13 +105,11 @@ test("with the box ticked, the sessions arrive as agents after the password is s
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 });
   assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404, "not to a browser that is not signed in");
   const deadline = Date.now() + 30_000;
-  while (agentsIn(server.data) === 0 && Date.now() < deadline) await sleep(100);
-  const reader = openStoreReader(server.data);
-  t.after(() => reader.close());
-  const [agent] = reader.listAgents();
+  while ((await agentsOf(server.data)).length === 0 && Date.now() < deadline) await sleep(100);
+  const [agent] = await agentsOf(server.data);
   assert.equal(agent?.name, "acme-site");
-  for (const deadlineRuns = Date.now() + 30_000; reader.listRuns().length < 2 && Date.now() < deadlineRuns; ) await sleep(100);
-  assert.deepEqual(reader.listRuns().map((r) => r.importedFrom.source).sort(), ["claude-code", "codex"]);
+  for (const deadlineRuns = Date.now() + 30_000; (await runsOf(server.data)).length < 2 && Date.now() < deadlineRuns; ) await sleep(100);
+  assert.deepEqual((await runsOf(server.data)).map((r) => r.importedFrom.source).sort(), ["claude-code", "codex"]);
 });
 
 test("a server at a public address offers no import, and refuses one asked for", async (t) => {
@@ -100,7 +119,7 @@ test("a server at a public address offers no import, and refuses one asked for",
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { authorization: `Bearer ${server.token}`, ...json }, body: { password: PASSWORD, import: true } });
   assert.equal(made.status, 422, made.text);
   assert.equal(made.json.error.fields[0].field, "import");
-  assert.equal(agentsIn(server.data), 0);
+  assert.equal(await agentsIn(server.data), 0);
   const set = await call(server.port, { method: "POST", path: "/v2/setup", headers: { authorization: `Bearer ${server.token}`, ...json }, body: { password: PASSWORD } });
   assert.equal(set.status, 201, set.text);
   const after = await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(set) } });
@@ -148,7 +167,7 @@ test("open setup on an address other than loopback offers no import and refuses 
   assert.deepEqual([asked.json.error.fields[0].field, asked.json.error.fields[0].reason], ["import", "not_allowed"]);
   const session = await at(host, server.port, { path: "/v2/auth/session" });
   assert.equal(session.json.password_set, false, "the refusal set no owner");
-  assert.equal(agentsIn(server.data), 0);
+  assert.equal(await agentsIn(server.data), 0);
 });
 
 test("open setup with a public address, though it listens on loopback (behind a proxy), offers no import and refuses one asked for", async (t) => {
@@ -158,38 +177,59 @@ test("open setup with a public address, though it listens on loopback (behind a 
   const asked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
   assert.equal(asked.status, 422, asked.text);
   assert.equal(asked.json.error.fields[0].field, "import");
-  assert.equal(agentsIn(server.data), 0);
+  assert.equal(await agentsIn(server.data), 0);
 });
 
-test("an import at setup that cannot open the store (held past its wait) holds up no request, is said, and the server goes on serving", { timeout: 60_000 }, async (t) => {
-  // A rejection nothing handles would end a server: the import's own failure must be handled where it happens.
-  const unhandled = [];
-  const listen = (reason) => unhandled.push(reason);
-  process.on("unhandledRejection", listen);
-  t.after(() => process.off("unhandledRejection", listen));
-  const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
-  // Another writer holds the store past the import's five-second wait.
-  const holder = new DatabaseSync(join(server.data, "store.sqlite"));
-  holder.exec("BEGIN EXCLUSIVE");
-  try {
-    const asked = Date.now();
-    const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
-    assert.equal(made.status, 201, made.text);
-    // The import waits for the store on its own thread: the setup's answer and the next request do not.
-    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json.state, "running");
-    assert.ok(Date.now() - asked < 3_000, `answered in ${Date.now() - asked} ms while the store is held`);
-    // Held until the import has given up: past its five-second wait, plus its thread's start on a busy machine.
-    const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
-    for (const deadline = Date.now() + 20_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(200);
-    assert.equal((await call(server.port, { path: "/v2/auth/session" })).status, 200, "the server is still up");
-    assert.deepEqual(await state(), { state: "stopped" }, "the owner reads it stopped");
-  } finally {
-    holder.exec("ROLLBACK");
-    holder.close();
-  }
-  assert.deepEqual(unhandled.map(String), [], "no rejection left unhandled");
-  assert.equal(agentsIn(server.data), 0);
-  assert.ok(existsSync(join(server.data, ".import-at-setup")), "the owner's yes is kept for the next start");
+// The import worker opens no store of its own (the server holds the one exclusive owner): it reaches the server's open store
+// over its parentPort (import-proxy.ts). These drive that proxy over a real MessageChannel, so each round trip is a
+// structured clone as the worker's is. `serveStore` is the server's onWorker listener: a message carrying `req` is answered
+// against the store and posted back.
+const serveStore = (port, store) => port.on("message", (message) => void answerStoreCall(store, ctx, message).then((reply) => port.postMessage(reply)));
+const importInput = (id, session) => ({ id, agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session }, launch: { body: launchBody({ input: { content: "do it" }, title: "do it", place: { mode: "runner" } }) }, startedAt: 0, transcript: [[{ type: "conversation", value: { id: 1 } }]] });
+
+test("the two store errors the import tells apart cross the port as their own classes; any other keeps its name", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  const { port1, port2 } = new MessageChannel();
+  t.after(() => (port1.close(), port2.close()));
+  serveStore(port1, store);
+  const proxy = importStoreProxy(port2);
+  // A session imported twice is one run's: the store throws StoreConstraint, which crosses the port as itself (the import's
+  // dedup tells it apart from a busy store).
+  await proxy.importRun(importInput("imp-a", "s-1"));
+  await assert.rejects(proxy.importRun(importInput("imp-b", "s-1")), (error) => error instanceof StoreConstraint);
+  // A busy store and any other error, thrown by a stand-in the way the server would: StoreBusy as itself, the rest as an
+  // Error that keeps the thrown name.
+  const { port1: a, port2: b } = new MessageChannel();
+  t.after(() => (a.close(), b.close()));
+  serveStore(a, { flush: async () => { throw new StoreBusy("the database stayed locked"); }, agents: { get: async () => { throw Object.assign(new Error("gone"), { name: "StoreLaunchMissing" }); } } });
+  const stand = importStoreProxy(b);
+  await assert.rejects(stand.flush(), (error) => error instanceof StoreBusy && error.message === "the database stayed locked");
+  await assert.rejects(stand.agents.get("x"), (error) => !(error instanceof StoreBusy) && error.name === "StoreLaunchMissing" && error.message === "gone");
+});
+
+test("the import writes its runs one at a time over the port, each in one commit; a worker lost between two leaves the committed runs whole and no partial next", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  const { port1, port2 } = new MessageChannel();
+  t.after(() => (port1.close(), port2.close()));
+  // The order the store serves importRun: the next one reaches it only after the last has been answered.
+  const served = [];
+  port1.on("message", (message) => void (async () => {
+    if (typeof message === "object" && message !== null && "req" in message && message.path[0] === "importRun") served.push(message.args[0].id);
+    port1.postMessage(await answerStoreCall(store, ctx, message));
+  })());
+  const proxy = importStoreProxy(port2);
+  // Two runs as runImport writes them: each awaited before the next, so one is in flight at a time.
+  await proxy.importRun(importInput("run-a", "s-a"));
+  await proxy.importRun(importInput("run-b", "s-b"));
+  assert.deepEqual(served, ["run-a", "run-b"], "one run in flight at a time, in order");
+  assert.deepEqual((await listRuns(store, {}, ctx)).map((row) => row.id).sort(), ["run-a", "run-b"]);
+  // The worker is lost (its port closes) before a third run is sent: the two already committed stay whole, and nothing of a
+  // next run is half-written, since importRun is one commit.
+  port1.close();
+  port2.close();
+  assert.deepEqual((await listRuns(store, {}, ctx)).map((row) => row.id).sort(), ["run-a", "run-b"], "the committed runs are whole; no partial next run");
 });
 
 test("the owner's yes outlives a stop: the next start goes on with the import, and clears it once done", { timeout: 60_000 }, async (t) => {
@@ -202,9 +242,7 @@ test("the owner's yes outlives a stop: the next start goes on with the import, a
   t.after(() => server.close());
   for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
   assert.equal(existsSync(join(data, ".import-at-setup")), false, "cleared once the import ended");
-  const reader = openStoreReader(data);
-  t.after(() => reader.close());
-  assert.deepEqual(reader.listRuns().map((r) => r.importedFrom.source).sort(), ["claude-code", "codex"]);
+  assert.deepEqual((await runsOf(data)).map((r) => r.importedFrom.source).sort(), ["claude-code", "codex"]);
 });
 
 test("a server closed during the import at setup stops it between sessions and waits for it: nothing writes the store after close", { timeout: 60_000 }, async (t) => {
@@ -221,17 +259,10 @@ test("a server closed during the import at setup stops it between sessions and w
   assert.equal(made.status, 201, made.text);
   await server.close();
   closed = true;
-  const count = () => {
-    const reader = openStoreReader(data);
-    try {
-      return reader.listRuns().length;
-    } finally {
-      reader.close();
-    }
-  };
-  const atClose = count();
+  const count = async () => (await runsOf(data)).length;
+  const atClose = await count();
   await sleep(1_500);
-  assert.equal(count(), atClose, "no run written after close");
+  assert.equal(await count(), atClose, "no run written after close");
   assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
   // Waited for, not ended: the stopped import answered what it took, and the yes keeps it (setup wrote it empty).
   if (atClose < 40) assert.equal(JSON.parse(readFileSync(join(data, ".import-at-setup"), "utf8") || "{}").runs, atClose, "the import stopped between sessions and said so");
@@ -248,7 +279,7 @@ test("a setup with the box ticked still being answered when the server closes st
   await server.close();
   await asked;
   await sleep(2_000);
-  assert.equal(agentsIn(data), 0, "no agent written after close");
+  assert.equal(await agentsIn(data), 0, "no agent written after close");
   // Setup took the yes (the password is set) exactly when it is kept for the next start.
   const owner = join(data, "owner.json");
   const set = existsSync(owner) && JSON.parse(readFileSync(owner, "utf8")).password !== undefined;
@@ -267,7 +298,7 @@ test("a server that fails to listen takes up no import and starts no count: it h
   t.after(() => taken.close());
   await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, countSessions: true, sessionsHome }), /EADDRINUSE/);
   await sleep(3_000);
-  assert.equal(agentsIn(data), 0, "nothing imported by a server that never started");
+  assert.equal(await agentsIn(data), 0, "nothing imported by a server that never started");
   assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
 });
 
@@ -491,7 +522,7 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
 });
 
-test("setup's import cuts the secrets this server made and keeps, pasted into a session: its webhook signing secret, its two tokens and its sign-in sessions' secret", { timeout: 90_000 }, async (t) => {
+test("setup's import cuts the secrets this server made and keeps, pasted into a session: its webhook signing secret, its token and its sign-in sessions' secret", { timeout: 90_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const root = await scratch(t);
   const data = join(root, "agents");
@@ -511,13 +542,12 @@ test("setup's import cuts the secrets this server made and keeps, pasted into a 
   claudeSession(home, site, 1);
   const server = await serve(t, { data, accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
   const own = {
-    webhook: set.body.secret,
+    webhook: set.body.signing_secret,
     token: server.token,
-    door: readFileSync(join(data, ".door-token"), "utf8").trim(),
     session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
   };
   for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
-  claudeSession(home, site, 2, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}, door ${own.door}` });
+  claudeSession(home, site, 2, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}` });
   codexSession(home, site, 3, { prompt: `The session secret is ${own.session}.` });
   const kept = new Map(Object.entries(own).map(([name, value]) => [name, holding(data, value)]));
   const ticked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
@@ -554,22 +584,21 @@ test("a key saved on the Tool keys page is cut out of everything setup's import 
   const start = () => startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
   let server = await start();
   t.after(() => server.close());
-  const kept = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { values: { MONID_API_KEY: saved } } });
+  // On the switch a secret takes the owner's signed-in session, not the API token: set the owner (the box unticked, so no
+  // import yet), then save the key on the Tool keys page under that session.
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true }], made.text);
+  const kept = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...page(server), cookie: cookieOf(made) }, body: { values: { MONID_API_KEY: saved } } });
   assert.equal(kept.status, 204, kept.text);
-  // The server starts again with a MONID_API_KEY of its own, a different value: the saved one stays in the page's file.
+  // The server starts again with a MONID_API_KEY of its own, a different value: the saved one stays in the store. The owner's
+  // yes (as a setup stopped mid-import leaves it) drives the import at the next start, with the key already saved.
   await server.close();
   process.env.MONID_API_KEY = own;
+  writeFileSync(join(data, ".import-at-setup"), "", { mode: 0o600 });
   server = await start();
-  // Setup's count, by the ids as the import keeps them.
-  const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
-  let counted = await read();
-  for (const deadline = Date.now() + 30_000; counted.status === 202 && Date.now() < deadline; ) (await sleep(100), (counted = await read()));
-  assert.deepEqual([counted.status, counted.json], [200, { projects: 1, sessions: 2 }]);
-  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
-  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
-  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
-  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
-  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 2, skipped: 0 });
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal(existsSync(join(data, ".import-at-setup")), false, "the import ran at the next start");
+  assert.equal((await runsOf(data)).length, 2, "both sessions imported");
   const nowhere = (when) => {
     const names = [];
     const walk = (at) => {
@@ -582,16 +611,10 @@ test("a key saved on the Tool keys page is cut out of everything setup's import 
     for (const [which, value] of [["the saved key", saved], ["the server's own", own]]) assert.deepEqual([holding(data, value), names.filter((name) => name.includes(value))], [[], []], `${when}: no file under the data directory holds ${which}, or is named after it`);
   };
   nowhere("the first import");
-  assert.ok(holding(join(data, "disk"), "[redacted]").length > 0, "[redacted] where it was");
-  const sessions = () => {
-    const reader = openStoreReader(data);
-    try {
-      return reader.listRuns().map((run) => run.importedFrom.session).sort();
-    } finally {
-      reader.close();
-    }
-  };
-  const first = sessions();
+  // The new store keeps the transcript in its one file: the redacted id is written there, not under a per-run disk folder.
+  assert.ok(holding(data, "[redacted]").length > 0, "[redacted] where it was");
+  const sessions = async () => (await runsOf(data)).map((run) => run.importedFrom.session).sort();
+  const first = await sessions();
   assert.equal(first.filter((id) => /^redacted-[0-9a-f]{16}$/.test(id)).length, 1, "the session named after its file, under its id as kept");
   // The file named with the key grows by a turn; setup's import, gone on with at the next start, finds the run the first
   // made of it under the id as kept: no second run of it.
@@ -603,7 +626,7 @@ test("a key saved on the Tool keys page is cut out of everything setup's import 
   server = await start();
   for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
   assert.equal(existsSync(join(data, ".import-at-setup")), false, "the next start's import ended");
-  assert.deepEqual(sessions(), first, "no run made twice");
+  assert.deepEqual(await sessions(), first, "no run made twice");
   nowhere("the next start's import");
 });
 
@@ -652,22 +675,14 @@ test("an import at setup stopped part way and gone on with at the next start say
   for (let n = 1; n <= 60; n++) claudeSession(home, site, n, { prompt: `Task ${n}.` });
   const data = join(root, "agents");
   const options = { data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } };
-  const runs = () => {
-    if (!existsSync(join(data, "store.sqlite"))) return 0;
-    const reader = openStoreReader(data);
-    try {
-      return reader.listRuns().length;
-    } finally {
-      reader.close();
-    }
-  };
+  const runs = async () => (await runsOf(data)).length;
   const first = await startServe(options);
   const made = await call(first.port, { method: "POST", path: "/v2/setup", headers: page(first), body: { password: PASSWORD, import: true } });
   assert.equal(made.status, 201, made.text);
   // Stopped once some sessions are in, not all.
-  for (const deadline = Date.now() + 30_000; runs() === 0 && Date.now() < deadline; ) await sleep(20);
+  for (const deadline = Date.now() + 30_000; (await runs()) === 0 && Date.now() < deadline; ) await sleep(20);
   await first.close();
-  const before = runs();
+  const before = await runs();
   assert.ok(before > 0 && before < 60, `stopped part way: ${before} of 60 in`);
   const second = await startServe(options);
   t.after(() => second.close());

@@ -83,5 +83,5 @@ test("pi: two calls set to ask in one run, the first allowed, the second denied 
   const asks = done.filter((r) => r.kind === "tool_approval_requested").map((r) => r.tool_use_id);
   assert.equal(asks.length, 2, `two approval rows: ${JSON.stringify(done.map((r) => `${r.kind}: ${r.summary}`))}`);
   readsInOrder(done, asks[0], /^AgentRun: web_fetch ran once you allowed it/, "the first call, at the run's end");
-  readsInOrder(done, asks[1], new RegExp(`^AgentRun: web_fetch was refused: you declined it: ${NOTE}$`), "the second call, at the run's end");
+  readsInOrder(done, asks[1], new RegExp(`^AgentRun: You declined web_fetch: ${NOTE}$`), "the second call, at the run's end");
 });
