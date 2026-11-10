@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "learning-bench/2",
+  "title": "Learning bench results",
+  "description": "One run of the learning bench (scripts/learn-bench.mjs) over learn-bench/<job>/ jobs: per job, harness and arm one series of the job's steps in order, each step's run graded by its own graders (the template eval's: schema, regex, tool_used, file_exists, llm), and the series' learning metrics. Arm on: ONE agent applied from the job's package with learning on, the steps in order, its learning settled between steps. Arm off: a fresh agent per step, learning off. Costs in USD as the server's run view reports them (cost.usd), null when unknown. A rate is a fraction 0..1, null when nothing was counted.",
+  "type": "object",
+  "required": ["schema", "bench", "series", "hard_stop"],
+  "properties": {
+    "schema": { "const": "learning-bench/2" },
+    "hard_stop": { "type": ["string", "null"], "description": "Why the bench stopped early (its spend cap, its deadline, a stop), or null." },
+    "bench": {
+      "type": "object",
+      "required": ["sha", "started_at", "ended_at", "models", "caps"],
+      "properties": {
+        "sha": { "type": "string", "description": "The build's commit." },
+        "frozen": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Each frozen file's sha256 (the runner, the bench wrapper)." },
+        "models": {
+          "type": "object", "description": "Model names only, never a key.",
+          "properties": { "pi": { "type": ["string", "null"] }, "claude-agent": { "type": ["string", "null"] }, "learning_grader": { "type": ["string", "null"], "description": "The server's grade model; null: each run graded on its agent's own." }, "eval_grader": { "type": ["string", "null"], "description": "The llm graders' model; null: the server's default." } }
+        },
+        "caps": { "type": "object", "properties": { "bench_max_usd": { "type": "number" }, "deadline_s": { "type": "integer" }, "step_cap_default_usd": { "type": "number" } } },
+        "started_at": { "type": "string" }, "ended_at": { "type": "string" }
+      }
+    },
+    "series": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job", "harness", "arm", "steps", "metrics"],
+        "properties": {
+          "job": { "type": "string", "description": "The job's folder under learn-bench/." },
+          "template": { "type": ["string", "null"], "description": "The template it applies, or null for a job with its own agent.md." },
+          "harness": { "enum": ["pi", "claude-agent", "codex"] },
+          "arm": { "enum": ["on", "off"] },
+          "agents": { "type": "array", "items": { "type": "string" }, "description": "on: the one agent; off: one per step." },
+          "hard_stop": { "type": ["string", "null"] },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "status", "pass", "graders", "cost_usd"],
+              "properties": {
+                "id": { "type": "string" },
+                "kind": { "enum": ["teach", "repeat", "change", "plant"], "description": "job.yaml's: teach the job, repeat it, change a rule from now on (later graders check the new rule), plant something not to keep (later graders check it was not followed)." },
+                "agent_id": { "type": ["string", "null"] },
+                "run_id": { "type": ["string", "null"] },
+                "status": { "type": "string", "description": "The run's end (completed, failed, cancelled, input_required, timed_out), or not_run." },
+                "error": { "type": ["string", "null"] },
+                "pass": { "type": "boolean", "description": "The run finished and every grader passed (the template eval's rule)." },
+                "graders": {
+                  "type": "array",
+                  "items": { "type": "object", "required": ["grader", "type", "pass", "reason"], "properties": { "grader": { "type": "string" }, "type": { "type": "string" }, "pass": { "type": "boolean" }, "reason": { "type": "string" }, "cost_usd": { "type": ["number", "null"] }, "run_id": { "type": "string" } } }
+                },
+                "answer": { "type": "string", "description": "The run's final answer as the graders read it, its first 4000 characters." },
+                "cost_usd": { "type": ["number", "null"], "description": "The step's run, whole: its job's turns and its end-of-run learning turn (its learning run, the grade, is apart)." },
+                "work_cost_usd": { "type": ["number", "null"], "description": "The job's own turns: what the run had cost when its job answered (its kept learning row's job_cost_usd); the whole run for one that did not learn or look back." },
+                "reflect_cost_usd": { "type": ["number", "null"], "description": "The end-of-run learning turn (the kept row's look_back_usd); 0 for a run that did not learn or look back." },
+                "eval_grader_cost_usd": { "type": ["number", "null"], "description": "Its llm graders' runs." },
+                "learning": { "type": ["object", "null"], "description": "on: the run's learning as it settled.", "properties": { "state": { "type": ["string", "null"] }, "reason": { "type": ["string", "null"] }, "detail": { "type": ["string", "null"] } } },
+                "grade_cost_usd": { "type": ["number", "null"], "description": "on: its learning run's grade cost (GET /runs/{id}/learning cost_usd.grade); null when unknown: a grade whose usage counted tokens at no price reads null here, never 0 (LS-09)." },
+                "grade_cost_unpriced": { "type": "boolean", "description": "on: the grade's usage counted tokens and no price." },
+                "learned": { "type": ["object", "null"], "description": "on: what its learning merged, by name: notes, skills, workflows." },
+                "workflow_proposed": { "type": "boolean", "description": "on: its learning kept a workflow draft or put one to the grader." },
+                "learned_workflow_calls": { "type": "integer", "minimum": 0 },
+                "tools": { "type": "array", "items": { "type": "string" }, "description": "The tools the run called (its timeline)." },
+                "approvals": { "type": "array", "description": "on: pending items the owner approved after the step (--approve, the default).", "items": { "type": "object", "properties": { "file": { "type": "string" }, "status": { "type": "integer" } } } },
+                "active_after": { "type": ["object", "null"], "description": "on: the agent's active learned items after the step, each name with the sha256 of its text: notes, skills, workflows.", "properties": { "notes": { "type": "object", "additionalProperties": { "type": "string" } }, "skills": { "type": "object", "additionalProperties": { "type": "string" } }, "workflows": { "type": "object", "additionalProperties": { "type": "string" } } } }
+              }
+            }
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "follow_rate": { "type": ["number", "null"], "description": "Passed, over the repeat steps." },
+              "pass_rate": { "type": ["number", "null"], "description": "Passed, over every step." },
+              "grader_pass_rates": { "type": "object", "additionalProperties": { "type": ["number", "null"] }, "description": "Each grader file's pass rate over the steps that have it: what the all-graders pass hides." },
+              "cost_per_run_usd": { "type": ["number", "null"], "description": "The step runs' whole cost (work and reflect), per run." },
+              "work_cost_per_run_usd": { "type": ["number", "null"], "description": "The job's own turns, per run." },
+              "cost_trend_usd_per_run": { "type": ["number", "null"], "description": "The least-squares slope of the work cost over the steps' order: below 0, the work got cheaper as it went." },
+              "reflect_cost_per_run_usd": { "type": ["number", "null"], "description": "on: the end-of-run learning turn, per run." },
+              "learning_overhead_usd_per_run": { "type": ["number", "null"], "description": "on: what learning adds to a run: its end-of-run turn and its grade. A grade of unknown cost counts 0, so with grade_cost_unknown_steps above 0 this is a lower bound." },
+              "cost_first_usd": { "type": ["number", "null"] }, "cost_last_usd": { "type": ["number", "null"] },
+              "workflow_proposal_rate": { "type": ["number", "null"], "description": "on: teach steps whose learning proposed a workflow, over the teach steps." },
+              "reuse_rate": { "type": ["number", "null"], "description": "on: steps after a workflow was first kept that called learned_workflow; null before one is kept." },
+              "staleness": {
+                "type": "array", "description": "One per change step (on).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "change_step": { "type": "string" },
+                    "pass_rate_after": { "type": ["number", "null"], "description": "Steps after the change that passed." },
+                    "change_graders_pass_rate": { "type": ["number", "null"], "description": "Graders named change-*.md in the steps after it that passed: the new rule checked alone." },
+                    "skill_updated": { "type": ["boolean", "null"], "description": "An active skill's text differs at the series' end from just before the change; null with no skill." },
+                    "workflow_updated": { "type": ["boolean", "null"], "description": "An active workflow's text differs at the end from just before the change; null with no workflow." },
+                    "workflow_follows": { "type": ["boolean", "null"], "description": "Every step after the change that called learned_workflow passed its change graders; null when none called it." }
+                  }
+                }
+              },
+              "wrong_keeps": { "type": ["integer", "null"], "description": "on: graders named plant-*.md in steps after a plant step that failed (the planted request followed later)." },
+              "plant_graders": { "type": ["integer", "null"], "description": "How many such graders ran." },
+              "grade_cost_usd": { "type": ["number", "null"], "description": "on: the learning runs' grade cost." },
+              "grade_cost_unknown_steps": { "type": ["integer", "null"], "description": "on: steps whose grade cost is unknown (unpriced, or merged and read null)." },
+              "eval_grader_cost_usd": { "type": ["number", "null"] },
+              "approvals": { "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
