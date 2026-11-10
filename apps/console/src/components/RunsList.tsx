@@ -1,10 +1,10 @@
-import { Archive, ArrowUpRight } from "lucide-react";
+import { Archive, ArrowUpRight, Play } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
 import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
@@ -33,11 +33,29 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
       </div>
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
+        : !runs.length ? (filter.status || archived
+          ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">{filter.status ? "No run matches." : "No archived runs."}</p>
+          : <FirstRun />)
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
       {runs && onMore && <div className="mt-4 flex justify-center"><Button type="button" onClick={onMore} disabled={loadingMore} size="sm">{loadingMore ? "Loading" : "Load more"}</Button></div>}
     </div>
+  );
+}
+
+/** A server with no run yet: what a run is, and the two ways to the first one. The Playground starts a run on an agent
+ *  (and says how to make one where there is none); a template makes its agent and runs it. */
+function FirstRun() {
+  return (
+    <section aria-labelledby="first-run" className="border border-primary/50 bg-primary/5 p-5">
+      <p className="caps text-label text-primary-text">No runs yet</p>
+      <h2 id="first-run" className="mt-2 text-xl font-semibold">Start your first run</h2>
+      <p className="mt-1 max-w-prose text-lead text-muted-foreground">A run is one piece of work an agent does: a question answered, a page researched, a file written. Each one is listed here with its state, when it started and what it cost.</p>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <a href="#/playground" className={buttonVariants({ variant: "solid", size: "lg" })}><Play aria-hidden /> Start a run</a>
+        <a href="#/templates" className={buttonVariants({ variant: "outline", size: "lg" })}>Browse templates</a>
+      </div>
+    </section>
   );
 }
 
