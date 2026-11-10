@@ -291,7 +291,7 @@ describe("same", () => {
   });
 });
 
-describe("tools by default (tools on, Miguel's rule), and whether the agent reaches the web", () => {
+describe("tools by default (tools on, the owner's rule), and whether the agent reaches the web", () => {
   const offers = toolOffers([
     { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
     { name: "web_fetch", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
