@@ -84,6 +84,20 @@ export function runRunChangeCases(test, subject) {
     assert.deepEqual(second.changes.map((change) => change.id), ["run-page-3", "run-page-4"]);
   });
 
+  test("run changes: the head (changesHead) is, in one read, the cursor a reader holds after draining the feed; nothing is read from it, and a change made after it is read from it once", async (t) => {
+    const { store } = await subject.open(t);
+    // A feed with nothing in it: the head is where a reader from the start stands.
+    assert.equal(await store.runs.changesHead(), (await readAll(store, undefined)).cursor, "an empty feed's head is the drained cursor");
+    for (const state of FINAL) await store.runs.update(await claimed(store, `run-head-${state}`), { state });
+    await store.release(await claimed(store, "run-head-parked"), { state: "parked" });
+    const head = await store.runs.changesHead();
+    const drained = await readAll(store, undefined, 2);
+    assert.equal(head, drained.cursor, "the head is the cursor after draining, paged or not");
+    assert.deepEqual((await store.runs.changedSince(head)).changes, [], "nothing is read from the head");
+    await store.runs.update(await claimed(store, "run-after-head"), { state: "ended" });
+    assert.deepEqual((await readAll(store, head)).changes.map((change) => change.id), ["run-after-head"], "a change after the head is read from it, once");
+  });
+
   test("run changes: two connections writing at once: every change is read once, none missed", async (t) => {
     const { store, other } = await subject.open(t);
     const second = await other();
