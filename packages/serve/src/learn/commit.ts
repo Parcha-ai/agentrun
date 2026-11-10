@@ -197,6 +197,18 @@ async function personOf(change: Extract<LearningChange, { kind: "person" }>, sna
  *  line, the whole text of each note the proposal supersedes, and the blob each of those was read at (`graded`, which
  *  the merge checks); or `problems` when the proposal cannot join main as it is (learn/check.ts mergeProblems). From
  *  the folder's snapshot and its bodies: no git, no exec. */
+/** The texts main holds at `paths`, each a note's file, by path: one main holds no note at is not in it. From the
+ *  folder's snapshot and its bodies: no git, no exec. What a skill the grader re-filed as a note (grade.ts skillAsNote)
+ *  would be written over, read before its merge. */
+export async function mainTexts(ws: Workspace, paths: readonly string[]): Promise<Record<string, string>> {
+  if (!paths.length) return {};
+  return readLearning(ws, async ({ snapshot, body }) => {
+    const oids = new Map((snapshot?.notes ?? []).map((note) => [note.file, note.oid]));
+    const held = paths.filter((path) => oids.has(path));
+    return Object.fromEntries(await Promise.all(held.map(async (path) => [path, await body(path, oids.get(path)!)] as const)));
+  });
+}
+
 export async function readMain(ws: Workspace, proposal: { readonly notes: readonly NoteText[] }): Promise<{ active: IndexEntry[]; superseded: NoteText[]; graded: Record<string, string> } | { problems: Problem[] }> {
   const added = proposal.notes.map(({ file, text }) => parseNoteFile(file, text));
   const bad = proposal.notes.filter((_, i) => Array.isArray(added[i])).map(({ file }): Problem => ({ rule: "note", path: file, detail: "the proposal's note is out of shape" }));

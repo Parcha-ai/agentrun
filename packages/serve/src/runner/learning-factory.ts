@@ -8,7 +8,7 @@
 //   readMain   main as the grader reads it, from the folder's snapshot (learn/commit.ts readMain);
 //   commit     the folder's one write (learn/commit.ts learningCommit).
 
-import { learningCommit, type LearningChange, readMain } from "../learn/commit.js";
+import { learningCommit, type LearningChange, mainTexts, readMain } from "../learn/commit.js";
 import { learningWorkspace } from "../learn/folder.js";
 import type { Store } from "../store/store.js";
 import type { Workspace } from "../workspace/index.js";
@@ -45,6 +45,7 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
     folder: (agentId) => learningWorkspace({ mode: "local", agentId, data: deps.data, ...(deps.log ? { log: deps.log } : {}) }),
     readMain: async (ws, proposal) => (await readMain(ws as Workspace, { notes: proposal.notes })) as GradeMain | { readonly problems: readonly Problem[] },
     commit: async (ws, change) => (await learningCommit(ws as Workspace, change as LearningChange)) as LearningCommitResult,
+    mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
     ...(deps.now ? { now: deps.now } : {}),
   });
 }
