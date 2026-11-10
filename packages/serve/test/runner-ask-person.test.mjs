@@ -283,7 +283,10 @@ test("wait in the claim: a trigger's message (answers: false) delivered while th
   assert.equal((await viewOverStore(server, RUN, VIEW_DEPS)).status, "input_required", "a trigger's message counts as no answer");
   const row = await until(async () => (await server.commands(RUN, 0)).find((c) => c.id === trigger.id && (c.refused !== null || c.takenAt !== null)), "the trigger's row answered");
   assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
-  const now = await server.runs.get(RUN);
+  const now = await until(async () => {
+    const r = await server.runs.get(RUN);
+    return r.summary === "Waiting for your reply" && r;
+  }, "the row's waiting summary").catch(() => server.runs.get(RUN));
   assert.deepEqual([now.state, now.summary], ["running", "Waiting for your reply"], "still waiting on the person");
   assert.equal(modelCalls(gw).length, before, "the agent was not resumed");
   await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
@@ -308,7 +311,11 @@ test("wait in the claim: a trigger's message (answers: false) delivered between 
   } });
   const row = (await server.commands(RUN, 0)).find((c) => c.id === trigger.id);
   assert.equal(row.refused, "The run is waiting on a person.", JSON.stringify(row));
-  const now = await server.runs.get(RUN);
+  // The wait's start lands just after its hold: the row says so then.
+  const now = await until(async () => {
+    const r = await server.runs.get(RUN);
+    return r.summary === "Waiting for your reply" && r;
+  }, "the row's waiting summary").catch(() => server.runs.get(RUN));
   assert.deepEqual([now.state, now.summary], ["running", "Waiting for your reply"], "the run waits on its person");
   const asks = modelCalls(gw).length;
   await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });

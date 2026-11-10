@@ -1648,7 +1648,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const run = {
       state: data.state,
+      // An end's summary is its own: with none, a wait's summary the row still says (a question's, a hand-over's: HELD_WAITS
+      // and the park's) goes, so an ended run never reads as waiting on its person.
       ...(data.summary ? { summary: data.summary } : {}),
+      ...(!data.summary ? { summary: null } : {}),
       ...(data.outcome !== undefined ? { outcome: data.outcome } : {}),
       ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),

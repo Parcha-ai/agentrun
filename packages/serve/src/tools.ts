@@ -486,6 +486,26 @@ const browserTool: ToolEntry = {
     });
     host.beforeResume(async (harness) => {
       opened = harness;
+      // A hand-over still waiting from an earlier pass or claim (its waiting entry, no answer yet): its answer, in this
+      // pass, clears the row's waiting summary too, as the pass that asked would have.
+      // A first claim has no root yet (the session creates it): nothing waits then.
+      if (host.rowSummaryOn && (await harness.conversation(ROOT_CONVERSATION_ID as never, context).catch(() => undefined))) {
+        const entries: { kind: string; data?: unknown }[] = [];
+        await harness.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            entries.push(...page.items);
+            if (page.next === undefined) return;
+            cursor = page.next;
+          }
+        }, context);
+        const waitingIdOf = (entry: { kind: string; data?: unknown }) => {
+          const data = entry.data as { state?: unknown; id?: unknown } | undefined;
+          return entry.kind === "agent.handover" && data?.state === "waiting" && typeof data.id === "string" ? data.id : undefined;
+        };
+        const waiting = new Set(entries.map(waitingIdOf).filter((id): id is string => id !== undefined));
+        for (const id of waiting) if (!answerIn(entries, id)) host.rowSummaryOn("agent.handover", (entry) => entry.id === id && entry.state !== "waiting", null);
+      }
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
       // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.

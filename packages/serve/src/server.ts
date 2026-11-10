@@ -3164,6 +3164,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since
    *  is not read again, and a new wait comes with a new claim, so a new epoch. */
   const readWaits = new Map<string, string>();
+  /** When each held wait (a run waiting on its person with its claim held) was last read again. */
+  const heldReadAt = new Map<string, number>();
+  const HELD_WAIT_REREAD_MS = 1_000;
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
   /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
    *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
@@ -3192,9 +3195,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its browser hand-over,
         // tools.ts), which its row's summary says (HELD_WAITS); a new ask sets it anew, so each is read and told once.
         const waitsInClaim = row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
-        // A held run past its wait (answered, working again): what was read for that wait goes, so its next ask in the same
-        // claim, whose row reads the same as the last one's, is read and told too.
-        if (row.state === "running" && row.runner !== null && !waitsInClaim) readWaits.delete(row.id);
+        // A held run's next ask in the same claim reads the same row as its last (state, epoch, runner, summary), and the
+        // answer between may come and go within one read: so a held wait is read again now and then (HELD_WAIT_REREAD_MS),
+        // and told once per ask all the same, since each ask's notice is keyed to its own last row (webhooks.ts emit).
+        if (waitsInClaim && Date.now() - (heldReadAt.get(row.id) ?? 0) >= HELD_WAIT_REREAD_MS) {
+          heldReadAt.set(row.id, Date.now());
+          readWaits.delete(row.id);
+        }
         if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
       }
     }
@@ -3208,6 +3215,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         continue;
       }
       readWaits.delete(id);
+      heldReadAt.delete(id);
       if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
       if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
     }
