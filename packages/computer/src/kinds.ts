@@ -190,6 +190,16 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 		defaultImage: { browser: BROWSER_IMAGE },
 	}),
+	// This machine's Chrome: no key, nothing billed, no live view (a person watching runs it headed).
+	entry({
+		id: "local",
+		label: "Local Chrome",
+		keys: [],
+		mounts: [],
+		metered: false,
+		capabilities: [{ kind: "browser", groups: ["cdp"] }],
+		defaultImage: { browser: BROWSER_IMAGE },
+	}),
 ];
 
 /** What testConnection is given: the provider's keys by their serve-side names, and the caller's signal. */

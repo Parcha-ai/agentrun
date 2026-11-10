@@ -61,7 +61,11 @@ export interface ComputerCapabilities {
 	 * once the live bypass cases pass (ruling 9).
 	 */
 	networkReadBack?: boolean;
-	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
+	/**
+	 * What keeps the computer's programs apart from everything else. host: they are processes of the machine the
+	 * provider runs on, as its user (the local browser's Chrome, held only by Chrome's own sandbox and its egress proxy).
+	 */
+	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine" | "host";
 	os: ComputerOs;
 	/**
 	 * With release "stop": true when a stop ends in deletion (Daytona with autoDeleteMinutes 0), so release(ref, "stop")

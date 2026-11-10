@@ -64,6 +64,7 @@ export const providers = {
 	e2b: () => import("./e2b.js"),
 	browserbase: () => import("./browserbase.js"),
 	kernel: () => import("./kernel.js"),
+	local: () => import("./local.js"),
 	"phone-harness": () => import("./phone-harness.js"),
 	orgo: () => import("./orgo.js"),
 } satisfies Record<string, () => Promise<ProviderModule>>;
