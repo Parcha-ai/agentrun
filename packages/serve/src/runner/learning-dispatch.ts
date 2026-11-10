@@ -4,7 +4,8 @@
 // grade is booked as the grade's (learning-ask.ts bookedAsk: the learning run's own records, the kernel's model proxy)
 // and capped by nothing: main books it to the learning meter and caps no grade. A grader that never answers is cut at
 // the grade's bound, and what it spent is unknown (null).
-import { openRouterOnly, providerFor } from "../provider.js";
+import { FAUX_ENV } from "../model.js";
+import { anthropicModelId, openRouterOnly, providerFor } from "../provider.js";
 import { bookedAsk, type GraderRoute } from "./learning-ask.js";
 import { learningLoopFactory } from "./learning-factory.js";
 import { GRADE_TIMEOUT_MS, type LearningLoopDeps } from "./learning-loop.js";
@@ -45,10 +46,12 @@ const objectOf = (value: unknown): Record<string, unknown> => (value !== null &&
  *    own id on the wire, OpenRouter's key as a bearer token, its one credential), priced at OpenRouter's catalog price of
  *    the model (its priceModel, through the runner's route);
  *  - an OpenAI model, the same model on OpenRouter (`openrouter/openai/<id>`, the route's own translation).
- *  Every other model and host: the runner's route as named. */
+ *  A faux host (FAUX_ENV) and a gateway take the model as named: a faux grade never reaches a real provider, whatever
+ *  key the host inherited. Every other Anthropic model goes by Anthropic's own id (anthropicModelId: OpenRouter's
+ *  dotted name dashed), as its harness's model selection names it (provider.ts modelOn), so the catalog finds it. */
 export async function gradeRouteOf(model: string | undefined, env: NodeJS.ProcessEnv, routeOf: (model: string | undefined) => GraderRoute | Promise<GraderRoute>): Promise<GraderRoute> {
   const slash = model?.indexOf("/") ?? -1;
-  if (model === undefined || slash < 1 || env.AGENT_MODEL_BASE_URL) return routeOf(model);
+  if (model === undefined || slash < 1 || env.AGENT_MODEL_BASE_URL || env[FAUX_ENV]) return routeOf(model);
   const [vendor, id] = [model.slice(0, slash), model.slice(slash + 1)];
   if (vendor === "anthropic" && openRouterOnly("anthropic-messages", env)) {
     const sent = providerFor("anthropic-messages", env, { provider: "anthropic", modelId: id }, "the grader");
@@ -56,6 +59,7 @@ export async function gradeRouteOf(model: string | undefined, env: NodeJS.Proces
     return { model: sent.modelId, provider: { api: "anthropic-messages", origin: sent.origin, credential: sent.credential, auth: sent.auth }, ...(priced.like ? { like: priced.like } : {}), ...(priced.price ? { price: priced.price } : {}) };
   }
   if (vendor === "openai" && openRouterOnly("openai-responses", env)) return routeOf(`openrouter/openai/${id}`);
+  if (vendor === "anthropic") return routeOf(`anthropic/${anthropicModelId({ provider: "anthropic", modelId: id })}`);
   return routeOf(model);
 }
 
