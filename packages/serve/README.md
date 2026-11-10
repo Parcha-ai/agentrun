@@ -173,6 +173,7 @@ On a Linux host with Docker Engine 26 or later, with no checkout:
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" >> .env && chmod 600 .env   # once; keep it
 docker compose up -d
 docker compose logs agentrun | grep Open
 ```

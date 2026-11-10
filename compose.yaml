@@ -1,6 +1,7 @@
 # AgentRun Server in a container, with Docker sandboxes, on a Linux host with Docker Engine 26 or later. In the directory
 # that holds this file, once, then every later compose command in any shell:
 #   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+#   echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" >> .env && chmod 600 .env   # once; keep it
 #   docker compose up -d
 # Then open the link `docker compose logs agentrun` prints. From a checkout, `--build` builds the image from it
 # (packages/serve/docker/Dockerfile) in place of the published one.
@@ -38,6 +39,9 @@ services:
       AGENTRUN_BOXES: docker
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
+      # The key every saved secret (model and tool keys, MCP credentials, sign-ins) is sealed under. Make it once in .env
+      # (README) and keep it: without it a recreated container makes a new key, and the secrets saved under the old one are lost.
+      AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?make .env with AGENTRUN_SEAL_KEY (openssl rand -base64 32) and keep it; it seals every saved key}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
       AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}
       AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link

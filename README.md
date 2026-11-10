@@ -47,11 +47,13 @@ agents can spend.
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
 export OPENROUTER_API_KEY=...
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" >> .env && chmod 600 .env
 docker compose up -d
 docker compose logs agentrun | grep Open
 ```
 
-The `.env` beside `compose.yaml` keeps the socket's group for every later `docker compose` command, in any shell.
+The `.env` beside `compose.yaml` keeps the socket's group and the seal key for every later `docker compose` command, in any shell.
+Keep it: the seal key seals every saved key, and a new one can't open them.
 
 Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
 Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
