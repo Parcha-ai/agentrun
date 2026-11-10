@@ -5,7 +5,7 @@ import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
-import { exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
+import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -81,7 +81,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         </div>
         <div className="mt-3 max-sm:mt-0"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
       </div>
-      {example && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{example.from === "example" ? "The workflow's example input. Edit it, then run." : "The workflow's input, its fields empty. Fill them in, then run."}</p>}
+      {example && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{exampleHint(example, "run")}</p>}
       {!built.ok && text.trim() && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{built.message}</p>}
       {problem && (
         <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-[12px] text-destructive-text" role="alert">

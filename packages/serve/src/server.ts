@@ -1751,7 +1751,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   function workflowInputIssues(validateWorkflow: typeof import("@parcha/agentrun-dsl").validateWorkflow, revision: Revision, input: Json): InputIssue[] {
     if (revision.kind !== "workflow") return [];
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
-    return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
+    if (checked.ok) return [];
+    return checked.issues.map((i) => {
+      // An input problem has no path of its own; its message names the schema's path and why (the DSL's schemaProblems
+      // reports schema paths, never the input's data), so it is said as it is, and the field carries that path (#1926).
+      const said = !i.path && i.code === "INPUT_INVALID" && i.message ? i.message.replace(/^input:\s*/, "") : `${i.code}${i.path ? ` at ${i.path}` : ""}`;
+      const at = i.path || /^(#\/\S*?):\s/.exec(said)?.[1];
+      return { field: `input${at ? ` at ${at}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${said}` };
+    });
   }
 
   /** Where a person opens a page an answer to `req` names (a run's or an agent's console_url, console-links.ts): the
