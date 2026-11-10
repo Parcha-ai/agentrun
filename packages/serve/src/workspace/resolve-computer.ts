@@ -29,7 +29,7 @@ import type { Workspace } from "./workspace.js";
 export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace };
 
 /** An agent's computer setting: a sandbox's may ask for GPUs. */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly gpu?: GpuSpec | null };
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly gpu?: GpuSpec };
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */

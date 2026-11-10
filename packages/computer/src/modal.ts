@@ -1,4 +1,4 @@
-// The Modal provisioner, VM runtime only: every call through the host's own Modal JS SDK client, of which this package
+// The Modal provisioner, on the VM runtime, and on gVisor for a GPU computer (Modal's one GPU runtime): every call through the host's own Modal JS SDK client, of which this package
 // names only the slice it uses (ModalSdk) and imports nothing. Every SDK fact below is cited in the README's Modal
 // section, from modal-client@64880502 (js/src) and Modal's docs.
 import { createHash, randomBytes } from "node:crypto";
@@ -724,13 +724,13 @@ function recordedArchil(tags: Record<string, string>): RecordedArchil | undefine
 }
 
 /** Every way the probe's report differs from what the computer should be. */
-function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec; runtime?: ModalRuntime }): string[] {
+function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec; runtime: ModalRuntime }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
 	// The probe's kernel is the only runtime read-back: gVisor exactly for a GPU computer, a VM's kernel for every other.
 	const gvisor = /gvisor/i.test(probe.kernel);
-	if ((expected.runtime ?? "vm") === "vm" && gvisor) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	if (expected.runtime === "vm" && gvisor) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
 	if (expected.runtime === "gvisor" && !gvisor) found.push(`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(probe.kernel)})`);
 	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	// Its own network: the live interfaces lo alone (a kernel's quiet tunnels are none), and none it could bring up.
@@ -747,7 +747,7 @@ function tagDrift(given: Record<string, string>, read: Record<string, string>): 
 }
 
 /**
- * Computers that are Modal sandboxes on the VM runtime. The daemon is uploaded right after create, streamed through an
+ * Computers that are Modal sandboxes on the VM runtime, or on gVisor with a GPU. The daemon is uploaded right after create, streamed through an
  * exec's stdin, while the sandbox's command, a small sh entrypoint, waits for it and then becomes `computerd init`; or,
  * with daemonImage, it comes in as a layer of the computer's image (COPY --from) and is the command itself. A
  * connection is `computerd stdio` through exec, so a computer with network none is still reached, and needs no network

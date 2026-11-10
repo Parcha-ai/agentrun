@@ -26,7 +26,7 @@ export type ComputerSetting =
 const GPU_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The GPUs a setting asks for, or undefined. */
-export const gpuOf = (computer: { readonly kind: string; readonly gpu?: GpuSetting | null }): GpuSetting | undefined => (computer.kind === "sandbox" && computer.gpu ? computer.gpu : undefined);
+export const gpuOf = (computer: { readonly kind: string; readonly gpu?: GpuSetting }): GpuSetting | undefined => (computer.kind === "sandbox" ? computer.gpu : undefined);
 
 /** A place as the v2 API names it. */
 export type PlaceView = { mode: "runner" } | { mode: "sandbox"; box: string };

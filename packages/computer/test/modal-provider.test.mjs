@@ -991,6 +991,8 @@ test("attach refuses a drifted computer in words and leaves it running", async (
 		[{ deadline: "soon" }, /deadline/],
 		[{ tags: { [SPEC_TAG]: "not json" } }, /spec/],
 		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "gvisor" }) } }, /runtime/],
+		// A computer an earlier version made records no runtime: refused, never read as vm (the breaking change).
+		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work" }) } }, /runtime: the tag agentrun\.computer\.spec says nothing/],
 	];
 	for (const [options, pattern] of cases) {
 		const { provider, fake } = setup({}, { sandboxes: [seeded(options)] });
