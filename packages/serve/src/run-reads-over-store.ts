@@ -118,10 +118,11 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
   // The run's model-node cost once it ended (0 before): what its sessions booked (booked-cost.ts), its model nodes', its
   // `llm` calls' and its paid tools', all but its decisions, which the graph sums from their receipts. Its `llm` calls'
-  // answers are then all in it (llmRead), never counted again from the node log. A run that booked nothing reads its rows,
-  // as the old graph read run.rows.
+  // answers are then all in it (llmRead), never counted again from the node log. One that booked nothing but decisions
+  // has a model-node cost of 0 (its decisions are the receipts'). A run whose cost is not its booking reads its rows, as
+  // the old graph read run.rows.
   const entries = ended ? await runEntries(store, runId, deps.context) : [];
-  const booked = ended && costIsBooked(entries, false) ? bookedCostOf(entries, { settled: true, except: [DECISION_SESSION] }) : undefined;
+  const booked = ended && costIsBooked(entries, false) ? (bookedCostOf(entries, { settled: true, except: [DECISION_SESSION] }) ?? { usd: 0 }) : undefined;
   const rows = ended && !booked ? await runTimeline(store, runId, deps.context) : [];
   // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
   // servedPart, and every other field (its workflow, its structure, any added later) whole.

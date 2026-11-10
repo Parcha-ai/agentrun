@@ -12,7 +12,11 @@ export async function spentOverStore(store: Store, runId: string, context: Conte
   const entries = await runEntries(store, runId, context);
   // A run whose record carries no booked cost of its own (a CLI harness's, a workflow's, a learning run's) reads what its
   // sessions booked, the figure its cap holds it to (booked-cost.ts); its record's answers would read $0.
-  if (costIsBooked(entries, isCliRecord(entries))) return bookedCostOf(entries, { settled: false })?.spentUsd ?? 0;
+  // One that booked nothing yet has spent 0; an unknown booked spend stays unknown (null).
+  if (costIsBooked(entries, isCliRecord(entries))) {
+    const booked = bookedCostOf(entries, { settled: false });
+    return booked === undefined ? 0 : booked.spentUsd;
+  }
   return spentFrom(entries);
 }
 
