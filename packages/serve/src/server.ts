@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFi
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
+import proxyaddr from "proxy-addr";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -192,8 +193,14 @@ export type ServeOptions = {
   /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
    *  the offer has its numbers by the time the page opens (the CLI sets it). */
   countSessions?: boolean;
-  /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
+  /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is counted by
+   *  the server's failure budget only. */
   signInAddresses?: number;
+  /** The proxies in front of this server (AGENTRUN_TRUSTED_PROXIES): addresses, CIDR ranges, or `loopback`, `linklocal`,
+   *  `uniquelocal`. A request from one of them is counted by the sign-in limit under the client address its
+   *  X-Forwarded-For names (the nearest one not itself a trusted proxy). None by default: the header is never read, and
+   *  every request counts under the address it came from. */
+  trustedProxies?: readonly string[];
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -1283,6 +1290,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
   const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // Who a sign-in comes from, for its limit: the socket's peer, or, from a trusted proxy only, the client it forwards for.
+  const trusted = (() => {
+    if (!options.trustedProxies?.length) return undefined;
+    try { return proxyaddr.compile([...options.trustedProxies]); } catch (error) { throw new Error(`trustedProxies: ${(error as Error).message}`); }
+  })();
+  const clientOf = (req: IncomingMessage) => (trusted ? proxyaddr(req, trusted) : req.socket.remoteAddress) ?? "unknown";
   /** Whether `req` may be shown a secret this server mints (trigger-secrets-shown.ts): the caller that may write one. */
   const mayHoldSecrets = (req: IncomingMessage) => writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) });
   /** A trigger's view with its minted secret's metadata, never the secret (trigger-secrets-shown.ts). */
@@ -2198,12 +2211,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "/auth/sign-in": {
         fromPage(req);
-        const allowed = me.allow(req.socket.remoteAddress ?? "unknown");
-        if (allowed === "full") authFailed("/v2/auth/sign-in", "sign_in_table_full");
-        if (allowed !== "ok") throw new ApiError("rate_limited", "too many sign-ins; try again later", { retry_after_ms: 900_000 }, { "retry-after": "900" });
+        // The body first: the limit's place is taken only for the password's check, so a body sent slowly holds nothing
+        // of the limit (the request's own timeout bounds it, as on any route).
         const { password } = await passwordIn(req, ["password"], false);
         if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
-        if (!(await me.check(password))) {
+        // Never refused for good (owner.ts SignInLimit): a try past the limit is told how long to wait, a minute at most.
+        const allowed = me.signIns.allow(clientOf(req));
+        if (!allowed.ok) {
+          const seconds = Math.ceil(allowed.retryAfterMs / 1000);
+          throw new ApiError("rate_limited", `too many sign-ins ${allowed.by === "address" ? "from this address" : "on this server"}; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
+        }
+        if (allowed.untracked) authFailed("/v2/auth/sign-in", "sign_in_table_full");
+        // The try holds its place in the server's count while the password is checked: a wrong one is charged.
+        let wrong = false;
+        try {
+          wrong = !(await me.check(password));
+        } finally {
+          allowed.done(wrong);
+        }
+        if (wrong) {
           authFailed("/v2/auth/sign-in", "wrong_password");
           throw new ApiError("unauthenticated", "that is not the password");
         }
