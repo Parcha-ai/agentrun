@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
+import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -230,7 +230,7 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
-  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
+  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT, CAPABILITIES_SENT, Run.place) may be, so a required addition anywhere else still fails this comparison.
   const unrequired = [];
   const notes = [];
   const strip = (schema, at) => {
@@ -303,8 +303,15 @@ test("the contract's operations are as vendored; this server's own are added and
     for (const field of fields) assert.ok(!components.schemas[name].required.includes(field), `${name}.${field} is optional here`);
     components.schemas[name].required = VENDORED.components.schemas[name].required;
   }
+  // A contract property this server always sends (CAPABILITIES_SENT's `models`) is required here though the contract's is
+  // not: taken out of the required list, and listed with the rest.
+  const capabilities = components.schemas.Capabilities;
+  for (const field of CAPABILITIES_SENT.filter((name) => capabilities.required.includes(name) && !VENDORED.components.schemas.Capabilities.required.includes(name))) {
+    capabilities.required = capabilities.required.filter((name) => name !== field);
+    unrequired.push(`Capabilities.${field}`);
+  }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
