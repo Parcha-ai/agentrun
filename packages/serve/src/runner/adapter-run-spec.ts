@@ -41,7 +41,7 @@ import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
-import { runTools, type ToolResults } from "../workspace/run-tools.js";
+import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../runs.js";
@@ -301,7 +301,9 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context });
+  // A desktop's or a phone's hold (the person's take-over) wraps its ports: a call made while the person holds it waits,
+  // and the agent's hand-over (computer_request_handoff) asks the person through it.
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}) });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -407,7 +409,7 @@ export async function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRu
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
-  const handTools = tools.hostTools(granted, undefined, results);
+  const handTools = tools.hostTools(withKindTools(granted, tools), undefined, results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, seedLaid?.workflows ?? [], native, gate.permissions)).map((tool) => answersCut(tool, cut));
