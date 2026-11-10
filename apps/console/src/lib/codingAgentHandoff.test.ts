@@ -72,7 +72,11 @@ describe("codingAgentPrompt", () => {
 
 describe("apiOf", () => {
   it("keeps only the origin and the path, without a trailing slash", () => {
-    expect(apiOf("https://u:p@server.example/v2/?q=1#h")).toEqual({ origin: "https://server.example", path: "/v2", api: "https://server.example/v2" });
+    // An address with a user and password in it, built here so the source holds no credential-shaped URL.
+    const signedIn = new URL("https://server.example/v2/?q=1#h");
+    signedIn.username = "u";
+    signedIn.password = "p";
+    expect(apiOf(signedIn.href)).toEqual({ origin: "https://server.example", path: "/v2", api: "https://server.example/v2" });
   });
 });
 
