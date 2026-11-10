@@ -176,9 +176,16 @@ export async function message(
     try {
       await store.runs.reopen(moment.id, command);
     } catch (again) {
-      // Refused: in the words of the run's end as it reads now, which may have come after `moment` was read.
-      if (again instanceof RunFinal) throw finished((await momentNow?.()) ?? moment);
-      throw again;
+      if (!(again instanceof RunFinal)) throw again;
+      // Refused: another message may have opened the run again meanwhile, so the steer is sent once more, to the run now
+      // running. Refused that too, the run takes no message: in the words of its end as it reads now, which may have come
+      // after `moment` was read.
+      try {
+        await sendCommand(store, moment.id, command);
+      } catch (last) {
+        if (last instanceof RunFinal) throw finished((await momentNow?.()) ?? moment);
+        throw last;
+      }
     }
   }
   return { mode, messageId };
