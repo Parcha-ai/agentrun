@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { hostTools } from "../dist/host-tools.js";
-import { localWorkspace } from "../dist/workspace/index.js";
+import { COMPUTER_ROOT, localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
 import { bindTools, runHands } from "../dist/workspace/run-tools.js";
 
@@ -55,7 +55,7 @@ test("bound: a call's text is today's host tool's for the same call on the same 
   const leftEnv = piEnv(localWorkspace(left), { cwd: left, env: { PATH: "/usr/bin:/bin" }, defaultTimeoutS: 120 });
   const today = Object.fromEntries(hostTools({ env: async () => leftEnv }, ["read", "write", "edit", "bash"], ctx, new Map(), [...fileTools(), bashTool()]).map((tool) => [tool.name, tool]));
   const run = await runHands(localWorkspace(right), undefined, { mode: 1, context: ctx });
-  // bash on Archil's exec (Mode 2), here over the same folder: its texts name no path.
+  // bash on Archil's exec (Mode 2), here over the same folder: a path it names is the folder as the computer names it.
   const shell = await runHands(localWorkspace(right), undefined, { mode: 2, context: ctx });
   const results = new Map();
   const bound = Object.fromEntries([
@@ -68,8 +68,9 @@ test("bound: a call's text is today's host tool's for the same call on the same 
     ["bash", { command: "echo hi" }], ["bash", { command: "echo out; exit 3" }], ["bash", { command: "seq 1 5000" }],
     ["bash", { command: "echo before; sleep 30", timeout: 0.5 }], ["bash", { command: "printf 'é%.0s' $(seq 1 30000)" }],
   ];
-  // Each side names its own folder, and a spilled output's file name is random: the texts are compared with both taken out.
-  const plain = (text, root) => text.replaceAll(root, "<folder>").replace(/\.agentrun\/output\/[0-9a-f]+\.log/g, ".agentrun/output/<id>.log");
+  // Each side names its own folder (Mode 2's bash names it as the computer does, COMPUTER_ROOT), and a spilled output's
+  // file name is random: the texts are compared with both taken out.
+  const plain = (text, root) => text.replaceAll(root, "<folder>").replaceAll(`${COMPUTER_ROOT}/`, "<folder>/").replace(/\.agentrun\/output\/[0-9a-f]+\.log/g, ".agentrun/output/<id>.log");
   for (const [name, args] of cases) {
     // Each side has its own folder: its two calls run at once.
     const [expected, actual] = await Promise.all([
