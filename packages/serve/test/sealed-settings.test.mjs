@@ -73,15 +73,16 @@ test("a given value the redaction of the server's secrets would pass over is ref
   assert.equal(store.get("server", "token"), undefined, "nothing kept");
 });
 
-test("at the open, a server with no seal key says once that the sealed settings it holds are not read, and a leftover trigger-secrets.json is said with what to do", async (t) => {
+test("at the open, a value sealed under another key is said, each, and reads as unset; a leftover trigger-secrets.json is said with what to do", async (t) => {
   const data = await dir(t);
   const key = randomBytes(32);
   const kept = new SealedSettings(data, "slackish", spec, key, () => {});
   kept.set("server", "token", "a-long-enough-token");
   kept.set("server", "signing", `whsec_${randomBytes(32).toString("base64")}`);
   const said = [];
-  new SealedSettings(data, "slackish", spec, undefined, (fields) => said.push(fields));
-  assert.deepEqual(said.map((s) => [s.condition, s.adapter]), [["trigger_settings_no_seal_key", "slackish"]], "one line for the store, not one a value");
+  const other = new SealedSettings(data, "slackish", spec, randomBytes(32), (fields) => said.push(fields));
+  assert.deepEqual(said.map((s) => [s.condition, s.adapter, s.field]).sort(), [["trigger_setting_unopened", "slackish", "signing"], ["trigger_setting_unopened", "slackish", "token"]]);
+  assert.equal(other.get("server", "token"), undefined, "unset until it is set again");
   await writeFile(join(data, "trigger-secrets.json"), `${JSON.stringify({ v: 1, secrets: { trg_1: "sealed" } })}\n`);
   const opened = [];
   openServerSecrets(data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, TRIGGER_ADAPTERS, (fields) => opened.push(fields));

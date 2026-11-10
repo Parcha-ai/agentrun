@@ -27,11 +27,18 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
     }
     throw error;
   }
-  // The server's seal key (seal-key.ts): the one handed over (read through secrets.js, which moves it out of the
-  // environment as it loads), else the one the server keeps under the config home. A runner never starts without it: it
-  // seals the live-viewer tokens, and there is no stand-in key.
+  // The server's seal key (seal-key.ts), booted the one way and checked against the store: the one handed over (read
+  // through secrets.js, which moves it out of the environment as it loads), else the one in the data directory. A runner
+  // never starts without it, nor with a key that is not the store's: it seals the live-viewer tokens, and there is no
+  // stand-in key.
   const { bootSealKey } = await import("../seal-key.js");
-  const sealKey = bootSealKey().key;
+  let sealKey: Buffer;
+  try {
+    sealKey = (await bootSealKey(store, dataDir)).key;
+  } catch (error) {
+    await store.close();
+    throw error;
+  }
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
   // (workspace/computer-deps.ts computerDepsFrom), from that same environment.

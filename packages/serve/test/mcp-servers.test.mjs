@@ -5,12 +5,13 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
+import { SECRET_NAMES } from "../dist/secrets.js";
 import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -316,17 +317,27 @@ test("names an empty object would inherit are no saved servers: 404 on every rou
   assert.equal(headers.status, 200, `a header named constructor is no duplicate: ${JSON.stringify(headers.body)}`);
 });
 
-test("the launcher's warning for a seal key it cannot use names MCP server credentials, and how to fix the file", (t) => {
+test("the launcher keeps no seal key of its own: with none handed it reads, makes and hands none from the config home (the server keeps its key in its data directory)", (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-seal-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // An earlier build's key under the config home, one another user can read: the launcher neither reads nor changes it.
   const keys = join(dir, "config", "agentrun");
   mkdirSync(keys, { recursive: true, mode: 0o700 });
   writeFileSync(join(keys, "seal.key"), `${randomBytes(32).toString("base64")}\n`);
-  chmodSync(join(keys, "seal.key"), 0o644); // another user can read it: refused, never changed
-  const { AGENTRUN_SEAL_KEY: _, ...env } = process.env;
-  const ran = spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", ""], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir } });
+  chmodSync(join(keys, "seal.key"), 0o644);
+  // None of the launcher's secrets in its environment: whatever it hands over, it made or read itself.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_NAMES.includes(name)));
+  const probe = "process.stdout.write(String(process.env.AGENTRUN_SECRETS_LEN ?? 0))";
+  const ran = spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", probe], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir } });
   assert.equal(ran.status, 0, ran.stderr);
-  assert.match(ran.stderr, /so the server keeps no tool key and no MCP server credential: make the file 0600 and its directory 0700 \(chmod 700 \S+; chmod 600 \S+seal\.key\)/);
+  assert.doesNotMatch(ran.stderr, /seal key/i);
+  assert.equal(ran.stdout, "0", "no key handed over");
+  assert.equal(statSync(join(keys, "seal.key")).mode & 0o777, 0o644, "never changed");
+  // A config home with no key: none is made there.
+  const fresh = join(dir, "fresh");
+  mkdirSync(fresh);
+  assert.equal(spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", ""], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: fresh, TMPDIR: dir } }).status, 0);
+  assert.deepEqual(readdirSync(fresh), [], "nothing is made under the config home");
 });
 
 test("the names AgentRun's own tools are called by, hands and monid, are no MCP server's: a PUT under one is 422 on its name, with why, and nothing is saved", async (t) => {

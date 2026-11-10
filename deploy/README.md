@@ -29,7 +29,7 @@ What each takes, from its environment alone:
 
 | Setting | Server | Runner | What it is |
 | --- | --- | --- | --- |
-| `AGENTRUN_SEAL_KEY` | required | required | The key saved model keys, tool keys and MCP credentials are sealed under. The server and every runner must have the same one. Make it once with `openssl rand -base64 32` and keep it: losing it loses what it sealed. |
+| `AGENTRUN_SEAL_KEY` | required | required | The key saved model keys, tool keys and MCP credentials are sealed under. The server and every runner must have the same one. Make it once with `openssl rand -base64 32` and keep it: losing it loses what it sealed. Unset, the server keeps one in `/data/seal/seal.key`, beside the store, and a runner on the same volume reads it; a runner on another machine must be handed it. The store records the key's fingerprint, so a process with another key does not start. |
 | `AGENTRUN_STORE_URL` | optional | optional | A `postgres://` URL for a Postgres store. Unset, the store is SQLite in `/data`, and every process must share that one volume. It holds the database's password, so it is a secret: give it from an env file or a secret store, never written into a compose file or a command line. The launcher hands it to the process over a pipe and keeps it out of the process environment, so no run sees it. |
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |

@@ -21,9 +21,9 @@ import { logLine } from "./print.js";
 import { launchBody } from "./run-launch.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
-import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { handedSecret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
-import { bootSealKey } from "./seal-key.js";
+import { bootSealKey, SealKeyRefused } from "./seal-key.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
@@ -1050,15 +1050,15 @@ export async function importCommand(
     temp?: string;
   } = {},
 ): Promise<number> {
-  // The server's own secrets, which the switch keeps sealed in the store, open only under the server's seal key: boot it the
-  // one way the server and runner do (seal-key.ts bootSealKey), before the environment is read, so the environment carries
-  // it; without it the store's server-secret reads refuse to open. The key handed over wins, else the one under the config
-  // home, as the server reads it. A caller's own environment (a test's) is given the key too, so it reads the same store.
-  const seal = bootSealKey();
+  // The server's own secrets, which the switch keeps sealed in the store, open only under the server's seal key: it is
+  // booted the one way the server and runner boot it (seal-key.ts bootSealKey) once the store is open (keyed below), and
+  // checked against it. The key handed over wins (this process's, else a caller's own environment's: a test's), else the
+  // one in the data directory, as the server reads it.
+  const handedKey = handedSecret(SEAL_KEY_ENV) ?? env?.[SEAL_KEY_ENV];
+  const ownEnv = env === undefined;
   // The server's own keys, which its start moved out of process.env (secrets.ts), read back in: the import cuts them out of
   // what it keeps, as it cuts every other key in the environment.
   env ??= withSecrets(process.env);
-  if (env[SEAL_KEY_ENV] === undefined) Object.defineProperty(env, SEAL_KEY_ENV, { value: seal.text, enumerable: false, configurable: true });
   // What it prints goes through the cut what it keeps does, with the keys secretlint finds in the lines themselves: a
   // file or project named after a key is printed cut. The lines are held until the end, then scanned and printed.
   const printed = secretCut(env, SECRET_NAMES);
@@ -1073,6 +1073,24 @@ export async function importCommand(
     printed.add(await secretsIn([...warnings, ...lines].join("\n")));
     for (const line of warnings.splice(0)) console.error(printed.text(line));
     for (const line of lines.splice(0)) print(printed.text(line));
+  };
+  let dir: string | undefined;
+  /** The store's seal key, booted against `store` (seal-key.ts), and the environment the import reads given it, so the
+   *  store's sealed reads open under it. A dry run (`write` false) makes, moves and records nothing, and a store that holds
+   *  no secret and has no key is read with none. The key is cut from what is printed, as every key is. */
+  const keyed = async (store: Store, write: boolean): Promise<void> => {
+    const seal = await bootSealKey(store, dir!, { given: handedKey, write, say: (line) => void warnings.push(line.trimEnd()) });
+    if (!seal) return;
+    printed.add([seal.text]);
+    // This process's own environment again, with the key the boot holds now; a caller's own is given it when it has none.
+    if (ownEnv) env = withSecrets(process.env);
+    else if (env![SEAL_KEY_ENV] === undefined) Object.defineProperty(env!, SEAL_KEY_ENV, { value: seal.text, enumerable: false, configurable: true });
+  };
+  /** A start the seal key refuses (seal-key.ts): said, in its words, and the import does not go on. */
+  const sealRefused = (error: unknown): boolean => {
+    if (!(error instanceof SealKeyRefused)) return false;
+    warnings.push(`agentrun-serve import: ${error.message}`);
+    return true;
   };
   try {
     let values;
@@ -1105,13 +1123,15 @@ export async function importCommand(
       console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
       return 2;
     }
-    const dir = values.data ?? defaultData({ ...env, HOME: home });
+    dir = values.data ?? defaultData({ ...env, HOME: home });
     // The import's options, built from the open store: the tool keys the server keeps as sealed rows (tool-keys-store.ts),
     // opened here with the seal key this process was handed, and this server's own secrets (server-secrets-store.ts). One
     // that does not open is not known here, so not cut: said, as the server says it at its start. A dry run on a data
     // directory with no store yet reads neither (none is there).
     const optionsFrom = async (store: Store | undefined): Promise<ImportOptions> => {
-      const keys = store ? toolKeysOverStore(store, env, say("tool_keys")) : undefined;
+      // The environment as it is now: once the store's key is booted (keyed), it carries it.
+      const keyEnv = env!;
+      const keys = store ? toolKeysOverStore(store, keyEnv, say("tool_keys")) : undefined;
       if (keys) {
         await keys.load();
         keys.view();
@@ -1122,9 +1142,9 @@ export async function importCommand(
         all: values.all === true,
         deleted: values["include-deleted"] === true,
         temp,
-        env,
+        env: keyEnv,
         stored: keys ? keys.values() : {},
-        own: store ? await ownSecrets(store, dir, env, say("webhook_secret")) : [],
+        own: store ? await ownSecrets(store, dir!, keyEnv, say("webhook_secret")) : [],
       };
       // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
       // keeps is.
@@ -1138,10 +1158,14 @@ export async function importCommand(
       let plan: Plan;
       let found: Found[];
       try {
+        if (reader) await keyed(reader, false);
         const options = await optionsFrom(reader);
         plan = await planImport({ ...options, measure: true }, reader);
         for (const line of await describePlan(plan, reader, { verbose: values.verbose === true })) out(line);
         found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : []), ...(await untiedFound(plan))];
+      } catch (error) {
+        if (sealRefused(error)) return 1;
+        throw error;
       } finally {
         await reader?.close();
       }
@@ -1165,6 +1189,12 @@ export async function importCommand(
       throw error;
     }
     try {
+      try {
+        await keyed(store, true);
+      } catch (error) {
+        if (sealRefused(error)) return 1;
+        throw error;
+      }
       const options = await optionsFrom(store);
       const plan = await planImport(options, store);
       const report = await runImport(store, plan, options);

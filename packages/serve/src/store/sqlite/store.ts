@@ -982,6 +982,11 @@ class SqliteStore implements Store {
       put: async (key, value) => {
         await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", params: [key, json(value), now()] }]);
       },
+      putIfAbsent: async (key, value) => {
+        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, json(value), now()] }]);
+        const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+        return row === undefined ? undefined : JSON.parse(row.value);
+      },
       remove: async (key) => {
         await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
       },

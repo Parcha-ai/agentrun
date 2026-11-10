@@ -641,6 +641,9 @@ export interface Settings {
   get(key: string): Promise<unknown | undefined>;
   /** Saves `value` (JSON) under `key`, inserted or replaced in place. */
   put(key: string, value: unknown): Promise<void>;
+  /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
+   *  wins; the value saved under it after (this one, or the one there before). */
+  putIfAbsent(key: string, value: unknown): Promise<unknown>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
   /** Every setting, by key. */
