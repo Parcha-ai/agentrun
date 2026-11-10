@@ -200,6 +200,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
+  // agentrun-pi's root loads its host runner and @earendil-works/pi-coding-agent, an optional peer of agentrun-pi: serve
+  // depends on it (package.json) so an installed server has it, not only this repository.
   const { createPiHostRunner } = await import("@parcha/agentrun-pi");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
   const runnerFor = async (tier: string | undefined) => {

@@ -35,7 +35,6 @@ import { runGate } from "../tool-gate.js";
 import { callNodeAskText, deniedText, modelNodeAskText } from "../refusal-words.js";
 import { loadToolSettings, planeOf, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { SUBMIT_TOOL } from "@parcha/agentrun-pi";
 import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
 import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -51,6 +50,11 @@ import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Store } from "../store/store.js";
+
+/** A model node's submit tool, by name: pi's SUBMIT_TOOL (packages/pi/src/host-tools.ts). Named here, not imported from
+ *  @parcha/agentrun-pi, whose root loads its runner and with it pi-coding-agent, an optional peer an installed server
+ *  does not have: importing it here stopped the runner from starting. workflow-submit-name.test.mjs holds the two equal. */
+export const SUBMIT_TOOL = "submit";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = "workflow";

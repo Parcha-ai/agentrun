@@ -5,10 +5,9 @@
 // runner's events (claims, releases, lost claims, errors, each with its time) are appended to eventsFile as JSON lines,
 // written synchronously so the kill loses none, for the case to show beside the second runner's.
 import { appendFileSync } from "node:fs";
-import { openStore } from "../../store/index.js";
 import type { LoopFactory } from "../loop-contract.js";
 import { startRunner } from "../runner.js";
-import { CONFORMANCE_PROCESS_TIMING, storeClockOf, suiteTools } from "./harness.js";
+import { CONFORMANCE_PROCESS_TIMING, openCaseStore, suiteTools } from "./harness.js";
 import type { ConformanceSubject, KernelHooks, ToolName } from "./subject.js";
 
 // `clockFile`: the case's store clock skew (harness.ts runOut), so this process's store reads the same now as the case's:
@@ -48,7 +47,7 @@ const at = async (point: keyof KernelHooks) => {
 };
 const hooks: KernelHooks = { beforeIntent: () => at("beforeIntent"), beforeResult: () => at("beforeResult") };
 // The store the harness's world opened (its data directory, or its own Postgres schema).
-const store = await openStore({ dataDir: config.dataDir, role: "runner", url: storeUrl ?? "", env: { ...process.env, ...config.storeEnv }, now: storeClockOf(config.clockFile) });
+const store = await openCaseStore({ dataDir: config.dataDir, role: "runner", url: storeUrl ?? "", env: { ...process.env, ...config.storeEnv }, ...(config.clockFile ? { clockFile: config.clockFile } : {}) });
 // Each journal commit's outcome, by the claim's epoch: one that lands, or one refused and by what (the runner's ClaimLost,
 // or the store's Fenced), so the case can say what a loop that lost its claim tried to write.
 const createLoop = subject.createLoop({ script: [{ call: config.tool }, { say: "done" }], tools, hooks });

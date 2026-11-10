@@ -126,6 +126,17 @@ test("a schedule's runs take their input as the trigger's, owner true: fired on 
   }
 });
 
+/** The run's Timeline once it holds its trigger's row: a run reads "working" from its claim, before its runner has written
+ *  the first input, so under load the row comes a little after that state. Polled, within 60 s. */
+async function withTriggerRow(api, runId) {
+  for (const end = Date.now() + 60_000; ; await sleep(50)) {
+    const { status, body } = await api("GET", `/runs/${runId}/timeline`);
+    assert.equal(status, 200, JSON.stringify(body));
+    if (body.rows.some((row) => row.origin === "trigger")) return body.rows;
+    assert.ok(Date.now() < end, `no trigger row in 60 s: ${JSON.stringify(body.rows)}`);
+  }
+}
+
 test("a schedule's run's first Timeline row names the schedule by its name, on a live page and in the final rows; once the trigger is deleted, by its id", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t);
   await made(api, "clock");
@@ -139,7 +150,7 @@ test("a schedule's run's first Timeline row names the schedule by its name, on a
   const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
   const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
   assert.equal(live.last.status, "working", "the page was read while the run still worked");
-  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "a live page names the schedule");
+  assert.deepEqual(named(await withTriggerRow(api, firing.run_id)), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "a live page names the schedule");
   await writeFile(gate, "");
   const { rows } = await follow(api, firing.run_id, ["completed"]);
   assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
@@ -161,8 +172,8 @@ test("a schedule renamed while a run of it is held: the held run's Timeline row 
   assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
   const [firing] = await firings(api, id, 1);
   const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
-  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
-  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time. Hold the answer until ${gate}.`], "named before the rename");
+  await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  assert.deepEqual(named(await withTriggerRow(api, firing.run_id)), [`Schedule utc-check: Tell me the time. Hold the answer until ${gate}.`], "named before the rename");
   assert.equal((await api("PATCH", `/triggers/${id}`, { name: "clock-check" })).status, 200);
   const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
   assert.deepEqual(named(after), [`Schedule clock-check: Tell me the time. Hold the answer until ${gate}.`], "the new name shows at once on the held run");
@@ -181,6 +192,8 @@ test("a schedule's run read by a server restarted on the same data still names i
   assert.ok((await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" })).status < 300);
   const [firing] = await firings(api, id, 1);
   await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  // The first input written, so the restarted server has the trigger's row to name.
+  await withTriggerRow(api, firing.run_id);
   // The server restarted: the store holds one server, so the first closes, then a fresh one opens on the same data (the
   // first's runner still runs the run). It reads the trigger's name from the store.
   await close();

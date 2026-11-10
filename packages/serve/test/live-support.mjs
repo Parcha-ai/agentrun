@@ -97,7 +97,8 @@ export async function liveWorld(t) {
       createLoop = ticker.createLoop;
       closers.push(() => ticker.close());
     }
-    const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
+    // The runner's own live ticker off: these cases wrap their loops in one of their own (options.live), or want none.
+    const runner = startRunner({ store, createLoop, live: false, name: "runner-a", ...TIMING });
     closers.push(async () => {
       await runner.close();
       await store.close().catch(() => {});
