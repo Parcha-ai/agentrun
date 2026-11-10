@@ -234,6 +234,22 @@ test("the package's index exports the registry, so serve resolves a provider wit
 	assert.deepEqual(index.providerIds, providerIds);
 });
 
+test("loading the package root loads no provider file; each provider loads from its own subpath", () => {
+	const reached = new Set();
+	const walk = (url) => {
+		if (reached.has(url.href)) return;
+		reached.add(url.href);
+		for (const from of staticImports(url)) if (from.startsWith(".")) walk(new URL(from, url));
+	};
+	walk(new URL("../dist/index.js", import.meta.url));
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	for (const { file } of providerFiles()) {
+		assert.ok(!reached.has(new URL(`../dist/${file}.js`, import.meta.url).href), `the package root reaches dist/${file}.js`);
+		assert.deepEqual(pkg.exports[`./${file}`], { types: `./dist/${file}.d.ts`, default: `./dist/${file}.js` }, `@parcha/agentrun-computer/${file} is its subpath`);
+	}
+	assert.ok(reached.has(new URL("../dist/descriptors/index.js", import.meta.url).href), "the walk follows the root's imports");
+});
+
 test("Docker's create() takes the daemon as options.daemonPath without asking Docker, and refuses a root user", async () => {
 	const docker = await import("../dist/docker.js");
 	assert.equal(docker.ENV, undefined);

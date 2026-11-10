@@ -5,8 +5,9 @@
 // No vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ModalProvider } from "../dist/modal.js";
 import {
-	DaytonaProvider,
 	DESCRIPTORS,
 	defineProvider,
 	descriptorProblems,
@@ -15,7 +16,6 @@ import {
 	KIND_SHAPES,
 	kindOf,
 	kindRefusals,
-	ModalProvider,
 	PROVIDERS,
 	providerIds,
 	providerModule,

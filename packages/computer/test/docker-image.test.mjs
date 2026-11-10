@@ -8,11 +8,11 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import * as index from "../dist/index.js";
 import * as image from "../dist/docker/image.js";
-import { create } from "../dist/docker.js";
+import { create, DockerProvider } from "../dist/docker.js";
 import { createProvider, DOCKER_ENV, settingsFromEnv } from "../dist/conformance/docker.js";
 import { alive, fakeImageDocker, until } from "./fake-image-docker.mjs";
 
-const { DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, DockerProvider, ensureImage, IMAGE_REPOSITORY, IMAGE_TIMEOUT_MS, RECIPE_LABEL, recipeHash, recipeTag } = index;
+const { DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, ensureImage, IMAGE_REPOSITORY, IMAGE_TIMEOUT_MS, RECIPE_LABEL, recipeHash, recipeTag } = index;
 
 const RECIPE = "FROM alpine:3.20\nRUN echo one > /one\n";
 const HASH = createHash("sha256").update(RECIPE).digest("hex");

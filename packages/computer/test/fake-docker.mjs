@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
-import { DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };

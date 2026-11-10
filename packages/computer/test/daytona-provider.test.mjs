@@ -7,7 +7,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { checkLifetime, DaytonaProvider, kindRefusals } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { checkLifetime, kindRefusals } from "../dist/index.js";
 import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION, wordsOf } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };

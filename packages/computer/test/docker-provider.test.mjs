@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { checkLifetime } from "../dist/index.js";
 import { fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };

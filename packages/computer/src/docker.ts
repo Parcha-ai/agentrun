@@ -12,19 +12,22 @@ import { DOCKER } from "./descriptors/docker.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
-	CPU_PERIOD_US,
-	DAEMON_DIR_IN_COMPUTER,
 	DAEMON_IN_COMPUTER,
 	DEADLINE_LABEL,
 	DEFAULT_CPUS,
 	DEFAULT_MEMORY_MB,
 	DEFAULT_PIDS,
+	helloDrift,
+	WORK,
+} from "./drift.js";
+import {
+	CPU_PERIOD_US,
+	DAEMON_DIR_IN_COMPUTER,
 	type DockerHost,
 	type DockerInspect,
 	type DriftExpected,
 	drift,
 	egressShaped,
-	helloDrift,
 	hostOf,
 	inspectDrift,
 	mountAsked,
@@ -32,8 +35,7 @@ import {
 	networkOf,
 	samePolicy,
 	tmpfsOf,
-	WORK,
-} from "./drift.js";
+} from "./docker/inspect.js";
 import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import {
 	ALLOW_PORTS,

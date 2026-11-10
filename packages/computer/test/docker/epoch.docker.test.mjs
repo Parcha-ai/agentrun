@@ -10,7 +10,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, EPOCH_LABEL, RUN_LABEL, releaseOlder, runLabels } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { EPOCH_LABEL, RUN_LABEL, releaseOlder, runLabels } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const TEST_LABEL = "agentrun.test.run";

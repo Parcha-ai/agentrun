@@ -7,7 +7,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as modal from "../dist/modal.js";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 

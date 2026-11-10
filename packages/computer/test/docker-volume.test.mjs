@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { after } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { DockerProvider, VOLUME_SUBPATH_ENGINE } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { VOLUME_SUBPATH_ENGINE } from "../dist/index.js";
 import { DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
 /** The egress proxy's code as this package builds it. */
