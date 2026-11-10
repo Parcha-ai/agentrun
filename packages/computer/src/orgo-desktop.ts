@@ -84,8 +84,11 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
+
+/** This module's fail: a vendor failure names Orgo (CP-1's one vendor code). */
+const fail = failFor("orgo");
 import { listTested } from "./test-connection.js";
 
 // The images and each desktop's groups are its descriptor's (descriptors/orgo.ts), declared there once.
@@ -522,7 +525,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 			return fail(made.error.code, `${made.error.message}${await this.#deleteNamed(name)}`);
 		}
 		const id = made.value?.id;
-		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return fail("orgo", `Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
+		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return fail("vendor",`Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
 		const ref = { id, name };
 		const file: LabelsFile = { name, labels, deadline, maxDeadline, image: profile.image, ...(cpu === undefined ? {} : { cpus: cpu }), memoryMb: ram * 1024 };
 		const prepared = await this.#prepare(ref, made.value.status, file, signal);
@@ -560,7 +563,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 			if (!read.ok) return read;
 			last = read.value.status;
 			if (last === "running") return ok(undefined);
-			if (!RUNNING.has(last)) return fail("orgo", `Orgo read ${ref.name} ${last}, not running`);
+			if (!RUNNING.has(last)) return fail("vendor",`Orgo read ${ref.name} ${last}, not running`);
 			if (Date.now() >= until) return fail("timeout", `Orgo did not read ${ref.name} running within ${seconds(this.#timeouts.createMs)}; it last read ${last}`);
 			await pause(this.#timeouts.pollMs, signal);
 			if (signal?.aborted) return fail("aborted", "create was aborted while Orgo made the computer");
@@ -591,7 +594,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	async #get(id: string, signal?: AbortSignal): Promise<Result<OrgoComputer>> {
 		const read = await this.#rest.request<OrgoComputer>("GET", `/computers/${encodeURIComponent(id)}`, { timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
-		if (typeof read.value?.name !== "string" || typeof read.value.status !== "string") return fail("orgo", `Orgo's record of ${id} has no name or status`);
+		if (typeof read.value?.name !== "string" || typeof read.value.status !== "string") return fail("vendor",`Orgo's record of ${id} has no name or status`);
 		return ok(read.value);
 	}
 
@@ -666,7 +669,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		const read = await this.#rest.request<{ desktops?: unknown }>("GET", `/workspaces/${encodeURIComponent(this.#workspaceId)}`, { timeoutMs: this.#timeouts.listMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
 		const desktops = read.value?.desktops;
-		if (!Array.isArray(desktops)) return fail("orgo", `Orgo's workspace ${this.#workspaceId} lists no computers array`);
+		if (!Array.isArray(desktops)) return fail("vendor",`Orgo's workspace ${this.#workspaceId} lists no computers array`);
 		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: this.#workspaceId })));
 	}
 
@@ -734,7 +737,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		const user = await this.#shell(ref.id, userCommand(this.#profile), this.#timeouts.execMs, signal);
 		if (!user.ok) return user;
 		const ids = /^(\d+):(\d+)$/.exec(user.value.stdout.trim());
-		if (user.value.exitCode !== 0 || ids === null) return fail("orgo", `who ${ref.name}'s programs run as could not be read (exit ${user.value.exitCode}): ${user.value.stdout.trim().slice(0, 100)}`);
+		if (user.value.exitCode !== 0 || ids === null) return fail("vendor",`who ${ref.name}'s programs run as could not be read (exit ${user.value.exitCode}): ${user.value.stdout.trim().slice(0, 100)}`);
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		opened.value.client.close();
@@ -879,7 +882,7 @@ async function bashCall(rest: OrgoRest, id: string, command: string, timeoutMs: 
 	});
 	if (!ran.ok) return ran;
 	const { exit_code: exitCode, output, stdout, stderr, error } = ran.value ?? {};
-	if (typeof exitCode !== "number") return fail("orgo", `Orgo's bash call answered no exit code (${JSON.stringify(ran.value)?.slice(0, 200)})`);
+	if (typeof exitCode !== "number") return fail("vendor",`Orgo's bash call answered no exit code (${JSON.stringify(ran.value)?.slice(0, 200)})`);
 	const split = typeof stdout === "string" || typeof stderr === "string";
 	// Windows says a timeout in words (exit 124, error "timeout"); Linux, and by the same agent macOS, with exit -1.
 	const timedOut = error === "timeout" || exitCode === -1;
@@ -1027,14 +1030,14 @@ export class OrgoDesktopClient implements ComputerClient {
 		});
 		if (!shot.ok) return shot;
 		const { image, width, height } = shot.value ?? {};
-		if (typeof image !== "string" || image === "") return fail("orgo", "Orgo's screenshot answered no image");
+		if (typeof image !== "string" || image === "") return fail("vendor","Orgo's screenshot answered no image");
 		const bytes = Buffer.from(image.replace(/^data:[^,]*,/, ""), "base64");
 		if (Number.isSafeInteger(width) && Number.isSafeInteger(height) && (width as number) > 0 && (height as number) > 0) return ok({ bytes, width: width as number, height: height as number });
 		try {
 			const png = readPng(bytes);
 			return ok({ bytes, width: png.width, height: png.height });
 		} catch (error) {
-			return fail("orgo", `Orgo's screenshot is not a PNG this client reads: ${error instanceof Error ? error.message : String(error)}`);
+			return fail("vendor",`Orgo's screenshot is not a PNG this client reads: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 

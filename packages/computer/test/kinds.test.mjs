@@ -211,11 +211,8 @@ const BUILT = {
 			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
 		},
 	],
-	orgo: [
-		() => createOrgo({ apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) }),
-		() => createOrgo({ os: "windows", apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) }),
-		() => createOrgo({ os: "macos", apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) }),
-	],
+	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
 test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {
@@ -226,6 +223,6 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 			const { kind, groups } = build().capabilities();
 			return { kind, groups };
 		});
-		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind and groups`);
+		assert.deepEqual(seen, entry.capabilities.map(({ kind, groups }) => ({ kind, groups })), `${id}: each configuration's kind and groups`);
 	}
 });

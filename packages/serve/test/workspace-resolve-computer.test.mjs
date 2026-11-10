@@ -210,6 +210,18 @@ test("a setting's image selects the provider's configuration of that image, whos
   assert.equal("configuration" in e2b.launched[0][1], false);
 });
 
+test("Orgo's own descriptor: windows and macos launch their configuration with its os, no image launches the Linux desktop; another image is refused naming the three", async () => {
+  const root = scratch();
+  for (const [image, os] of [["windows", "windows"], ["macos", "macos"], [undefined, undefined]]) {
+    const side = claim(root);
+    const resolved = await resolveComputer({ kind: "desktop", provider: "orgo", ...(image ? { image } : {}) }, 1, KINDS, side);
+    await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
+    const { configuration } = side.launched[0][1];
+    assert.deepEqual([configuration.image, configuration.options.os], [image ?? "linux", os], String(image));
+  }
+  assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image: "beos" }, 1, KINDS, claim(root))).refused, /^Orgo has no desktop image "beos"\. It offers the desktop images linux, windows, macos: pick one/);
+});
+
 test("an image the provider does not offer for the kind is refused before anything starts, in words naming the ones it offers", async () => {
   const side = claim(scratch());
   assert.deepEqual(await resolveComputer({ kind: "desktop", provider: "acme-desk", image: "beos" }, 1, IMAGED, side), { refused: 'Acme Desk has no desktop image "beos". It offers the desktop images linux, windows: pick one for this agent\'s computer in Settings → Computers.' });

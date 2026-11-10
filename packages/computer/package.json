@@ -46,6 +46,10 @@
       "types": "./dist/orgo.d.ts",
       "default": "./dist/orgo.js"
     },
+    "./orgo-desktop": {
+      "types": "./dist/orgo-desktop.d.ts",
+      "default": "./dist/orgo-desktop.js"
+    },
     "./phone-harness": {
       "types": "./dist/phone-harness.d.ts",
       "default": "./dist/phone-harness.js"

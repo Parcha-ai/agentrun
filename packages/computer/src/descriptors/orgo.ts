@@ -1,5 +1,6 @@
 // Orgo's descriptor: desktops on Orgo's cloud. The Linux desktop runs computerd (orgo.ts); the Windows and macOS
 // desktops are answered over Orgo's API with no daemon inside (orgo-desktop.ts), create()'s os option.
+import type { KindCapabilities } from "../kinds.js";
 import type { Group } from "../protocol.js";
 import { defineProvider } from "../descriptor.js";
 import { LINUX_DESKTOP } from "./shared.js";
@@ -15,6 +16,17 @@ export const WINDOWS_GROUPS: readonly Group[] = ["exec", "files", "screen", "inp
 /** What a macOS desktop offers: the shell for exec, and the screen, the pointer and the keys. */
 export const MACOS_GROUPS: readonly Group[] = ["exec", "screen", "input.pointer", "input.keys"];
 
+/**
+ * Orgo's configurations, each naming the image an agent's setting selects it by and the create() options that build it
+ * (KindCapabilities; serve passes the options to providerFor beside the keys'): the Linux desktop with computerd, then
+ * Windows and macOS over Orgo's API.
+ */
+export const ORGO_CONFIGURATIONS = [
+	{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {} },
+	{ kind: "desktop", groups: [...WINDOWS_GROUPS], image: ORGO_WINDOWS_IMAGE, options: { os: "windows" } },
+	{ kind: "desktop", groups: [...MACOS_GROUPS], image: ORGO_MACOS_IMAGE, options: { os: "macos" } },
+] as const satisfies readonly KindCapabilities[];
+
 export const ORGO = defineProvider({
 	id: "orgo",
 	label: "Orgo",
@@ -22,8 +34,8 @@ export const ORGO = defineProvider({
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.
 	mounts: [],
-	// The Linux desktop (no os), then Windows and macOS (os "windows", "macos").
-	capabilities: [LINUX_DESKTOP, { kind: "desktop", groups: [...WINDOWS_GROUPS] }, { kind: "desktop", groups: [...MACOS_GROUPS] }],
+	// The Linux desktop (no os, the default), then Windows and macOS (os "windows", "macos").
+	capabilities: ORGO_CONFIGURATIONS,
 	defaultImage: { desktop: ORGO_BASE_IMAGE },
 	load: () => import("../orgo.js"),
 });

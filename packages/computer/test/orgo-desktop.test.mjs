@@ -65,9 +65,9 @@ test("Orgo desktops: create({ os }) builds the Windows or the macOS provider, da
 	assert.throws(() => create({ os: "beos", apiKey: KEY, workspaceId: WORKSPACE }), /linux.*windows.*macos/);
 	assert.throws(() => create({ os: "windows", workspaceId: WORKSPACE }), /apiKey/);
 	assert.deepEqual(orgo.CAPABILITIES.slice(1), [
-		{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"] },
-		{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"] },
-	]);
+		{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+		{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"], image: "macos", options: { os: "macos" } },
+	], "each configuration names the image a setting selects it by, and the os create() builds it with");
 	assert.equal(orgo.ORGO_WINDOWS_IMAGE, "windows");
 	assert.equal(orgo.ORGO_MACOS_IMAGE, "macos");
 });
