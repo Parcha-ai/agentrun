@@ -25,6 +25,9 @@ const answerFlow = {
   root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
 };
 
+/** A run's gate that allows every tool (adapter-run-spec.ts RunPermissions). */
+const ALLOW_ALL = { policy: () => "allow", denyFrom: () => "default", refresh: async () => {} };
+
 /** The `answer` workflow as the claim's seed lay hands it on. */
 const answer = { name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(answerFlow) };
 
@@ -49,7 +52,7 @@ test("a run lists learned_workflow for real: its model nodes run on the session'
   const work = runDir();
   const asked = [];
   const run = fakeRun(asked);
-  const tool = await learnedWorkflowHostTool({ run, kind: "agentic", granted: ["read"], plane: undefined, env: {}, work, workflows: [answer], ctx: hostToolCtxOf(run, ctx, new Map(), work) });
+  const tool = await learnedWorkflowHostTool({ run, kind: "agentic", granted: ["read"], plane: undefined, env: {}, work, workflows: [answer], permissions: ALLOW_ALL, ctx: hostToolCtxOf(run, ctx, new Map(), work) });
   assert.ok(tool && tool.name === LEARNED_WORKFLOW_TOOL, `learned_workflow is listed: ${JSON.stringify(tool && tool.name)}`);
   assert.deepEqual(asked, [LEARNED_WORKFLOW_TOOL], "its model nodes take the session's proxied models from the run's one ledger, under the learned_workflow label");
 });
@@ -57,11 +60,11 @@ test("a run lists learned_workflow for real: its model nodes run on the session'
 test("a run with no learned workflow lists none, nor a workflow revision's run; a revision never grants it to list it", async () => {
   const dir = runDir();
   const run = fakeRun([]);
-  const none = await learnedWorkflowHostTool({ run, kind: "agentic", granted: ["read"], plane: undefined, env: {}, work: dir, workflows: [], ctx: hostToolCtxOf(run, ctx, new Map(), dir) });
+  const none = await learnedWorkflowHostTool({ run, kind: "agentic", granted: ["read"], plane: undefined, env: {}, work: dir, workflows: [], permissions: ALLOW_ALL, ctx: hostToolCtxOf(run, ctx, new Map(), dir) });
   assert.equal(none, undefined, "no learned workflow, no learned_workflow tool");
-  const workflowKind = await learnedWorkflowHostTool({ run, kind: "workflow", granted: ["read"], plane: undefined, env: {}, work: dir, workflows: [answer], ctx: hostToolCtxOf(run, ctx, new Map(), dir) });
+  const workflowKind = await learnedWorkflowHostTool({ run, kind: "workflow", granted: ["read"], plane: undefined, env: {}, work: dir, workflows: [answer], permissions: ALLOW_ALL, ctx: hostToolCtxOf(run, ctx, new Map(), dir) });
   assert.equal(workflowKind, undefined, "a workflow revision's run has no learned_workflow tool");
-  const ungranted = await learnedWorkflowHostTool({ run, kind: "agentic", granted: ["read"], plane: undefined, env: {}, work: dir, workflows: [answer], ctx: hostToolCtxOf(run, ctx, new Map(), dir) });
+  const ungranted = await learnedWorkflowHostTool({ run, kind: "agentic", granted: ["read"], plane: undefined, env: {}, work: dir, workflows: [answer], permissions: ALLOW_ALL, ctx: hostToolCtxOf(run, ctx, new Map(), dir) });
   assert.equal(ungranted?.name, LEARNED_WORKFLOW_TOOL, "listed though the revision names only its own tools, as main lists it");
 });
 
