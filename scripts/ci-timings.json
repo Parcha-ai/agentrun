@@ -565,7 +565,6 @@
   "packages/serve/test/tool-plane.test.mjs": 20.6,
   "packages/serve/test/tool-preview-redact.test.mjs": 11.7,
   "packages/serve/test/turn-end.test.mjs": 0.2,
-  "packages/serve/test/turn-record-restart.test.mjs": 12.2,
   "packages/serve/test/turn-record.test.mjs": 58.8,
   "packages/serve/test/upgrade.test.mjs": 4.5,
   "packages/serve/test/uploads-first-try.test.mjs": 16.7,
