@@ -11,7 +11,7 @@ import type { RaiseAnswer, Run } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const run = (extra: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (extra: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Take your time.",
   created_at: "2026-11-05T00:00:00Z", ended_at: null, result: null, error: null, archived_at: null,
   cost: { usd: 0.01, basis: "estimate", charge_state: null, cap_usd: 10 }, ...extra,

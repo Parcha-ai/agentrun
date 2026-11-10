@@ -287,7 +287,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
-    listMcpServers: () => call<{ servers: McpServer[]; file_unreadable?: true }>("GET", "/settings/mcp-servers"),
+    listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
     previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
     /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
     saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),

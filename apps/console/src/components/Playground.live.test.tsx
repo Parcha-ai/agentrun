@@ -25,7 +25,7 @@ function fauxServer() {
     return out;
   };
   const done = () => polls >= 3;
-  const run = (): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+  const run = (): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
     run_id: "run1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: done() ? "completed" : "working", state: done() ? "idle" : "working",
     title: "What is six times seven?", created_at: "2026-10-30T03:40:00Z", ended_at: done() ? "2026-10-30T03:40:03Z" : null,
     result: done() ? { output: null, final_answer: turns > 1 ? "Eight times nine is 72." : "The answer is 42." } : null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,

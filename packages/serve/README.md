@@ -1667,8 +1667,7 @@ sealed in a retired row of its own (scope `retired:<trigger>:<n>`), never a sett
 before is still cut on every later server. Retired rows are kept for good for now; dropping one once no run older than
 it is left is still to come. A secret that does not open under the seal key the server starts with is
 said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
-secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
-away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
+secret is made.
 
 The request's `webhook-id`, which its signature covers, is its firing's key: the first answers `202` once the firing is
 recorded, and its run starts after; the same `webhook-id` again, for a day after, answers `200` with that firing and

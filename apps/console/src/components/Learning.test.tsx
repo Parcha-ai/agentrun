@@ -33,7 +33,7 @@ const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
   counts: { merged: 2, dropped: { empty: 2, grader: 1 }, in_progress: 0 }, skills: [], workflows: [], impact: null,
   ...extra,
 });
-const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: id, agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
