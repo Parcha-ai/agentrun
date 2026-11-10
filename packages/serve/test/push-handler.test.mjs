@@ -119,8 +119,7 @@ async function pingServer(t, extra = {}) {
   return { server, api, store, secret, lines };
 }
 
-// Its event starts a run: the store's firing row names that run, which the server's start inserts into the store (run_id's foreign
-// key). Until then this case is todo, never skipped: it still runs.
+// Its event starts a run on a runner (dispatch and command delivery): skipped until that lands (RUN_EXEC).
 test("a pushed source is one adapter: served at /v2/hooks/<its id> with no token and no edit of the server, verified with its own settings, and its event fires its trigger once", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
   const { server, api, secret } = await pingServer(t);
   assert.equal((await api("POST", "/agents", agent("pinged"))).status, 201);
@@ -241,7 +240,7 @@ test("a source's handshake answers only a request that passed its check: an unsi
   assert.deepEqual([signed.status, signed.body], [200, { challenge: "c-123" }]);
 });
 
-test("a signature is checked against the clock when the body has arrived, not when its headers did: a timestamp at 299 s whose body takes 2 s more is the one 401", { timeout: 60_000 }, async (t) => {
+test("a signature is checked against the clock when the body has arrived, not when its headers did: a timestamp at 299 s whose body arrives past 300 s is the one 401", { timeout: 60_000 }, async (t) => {
   const { server, api } = await pingServer(t);
   assert.equal((await api("POST", "/agents", agent("hooked"))).status, 201);
   const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
@@ -257,8 +256,8 @@ test("a signature is checked against the clock when the body has arrived, not wh
     socket.on("close", () => resolve(text));
     socket.on("error", reject);
     socket.write(`POST /v2/hooks/${made.body.id} HTTP/1.1\r\nHost: ${host}\r\nwebhook-id: msg_slow\r\nwebhook-timestamp: ${at}\r\nwebhook-signature: ${signature}\r\ncontent-type: application/json\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n`);
-    // The body held back past the tolerance's edge.
-    setTimeout(() => socket.write(body), 2_500).unref();
+    // The body held back until just past the tolerance's edge: the headers were within it when they came, the body is not.
+    setTimeout(() => socket.write(body), (at + 300) * 1000 - Date.now() + 250).unref();
     setTimeout(() => reject(new Error(`no answer within 15 s: ${text}`)), 15_000).unref();
   });
   assert.match(answer, /^HTTP\/1\.1 401 /, answer);
