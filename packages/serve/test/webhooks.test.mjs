@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, 
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
@@ -76,7 +77,7 @@ async function receiver(t, answer = () => 200, down = false) {
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
   const when = (want, what = typeof want === "number" ? `request ${want} at the receiver` : "the request awaited at the receiver", dir) => {
     const check = typeof want === "number" ? (all) => all.length >= want : want;
-    return check(got) ? Promise.resolve(got) : arriving(new Promise((resolve) => waiting.push({ check, resolve })), () => `${what} (the receiver holds ${got.length}: ${got.map((r) => JSON.parse(r.body).type).join(", ") || "none"})`, dir);
+    return check(got) ? Promise.resolve(got) : arriving(new Promise((resolve) => waiting.push({ check, resolve })), () => `${typeof what === "function" ? what() : what} (the receiver holds ${got.length}: ${got.map((r) => JSON.parse(r.body).type).join(", ") || "none"})`, dir);
   };
   return { url: `http://127.0.0.1:${server.address().port}${path}`, got, server, when };
 }
@@ -286,7 +287,7 @@ async function parkedOnQuestion(writer, agentId, id, question, { wake = true } =
 }
 /** Run `id` of `agentId`, ended with its answer, as a runner ends one: written into the store by `writer`. Its end's time,
  *  as the store stamped it (ISO), which its run.ended's webhook-id is made from. */
-async function endedInStore(writer, agentId, id) {
+async function endedInStore(writer, agentId, id, { beforeEnd } = {}) {
   const ROOT = 1;
   const at = Date.now();
   await writer.runs.create({ id, agentId, revisionId: `${agentId}-rev` }, { body: { input: { message: "Answer." }, title: `Ends ${id}`, place: { mode: "runner" } } });
@@ -295,6 +296,7 @@ async function endedInStore(writer, agentId, id) {
   const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Answer.", timestamp: at }] };
   const a = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }], usage: { cost: { total: 0.01 } }, timestamp: at + 1 }] };
   await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: a }], BACKGROUND_CONTEXT);
+  await beforeEnd?.();
   const row = await writer.runs.update(claim, { state: "ended" });
   return new Date(row.endedAt).toISOString();
 }
@@ -367,6 +369,82 @@ test("a run parked on its question, its wait told, is not told again by the next
   await parkedOnQuestion(writer, "asker", "run-after-2", "And the currency?");
   await hook.when(() => waitsOf("run-after-2").length === 1, "the run.needs_input of run run-after-2", data);
   assert.equal(waitsOf("run-asks").length, 1, "the same wait, told once across a restart");
+});
+
+/** `count` runs copied from run `template` (its row and its launch, so its view reads as its own), each created and ended
+ *  in ONE transaction on a connection of the test's own: the server's reads see none of them, then all of them at once, so
+ *  each starts and ends between two of its reads, however it reads. Their ids, oldest first. */
+function startedAndEndedAtOnce(data, template, count) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  try {
+    const columns = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name);
+    const copied = (set) => columns.map((c) => (c in set ? set[c] : c)).join(", ");
+    const ids = [];
+    const at = Date.now();
+    db.exec("BEGIN IMMEDIATE");
+    for (let i = 0; i < count; i++) {
+      const id = `run-at-once-${String(i).padStart(3, "0")}`;
+      ids.push(id);
+      db.prepare(`INSERT INTO runs (${columns.join(", ")}) SELECT ${copied({ id: "?", state: "'queued'", epoch: "0", runner: "NULL", ended_at: "NULL", started_at: "?" })} FROM runs WHERE id = ?`).run(id, at + i, template);
+      db.prepare("INSERT INTO run_launch (run_id, body, sealed, created_at) SELECT ?, body, sealed, created_at FROM run_launch WHERE run_id = ?").run(id, template);
+      db.prepare("UPDATE runs SET state = 'ended', ended_at = ? WHERE id = ?").run(at + count + i, id);
+    }
+    db.exec("COMMIT");
+    return ids;
+  } finally {
+    db.close();
+  }
+}
+
+test("sixty runs that each start and end between two of the server's reads are each told run.ended, once: none is missed for being older than the newest", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const server = await serve(t, { runner: false });
+  const { data } = server;
+  assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const writer = await askerStore(t, data);
+  // A run the store API wrote, ended: its notice shows the server reads, and its rows are the others' template.
+  await endedInStore(writer, "asker", "run-template");
+  await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run run-template", data);
+  const ids = startedAndEndedAtOnce(data, "run-template", 60);
+  const told = (got) => new Set(ofType(got, "run.ended").map((r) => JSON.parse(r.body).data.run_id));
+  await hook.when((got) => ids.every((id) => told(got).has(id)), () => `the run.ended of each of the 60 runs (missing: ${ids.filter((id) => !told(hook.got).has(id)).join(", ")})`, data);
+  await settled(data);
+  const ofEach = new Map(ids.map((id) => [id, ofType(hook.got, "run.ended").filter((r) => JSON.parse(r.body).data.run_id === id).length]));
+  assert.deepEqual([...ofEach.values()].filter((n) => n !== 1), [], "each once");
+});
+
+test("a run whose end cannot be read holds back no other run's notice: the next run's run.ended is told, the unreadable one is said once, and told once it reads", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const log = logged();
+  const server = await serve(t, { runner: false, log: log.push });
+  const { data } = server;
+  assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const writer = await askerStore(t, data);
+  // Run A's journal records are made unreadable (not JSON, on a connection of the test's own that skips the check) before
+  // its end is written, so reading its end throws; run B ends after it, so B's change comes after A's in the store's feed.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  t.after(() => db.close());
+  db.exec("PRAGMA ignore_check_constraints = ON");
+  let records;
+  await endedInStore(writer, "asker", "run-unreadable", {
+    beforeEnd: async () => {
+      records = db.prepare("SELECT id, record FROM pi_entries WHERE run_id = ?").all("run-unreadable");
+      db.prepare("UPDATE pi_entries SET record = '{not json' WHERE run_id = ?").run("run-unreadable");
+    },
+  });
+  await endedInStore(writer, "asker", "run-readable");
+  const endsOf = (id) => ofType(hook.got, "run.ended").filter((r) => JSON.parse(r.body).data.run_id === id);
+  await hook.when(() => endsOf("run-readable").length === 1, "the run.ended of run run-readable, after an end that cannot be read", data);
+  await log.when("condition=run_notice_unread", "run-unreadable");
+  assert.equal(endsOf("run-unreadable").length, 0, "the unreadable end is not told");
+  // Readable again: told, once, and said once only.
+  for (const { id, record } of records) db.prepare("UPDATE pi_entries SET record = ? WHERE run_id = ? AND id = ?").run(record, "run-unreadable", id);
+  await hook.when(() => endsOf("run-unreadable").length === 1, "the run.ended of run run-unreadable, once it reads", data);
+  await settled(data);
+  assert.deepEqual([endsOf("run-unreadable").length, endsOf("run-readable").length], [1, 1]);
+  assert.equal(log.lines.filter((line) => line.includes("condition=run_notice_unread") && line.includes("run-unreadable")).length, 1, "said once");
 });
 
 test("a receiver that is down gets each try, then the message is logged as failed; one that fails then answers gets it on a try again, under the same webhook-id; a redirect is not followed", async (t) => {

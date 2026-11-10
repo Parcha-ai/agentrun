@@ -539,6 +539,39 @@ export interface Runs {
    *  pointer, counting a running run and (within `signInSettleMs` of leaving running, a vendor's settle window) one that
    *  recently left running. `signInSettleMs` defaults to 0 (other vendors free the lease the instant a run leaves running). */
   update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[]; readonly signInSettleMs?: number }): Promise<UpdatedRun>;
+  /** The run changes after `cursor` (undefined: from the feed's start), oldest first, at most `limit` (default
+   *  RUN_CHANGES_PAGE), and the cursor to read on from (`next`; the one given when nothing is new). A change is a run
+   *  reaching a final state, or its runner letting it go (parked, or running with no runner), recorded by the write that
+   *  made it, in that write's own transaction, with the row as that write left it.
+   *
+   *  The guarantee: every change is read exactly once by a reader that reads on from each `next` it was handed. None is
+   *  skipped, even one committed after a change numbered above it was already read (concurrent writers): `next` never
+   *  passes a change a transaction still in flight may yet commit (a watermark; a store with one writer commits in the
+   *  order it numbers, so its watermark is its last change). None is read twice from a later cursor. The cursor is the
+   *  store's own: never a time, so writes in one millisecond are each read. */
+  changedSince(cursor: RunChangeCursor | undefined, options?: { limit?: number }): Promise<RunChanges>;
+}
+
+/** A position in the run-change feed (Runs.changedSince): opaque, the store's own; only one it handed back is valid. */
+export type RunChangeCursor = string;
+
+/** The most run changes one read returns unless asked for fewer. */
+export const RUN_CHANGES_PAGE = 200;
+
+/** A run change (Runs.changedSince): the run, and its row as the write that made the change left it. */
+export interface RunChange {
+  readonly id: string;
+  readonly state: RunState;
+  /** When it ended (ms): set for a final state, null otherwise. */
+  readonly endedAt: number | null;
+  readonly epoch: number;
+  readonly runner: string | null;
+}
+
+/** One read of the run-change feed: its changes, oldest first, and the cursor to read on from. */
+export interface RunChanges {
+  readonly changes: readonly RunChange[];
+  readonly next: RunChangeCursor;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its

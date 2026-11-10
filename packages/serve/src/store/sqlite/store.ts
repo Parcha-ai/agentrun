@@ -18,8 +18,14 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
-  type ComputerLedger, type ComputerLedgerRow,
+  type ComputerLedger, type ComputerLedgerRow, RUN_CHANGES_PAGE, type RunChangeCursor,
 } from "../store.js";
+
+/** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
+const seqOf = (cursor: RunChangeCursor): number => {
+  if (!/^(0|[1-9][0-9]{0,15})$/.test(cursor)) throw new TypeError(`${JSON.stringify(cursor)} is not a run-change cursor this store gave`);
+  return Number(cursor);
+};
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
@@ -737,6 +743,19 @@ class SqliteStore implements Store {
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
         return rows.map(runOf);
+      },
+      // The run-change feed: the rows the runs_changed trigger wrote, each in its write's transaction, after the cursor's
+      // seq. One writer numbers them in commit order, so the last one read is the watermark and the cursor is its seq.
+      changedSince: async (cursor, { limit } = {}) => {
+        const after = cursor === undefined ? 0 : seqOf(cursor);
+        const page = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : RUN_CHANGES_PAGE;
+        const rows = await db.all<{ seq: number; run_id: string; state: RunState; ended_at: number | null; epoch: number; runner: string | null }>(
+          "SELECT seq, run_id, state, ended_at, epoch, runner FROM run_changes WHERE seq > ? ORDER BY seq LIMIT ?",
+          after,
+          page,
+        );
+        const changes = rows.map((row) => ({ id: row.run_id, state: row.state, endedAt: row.ended_at, epoch: row.epoch, runner: row.runner }));
+        return { changes, next: String(rows.length ? rows.at(-1)!.seq : after) };
       },
       archive: async (runId, archived) => {
         await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
