@@ -82,7 +82,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
   const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
   const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds });
-  const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
+  // A form that doesn't make a body yet still has one to key its start by (never sent): the text as typed.
+  const body: StartBody = built.ok ? built.body : { input: (kind === "agentic" ? { content: text } : text) as StartBody["input"], ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;

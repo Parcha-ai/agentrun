@@ -1,6 +1,6 @@
 import { byName } from "./agents";
 import { cost } from "./format";
-import type { Run, RunSummary } from "./v2";
+import type { Run, RunSummary, StatsView } from "./v2";
 
 /** What Mission Control shows: counts from the server's store, the cost said with its basis, and the latest runs. */
 export type MissionView = {
@@ -32,33 +32,16 @@ export function costParts(c: MissionView["cost"]): { total: string; note?: strin
 }
 
 /** `GET /v2/stats` (a serve extension): counts and sums from the agent store, archived agents and runs left out of
- *  every number but `archived`. */
-export type Stats = {
-  agents: number;
-  runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number; needs_review: number };
-  per_agent: { agent_id: string; name: string; runs: number }[];
-  /** `basis`: "estimate" when `usd` is a number, null when it is null (GET /v2/stats). */
-  cost: { usd: number | null; basis: "estimate" | null; unknown_runs: number };
-  archived?: { agents: number; runs: number };
-  /** Over the runs `from`, `to` and `agent` pick (every other number is the whole store's). */
-  analytics: Analytics;
-};
-
+ *  every number but `archived`. `cost.basis`: "estimate" when `usd` is a number, null when it is null. `analytics`: over
+ *  the runs `from`, `to` and `agent` pick (every other number is the whole store's). */
+export type Stats = StatsView;
+/** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write.
+ *  A tool's `label` is what a person calls it (the server's label registry). */
+export type Analytics = Stats["analytics"];
 /** Runs counted together in `analytics`. Escalated runs count in `completed`, and `needs_review` says how many.
  *  `tokens` sums over `runs_with_metrics` alone; `cost_usd` is null when no run's cost is known, and
  *  `unknown_cost_runs` counts the runs it leaves out. */
-export type AnalyticsGroup = { runs: number; completed: number; failed: number; needs_review: number; runs_with_metrics: number; tokens: number; cost_usd: number | null; unknown_cost_runs: number };
-/** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write. */
-export type Analytics = {
-  filter: { from: string | null; to: string | null; agent: string | null };
-  totals: AnalyticsGroup & { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number };
-  time: { ended_runs: number; wall_ms: number; active_runs: number; active_ms: number };
-  by_harness_effort: (AnalyticsGroup & { harness: string; effort: string | null })[];
-  by_day: (AnalyticsGroup & { day: string })[];
-  by_source: (AnalyticsGroup & { source: string })[];
-  /** `label`: what a person calls the tool (the server's label registry). */
-  tools: { tool: string; label: string; calls: number; errors: number }[];
-};
+export type AnalyticsGroup = Omit<Analytics["by_day"][number], "day">;
 
 /** The range Mission Control's analytics cover: the last 7 or 30 UTC days, today included, or every run. */
 export type StatsRange = "7d" | "30d" | "all";

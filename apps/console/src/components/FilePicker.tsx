@@ -4,10 +4,12 @@ import { Button } from "@/components/ui/button";
 import { bytes } from "@/lib/format";
 import { refusalOf, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
+import type { Capabilities } from "@/lib/client";
 
 /** This server's upload limits (capabilities' `limits`): the largest file, and the most files one run names. Absent on a
  *  server that says nothing, and then nothing is checked here. */
-export type UploadLimits = { max_upload_bytes?: number; max_files_per_run?: number };
+/** The server's own limits (capabilities' `limits`): the largest upload (null: none), the most files a run names. */
+export type UploadLimits = Partial<Pick<NonNullable<Capabilities["limits"]>, "max_upload_bytes" | "max_files_per_run">>;
 
 /** One file the person picked: sending (`progress` 0 to 1), or sent (`file`), and `removing` while its delete is asked. */
 export type Attached = { key: string; name: string; size: number; progress: number; file?: { file_id: string }; removing?: boolean };
@@ -50,7 +52,7 @@ export function useAttachments({ upload, remove, limits = {}, frozen = false }: 
     const room = limits.max_files_per_run === undefined ? Infinity : limits.max_files_per_run - count.current;
     const taken: File[] = [];
     for (const f of files) {
-      if (limits.max_upload_bytes !== undefined && f.size > limits.max_upload_bytes) refused.push({ text: `${f.name} is ${bytes(f.size)}: this server takes files up to ${bytes(limits.max_upload_bytes)}.` });
+      if (limits.max_upload_bytes != null && f.size > limits.max_upload_bytes) refused.push({ text: `${f.name} is ${bytes(f.size)}: this server takes files up to ${bytes(limits.max_upload_bytes)}.` });
       else if (taken.length >= room) refused.push({ text: `${f.name} is not added: a run names at most ${limits.max_files_per_run} files here.` });
       else taken.push(f);
     }
@@ -125,7 +127,7 @@ export function FilePicker({ attachments, limits = {}, disabled, compact = false
   const { items, refusals, add, drop } = attachments;
   // Nothing changes while a start that names these files is under way.
   const off = disabled || attachments.frozen;
-  const said = [limits.max_files_per_run !== undefined ? `up to ${limits.max_files_per_run} files` : null, limits.max_upload_bytes !== undefined ? `${bytes(limits.max_upload_bytes)} each` : null].filter(Boolean).join(", ");
+  const said = [limits.max_files_per_run !== undefined ? `up to ${limits.max_files_per_run} files` : null, limits.max_upload_bytes != null ? `${bytes(limits.max_upload_bytes)} each` : null].filter(Boolean).join(", ");
   return (
     <div
       className={cn("border border-dashed px-3 py-2.5", over ? "border-primary bg-primary/5" : "border-border", compact && "max-sm:border-0 max-sm:p-0")}

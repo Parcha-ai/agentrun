@@ -22,6 +22,6 @@ export const ANALYTICS: Analytics = {
 
 /** The whole answer around `analytics`: the store's counts and cost, whose basis the tab reads. */
 export const statsWith = (analytics: Analytics = ANALYTICS): Stats => ({
-  agents: 3, runs: { total: 20, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 2.5, basis: "estimate", unknown_runs: 4 },
+  agents: 3, runs: { total: 20, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 2.5, basis: "estimate", unknown_runs: 4 }, archived: { agents: 0, runs: 0 }, learning: { runs: 0, merged: 0, dropped: {}, in_progress: 0 },
   analytics,
 });

@@ -15,6 +15,7 @@ import "@/test/picker"; // jsdom has no ResizeObserver, which the picker's posit
 // or the console's picker (a listbox button): these read either.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 import { servedAgent } from "@/test/agent";
+import { mcpServer } from "@/test/mcp";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
@@ -24,7 +25,7 @@ const GATES = [{ name: "read", permission: "allow", default_permission: "allow",
 const CAPS = { harnesses: [{ id: "pi", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }, { name: "web_fetch", available: true }, { name: "monid.discover", available: true }]), mcp: true, mcpHarnesses: ["pi"] };
 // As a saved server's read gives a tool: with its permission in force under the server's tool settings (`inForce`).
 const tool = (name: string, inForce?: "allow" | "ask" | "deny") => ({ name, description: `${name}.`, input_schema: { type: "object" }, ...(inForce ? { permission: inForce, default_permission: "ask" as const, permissions: ALL } : {}) });
-const github = (inForce?: "allow" | "ask" | "deny"): McpServer => ({ name: "github", url: "https://mcp.example.test/mcp", auth: { type: "bearer" }, credential: "sealed", tools: [tool("list_issues", inForce), tool("create_issue", inForce)], protocol: "2026-07-28" });
+const github = (inForce?: "allow" | "ask" | "deny"): McpServer => mcpServer({ name: "github", url: "https://mcp.example.test/mcp", auth: { type: "bearer" }, credential: "sealed", tools: [tool("list_issues", inForce), tool("create_issue", inForce)], protocol: "2026-07-28" });
 const definition = (tools: string[], toolSettings?: Record<string, unknown>): Agent["definition"] => ({ id: "triage", version: 1, name: "Triage", instructions: "Triage.", harness: "pi", skills: [], tools, ...(toolSettings ? { tool_settings: toolSettings as Agent["definition"]["tool_settings"] } : {}) });
 // The agent as GET /agents/{id} reads it: its saved tools, each with the permission in force.
 // An MCP tool's entry is as serve's agentTools gives it: `inForce` with the agent's own layer, its default the server's.

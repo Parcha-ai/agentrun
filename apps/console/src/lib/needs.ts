@@ -1,4 +1,4 @@
-import type { Run, RunSummary } from "./v2";
+import type { Run, RunStartBody, RunSummary } from "./v2";
 
 // What Mission Control's "Needs you" strip reads from the runs lists: the choices a question offers, the failures
 // grouped by their error, and whether the owner has run anything of their own yet.
@@ -58,7 +58,7 @@ const TIMELINE_TEXT_CAP = 2000;
 /** The start of "Run again": the run's whole first message, with its effort and its spend cap, or why it can't be
  *  started again from here. A workflow run takes typed input, and a first message the timeline cut would start a
  *  shortened task: both are refused. */
-export function rerunBody(run: RunSummary, firstMessage: string | null | undefined): { body: { input: { content: string }; effort?: string; max_cost_usd?: number } } | { refusal: string } {
+export function rerunBody(run: RunSummary, firstMessage: string | null | undefined): { body: RunStartBody & { input: { content: string } } } | { refusal: string } {
   if (run.kind === "workflow") return { refusal: `"${run.title}" is a workflow run: start it again from its agent's page` };
   if (!firstMessage) return { refusal: `"${run.title}": its first message could not be read` };
   if (firstMessage.length >= TIMELINE_TEXT_CAP && firstMessage.endsWith("...")) return { refusal: `"${run.title}": its first message is longer than the timeline keeps; start it again from its agent's page` };

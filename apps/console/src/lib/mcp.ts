@@ -1,29 +1,23 @@
 import { ClientError } from "./client";
-import type { Permission, SecretMeta } from "./v2";
+import type { CapabilitiesView, McpPreviewView, McpRefreshView, McpSaveBody, McpServerView } from "./v2";
 
-/** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
+/** A saved MCP server as GET /v2/settings/mcp-servers/{name} shows it: never a credential, only its state (`credential`:
+ *  null for one that takes none; `secret`, set or not, how it came, when it last changed). `prices`, per tool in USD, only
+ *  when the server meters them; `not_metered`, the tools no price meters. */
+export type McpServer = McpServerView;
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
  *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[] };
-export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
-/** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
- *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */
-export type McpServer = {
-  /** The tools it lists that no price meters (the read's `not_metered`): absent when every tool has a price. */
-  not_metered?: string[];
-  /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
-  secret?: SecretMeta;
-  name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
-  credential: "sealed" | "unreadable" | "expired" | null;
-  oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
-  prices?: Record<string, number>;
-};
-export type McpPreview = { protocol: string; server_info?: { name?: string; version?: string }; instructions?: string; tools: McpTool[] };
-export type McpRefresh = { added: string[]; removed: string[]; changed: string[]; server: McpServer };
+export type McpTool = McpServer["tools"][number];
+/** How a server is signed in to. */
+export type McpAuthType = McpServer["auth"]["type"];
+/** POST …/preview's answer: what a server lists before it is saved. */
+export type McpPreview = McpPreviewView;
+/** POST …/{name}/refresh's answer: what changed in the server's list, and the server as saved now. */
+export type McpRefresh = McpRefreshView;
 /** What a preview or save sends as `auth`: a credential only when one was typed (none: keep the sealed one). */
-export type McpAuth = { type: Exclude<McpAuthType, "oauth"> | "oauth"; token?: string; headers?: Record<string, string> };
+export type McpAuth = NonNullable<McpSaveBody["auth"]>;
 /** Capabilities' `features.mcp_client`. */
-export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
+export type McpClientFeature = NonNullable<CapabilitiesView["features"]["mcp_client"]>;
 
 /** The grant `definition.tools` holds for a server's tool, and the server and tool a grant names (null: not one). */
 export const mcpGrant = (server: string, tool: string) => `mcp:${server}/${tool}`;

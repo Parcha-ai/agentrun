@@ -75,7 +75,7 @@ describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them
   const stats = {
     agents: 2, runs: { total: 7, active: 1, needs_input: 2, failed: 1, status_unknown: 0, needs_review: 0 },
     per_agent: [{ agent_id: "calc", name: "Calc", runs: 5 }],
-    cost: { usd: null, basis: null, unknown_runs: 7 }, archived: { agents: 1, runs: 3 }, analytics: analytics(),
+    cost: { usd: null, basis: null, unknown_runs: 7 }, archived: { agents: 1, runs: 3 }, learning: { runs: 0, merged: 0, dropped: {}, in_progress: 0 }, analytics: analytics(),
   } satisfies Stats;
   it("maps the server's fields, keeps an all-unknown cost null, and leaves archived out of the counts", () => {
     const v = missionFrom(stats, view.recent);
@@ -214,7 +214,7 @@ describe("runs that need review (needs_review)", () => {
     expect(successRate(g)).toBeCloseTo(6 / 11);
   });
   it("Mission Control says the runs that need review under Failed, never in it, and the analytics' outcomes apart", () => {
-    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 3 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 }, analytics: analytics() };
+    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 3 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 }, archived: { agents: 0, runs: 0 }, learning: { runs: 0, merged: 0, dropped: {}, in_progress: 0 }, analytics: analytics() };
     const v = missionFrom(stats, []);
     expect(v.runs.needsReview).toBe(3);
     const a = analytics({ totals: { ...analytics().totals, completed: 9, failed: 2, needs_review: 3 } });

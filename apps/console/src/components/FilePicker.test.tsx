@@ -14,7 +14,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 type Pending = { file: File; progress: (f: number) => void; signal: AbortSignal; resolve: (f: UploadedFile) => void; reject: (e: unknown) => void };
-const made = (name: string, n: number): UploadedFile => ({ file_id: `019a0000-0000-7000-8000-00000000000${n}`, path: name, size_bytes: 3, content_type: "text/plain", sha256: "a".repeat(64), status: "ready" });
+const made = (name: string, n: number): UploadedFile => ({ file_id: `019a0000-0000-7000-8000-00000000000${n}`, path: name, size_bytes: 3, content_type: "text/plain", sha256: "a".repeat(64), status: "ready", created_at: "2026-11-01T09:00:00Z", expires_at: null });
 
 function open(limits: UploadLimits = {}) {
   const pending: Pending[] = [];

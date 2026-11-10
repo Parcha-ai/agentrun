@@ -41,8 +41,11 @@ export function failedWith(code: string, message?: RegExp): RunFixture {
 
 /** The recorded server's `features.messages`. */
 export const messageFeatures = recorded<{ features: { messages: MessageFeatures } }>("capabilities").body.features.messages;
+/** The recorded server's GET /v2/capabilities, as served. */
+export const recordedCapabilities = () => recorded<Capabilities>("capabilities").body;
 
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import type { Capabilities } from "@/lib/client";
 import type { EditorCaps, Revision } from "@/components/AgentEditor";
 
 /** The recorded agents (`agents.list`, and archived), each agent's revisions, and the server's editor capabilities. */

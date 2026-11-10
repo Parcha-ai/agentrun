@@ -1,4 +1,7 @@
-export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] };
+import type { RunStartBody } from "./v2";
+
+/** The body of a run's start, as the server takes it. */
+export type StartBody = RunStartBody;
 /** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts. */
 export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[] };
 
@@ -12,9 +15,11 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   } else {
     try { input = JSON.parse(f.text); } catch { return { ok: false, field: "input", message: "The workflow's input is JSON: this is not." }; }
   }
-  const body: StartBody = { input };
+  // A workflow's input is the JSON typed: the server refuses one that is not an object (422, with the field).
+  const body: StartBody = { input: input as StartBody["input"] };
   if (f.revision) body.revision = f.revision;
-  if (f.effort) body.effort = f.effort;
+  // An effort the form offers is one the server named (capabilities' efforts); it checks it again (422).
+  if (f.effort) body.effort = f.effort as StartBody["effort"];
   if (kind === "agentic" && f.maxCostUsd?.trim()) {
     const cap = Number(f.maxCostUsd);
     if (!Number.isFinite(cap) || cap <= 0) return { ok: false, field: "max_cost_usd", message: "A spend cap is a positive number of dollars." };

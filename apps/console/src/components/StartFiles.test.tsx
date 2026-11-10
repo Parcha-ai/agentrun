@@ -14,7 +14,7 @@ import type { Upload, UploadedFile } from "@/lib/uploads";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const made: UploadedFile = { file_id: "019a0000-0000-7000-8000-000000000001", path: "invoice.pdf", size_bytes: 4, content_type: "application/pdf", sha256: "a".repeat(64), status: "ready" };
+const made: UploadedFile = { file_id: "019a0000-0000-7000-8000-000000000001", path: "invoice.pdf", size_bytes: 4, content_type: "application/pdf", sha256: "a".repeat(64), status: "ready", created_at: "2026-11-01T09:00:00Z", expires_at: null };
 function uploads() {
   const pending: ((f: UploadedFile) => void)[] = [];
   const upload: Upload = () => new Promise((resolve) => { pending.push(resolve); });

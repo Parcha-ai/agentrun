@@ -6,6 +6,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import recorded from "@/fixtures/mcp.requests.json";
+import { mcpServer } from "@/test/mcp";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -27,7 +28,7 @@ const TOOLS = [
   { name: "slow_write", description: "Write a line after a wait.", input_schema: { type: "object" } },
 ];
 const PREVIEW = { protocol: "2026-07-28", server_info: { name: "fake-mcp", version: "1.0.0" }, tools: TOOLS };
-const saved = (extra: Partial<McpServer> = {}): McpServer => ({ name: "fake", url: VARS.url, auth: { type: "bearer" }, credential: "sealed", tools: TOOLS, protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z", ...extra });
+const saved = (extra: Partial<McpServer> = {}): McpServer => mcpServer({ name: "fake", url: VARS.url, auth: { type: "bearer" }, credential: "sealed", tools: TOOLS, protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z", ...extra });
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 

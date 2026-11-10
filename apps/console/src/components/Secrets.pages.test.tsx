@@ -9,6 +9,7 @@ import type { McpServer } from "@/lib/mcp";
 import { NO_ACCOUNTS, secretsWhyNot, secretsWritableOf, SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import type { ToolKeys } from "@/lib/v2";
 import { type KeyIn, servedKey } from "@/test/keys";
+import { mcpServer } from "@/test/mcp";
 
 // Secrets are write-only, and only the owner's password session writes them (GET /v2/auth/session's secrets_writable).
 // Off it, every page holding a secret shows each one's state and says once how to change them, with no Paste, Replace,
@@ -37,14 +38,14 @@ const KEYS: ToolKeys = {
   reenter: null,
 };
 // Each server holds ONE secret, `secret` ("mcp:<server>"): its bearer token, its headers' values, or a sign-in.
-const MCP: McpServer = {
+const MCP: McpServer = mcpServer({
   name: "linear", url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: ["X-Api-Key"] }, credential: "sealed", tools: [], protocol: "2025-06-18",
   listed_at: "2026-11-09T09:00:00Z", updated_at: "2026-11-09T09:00:00Z",
   secret: { name: "mcp:linear", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" },
-};
-const BEARER: McpServer = { ...MCP, name: "fake", auth: { type: "bearer" }, secret: { name: "mcp:fake", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" } };
+});
+const BEARER: McpServer = mcpServer({ ...MCP, name: "fake", auth: { type: "bearer" }, secret: { name: "mcp:fake", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" } });
 // A sign-in's server: its secret is from the sign-in, which is its only write (no paste).
-const OAUTH: McpServer = { ...MCP, name: "gh", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: [], client: "dynamic" }, secret: { name: "mcp:gh", set: true, source: "sign-in", changed_at: "2026-11-09T09:00:00Z" } } as McpServer;
+const OAUTH: McpServer = mcpServer({ ...MCP, name: "gh", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: [], client: "dynamic" }, secret: { name: "mcp:gh", set: true, source: "sign-in", changed_at: "2026-11-09T09:00:00Z" } }) as McpServer;
 
 describe("the session that may write secrets", () => {
   it("is the one whose read says secrets_writable: true, accounts on or off, and no other", () => {

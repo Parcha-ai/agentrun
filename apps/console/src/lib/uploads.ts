@@ -1,9 +1,8 @@
 import { ClientError, type FieldIssue } from "./client";
-import type { ApiError } from "./v2";
+import type { ApiError, ServedFile } from "./v2";
 
-/** A file this server keeps (`POST /v2/files`'s answer, `GET /v2/files/{id}`): a run that names its `file_id` finds it at
- *  `inputs/<path>`. */
-export type UploadedFile = { file_id: string; path: string; size_bytes: number; content_type: string; sha256: string; status: string; created_at?: string; expires_at?: string | null };
+/** A file this server keeps (`POST /v2/files`'s answer): a run that names its `file_id` finds it at `inputs/<path>`. */
+export type UploadedFile = ServedFile;
 
 /** The least XMLHttpRequest this needs, so a test can stand one in. */
 export type UploadRequest = Pick<XMLHttpRequest, "open" | "send" | "abort" | "setRequestHeader" | "status" | "responseText"> & {

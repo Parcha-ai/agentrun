@@ -1,3 +1,4 @@
+import type { Capabilities } from "@/lib/client";
 /** The bar every page but the first screen shows while capabilities' `models.ready` is false (the first screen has the key
  *  card, ModelKeyCard): no agent that names no model runs here yet, and what would fix it. `needs` `model`: the server's
  *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes, and a
@@ -7,7 +8,7 @@
  *  keys. `source` `gateway` (`models.source`: the server sends its
  *  models to AGENT_MODEL_BASE_URL): the bar says what the server's own message does, name the gateway's model in
  *  AGENT_MODEL, or add a model key in Settings (its default goes to the gateway), with no OpenRouter promise. */
-export function NoModelBanner({ needs, settings, model, source }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: "faux" | "gateway" | "providers" }) {
+export function NoModelBanner({ needs, settings, model, source }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: NonNullable<Capabilities["models"]>["source"] }) {
   return (
     <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-[13px] text-warning-text md:px-8">
       {needs === "model" ? (

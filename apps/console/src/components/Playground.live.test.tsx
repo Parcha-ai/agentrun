@@ -6,13 +6,17 @@ import { Playground } from "./Playground";
 import type { Agent } from "@/lib/agentForm";
 import type { Run, TimelinePage, TimelineRow } from "@/lib/v2";
 import { servedAgent } from "@/test/agent";
+import { recordedCapabilities } from "@/fixtures";
+import type { Capabilities } from "@/lib/client";
 
 // The playground follows the run it started: the same reads as the run page (the run, its timeline from the cursor),
 // until the run ends, and again after a follow-up, so its messages, steps and answer show where the request was sent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = servedAgent({ agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
-const caps = { harnesses: [{ id: "pi", available: true, steer: true }], features: { messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false } } };
+// The recorded server, its pi harness steering and every message mode offered.
+const served = recordedCapabilities();
+const caps: Capabilities = { ...served, harnesses: (served.harnesses ?? []).filter((h) => h.id === "pi").map((h) => ({ ...h, available: true, steer: true })), features: { ...served.features, messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const row = (seq: number, kind: string, text: string): TimelineRow => ({ id: `r${seq}`, seq, kind, summary: text, text, timestamp: "2026-10-30T03:40:00Z", tool_name: null } as TimelineRow);
 
 /** A faux server: the run completes on the third timeline poll; a follow-up adds its own turn, answered at once. */

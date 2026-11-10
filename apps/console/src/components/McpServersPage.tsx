@@ -179,7 +179,7 @@ const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] out
 const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true", className: input } as const;
 const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"]];
 /** A server's one secret ("mcp:<server>"), as its row says it: by the kind of credential it is. */
-const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in" };
+const AUTH_LABEL: Partial<Record<McpAuth["type"], string>> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in" };
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */

@@ -213,4 +213,25 @@ export type LearningNotesPage = Answer<"listLearningNotes">;
 export type LearningLogPage = Answer<"listLearningLog">;
 /** GET /v2/runs/{id}/learning/diff's answer: what the run's learning changed, file by file. */
 export type RunLearningDiff = Answer<"getRunLearningDiff">;
+/** GET /v2/stats's answer (a serve extension). */
+export type StatsView = Answer<"getStats">;
+
+// MCP servers (Settings → MCP servers; lib/mcp.ts reads these).
+/** A saved MCP server as GET /v2/settings/mcp-servers/{name} and a save answer it. */
+export type McpServerView = Answer<"getMcpServer">;
+/** GET /v2/settings/mcp-servers's answer. */
+export type McpServerList = Answer<"listMcpServers">;
+export type McpPreviewView = Answer<"previewMcpServer">;
+export type McpRefreshView = Answer<"refreshMcpServer">;
+/** PUT /v2/settings/mcp-servers/{name}'s body. */
+export type McpSaveBody = Body<"saveMcpServer">;
+
+/** A file this server keeps (POST /v2/files's answer, GET /v2/files/{id}): a run that names its `file_id` finds it at
+ *  `inputs/<path>`. */
+export type ServedFile = components["File"];
+/** POST /v2/agents/{id}/runs's body. The server also takes `revision` (the revision to run), which its document doesn't
+ *  list yet. */
+export type RunStartBody = Body<"createRun"> & { revision?: string };
+/** GET /v2/capabilities's answer. */
+export type CapabilitiesView = Answer<"getCapabilities">;
 

@@ -8,11 +8,11 @@ export type HarnessRead = { state: "loading" } | { state: "read"; id: string | u
  *  read, it fails closed: never a steer (a follow_up, which every harness takes, stays). */
 export function messageOffer(
   harness: HarnessRead,
-  caps: { features: { messages: MessageFeatures }; harnesses: { id: string; available?: boolean; steer?: boolean }[] } | null,
+  caps: { features: { messages: MessageFeatures }; harnesses?: { id: string; available?: boolean; steer?: boolean }[] } | null,
 ): { messages: MessageFeatures; steers: boolean } {
   if (!caps || harness.state === "loading") return { messages: NO_MESSAGES, steers: false };
   if (harness.state === "failed") return { messages: caps.features.messages, steers: false };
-  return { messages: caps.features.messages, steers: harnessSteers(harness.id, caps.harnesses) };
+  return { messages: caps.features.messages, steers: harnessSteers(harness.id, caps.harnesses ?? []) };
 }
 
 type RevisionPage = { revisions: { revision: string; definition: { harness?: string } }[]; next_cursor: string | null };
