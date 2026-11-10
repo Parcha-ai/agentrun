@@ -99,7 +99,7 @@ async function piRun(t, { tools, learned }) {
 }
 
 test("a pi run's learned_workflow model node books on the run's one ledger, a side call labelled learned_workflow", async (t) => {
-  const { row, requests, turns } = await piRun(t, { tools: ["read", LEARNED_WORKFLOW_TOOL], learned: true });
+  const { row, requests, turns } = await piRun(t, { tools: ["read"], learned: true });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   const node = requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL);
   assert.equal(node.length, 1, `the node's one request is the session's, labelled learned_workflow: ${JSON.stringify(requests)}`);
