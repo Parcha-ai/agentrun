@@ -54,6 +54,8 @@ async function seedToolKey(data, seal, id, values) {
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
+/** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
+const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
 const ENV = { OPENAI_API_KEY: CANARY, PATH: "/usr/bin" };
 
 // The import boots its seal key the one way the server and runner do (seal-key.ts bootSealKey): handed, else the one in the
@@ -608,7 +610,7 @@ test("a webhook trigger's key or the outbound webhook's, pasted into sessions as
   }
 });
 
-test("an import whose seal key does not open this server's webhook secret (a generated one, or another handed one) says so once, its dry run too, and imports all the same; with the right key it says nothing", async (t) => {
+test("an import handed no seal key, or another one, over a server's store refuses in words, its dry run too, and imports nothing; with the right key it says nothing of the webhook secret and imports", async (t) => {
   const root = await scratch(t);
   const data = join(root, "agents");
   const key = randomBytes(32).toString("base64");
@@ -626,20 +628,25 @@ test("an import whose seal key does not open this server's webhook secret (a gen
   mkdirSync(site, { recursive: true });
   claudeSession(at, site, 1);
   const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
-  const said = (seal, ...args) => {
-    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, ...(seal ? { AGENTRUN_SEAL_KEY: seal } : {}) }, encoding: "utf8" });
-    assert.equal(ran.status, 0, ran.stderr);
-    return ran.stderr.split("\n").filter((line) => line.includes("event=webhook_secret"));
-  };
-  // The import always boots a seal key, as the server does: with none handed it makes one under the config home (HOME here),
-  // which is not the server's, so the webhook secret reads as sealed under another key; a different handed one, the same.
+  const ran = (seal, ...args) => spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, ...(seal ? { AGENTRUN_SEAL_KEY: seal } : {}) }, encoding: "utf8" });
+  // The import boots its seal key as the server does, checked against the store (seal-key.ts): handed none (and none in
+  // the data directory), or another, it refuses in the server's words and makes no key.
   for (const seal of [undefined, randomBytes(32).toString("base64")])
     for (const args of [["--dry-run"], []]) {
-      const lines = said(seal, ...args);
-      assert.equal(lines.length, 1, `${seal ? "another key" : "a generated key"} ${args}: ${lines.join("\n")}`);
-      assert.equal(lines[0].replace(/at=\S+ /, ""), `agentrun-serve import: event=webhook_secret condition=unreadable name=AGENTRUN_SEAL_KEY file=${join(data, "webhook.json")} effect="this server's webhook secret cannot be read, so the import does not cut it"`);
+      const refused = ran(seal, ...args);
+      assert.equal(refused.status, 1, `${seal ? "another key" : "none"} ${args}: ${refused.stderr}`);
+      assert.ok(refused.stderr.includes(SEALED_ELSEWHERE), refused.stderr);
+      assert.ok(!refused.stderr.includes("event=webhook_secret"), "it never reaches the webhook secret");
     }
-  for (const args of [["--dry-run"], []]) assert.deepEqual(said(key, ...args), [], "with the key it opens, nothing is said");
+  assert.equal(existsSync(join(data, "seal", "seal.key")), false, "no key is made over the store's secrets");
+  const none = await openData(data, "runner");
+  assert.equal((await rowsOf(none)).length, 0, "nothing imported");
+  await none.close();
+  for (const args of [["--dry-run"], []]) {
+    const done = ran(key, ...args);
+    assert.equal(done.status, 0, done.stderr);
+    assert.deepEqual(done.stderr.split("\n").filter((line) => line.includes("event=webhook_secret")), [], "with the key it opens, nothing is said");
+  }
   const reader = await openData(data, "runner");
   t.after(async () => await reader.close());
   assert.equal((await rowsOf(reader)).length, 1, "imported all the same");
@@ -664,14 +671,14 @@ test("what an import says on stderr goes through the cut its other lines do: a d
   mkdirSync(site, { recursive: true });
   claudeSession(at, site, 1);
   const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
-  // No seal key: the webhook's secret does not open, and the line naming its file is said.
+  // No seal key: the store refuses the import (seal-key.ts), in words that name the key file in the data directory.
   for (const args of [["--dry-run"], []]) {
     const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, OPENAI_API_KEY: value }, encoding: "utf8" });
-    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.status, 1, ran.stderr);
     assert.ok(![ran.stdout, ran.stderr].some((text) => text.includes(value)), `${args}: the key is printed`);
-    const lines = ran.stderr.split("\n").filter((line) => line.includes("event=webhook_secret"));
+    const lines = ran.stderr.split("\n").filter((line) => line.includes(SEALED_ELSEWHERE));
     assert.equal(lines.length, 1, `${args}: ${ran.stderr}`);
-    assert.ok(lines[0].includes(`file=${join(root, "agents-[redacted]", "webhook.json")}`), lines[0]);
+    assert.ok(lines[0].includes(join(root, "agents-[redacted]", "seal", "seal.key")), lines[0]);
   }
 });
 
@@ -1533,22 +1540,23 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   assert.equal((await rowsOf(store)).length, 1, "no run for the subagent");
 });
 
-test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key it is not known, so not cut", async (t) => {
+test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key the import refuses and writes nothing", async (t) => {
   const root = await scratch(t);
   const h = home(root);
   const seal = randomBytes(32).toString("base64");
   const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
   assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `MONID_API_KEY=${saved}` })).includes(saved));
-  const into = async (name, env) => {
+  const into = async (name, env, code = 0) => {
     const data = join(root, name);
     mkdirSync(data, { recursive: true });
     await seedToolKey(data, seal, "monid", { MONID_API_KEY: saved });
-    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), 0);
+    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), code);
     const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
     return files.filter((file) => readFileSync(file).includes(saved));
   };
   assert.deepEqual(await into("agents", { ...ENV, AGENTRUN_SEAL_KEY: seal }), [], "cut from every file the import writes");
-  assert.notDeepEqual(await into("unsealed", ENV), [], "the control: the same import with no seal key keeps it");
+  // With no seal key the store's sealed key is not the import's to open (seal-key.ts): it refuses, and writes nothing.
+  assert.deepEqual(await into("unsealed", ENV, 1), [], "refused: nothing written");
 });
 
 test("one number per run: an imported run's timeline usage row counts its subagents' requests, as its stored metrics do, and its transcript gives the same totals", async (t) => {

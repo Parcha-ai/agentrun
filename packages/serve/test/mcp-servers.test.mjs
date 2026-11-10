@@ -12,11 +12,26 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { sealColumn, sealedAt } from "../dist/store/index.js";
+import { DatabaseSync } from "node:sqlite";
 import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 const sealKey = () => randomBytes(32).toString("base64");
+/** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
+const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
+/** Saved server `name`'s credential in the stopped store at `data`, sealed again under another key: a row this server's key
+ *  does not open (one copied from another server's store). */
+function resealElsewhere(data, name) {
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  try {
+    const sealed = sealColumn(randomBytes(32), sealedAt.mcpServer(name), JSON.stringify({ type: "headers", headers: { authorization: "Bearer x" } }));
+    assert.equal(Number(db.prepare("UPDATE mcp_servers SET sealed = ? WHERE name = ?").run(sealed, name).changes), 1);
+  } finally {
+    db.close();
+  }
+}
 /** A throwaway value: none is a real token. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code))];
@@ -226,7 +241,7 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 404);
 });
 
-test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key keeps a credential under the one it made, reading one sealed under the other as unreadable", async (t) => {
+test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key over a store whose credentials another key sealed does not start, making no key; handed it again, it keeps credentials", async (t) => {
   const data = join(await scratch(t), "agents");
   const token = made();
   const server = await fake(t, { token });
@@ -253,26 +268,35 @@ test("what is refused before any connection: a bad name, OAuth (not yet), plain 
   assert.equal(typeless.status, 422, "a new server's bearer comes with its token");
   await first.close();
 
-  // Handed no seal key, the server makes its own (seal-key.ts): a credential sealed under the first does not open under
-  // it, and a new one is sealed under it.
+  // Handed no seal key, with none in its data directory, over a store whose credential the first sealed (seal-key.ts):
+  // it does not start, in words, and makes no key over it.
   delete process.env.AGENTRUN_SEAL_KEY;
+  await assert.rejects(startServe({ data, port: 0 }), (error) => String(error.message).includes(SEALED_ELSEWHERE));
+  assert.equal(existsSync(join(data, "seal", "seal.key")), false, "no key made over the saved credential");
+  process.env.AGENTRUN_SEAL_KEY = key;
   const { api } = await serve(t, { data });
-  assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the key the server made");
+  assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the store's key");
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200);
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
-  assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["again", "sealed"], ["guarded", "unreadable"], ["open", null]]);
+  assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["again", "sealed"], ["guarded", "sealed"], ["open", null]]);
   assert.equal((await api("GET", "/capabilities")).body.features.mcp_client.at_rest, "sealed");
 });
 
-test("a saved credential sealed under another key reads as unreadable, and a PUT must send it again", async (t) => {
+test("a saved credential sealed under another key reads as unreadable, and a PUT must send it again; the server itself handed another key does not start", async (t) => {
   const data = join(await scratch(t), "agents");
   const token = made();
   const server = await fake(t, { token });
-  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const key = sealKey();
+  withEnv(t, { AGENTRUN_SEAL_KEY: key });
   const first = await started(t, data);
   assert.equal((await first.api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer", token } })).status, 200);
   await first.close();
+  // The store records the key its secrets are sealed under: another one handed refuses the start (seal-key.ts).
   process.env.AGENTRUN_SEAL_KEY = sealKey();
+  await assert.rejects(startServe({ data, port: 0 }), (error) => String(error.message).includes(SEALED_ELSEWHERE));
+  // A row another key sealed, in a store under this one (copied from another server's): unreadable, asked for again.
+  process.env.AGENTRUN_SEAL_KEY = key;
+  resealElsewhere(data, "fake");
   const { api } = await serve(t, { data });
   assert.equal((await api("GET", "/settings/mcp-servers/fake")).body.credential, "unreadable");
   const again = await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer" } });

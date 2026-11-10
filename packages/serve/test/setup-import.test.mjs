@@ -339,7 +339,9 @@ test("under its launcher (node started from a string), setup counts this machine
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 }, err);
-  assert.equal(err, "", "no line on stderr: no refused worker, no node:sqlite warning");
+  // The one line a first start says: where it made the seal key (seal-key.ts), only its path.
+  const others = err.split("\n").filter((line) => line && !/^agentrun-serve: made a new seal key at \S+ \(0600\), beside the store/.test(line));
+  assert.deepEqual(others, [], "no other line on stderr: no refused worker, no node:sqlite warning");
 });
 
 test("a server whose process runs with flags a worker may not take (as a test runner's child does on Node 24) still counts and imports: its worker inherits what Node passes on", { timeout: 90_000 }, async (t) => {
