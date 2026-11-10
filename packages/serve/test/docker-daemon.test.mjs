@@ -8,7 +8,11 @@ import { dockerDaemonCheck, noDockerWords } from "../dist/docker-daemon.js";
 import { computerReadiness } from "../dist/workspace/index.js";
 import { KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
-const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+/** Mode 1 (run folders on this server's disk): a vendor sandbox can't reach them until Archil is on. */
+const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
+/** Mode 2 (run folders on Archil): a vendor sandbox mounts them. */
+const NO_DOCKER_SANDBOX_ARCHIL = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+/** Either mode: a desktop holds no run folder, so any vendor's works. */
 const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B or Orgo for a desktop.";
 
 /** A stand-in ask that answers each call with the next of `answers`, counting calls. */
@@ -17,11 +21,16 @@ function asks(...answers) {
   return { calls, ask: async (signal) => (calls.push(signal), answers[Math.min(calls.length - 1, answers.length - 1)]) };
 }
 
-test("the words name the vendors this server has for the kind, and none where it has none", () => {
-  assert.equal(noDockerWords("sandbox", PROVIDERS), NO_DOCKER_SANDBOX);
-  assert.equal(noDockerWords("desktop", PROVIDERS), NO_DOCKER_DESKTOP);
-  assert.equal(noDockerWords("sandbox", PROVIDERS.filter((one) => one.id === "docker" || one.id === "e2b")), "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B for a sandbox.");
-  assert.equal(noDockerWords("sandbox", PROVIDERS.filter((one) => one.id === "docker")), "No Docker on this server: Render and most hosted services run none. Pick another kind of computer, or none.");
+test("the words name only what works in the server's mode, of the vendors this server has for the kind", () => {
+  assert.equal(noDockerWords("sandbox", PROVIDERS, 1), NO_DOCKER_SANDBOX, "Mode 1: a vendor sandbox needs Archil first");
+  assert.equal(noDockerWords("sandbox", PROVIDERS, 2), NO_DOCKER_SANDBOX_ARCHIL, "Mode 2: a vendor sandbox mounts the run's folder");
+  for (const mode of [1, 2]) assert.equal(noDockerWords("desktop", PROVIDERS, mode), NO_DOCKER_DESKTOP, `a desktop in Mode ${mode}`);
+  const e2bOnly = PROVIDERS.filter((one) => one.id === "docker" || one.id === "e2b");
+  assert.equal(noDockerWords("sandbox", e2bOnly, 1), "No Docker on this server: Render and most hosted services run none. A vendor sandbox (E2B) needs Archil turned on in Settings → Workspace.");
+  assert.equal(noDockerWords("sandbox", e2bOnly, 2), "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B for a sandbox.");
+  // A sandbox that can't mount Archil is never named for one: it could not hold the run's folder in either mode.
+  const unmounted = PROVIDERS.filter((one) => one.id === "docker").concat(PROVIDERS.filter((one) => one.id === "daytona").map((one) => ({ ...one, mounts: [] })));
+  for (const mode of [1, 2]) assert.equal(noDockerWords("sandbox", unmounted, mode), "No Docker on this server: Render and most hosted services run none. Pick another kind of computer, or none.");
 });
 
 test("a failing ask is not ready; a succeeding one is ready; the answer is kept within the TTL and asked again after it, so a daemon that comes up is seen", async () => {

@@ -99,7 +99,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   const said = await answers(entry.id);
   if (said.up) return { ok: true };
   // It names the box whose probe said no (a refusal's details.box), as the box check did.
-  if (said.absent) return { refused: noDockerWords(resolved.kind, registry.PROVIDERS), box: entry.id };
+  if (said.absent) return { refused: noDockerWords(resolved.kind, registry.PROVIDERS, mode), box: entry.id };
   return { refused: `This agent's computer is a ${entry.label} ${resolved.kind}, and this server cannot run it: ${said.reason.replace(/[.!?]+$/, "")}.`, box: entry.id };
 }
 
@@ -240,7 +240,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       } catch (error) {
         // A provider that binds a folder of this machine (Docker) whose daemon does not answer: the one wording.
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;
-        if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS));
+        if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
       const computer = runComputerOf(kind, launched, mounts ? check : undefined);

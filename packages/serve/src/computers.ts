@@ -128,9 +128,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
   /** Why a computer of `kind` on `provider` can't be had for its daemon (a provider that binds a folder of this machine,
-   *  `said` its answer): none answering is the one wording (docker-daemon.ts noDockerWords); else its reason. */
-  const daemonWhy = (kind: ComputerKind, said: DockerDaemon): string | undefined =>
-    said.up ? undefined : said.absent ? noDockerWords(kind, kinds.PROVIDERS) : said.reason;
+   *  `said` its answer, in folder `mode`): none answering is the one wording (docker-daemon.ts noDockerWords); else its
+   *  reason. */
+  const daemonWhy = (kind: ComputerKind, said: DockerDaemon, mode: FolderMode): string | undefined =>
+    said.up ? undefined : said.absent ? noDockerWords(kind, kinds.PROVIDERS, mode === "disk" ? 2 : 1) : said.reason;
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
@@ -150,7 +151,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const daemon = daemons.get(provider.id);
-          const why = modeRefusal(kind, provider, mode) ?? (daemon ? daemonWhy(kind, daemon) : undefined) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const why = modeRefusal(kind, provider, mode) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
@@ -213,7 +214,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       const words = [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
-    const refused = modeRefusal(computer.kind, provider, await modeNow()) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id)) : undefined);
+    const mode = await modeNow();
+    const refused = modeRefusal(computer.kind, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined);
     if (refused) return refused;
     const missing = missingKeys(provider, new Set([...(await sealedKeyNames(store)), ...provider.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]));
     return missing.length ? keysWhy(provider, missing, true) : undefined;

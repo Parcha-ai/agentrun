@@ -151,7 +151,7 @@ test("docker enabled with no daemon answering: the box's reason says to start Do
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   // A place is its computer setting's view: a Docker computer with no daemon is refused in the words Settings → Computers says.
-  const said = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+  const said = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
   assert.equal(made.body.warnings[0].message, said);
   const run = await api("POST", "/agents/docked/runs", { input: { content: "hi" } });
   assert.equal(run.body.error.message, said);

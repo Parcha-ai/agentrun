@@ -58,11 +58,15 @@ type Named = { readonly label: string; readonly kinds: readonly string[]; readon
 /** "A", "A or B", "A, B or C". */
 const either = (names: readonly string[]): string => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`);
 
-/** What a person is told when no Docker daemon answers here and a computer of `kind` is on Docker: Settings →
- *  Computers' why, a run's start refusal and the claim's launch refusal, all alike. The vendors named are those of
- *  `providers` that serve the kind and take no folder of this machine (no bind: none of them needs a local daemon). */
-export function noDockerWords(kind: string, providers: readonly Named[]): string {
-  const vendors = providers.filter((one) => one.kinds.includes(kind) && !one.mounts.includes("bind")).map((one) => one.label);
-  const next = vendors.length > 0 ? `Use a vendor computer, e.g. ${either(vendors)} for a ${kind}.` : `Pick another kind of computer, or none.`;
-  return `No Docker on this server: Render and most hosted services run none. ${next}`;
+/** What a person is told when no Docker daemon answers here and a computer of `kind` is on Docker, in folder `mode` (1:
+ *  run folders on this server's disk; 2: on Archil): Settings → Computers' why, a run's start refusal and the claim's
+ *  launch refusal, all alike. It names only what works in the mode, of `providers` (this server's), none needing a local
+ *  daemon: a sandbox holds the run's folder, so it is one that mounts Archil, and in Mode 1 those need Archil turned on
+ *  first; a desktop, phone or browser holds none, so any that takes no folder of this machine (no bind) does. */
+export function noDockerWords(kind: string, providers: readonly Named[], mode: 1 | 2): string {
+  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none.";
+  const vendors = providers.filter((one) => one.kinds.includes(kind) && (kind === "sandbox" ? one.mounts.includes("archil") : !one.mounts.includes("bind"))).map((one) => one.label);
+  if (vendors.length === 0) return `${NO_DOCKER} Pick another kind of computer, or none.`;
+  if (kind === "sandbox" && mode === 1) return `${NO_DOCKER} A vendor sandbox (${either(vendors)}) needs Archil turned on in Settings → Workspace.`;
+  return `${NO_DOCKER} Use a vendor computer, e.g. ${either(vendors)} for a ${kind}.`;
 }

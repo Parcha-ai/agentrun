@@ -174,8 +174,9 @@ test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "docker" }), undefined);
 });
 
-/** The words a person reads when no Docker daemon answers here, for a sandbox and a desktop over the fixture registry. */
-const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+/** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
+ *  need Archil first) and a desktop in either mode. */
+const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
 const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B or Orgo for a desktop.";
 
 test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind, and the claim refuses it in the same words", async (t) => {
@@ -192,6 +193,12 @@ test("no Docker daemon here: Docker is not ready, in words that name the vendors
   // A daemon that is there but refuses this process says its own reason.
   const denied = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers: async () => ({ up: false, absent: false, reason: "This server's process isn't in the docker group" }) });
   assert.equal(providerOf(await denied.view(), "sandbox", "docker").why, "This server's process isn't in the docker group");
+  // Mode 2: Docker's sandbox is refused for the mode first (it can't mount the owner's disk); its desktop says the words.
+  const archil = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "disk", answers });
+  const inDisk = await archil.view();
+  assert.match(providerOf(inDisk, "sandbox", "docker").why, /can't mount the owner's disk/);
+  assert.equal(providerOf(inDisk, "desktop", "docker").why, NO_DOCKER_DESKTOP);
+  assert.equal(await archil.claimRefusal({ kind: "desktop", provider: "docker" }), NO_DOCKER_DESKTOP);
 });
 
 test("a Docker daemon that answers: Docker is ready, and the claim takes it", async (t) => {
