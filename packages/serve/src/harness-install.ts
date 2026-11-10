@@ -21,8 +21,9 @@
 // cut short) is never loaded, and the next install replaces it.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
@@ -304,6 +305,66 @@ function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signa
   });
 }
 
+/** The file an install of a harness keeps beside its directory while it runs, for every process on this data (a runner
+ *  beside the server, one of its own, or one in another container on the same volume): the installing host and process,
+ *  and since when. A failed install leaves why in it until the next install; one that lands removes it. */
+export const installMarkOf = (dir: string): string => join(dirname(dir), `.${basename(dir)}.installing.json`);
+type InstallMark = { readonly host: string; readonly pid: number; readonly startedAt: number } | { readonly failed: string; readonly at: number };
+
+async function writeMark(dir: string, mark: InstallMark): Promise<void> {
+  await mkdir(dirname(dir), { recursive: true });
+  await writeFile(installMarkOf(dir), JSON.stringify(mark));
+}
+
+async function readMark(dir: string): Promise<InstallMark | undefined> {
+  try {
+    const mark = JSON.parse(await readFile(installMarkOf(dir), "utf8")) as Partial<{ host: string; pid: number; startedAt: number; failed: string; at: number }>;
+    if (typeof mark.failed === "string") return { failed: mark.failed, at: Number(mark.at) };
+    return typeof mark.host === "string" && typeof mark.pid === "number" && typeof mark.startedAt === "number" ? { host: mark.host, pid: mark.pid, startedAt: mark.startedAt } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether process `pid` is alive (signal 0: one of another user's reads as alive too, by EPERM). */
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/** Where a run's claim stands on a harness that installs on first use, in `dir`: "installed" once it is whole; while an
+ *  install runs (its mark started within INSTALL_TIMEOUT_MS, by a live process when it names this host; another host's
+ *  process can't be read from here, so its mark is trusted within that bound), it waits for that install, polling, never
+ *  past that bound; `{ failed }` with the install's own words when the last install failed; "none" when nothing installs
+ *  it (no mark, one past the bound, or one this host's installer that is gone left), so the caller says what is missing
+ *  as before. `signal` aborted (the claim stopped or lost): it stops waiting and rejects. */
+export async function installSettled(entry: HarnessInstallEntry, dir: string, pins: HarnessPins, { signal, pollMs = 250, timeoutMs = INSTALL_TIMEOUT_MS, isAlive = alive, host = hostname() }: { signal?: AbortSignal; pollMs?: number; timeoutMs?: number; isAlive?: (pid: number) => boolean; host?: string } = {}): Promise<"installed" | "none" | { failed: string }> {
+  for (;;) {
+    if (entry.lacking(dir, pins) === undefined) return "installed";
+    const mark = await readMark(dir);
+    if (mark === undefined) return "none";
+    if ("failed" in mark) return { failed: mark.failed };
+    if (Date.now() - mark.startedAt > timeoutMs || (mark.host === host && !isAlive(mark.pid))) return "none";
+    signal?.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(done, pollMs);
+      function done() {
+        signal?.removeEventListener("abort", stop);
+        resolve();
+      }
+      function stop() {
+        clearTimeout(timer);
+        reject(signal!.reason);
+      }
+      signal?.addEventListener("abort", stop, { once: true });
+    });
+  }
+}
+
 /** The server's one installer of a harness into `dir`: `ensure()` resolves once it is installed whole, installing it first
  *  when it is not, and every caller while an install runs waits for that one. A failed install is not kept: the next call
  *  tries again. `stop()` stops an install that runs (its npm) and waits, bounded, for it to end. `onInstalled` hears of an
@@ -339,7 +400,18 @@ export class HarnessInstall {
       const pins = await this.pins();
       if (this.entry.lacking(this.dir, pins) === undefined) return void (this.done = true);
       const started = performance.now();
-      await this.install(this.entry, this.dir, pins, this.stopping.signal);
+      // The mark a run's claim reads, in this process or a runner's own (installSettled): installing now, then gone once
+      // it is in, or why it failed.
+      await writeMark(this.dir, { host: hostname(), pid: process.pid, startedAt: Date.now() });
+      try {
+        await this.install(this.entry, this.dir, pins, this.stopping.signal);
+      } catch (error) {
+        // Why it failed, for the runs that waited on it; a server that stops leaves no mark (its npm was stopped, not refused).
+        if (this.stopping.signal.aborted) await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
+        else await writeMark(this.dir, { failed: (error as Error).message, at: Date.now() }).catch(() => undefined);
+        throw error;
+      }
+      await rm(installMarkOf(this.dir), { force: true });
       this.done = true;
       this.onInstalled?.(Math.round(performance.now() - started));
     })().finally(() => (this.running = undefined));
