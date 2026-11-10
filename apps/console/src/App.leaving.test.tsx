@@ -101,6 +101,17 @@ async function editing() {
 }
 
 describe("App, leaving the agent editor with unsaved changes", () => {
+  it("asks before Sign out everywhere too; Cancel keeps the editor and the edit, and sends no sign-out", async () => {
+    const page = await editing();
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    const before = asked.length;
+    await page.click(page.button(/^Sign out everywhere$/));
+    await page.click([...page.host.querySelectorAll('[role="alertdialog"] button')].find((b) => b.textContent?.trim() === "Sign out everywhere"));
+    expect(confirms).toEqual([LEAVE]);
+    expect(asked.slice(before).filter((r) => !r.startsWith("GET "))).toEqual([]);
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+
   it("asks when a sidebar link would leave it; Cancel stays, the address and the edit kept", async () => {
     const page = await editing();
     await page.type(page.instructions(), "Answer, then check the sum.");

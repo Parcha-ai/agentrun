@@ -109,6 +109,16 @@ describe("AgentEditor: Save follows the form", () => {
     expect(t.saveButton().disabled).toBe(true);
   });
 
+  it("is off again once a saved setting the form sets only on a change (approvals) is changed and set back", () => {
+    const t = mount(agent({ definition: { ...agent().definition, approvals: "never" } }), "tools");
+    const radio = (v: string) => t.host.querySelector<HTMLInputElement>(`fieldset[aria-label="Approvals"] input[type="radio"][value="${v}"]`)!;
+    act(() => { radio("ask").click(); });
+    expect(t.saveButton().disabled).toBe(false);
+    act(() => { radio("never").click(); });
+    expect(t.saveButton().textContent).toBe("Saved · rev 2");
+    expect(t.saveButton().disabled).toBe(true);
+  });
+
   it("is off again after a save, the form as saved", async () => {
     const t = mount(agent());
     t.pick("claude-agent");

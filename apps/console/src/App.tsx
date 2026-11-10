@@ -531,6 +531,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} onSignOutEverywhere={() => {
+      if (!mayLeave()) return;
       v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} banners={<>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}

@@ -116,9 +116,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as saved: as it opened, or as its last save left it. Save is on only for a form unlike it, and leaving the
   // page with one asks first (lib/leaving). The revision note is not part of it: a note alone saves nothing.
   const [base, setBase] = useState<AgentFields>(f);
-  // Both sides with their effective tool settings (the form's own, else the definition's: the form drops settings equal
-  // to the definition's) and their tools as a set (a harness switch and back can reorder them, never change them).
-  const effective = (x: AgentFields): AgentFields => ({ ...x, tool_settings: x.tool_settings ?? d?.tool_settings ?? {}, tools: [...(x.tools ?? [])].sort() });
+  // Both sides as they take effect: a field the form sets only once it is changed (tool settings, approvals, learning,
+  // the computer and place) is the form's own, else the definition's, so a change undone is no change; and their tools
+  // as a set (a harness switch and back can reorder them, never change them).
+  const effective = (x: AgentFields): AgentFields => ({
+    ...x,
+    tool_settings: x.tool_settings ?? d?.tool_settings ?? {},
+    approvals: x.approvals ?? d?.approvals ?? "ask",
+    learning: x.learning ?? d?.learning,
+    computer: x.computer ?? (d?.computer as AgentFields["computer"]),
+    place: x.place ?? placeOf(d?.place),
+    tools: [...(x.tools ?? [])].sort(),
+  });
   const dirty = !same(effective(f), effective(base));
   const leaveSaved = useLeaveGuard(dirty);
   // The tools a harness switch took off (the new harness doesn't run them here), with why, so a switch back ticks them again.
