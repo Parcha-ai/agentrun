@@ -108,8 +108,10 @@ The server takes two tokens at once: `AGENTRUN_TOKEN` (or `/data/.token` when th
 `AGENTRUN_TOKEN_NEXT`. Either opens every route the token opens, and each is compared in constant time. Runners hold no
 API token, so a rotation touches the server alone.
 
-1. Make the new token (`openssl rand -hex 32`), set it as `AGENTRUN_TOKEN_NEXT`, and restart the server. Its banner
-   says the next token is taken beside the old one. Both tokens work now.
+1. Make the new token (`openssl rand -hex 32`), set it as `AGENTRUN_TOKEN_NEXT`, and restart the server. Check that
+   its banner says `The next token ($AGENTRUN_TOKEN_NEXT) is taken beside it` before you go on: an empty
+   `AGENTRUN_TOKEN_NEXT` counts as unset, as an empty `AGENTRUN_TOKEN` does, and the banner then has no such line. Both
+   tokens work now.
 2. Move every caller (your backend, scripts, `AGENTRUN_API_KEY` for the CLI) to the new token. Each request with either
    token is answered, so callers can move one at a time.
 3. Set `AGENTRUN_TOKEN` to the new token, unset `AGENTRUN_TOKEN_NEXT`, and restart the server. The old token is refused

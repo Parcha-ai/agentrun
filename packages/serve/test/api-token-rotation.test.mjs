@@ -1,8 +1,9 @@
 // The server takes two API tokens at once (api-token.ts): the token (AGENTRUN_TOKEN, else DIR/.token's) and, during a
-// rotation, the next one (AGENTRUN_TOKEN_NEXT). Either opens /v2, /mcp and the store's /api/*; anything else is refused
-// as before. Once the next token is the token and the old one is gone, the old one is refused. Every presented token is
-// compared with node:crypto's timingSafeEqual, against every token the server takes, on equal-length digests, with no
-// early return. The next token follows the token's rules, and no run or runner loop is handed it.
+// rotation, the next one (AGENTRUN_TOKEN_NEXT). Either opens /v2, /mcp and the store's /api/*, and setup (with accounts)
+// takes either as its Bearer header or its code; anything else is refused as before. Once the next token is the token
+// and the old one is gone, the old one is refused. Every presented token is compared with node:crypto's timingSafeEqual,
+// against every token the server takes, on equal-length digests, with no early return. The next token follows the
+// token's rules, and no run or runner loop is handed it.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { client, serve } from "./support.mjs";
+import { call, client, serve } from "./support.mjs";
 
 const { acceptedTokens, bearerCheck, TOKEN_NEXT_ENV, tokenProblem } = await import("../dist/api-token.js");
 const { banner } = await import("../dist/print.js");
@@ -126,6 +127,33 @@ test("after the rotation (the next token made the token, the old one removed) th
   assert.equal(await mcpStatus(after, OLD), 401, "on /mcp too");
   assert.equal(await apiStatus(after, OLD), 401, "and on /api/*");
   assert.ok(lines.some((line) => / event=auth_failed /.test(line) && / route=\/v2\/agents /.test(line) && / reason=wrong_token$/.test(line)), `logged as wrong_token: ${lines.join("\n")}`);
+});
+
+/** A first password for a server with accounts, plainly no secret (as owner-auth.test.mjs makes them). */
+const PASSWORD = `not-a-secret-${"owner"}`;
+/** POST /v2/setup on `server` with `body`, from its own page unless `headers` says otherwise. */
+const setup = (server, body, headers = { "content-type": "application/json", origin: `http://127.0.0.1:${server.port}` }) => call(server.port, { method: "POST", path: "/v2/setup", headers, body });
+
+test("setup with accounts takes the next token as its Bearer header, as it takes the token", async (t) => {
+  const server = await serve(t, { accounts: true, token: OLD, nextToken: NEXT, runner: false });
+  const made = await setup(server, { password: PASSWORD }, { "content-type": "application/json", authorization: `Bearer ${NEXT}` });
+  assert.equal(made.status, 201, made.text);
+});
+
+test("setup with accounts takes the next token in its code field, as it takes the token", async (t) => {
+  const server = await serve(t, { accounts: true, token: OLD, nextToken: NEXT, runner: false });
+  const made = await setup(server, { password: PASSWORD, code: NEXT });
+  assert.equal(made.status, 201, made.text);
+});
+
+test("after the rotation, setup refuses the old token as its Bearer header and as its code", async (t) => {
+  const server = await serve(t, { accounts: true, token: NEXT, runner: false });
+  const byHeader = await setup(server, { password: PASSWORD }, { "content-type": "application/json", authorization: `Bearer ${OLD}` });
+  assert.equal(byHeader.status, 401, byHeader.text);
+  const byCode = await setup(server, { password: PASSWORD, code: OLD });
+  assert.equal(byCode.status, 403, byCode.text);
+  assert.ok(!byHeader.text.includes(OLD) && !byCode.text.includes(OLD), "no refusal says the token");
+  assert.equal((await setup(server, { password: PASSWORD, code: NEXT })).status, 201, "the token now in force still sets the password");
 });
 
 test("a next token that breaks the token's rules stops the start, in words", async (t) => {
