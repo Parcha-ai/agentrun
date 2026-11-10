@@ -18,7 +18,9 @@ const { momentOverStore, timelineOverStore, viewOverStore } = await import("../d
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { answersOf, withApprovalRows } = await import("../dist/run-view.js");
 const { approve } = await import("../dist/runs-over-store.js");
-const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
+// A stopped end the journal refuses gives up at once (no retry, no wait at the cap): the run ends stopped on its row
+// alone, the shape this file reads.
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30, endRetryBackoffMs: 1, endRetryCapMs: 1, endRetryAtCap: 0 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const DEPS = { origin: "", serverSecrets: () => [] };
 const SERVED = { serverSecrets: () => [], keyEnv: () => ({}) };
@@ -93,6 +95,7 @@ test("a final run whose asked call has no answer in its journal reads it withdra
   await server.command("run-1", { kind: "stop" });
   await stoppedRowOnly(server);
   const seen = await readers(server);
+  // A stopped end written on the run's row alone (no end in its journal, no outcome) reads cancelled.
   assert.equal(seen.status, "cancelled");
   assert.equal(seen.pending, null, "nothing pending");
   assert.match(seen.row, /^Withdrawn when the run was stopped: add /, "the view's approval row");
