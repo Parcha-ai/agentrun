@@ -32,11 +32,3 @@ export async function sealedKeyNames(store: { sealedKeys: Pick<SealedKeys, "all"
   return (await store.sealedKeys.all()).map((row) => row.name);
 }
 
-/** Every saved key's value that opens under `sealKey` now: what the server never shows (its serverSecrets read them), for
- *  a reader in another process (the runner's learning end) that must refuse them too. One that does not open is left out,
- *  as getSealedKey reads it. */
-export async function savedKeyValues(store: { sealedKeys: Pick<SealedKeys, "all" | "get"> }, sealKey: Buffer): Promise<string[]> {
-  const names = await sealedKeyNames(store);
-  const values = await Promise.all(names.map((name) => getSealedKey(store, sealKey, name)));
-  return values.filter((value): value is string => typeof value === "string" && value.length > 0);
-}

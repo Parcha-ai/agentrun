@@ -328,8 +328,9 @@ if (!values["no-runner"]) {
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
-// With a public address the setup link and its code are printed as the code is made (owner.ts).
-if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
+// setup link with its code as the code was made (owner.ts).
+if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
 bannered = true;
 for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments

@@ -12,7 +12,7 @@ const { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer,
 const KEY = Buffer.from(randomBytes(32));
 const server = (over = {}) => ({ name: "github", url: "https://mcp.example.com/github", auth: "headers", protocol: "2025-06-18", tools: [{ name: "create_issue", grantable: true }], prices: { create_issue: 0.01 }, credential: { type: "headers", headers: { authorization: "Bearer gh-secret" } }, ...over });
 
-test("a server's row saves with its credential sealed, opens back with the origin, and lists; removed", async (t) => {
+test("a server's row saves with its credential sealed, opens back with the origin, and lists; removed; with no credential it stores null", async (t) => {
   const { store } = await storeOn(t);
   const row = await saveMcpServer(store, KEY, server());
   assert.deepEqual([row.name, row.url, row.auth, row.protocol], ["github", "https://mcp.example.com/github", "headers", "2025-06-18"]);
@@ -23,13 +23,9 @@ test("a server's row saves with its credential sealed, opens back with the origi
   assert.deepEqual((await listMcpServers(store)).map((r) => r.name), ["github"]);
   await removeMcpServer(store, "github");
   assert.equal(await store.mcp.server("github"), undefined, "removed");
-});
-
-test("a server with no credential (auth none) stores null; opening says none", async (t) => {
-  const { store } = await storeOn(t);
+  // A server with no credential (auth none) keeps no sealed bytes at all; opening it says none (store-seal.test.mjs).
   await saveMcpServer(store, KEY, { name: "public", url: "https://mcp.example.com/public", auth: "none", tools: [] });
   assert.equal((await store.mcp.server("public")).sealed, null);
-  assert.equal((await openServerCredential(store, KEY, "public")).unusable, "none");
 });
 
 test("a credential is refused as damaged when the row's url origin changed since it was sealed (never sent to a new host)", async (t) => {

