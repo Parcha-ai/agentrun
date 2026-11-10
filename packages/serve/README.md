@@ -157,10 +157,9 @@ once without checking again (a key some harness reads would, with `why=key`).
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
 `compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
-Docker socket. In this release a server in a container can't start a Docker sandbox yet (its folder and the computer
-daemon are mounted by paths only the server's container has, and it sets no host list), so agents there get file tools
-and `web_fetch`, no shell. For a sandbox, run the server on the host, or give the agent a Daytona or E2B computer with
-workspaces on Archil.
+Docker socket, so each run's Docker sandbox is a container beside the server's, its run's folder mounted from that
+volume ([in the published image](#in-the-published-image)). It takes Docker Engine 26 or later, which mounts a
+volume's subpath.
 
 1. Start it (below).
 2. Open the console and set your password.
@@ -669,8 +668,8 @@ never runs; the box's first process is a `sleep` of its lifetime.
 
 ### In the published image
 
-The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker boxes on the Docker of the host it runs on, through
-that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
+The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker sandboxes on the Docker of the host it runs on,
+through that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
 has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives the image's `node` user the socket's group
 (`DOCKER_GID`), so the server never runs as root.
 
@@ -680,27 +679,32 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   it root. A box never gets it.
 - **A box is a container beside the server's.** It is made as on a Linux host (`--network none`, every capability dropped,
   no new privileges, the server's uid, the box limits).
-- **No host list from a container yet.** A Docker sandbox's egress proxy refuses the Docker host's own addresses, so it
-  must know them, and a provider that runs in a container (`/.dockerenv`, `/run/.containerenv` or a container's cgroup)
-  can't read them from its own interfaces. The computer package's Docker provider takes them as its
-  `egress.hostAddresses` option (IP addresses, the host's public ones and any NAT'd or elastic IP;
-  [its README](../computer/README.md)), but this server sets no such option and has no setting for it. So in a
-  container, a Docker sandbox asked for a host list (`AGENTRUN_BOX_ALLOW`, whose default is a list) is refused before
-  anything is made: "this provider runs in a container (…), so this provider's own interfaces are not the Docker
-  host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for
-  network none or open". With `AGENTRUN_BOX_ALLOW=none` a sandbox asks for no network, which this check does not
-  refuse.
 - **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
   start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
-  (`docker inspect`), and takes the named volume that holds the data directory. A box mounts that run's `work/` from it,
-  and the run's egress proxy's directory (`<data>/box-egress/<16 hex>/`, read-only), as the volume's subpaths
-  (`--mount type=volume,...,volume-subpath=disk/agents/<key>/runs/<run>/work`), never the rest. The run's files and the box's are the same
+  (`docker inspect`), and takes the named volume that holds the data directory. A run's sandbox mounts that run's folder
+  from it, and the sandbox's own daemon (copied to `<volume mount>/.agentrun/computerd`, read-only), as the volume's
+  subpaths (`--mount type=volume,...,volume-subpath=...`), never the rest. The run's files and the sandbox's are the same
   files, as on a host.
+- **The host's own addresses.** A sandbox's egress proxy refuses the Docker host's own addresses, which the server in a
+  container can't see on its interfaces. At its start it reads them once through the socket: one container on the
+  host's network (`--network host`, with `host.docker.internal` added for Docker Desktop and OrbStack, whose listing is
+  the VM's), from the proxy's own image, as nobody (`65534:65534`), every capability dropped, no new privileges, a
+  read-only root, 64 MiB and 32 processes, removed at its exit, bounded to 60 s. To those it adds
+  `AGENTRUN_DOCKER_HOST_ADDRESSES` (a comma list of IP addresses, checked at the start), for what no interface shows,
+  such as a NAT'd or elastic public address. The union is in capabilities' docker entry (`host_addresses`) and the
+  `event=docker_host_addresses` line. With none known under an allow-list (the read failed, nothing set), docker is
+  unavailable at the start, saying so and naming the setting or `AGENTRUN_BOX_ALLOW=none`; under `none` nothing is read.
 - **Any other layout** (the data directory not on a read-write named volume of the server's own container, the socket of
   another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name) makes
   docker unavailable at the start, its reason in capabilities and the `event=box_paths` line: `run AgentRun in a
   container with docker compose up from compose.yaml (its named data volume is how boxes reach a run's files)`. On an
-  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`.
+  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`. A daemon of another
+  machine makes it unavailable too, whether `DOCKER_HOST` names it or the current Docker context does (`DOCKER_CONTEXT`,
+  else the saved current one, read once with `docker context inspect`): that daemon has none of this machine's paths.
+  Another machine's is `ssh://`, or `tcp://` to a host that isn't loopback; `unix://`, `npipe://` (Docker Desktop on
+  Windows) and `tcp://` to loopback are this machine's. An agent that
+  names a Docker computer is refused at its run's start in those words, and one with no computer runs on the runner,
+  with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
 
@@ -770,8 +774,9 @@ Docker sandbox where this server's Docker answers, else no computer; in Mode 2, 
 no computer.
 
 **What a computer reaches.** A Docker sandbox reaches the hosts of `AGENTRUN_BOX_ALLOW` (by default the package
-registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. A
-server that runs in a container can't start a Docker sandbox yet ([in a container](#in-a-container)). A
+registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
+server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
+([in the published image](#in-the-published-image)). A
 Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
 own network, whatever the list says.
 
@@ -1319,18 +1324,20 @@ runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
-key. With `AGENTRUN_SEAL_KEY` not set, the launcher keeps it in `agentrun/seal.key` under `$XDG_CONFIG_HOME` (or
-`~/.config`), making it the first time: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can
-read is refused, not changed. It is outside the data directory on purpose: a copy or a backup of the data directory
-holds the keys as ciphertext alone, and opens nowhere without the seal key. With no seal key (started with no launcher and
-no `AGENTRUN_SEAL_KEY`, or with no home directory) nothing is saved, never in the clear: `409 no_sealing_key`, and capabilities' `features.tool_keys.at_rest` is
-`unavailable` (`sealed` otherwise).
+key. With `AGENTRUN_SEAL_KEY` not set, the server keeps it in `seal/seal.key` in its data directory, beside the store,
+making it at the first start: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can read is
+refused, not changed. It lives and dies with the data (a disk, a volume): back it up with the data directory, and keep
+the two together. The store records the key's fingerprint (an HMAC of a fixed label under the key, never the key), and
+the server, every runner and `import` check the key they hold against it: a store whose secrets were sealed with another
+key does not start ("this store's secrets were sealed with another key; hand the server the original
+AGENTRUN_SEAL_KEY"), and no key is ever made over sealed secrets, so a lost `seal.key` is never replaced by a new one.
+The same holds on Postgres: a second machine with another key refuses. Only the server's start makes the key; a runner
+reads it from `AGENTRUN_SEAL_KEY` or the data directory, never makes one, and is refused without one. Set
+`AGENTRUN_SEAL_KEY` explicitly, the same in every process, and keep it.
 
 A stored value that does not open is never a reason not to start. It reads `set: false, stored_unreadable: true`, and
-`reenter` names those fields with why: `seal_key_missing`, `seal_key_changed` (a lost `seal.key` is made anew, so it
-shows as this) or `file_unreadable`. The log says so once, naming the condition and the file, never a value; a `PUT` of
-the value seals it again under the current key. In a container, `~/.config` is the container's own and goes with it:
-pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new container opens the keys the volume holds.
+`reenter` names those fields with why: `seal_key_changed` (sealed under another key) or `file_unreadable`. The log says
+so once, naming the condition and the file, never a value; a `PUT` of the value seals it again under the current key.
 
 A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
 gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its
