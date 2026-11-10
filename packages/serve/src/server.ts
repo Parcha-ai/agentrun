@@ -52,7 +52,7 @@ import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raise
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
-import { agentPointers } from "./handed-values.js";
+import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -1204,8 +1204,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
   // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
-  // The learning routes' cut: the server's secrets and agent `agentId`'s own sign-in pointers, live and forgotten.
-  const learningShown = async (agentId: string) => secretsShown([...serverSecrets(), ...(await agentPointers(signIns, agentId))]);
+  // The learning routes' cut: the server's secrets and agent `agentId`'s own sign-in pointers, live and forgotten; 403 when
+  // one of them can't be read here (agentPointers), never a shorter cut.
+  const learningValues = async (agentId: string): Promise<string[]> => {
+    const pointers = await agentPointers(signIns, agentId);
+    if (pointers === "unreadable") throw new ApiError("forbidden", WITHHELD_LEARNING);
+    return [...serverSecrets(), ...pointers];
+  };
+  const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
   const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSecrets(process.env, "all", storedKeys) });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
@@ -2806,7 +2812,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
         // What it refuses is what the reads cut: a note shown cut is never saved over the hidden text.
-        const refuse = [...serverSecrets(), ...(await agentPointers(signIns, id))];
+        const refuse = await learningValues(id);
         const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(refuse);

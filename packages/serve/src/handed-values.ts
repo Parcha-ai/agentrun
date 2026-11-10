@@ -41,18 +41,24 @@ export async function handedValuesOf(deps: { readonly signIns?: SignInReader }, 
 /** The browser vendors that keep a sign-in (sign-ins-store.ts vendorOf). */
 const SIGN_IN_VENDORS = ["browserbase", "kernel"] as const;
 
-/** Every sign-in pointer of agent `agentId` that opens here, live and forgotten, at each vendor that keeps one (each at
- *  least MIN_SECRET long, as every cut takes them): what the learning routes cut beside the server's secrets, so a note,
- *  a skill or a run's learning that wrote one never shows it. One that does not open under this server's key, or a read
- *  that fails, gives nothing: no route can be handed it from here either. */
-export async function agentPointers(signIns: SignInReader | undefined, agentId: string): Promise<string[]> {
+/** Why what an agent learned is withheld (403): a pointer of its sign-in can't be read here, so the cut would be shorter
+ *  than what a note may hold. */
+export const WITHHELD_LEARNING = "This server can't read the agent's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so what it learned is not shown.";
+
+/** Every sign-in pointer of agent `agentId`, live and forgotten, at each vendor that keeps one (each at least MIN_SECRET
+ *  long, as every cut takes them): what the learning routes cut beside the server's secrets, so a note, a skill or a
+ *  run's learning that wrote one never shows it. `unreadable` when one does not open under this server's key, or a read
+ *  fails: what the agent learned may hold that pointer, so it is withheld (WITHHELD_LEARNING), never shown over a
+ *  shorter list. */
+export async function agentPointers(signIns: SignInReader | undefined, agentId: string): Promise<string[] | "unreadable"> {
   if (!signIns) return [];
   const refs: string[] = [];
   for (const vendor of SIGN_IN_VENDORS) {
-    const live = await signIns.peek(agentId, vendor).catch(() => undefined);
-    if (live && typeof live === "object") refs.push(live.ref);
-    const gone = await signIns.forgotten(agentId, vendor).catch(() => undefined);
-    if (gone && typeof gone === "object") refs.push(...gone.refs);
+    const live = await signIns.peek(agentId, vendor).catch(() => "unreadable" as const);
+    const gone = await signIns.forgotten(agentId, vendor).catch(() => "unreadable" as const);
+    if (live === "unreadable" || gone === "unreadable" || gone.unreadable) return "unreadable";
+    if (live) refs.push(live.ref);
+    refs.push(...gone.refs);
   }
   return [...new Set(refs)].filter((ref) => ref.length >= MIN_SECRET);
 }
