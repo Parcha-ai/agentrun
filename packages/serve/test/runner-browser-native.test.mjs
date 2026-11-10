@@ -243,3 +243,41 @@ test("the agent's hand-over on the runner: browser_request_handoff writes its wa
   assert.match(String(commands.find((row) => row.id === answered.second.id)?.refused), /already answered done/, "a second answer is refused: first wins");
   assert.ok(r.requests.some((body) => /done/i.test(JSON.stringify(body))), "the call returned done to the model");
 });
+
+test("a hand-over waiting across a re-claim: the next claim's answer clears the row's waiting summary, so the run reads no stale wait", { timeout: 180_000 }, async (t) => {
+  const opened = await storeWith(t, { tools: ["browser"] }, PI_LAUNCH);
+  const requests = [];
+  const script = [{ call: "snapshot" }, { call: "browser_request_handoff", args: { request_id: "5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d", instruction: "Sign in for me.", completion_condition: "Signed in." } }, { sayLastResult: true }];
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests) };
+  const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
+  const start = (name) => startRunner({
+    store: opened.store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
+    createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+  });
+  let runner = start("runner-a");
+  t.after(() => runner.close().catch(() => {}));
+  const entriesNow = async () => (await journalRecords(opened.server.readJournal(RUN), ctx)).entries;
+  // The hand-over waits, its row saying so.
+  const ask = await until(async () => {
+    const row = await opened.server.runs.get(RUN);
+    const waiting = (await entriesNow()).map((entry) => entry.data).find((data) => data?.state === "waiting" && typeof data.id === "string");
+    return waiting && row.summary === "Waiting for you in the browser" && waiting;
+  }, "the hand-over's wait, the row saying so");
+  // The runner goes (a deploy's drain); another claims the run and takes the wait up.
+  const first = await opened.server.runs.get(RUN);
+  await runner.close();
+  runner = start("runner-b");
+  await until(async () => {
+    const row = await opened.server.runs.get(RUN);
+    return row.runner === "runner-b" && row.epoch > first.epoch;
+  }, "the next claim");
+  const handedBack = await opened.server.command(RUN, { kind: "browser_hand_back", body: { ask: ask.id, outcome: "done" } });
+  const handovers = async () => (await entriesNow()).filter((entry) => entry.kind === "agent.handover").map((entry) => entry.data?.state);
+  await until(async () => (await handovers()).some((state) => state !== "waiting") || ["ended", "failed", "stopped"].includes((await opened.server.runs.get(RUN)).state), "the answer in the journal, or the run's end").catch(() => undefined);
+  const command = (await opened.server.commands(RUN, 0)).find((row) => row.id === handedBack.id);
+  const after = await until(async () => {
+    const now = await opened.server.runs.get(RUN);
+    return now.summary !== "Waiting for you in the browser" && now;
+  }, "the row's waiting summary cleared", 20_000).catch(async () => ({ ...(await opened.server.runs.get(RUN)), handovers: await handovers(), command }));
+  assert.notEqual(after.summary, "Waiting for you in the browser", `the answer on the next claim cleared the waiting summary: ${JSON.stringify({ state: after.state, summary: after.summary, handovers: after.handovers, command: after.command })}`);
+});

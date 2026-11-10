@@ -93,11 +93,26 @@ export type PiAnswer = ToolAnswer;
 export type PiCall = Pick<ToolCall, "signal" | "output" | "model">;
 export type PiExecutor = (args: unknown, call: PiCall) => Promise<PiAnswer>;
 
-/** The call's model as pi names one ({ provider, modelId }), when the call gives one. */
+/** The call's model as pi names one ({ provider, modelId }), when the call gives one: a pi-ai Model (its `id`), as the
+ *  pi adapter resolves the calling agent's, or a bare ref (`modelId`). */
 const modelRef = (model: unknown): { provider: string; modelId: string } | undefined => {
-  const ref = model as { provider?: unknown; modelId?: unknown } | null | undefined;
-  return typeof ref?.provider === "string" && typeof ref.modelId === "string" ? { provider: ref.provider, modelId: ref.modelId } : undefined;
+  const ref = model as { provider?: unknown; modelId?: unknown; id?: unknown } | null | undefined;
+  const id = typeof ref?.modelId === "string" ? ref.modelId : typeof ref?.id === "string" ? ref.id : undefined;
+  return typeof ref?.provider === "string" && id !== undefined ? { provider: ref.provider, modelId: id } : undefined;
 };
+
+/** The models a host tool's api answers from: the call's own model, when it is a pi-ai Model (its input and input limits,
+ *  which pi's read sizes an image by), found by its provider and id, as the session's models hold it; else none, so the
+ *  read falls to pi's defaults. */
+function callModels(model: unknown): ReturnType<typeof createModels> {
+  const models = createModels();
+  const given = model as { provider?: unknown; id?: unknown; input?: unknown } | null | undefined;
+  if (typeof given?.provider !== "string" || typeof given.id !== "string" || !Array.isArray(given.input)) return models;
+  const found = (provider: string, id: string) => (provider === given.provider && id === given.id ? model : undefined);
+  return new Proxy(models, {
+    get: (target, key) => (key === "getModel" ? (provider: string, id: string) => found(provider, id) ?? target.getModel(provider as never, id as never) : Reflect.get(target, key)),
+  });
+}
 
 /** The text a model reads for `answer`: the output, the failure's words, then each diagnostic, apart by blank lines. */
 export const answerText = (answer: PiAnswer): string =>
@@ -119,7 +134,7 @@ export function piExecutor(tool: ToolRegistration, env: ExecutionEnv, context: C
       diagnostic: (note: { severity: "info" | "warn" | "error"; code?: string; message: string }) => void notes.push(note),
       // pi's read asks the calling agent for its model, for an image's limits: the call's, else pi's defaults.
       agent: async () => ({ model: modelRef(call.model) }),
-      models: createModels(),
+      models: callModels(call.model),
     };
     // Only these members (host-tools.ts HOST_API_MEMBERS, which scripts/host-tool-api.test.mjs holds to every member
     // pi's tools read): a read of any other names it, rather than reading as "is not a function".

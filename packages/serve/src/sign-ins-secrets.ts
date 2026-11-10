@@ -4,8 +4,9 @@
 // Rule 1, the writes: no route takes a browser credential in its body. A sign-in is saved inside a run (pi-browser opens
 // the vendor's profile with save:true and the run path keeps its pointer, sealed, in store.signIns), never by an API
 // write; the one browser route that changes a sign-in, DELETE /agents/{agent_id}/sign-ins/{key} (forgetSignIn), has no
-// body. So this plane registers no secret-field predicate with secret-writes.ts, marks no field `x-agentrun-secret`, and
-// gives the planted-secret harness no write route. browserBodyCredentials is the check that keeps it so.
+// body. So this plane marks no field `x-agentrun-secret` and gives the planted-secret harness no write route
+// (browserBodyCredentials is the check that keeps it so). The forget drops a sealed pointer, though: it is registered with
+// secret-writes.ts as a secret write whatever its request, the owner's session alone, never the API token.
 //
 // Rule 3, the views: each saved sign-in carries its one secret under `secret`, in the metadata shape every plane gives
 // (signInSecretMeta), beside its own state (held | ready | unreadable). Never the pointer, a prefix, a length or a hash.
@@ -24,10 +25,13 @@ export function signInSecretMeta(row: { agentId: string; provider: string; saved
   return secretMeta(secretName("sign-in", row.agentId, row.provider), { set: true, source: SIGN_IN_SOURCE, changedAt: new Date(row.savedAt) });
 }
 
-/** The browser plane's secret body fields, by operationId, for secret-writes.ts's one gate: none, since no browser route
- *  takes a credential in its body (rule 1 above). Registered below all the same, so a browser route that takes one is
- *  added here and gated with no other change. */
-export const SIGN_IN_SECRET_FIELDS: Readonly<Record<string, SecretPredicate>> = {};
+/** The browser plane's secret writes, by operationId, for secret-writes.ts's one gate: no browser route takes a
+ *  credential in its body (rule 1 above), but forgetting a saved sign-in drops one, whatever its request. A browser route
+ *  that takes or drops one is added here and gated with no other change. */
+export const SIGN_IN_SECRET_FIELDS: Readonly<Record<string, SecretPredicate>> = {
+  // Forgetting a saved sign-in drops its sealed credential: the owner's session alone, never a token.
+  forgetSignIn: () => true,
+};
 for (const [operationId, predicate] of Object.entries(SIGN_IN_SECRET_FIELDS)) registerSecretWrite(operationId, predicate);
 
 /** The browser plane's secret write routes, for the planted-secret harness: none. A sign-in is saved inside a run (the
