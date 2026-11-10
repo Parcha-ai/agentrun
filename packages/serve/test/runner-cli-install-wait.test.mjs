@@ -1,18 +1,23 @@
 // A CLI run claimed while its harness's first-use install is still running (#2196): the claim waits for that install
 // and then runs on it, never failing with the line that installs it by hand while it installs; an install that fails
-// fails the run in the install's own words. The claim reads the install's mark beside the harness's directory
+// fails the run in the install's own words. On every harness the server installs: Claude Code and Codex (whose binary
+// check, its platform package's binary, is what the wait reads too). The claim reads the install's mark beside the harness's directory
 // (harness-install.ts installSettled), which the server's one installer (HarnessInstall.ensure) keeps while it runs, so a
 // runner beside the server and one in a process of its own read it alike. Each wait here is held open by a gate the test
 // opens once the claim is seen waiting, never by time.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
 const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, installDirOf, installMarkOf, installSettled } = await import("../dist/harness-install.js");
-const { claudePins } = await import("../dist/adapters.js");
+const { CODEX_STANDIN_ENV, claudePins, codexPins } = await import("../dist/adapters.js");
+const { copyStandIn } = await import("../../run-adapters-codex/test/stand-in.mjs");
+/** Codex's stand-in confines its app-server with setpriv, and a platform with no Codex build has no binary to check. */
+const noCodexHere = (!existsSync("/usr/bin/setpriv") && "no setpriv here") || (!(await codexPins()).target && "no Codex build for this platform");
 const { DATA_ENV } = await import("../dist/server-fs.js");
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -134,28 +139,83 @@ test("installSettled: a claim stopped while it waits stops waiting", async (t) =
   await assert.rejects(settled, { message: "the claim was stopped" });
 });
 
-// ---- a claude-agent run claimed mid-install ----------------------------------------------------------------------------
+// ---- a CLI run claimed mid-install, on every harness the server installs (claude-agent, codex) ------------------------
 
-/** A claude-agent run claimed while the server's install of Claude Code runs (held at a gate; it lands by linking the
- *  pinned SDK and CLI as a first use installs them, or fails with `fails`). The gate opens once the claim is seen waiting
- *  for the install (its spec's installSettled entered) with the run still running. Returns the run's end. */
-async function claimedMidInstall(t, { fails, stop = false } = {}) {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "Hello from Claude." }) });
-  t.after(() => fake.close());
+/** Claude Code: its first-use install lands by linking the pinned SDK and CLI, as a first use installs them; the run
+ *  is a real Claude run against a fake Anthropic endpoint. */
+const claude = {
+  id: "claude-agent",
+  label: "Claude Code",
+  pins: () => claudePins(),
+  land: (dir) => linkHarnesses(dir),
+  async setup(t) {
+    const fake = await fakeAnthropic({ reply: () => ({ text: "Hello from Claude." }) });
+    t.after(() => fake.close());
+    return { env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, answer: "Hello from Claude." };
+  },
+};
+
+/** Codex: its first-use install lands as the tree an install leaves (the launcher at the pin, this platform's package
+ *  with its binary), which is what Codex's own binary check reads; the run is on Codex's stand-in (no Codex binary runs)
+ *  against a loopback Responses gateway. */
+const codex = {
+  id: "codex",
+  label: "Codex",
+  pins: () => codexPins(),
+  async land(dir, pins) {
+    const modules = join(installDirOf(dir, "codex"), "node_modules", "@openai");
+    mkdirSync(join(modules, "codex"), { recursive: true });
+    writeFileSync(join(modules, "codex", "package.json"), JSON.stringify({ name: "@openai/codex", version: pins.version }));
+    const platform = join(modules, `codex-${pins.platform}`);
+    mkdirSync(join(platform, "vendor", pins.target, "bin"), { recursive: true });
+    writeFileSync(join(platform, "package.json"), JSON.stringify({ name: `@openai/codex-${pins.platform}`, version: `${pins.version}-${pins.platform}` }));
+    writeFileSync(join(platform, "vendor", pins.target, "bin", process.platform === "win32" ? "codex.exe" : "codex"), "");
+  },
+  async setup(t, dir) {
+    const was = process.env.AGENTRUN_CODEX_STANDIN;
+    process.env.AGENTRUN_CODEX_STANDIN = "1";
+    t.after(() => (was === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = was)));
+    const origin = await responsesGateway(t, "Codex answered.");
+    const standIn = join(dir, "codex-stand-in.mjs");
+    await copyStandIn(standIn);
+    const env = { [CODEX_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }), AGENT_MODEL_BASE_URL: origin, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5" };
+    return { env, model: { provider: "openai", modelId: "gpt-test" }, answer: "Codex answered." };
+  },
+};
+
+/** A loopback gateway answering OpenAI's Responses API with `text` (SSE). */
+async function responsesGateway(t, text) {
+  const server = createServer(async (req, res) => {
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    for await (const _chunk of req) void _chunk;
+    const events = [{ type: "response.output_text.delta", delta: text }, { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 100 } } }];
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+/** A `harness` run claimed while the server's first-use install of it runs (held at a gate; it lands as the harness's
+ *  `land` lays it, or fails with `fails`). The gate opens once the claim is seen waiting for the install (its spec's
+ *  installSettled entered) with the run still running; `stop`: the person stops the run instead. Returns the run's end. */
+async function claimedMidInstall(t, harness, { fails, stop = false } = {}) {
   const dir = scratch(t, "runner-cli-install-wait");
-  const entry = HARNESS_INSTALLS["claude-agent"];
-  const target = installDirOf(dir, "claude-agent");
+  const { env: harnessEnv, model, answer } = await harness.setup(t, dir);
+  const entry = HARNESS_INSTALLS[harness.id];
+  const target = installDirOf(dir, harness.id);
   const held = gate();
-  const install = new HarnessInstall(entry, target, () => claudePins(), async (_entry, into, pins) => {
+  const install = new HarnessInstall(entry, target, harness.pins, async (_entry, into, pins) => {
     await held.opened;
     if (fails) throw new HarnessNotInstalled(entry, into, pins.version, fails);
-    await linkHarnesses(dir);
+    await harness.land(dir, pins);
   });
   let landed = false;
   const installing = install.ensure().then(() => void (landed = true), (error) => error);
   await until(() => existsSync(installMarkOf(target)), "the install's mark");
 
-  const env = { [DATA_ENV]: dir, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url };
+  const env = { [DATA_ENV]: dir, ...harnessEnv };
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   let runner;
@@ -166,8 +226,8 @@ async function claimedMidInstall(t, { fails, stop = false } = {}) {
     await store.close().catch(() => {});
     await server.close().catch(() => {});
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness: "claude-agent", tools: ["read"] } });
-  const launch = { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness: "claude-agent", model: { provider: "anthropic", modelId: "claude-haiku-4-5" } };
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness: harness.id, tools: ["read"] } });
+  const launch = { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness: harness.id, model };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const waiting = gate();
@@ -189,7 +249,7 @@ async function claimedMidInstall(t, { fails, stop = false } = {}) {
     stopMarginMs: 5_000,
     createLoop: createDispatchLoop({
       launchOf: (runId) => store.runs.launch(runId),
-      resolve: (name, given) => (name === "claude-agent" ? createAdapterLoop((claim, run) => spec.cliRunSpecFromLaunch(given, run, deps, claim)) : undefined),
+      resolve: (name, given) => (name === harness.id ? createAdapterLoop((claim, run) => spec.cliRunSpecFromLaunch(given, run, deps, claim)) : undefined),
     }),
   });
   // The claim reaches the wait; a build with no wait fails the run on the missing install instead, said here by name ...
@@ -212,29 +272,31 @@ async function claimedMidInstall(t, { fails, stop = false } = {}) {
   const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   const stillInstalling = !landed && existsSync(installMarkOf(target));
   if (stop) held.open();
-  return { row, entries, messages: messagesOf(entries), install: await installing, stillInstalling };
+  return { row, entries, messages: messagesOf(entries), install: await installing, stillInstalling, answer };
 }
 
 /** The run's phase rows' words (the host's own steps on its timeline). */
 const phasesOf = (entries) => entries.filter((entry) => typeof entry.data?.summary === "string" && /phase/.test(entry.kind)).map((entry) => entry.data.summary);
 
-test("a claude-agent run claimed while Claude Code's first-use install runs waits for it, then runs on it and ends with its answer", { timeout: 180_000 }, async (t) => {
-  const { row, messages, entries } = await claimedMidInstall(t);
-  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
-  assert.deepEqual(messages.map((message) => [message.role, message.text]), [["person", "Say hello."], ["model", "Hello from Claude."]]);
-  assert.ok(phasesOf(entries).includes("Installing Claude Code (first use)…"), `the run said it waited for the install: ${JSON.stringify(phasesOf(entries))}`);
-});
+for (const harness of [claude, codex]) {
+  test(`a ${harness.id} run claimed while ${harness.label}'s first-use install runs waits for it, then runs on it and ends with its answer`, { timeout: 180_000, skip: harness === codex && noCodexHere }, async (t) => {
+    const { row, messages, entries, answer } = await claimedMidInstall(t, harness);
+    assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+    assert.deepEqual(messages.map((message) => [message.role, message.text]), [["person", "Say hello."], ["model", answer]]);
+    assert.ok(phasesOf(entries).includes(`Installing ${harness.label} (first use)…`), `the run said it waited for the install: ${JSON.stringify(phasesOf(entries))}`);
+  });
+
+  test(`a ${harness.id} run claimed while ${harness.label}'s first-use install runs, which then fails, fails in the install's own words`, { timeout: 180_000, skip: harness === codex && noCodexHere }, async (t) => {
+    const why = `Couldn't install ${harness.label} from npm: the registry answered 503`;
+    const { row, install } = await claimedMidInstall(t, harness, { fails: why });
+    assert.ok(install instanceof HarnessNotInstalled, "the install failed");
+    assert.equal(row.state, "failed", `the run failed: ${JSON.stringify(row)}`);
+    assert.ok(row.summary?.includes(why), `in the install's words: ${row.summary}`);
+  });
+}
 
 test("a person's stop of a claude-agent run waiting for Claude Code's first-use install ends it stopped at once; the install goes on", { timeout: 180_000 }, async (t) => {
-  const { row, stillInstalling } = await claimedMidInstall(t, { stop: true });
+  const { row, stillInstalling } = await claimedMidInstall(t, claude, { stop: true });
   assert.equal(row.state, "stopped", `the run stopped: ${JSON.stringify(row)}`);
   assert.ok(stillInstalling, "it ended while the install still ran: the stop ended the wait, never the install");
-});
-
-test("a claude-agent run claimed while Claude Code's first-use install runs, which then fails, fails in the install's own words", { timeout: 180_000 }, async (t) => {
-  const why = "Couldn't install Claude Code from npm: the registry answered 503";
-  const { row, install } = await claimedMidInstall(t, { fails: why });
-  assert.ok(install instanceof HarnessNotInstalled, "the install failed");
-  assert.equal(row.state, "failed", `the run failed: ${JSON.stringify(row)}`);
-  assert.ok(row.summary?.includes(why), `in the install's words: ${row.summary}`);
 });
