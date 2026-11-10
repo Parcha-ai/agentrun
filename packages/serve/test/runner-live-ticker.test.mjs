@@ -72,13 +72,17 @@ test("a run on the runner process writes its live row while its tool runs: the t
   closed = true;
 });
 
-/** `store` with each live row it puts counted (its run and when). */
-function countingPuts(store, puts) {
+/** `store` with each live row it puts counted (its run and when), and each drop (`drops`, when given). */
+function countingPuts(store, puts, drops = []) {
   return new Proxy(store, {
     get(target, key) {
       if (key === "live") {
         const live = target.live;
-        return { ...live, read: live.read.bind(live), drop: live.drop.bind(live), put: async (rows) => { for (const row of rows) puts.push({ runId: row.claim.runId, at: Date.now() }); return live.put(rows); } };
+        return {
+          ...live, read: live.read.bind(live),
+          drop: async (claim) => { drops.push({ runId: claim.runId, at: Date.now() }); return live.drop(claim); },
+          put: async (rows) => { for (const row of rows) puts.push({ runId: row.claim.runId, at: Date.now() }); return live.put(rows); },
+        };
       }
       const value = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
@@ -128,21 +132,24 @@ test("a killed runner writes no more of its runs' live view, though its loops st
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   t.after(() => store.close().catch(() => {}));
   const puts = [];
+  const drops = [];
   // The loop reports a fresh chunk every 20 ms, counted, and never ends on its own: kill() stops nothing of it.
   let reports = 0;
   let reporting;
   let release = () => {};
+  let loopEnded = false;
   const createLoop = (deps) => ({
     start: async () => {
       reporting = setInterval(() => { reports += 1; deps.live?.(() => held(`chunk ${reports}\n`)); }, 20);
       await new Promise((resolve) => (release = resolve));
       clearInterval(reporting);
+      loopEnded = true;
       return { state: "interrupted" };
     },
     command: async () => ({ refused: "this loop takes no commands" }),
     stop: async () => release(),
   });
-  const runner = startRunner({ store: countingPuts(store, puts), createLoop, live: { tickMs: 20 }, name: "runner-a", leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 });
+  const runner = startRunner({ store: countingPuts(store, puts, drops), createLoop, live: { tickMs: 20 }, name: "runner-a", leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 });
   t.after(() => {
     clearInterval(reporting);
     release();
@@ -155,6 +162,13 @@ test("a killed runner writes no more of its runs' live view, though its loops st
   await until(() => reports >= after + 10, "the loop went on reporting after the kill");
   const late = puts.filter((put) => put.at > killedAt);
   assert.deepEqual(late, [], `no live row put after the kill: ${late.length} put`);
+  // The loop the crash left going ends later: its end writes no drop either (the ticker's end-of-loop step runs as its
+  // start() resolves, so two event-loop turns after the end cover it).
+  release();
+  await until(() => loopEnded, "the loop ended");
+  for (let turn = 0; turn < 2; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  const lateDrops = drops.filter((drop) => drop.at > killedAt);
+  assert.deepEqual(lateDrops, [], `no live row dropped after the kill: ${lateDrops.length} dropped`);
 });
 
 test("a runner that loses its claim writes no more of the run's live view, though its loop still reports while it stops", async (t) => {

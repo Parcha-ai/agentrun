@@ -28,6 +28,9 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
   /** The ticker's writes, one after another: a run's drop never lands before a put already on its way. */
   let writing: Promise<unknown> = Promise.resolve();
   let closed = false;
+  /** Stopped (a runner killed): nothing more is written, neither a tick queued behind a write already on its way nor a
+   *  loop's drop at its end. Only a write already on its way at the stop lands, under the store's fence. */
+  let stopped = false;
   /** A reader's held state, read once here at the tick; nothing held (an empty row) when there is none or it can't be read. */
   const stateOf = (read: () => HeldState | undefined): HeldState => {
     try {
@@ -39,6 +42,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
 
   const tick = (): Promise<unknown> => {
     writing = writing.then(async () => {
+      if (stopped) return;
       const rows = [...changed.values()].map(({ claim, read }) => ({ claim, state: stateOf(read) }));
       changed.clear();
       if (rows.length > 0) await store.live.put(rows).catch(() => undefined);
@@ -73,8 +77,9 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
             // The run's row goes once its loop ends, before start() resolves (so before the runner releases the run):
             // after any put already on its way, and a state reported before the end is not written after it.
             changed.delete(given.runId);
-            // Under its claim: a loop that ended after its claim was lost drops nothing of a later claim's row.
-            writing = writing.then(() => store.live.drop(given).catch(() => undefined));
+            // Under its claim: a loop that ended after its claim was lost drops nothing of a later claim's row. A runner
+            // killed (stopped) writes nothing more, its drop included.
+            if (!stopped) writing = writing.then(() => (stopped ? undefined : store.live.drop(given).catch(() => undefined)));
             await writing;
           }
         },
@@ -89,6 +94,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
     },
     stop: () => {
       closed = true;
+      stopped = true;
       clearInterval(timer);
       changed.clear();
     },
