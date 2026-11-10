@@ -621,6 +621,7 @@ export function buildToolHost(opts: {
     beforeResume: life.register.beforeResume,
     beforeRelease: life.register.beforeRelease,
     personWait: life.register.personWait,
+    afterPass: life.register.afterPass,
     // The run row's summary staged on a commit of the run's (a hand-over's wait, its claim held: run.needs_input).
     ...(run.rowSummaryOn ? { rowSummaryOn: run.rowSummaryOn } : {}),
     handoverInJournal: true,

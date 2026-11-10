@@ -144,6 +144,11 @@ export interface HostLifecycle {
    *  bound): the run parks. `since` (ms): when the wait first started, kept in the journal, so a later claim's wait keeps
    *  the first one's bound. */
   readonly personWait?: readonly ((harness: Harness, callId: string, since: number) => Promise<PersonWait | undefined>)[];
+  /** Run at each pass's end, once its Session and Harness are closed: a restart within the claim (a kernel fault) as well as
+   *  the claim's last. A tool host lets go of what it holds in memory for the pass (the browser's live-view server, its
+   *  person holds, its idle timers and driver attachments), so a restart's next pass, which binds its tools afresh, never
+   *  runs beside the last one's. What it holds durably (a session at its vendor) stays for the next pass to take up. */
+  readonly afterPass?: readonly (() => void | Promise<void>)[];
 }
 
 /** The request ids of the person's messages placed as turns (loop.ts commandRequest). */
@@ -161,19 +166,21 @@ export interface PersonWait {
 
 /** A HostLifecycle and the ToolHost members that fill it: what a spec's ToolHost takes, and hands the loop. */
 export function hostLifecycle(): HostLifecycle & {
-  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void };
+  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void; afterPass(close: NonNullable<HostLifecycle["afterPass"]>[number]): void };
 } {
   const onConversation: HostLifecycle["onConversation"][number][] = [];
   const beforeResume: HostLifecycle["beforeResume"][number][] = [];
   const beforeRelease: HostLifecycle["beforeRelease"][number][] = [];
   const personWait: NonNullable<HostLifecycle["personWait"]>[number][] = [];
+  const afterPass: NonNullable<HostLifecycle["afterPass"]>[number][] = [];
   return {
-    onConversation, beforeResume, beforeRelease, personWait,
+    onConversation, beforeResume, beforeRelease, personWait, afterPass,
     register: {
       onConversation: (write) => void onConversation.push(write),
       beforeResume: (settle) => void beforeResume.push(settle),
       beforeRelease: (stop) => void beforeRelease.push(stop),
       personWait: (hold) => void personWait.push(hold),
+      afterPass: (close) => void afterPass.push(close),
     },
   };
 }
@@ -1483,6 +1490,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
     session = undefined;
+    // What the pass's tool hosts hold in memory goes with it (a restart's next pass binds its tools afresh).
+    for (const close of specNow?.lifecycle?.afterPass ?? []) {
+      await Promise.resolve().then(close).catch((error: unknown) => console.warn(`[runner] a tool host's afterPass failed: ${said(error)}`));
+    }
     // The pass's MCP credentials go with it.
     mcp?.release();
     mcp = undefined;

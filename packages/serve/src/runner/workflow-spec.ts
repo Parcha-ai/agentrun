@@ -28,15 +28,14 @@ import { decisionProvidersIn } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
-import { CALL_TOOLS, type EffectRun, type ToolBinding, type ToolHost, toolOf, workflowTools } from "../tools.js";
+import { CALL_TOOLS, type EffectRun, RUNNER_NODE_TOOLS, type ToolBinding, type ToolHost, toolOf, workflowTools } from "../tools.js";
 import { forModel } from "../result.js";
-import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { runGate } from "../tool-gate.js";
 import { callNodeAskText, deniedText, modelNodeAskText } from "../refusal-words.js";
 import { loadToolSettings, planeOf, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
-import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
+import { searchArgs } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { claimSecrets } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
@@ -802,7 +801,7 @@ function tiersOf(workflow: Workflow): Tier[] {
 /** The tools a workflow's model node takes on the runner: main's NODE_TOOLS (tools.ts) that bind through a ToolHost alone.
  *  Its file tools (read, write, edit) need the run's Workspace and its browser a computer, which the workflow loop does not
  *  claim yet: a node naming one is refused at the claim (nodeToolUnboundText). */
-export const RUNNER_NODE_TOOLS: readonly string[] = Object.freeze([WEB_FETCH_TOOL, WEB_SEARCH_TOOL]);
+export { RUNNER_NODE_TOOLS };
 /** A node naming a tool the runner does not bind for a model node yet: the run is refused at its claim in these words,
  *  the tool never offered and never silently dropped. */
 export const nodeToolUnboundText = (tool: string): string => `A workflow's model node names ${tool}, which the runner does not bind for a model node yet (it needs the run's workspace or computer); this run cannot start here.`;

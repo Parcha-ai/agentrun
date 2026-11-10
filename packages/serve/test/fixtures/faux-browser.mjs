@@ -123,7 +123,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     if (process.env.FAUX_BROWSER_CREATE_401_ECHO) throw Object.assign(new Error(`401 Unauthorized: the API key ${echoed(process.env.FAUX_BROWSER_CREATE_401_ECHO)} is not valid for this project`), { status: 401 });
     return provider.create(spec, signal).then((ref) => (save(), ref));
   };
-  const release = (ref, signal) => provider.release(ref, signal).finally(save);
+  // With $FAUX_BROWSER_RELEASE_FAILS the vendor refuses every release, as one that is down would: custody retries, then
+  // gives the session up as lost.
+  const release = (ref, signal) => process.env.FAUX_BROWSER_RELEASE_FAILS
+    ? ((log && appendFileSync(log, `${JSON.stringify({ op: "release-refused", id: ref.id })}\n`)), Promise.reject(Object.assign(new Error("503 Service Unavailable: the vendor would not release this session (a test's)"), { status: 503 })))
+    : provider.release(ref, signal).finally(save);
   // The session's id stays in the address's query, where the fake driver reads it.
   const attach = async (ref, signal) => {
     const target = await provider.attach(ref, signal);

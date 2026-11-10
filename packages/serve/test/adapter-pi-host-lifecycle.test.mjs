@@ -22,11 +22,11 @@ after(closeOpenSessions);
 
 /** A runner on the adapter loop playing `script`, each claim's spec carrying a fake host's lifecycle that records into
  *  `log`: [hook, claim epoch, conversation id]. */
-async function hosted(t, script) {
+async function hosted(t, script, hooks = quiet) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const suite = suiteTools();
-  const spec = piAdapterSpec({ script, tools: suite.tools, hooks: quiet });
+  const spec = piAdapterSpec({ script, tools: suite.tools, hooks });
   const log = [];
   const rootOf = async (harness) => (await harness.root(BACKGROUND_CONTEXT)).id;
   const loop = createAdapterLoop(async (claim, run) => ({
@@ -35,6 +35,7 @@ async function hosted(t, script) {
       onConversation: [async (_tx, conversationId) => void log.push(["conversation", claim.epoch, conversationId])],
       beforeResume: [async () => void log.push(["resume", claim.epoch])],
       beforeRelease: [async (harness) => void log.push(["release", claim.epoch, await rootOf(harness)])],
+      afterPass: [async () => void log.push(["afterPass", claim.epoch])],
     },
   }), { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store: opened.runners[0], createLoop: loop, name: "runner-a", ...TIMING });
@@ -59,6 +60,8 @@ test("a parked run brought back: each claim's open runs beforeResume, the root's
   assert.ok(conversation !== undefined && ask, "the run's root conversation and its ask");
   await sendCommand(w.opened.server, "run-1", { kind: "approve", body: { approval: ask } });
   const ended = await w.settled("ended");
+  // The last pass's afterPass comes once its Session and Harness are closed, just after the end's commit.
+  await until(async () => w.log.filter(([hook]) => hook === "afterPass").length >= 2, "the last pass let go", 15_000);
   assert.ok(ended.epoch > parked.epoch, "brought back under a new claim");
   const first = parked.epoch - 1;
   const second = ended.epoch - 1;
@@ -66,9 +69,11 @@ test("a parked run brought back: each claim's open runs beforeResume, the root's
     ["resume", first],
     ["conversation", first, conversation],
     ["release", first, conversation],
+    ["afterPass", first],
     ["resume", second],
     ["release", second, conversation],
-  ], "resume at each claim's open, the root's conversation once, release at the park and at the end");
+    ["afterPass", second],
+  ], "resume at each claim's open, the root's conversation once, release at the park and at the end, each pass let go after");
 });
 
 test("a shutdown while a tool runs: the claim's beforeRelease runs once, with the Harness still open", async (t) => {
@@ -78,7 +83,8 @@ test("a shutdown while a tool runs: the claim's beforeRelease runs once, with th
   const { conversation } = await w.root();
   const row = await w.opened.server.runs.get("run-1");
   const claimed = row.epoch - 1;
-  assert.deepEqual(w.log.filter(([hook]) => hook !== "conversation"), [["resume", claimed], ["release", claimed, conversation]], `released once at the shutdown: ${JSON.stringify(w.log)}`);
+  await until(async () => w.log.some(([hook]) => hook === "afterPass"), "the pass let go", 15_000).catch(() => undefined);
+  assert.deepEqual(w.log.filter(([hook]) => hook !== "conversation"), [["resume", claimed], ["release", claimed, conversation], ["afterPass", claimed]], `released once at the shutdown: ${JSON.stringify(w.log)}`);
 });
 
 test("onConversation is for agent conversations only: the root and a subagent's (task-owned), never the loop's bookkeeping session", async () => {
@@ -93,4 +99,17 @@ test("onConversation is for agent conversations only: the root and a subagent's 
 
 test("a host tool's api gives its conversationId, as a browser host tool reads it", () => {
   assert.ok(HOST_API_MEMBERS.includes("conversationId"), `the host api's members: ${HOST_API_MEMBERS.join(", ")}`);
+});
+
+test("a kernel fault ends its pass with the pass's afterPass, before the next pass (in the claim or the next) binds its tools afresh, and the run's end runs it once more for its last pass", async (t) => {
+  // The first call's beforeResult faults (the kernel's own fault): the journal is sealed, the pass closed, and the loop
+  // restarts within the claim; the second time it passes.
+  let faults = 1;
+  const hooks = { beforeIntent: async () => {}, beforeResult: async () => { if (faults-- > 0) throw new Error("a fault, once (a test's)"); } };
+  const w = await hosted(t, [{ call: "read" }, { say: "done" }], hooks);
+  const ended = await w.settled("ended");
+  await until(async () => w.log.filter(([hook]) => hook === "afterPass").length >= 2, "the last pass let go", 15_000).catch(() => undefined);
+  assert.ok(ended.state === "ended");
+  const hooksRun = w.log.filter(([hook]) => hook !== "conversation").map(([hook]) => hook);
+  assert.deepEqual(hooksRun, ["resume", "afterPass", "resume", "release", "afterPass"], `the first pass let go before the second resumed, and the last at the end: ${JSON.stringify(w.log)}`);
 });

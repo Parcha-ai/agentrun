@@ -281,3 +281,7 @@ test("a hand-over waiting across a re-claim: the next claim's answer clears the 
   }, "the row's waiting summary cleared", 20_000).catch(async () => ({ ...(await opened.server.runs.get(RUN)), handovers: await handovers(), command }));
   assert.notEqual(after.summary, "Waiting for you in the browser", `the answer on the next claim cleared the waiting summary: ${JSON.stringify({ state: after.state, summary: after.summary, handovers: after.handovers, command: after.command })}`);
 });
+
+// The drain at the ask park is runner-ask-browser-wait.test.mjs's ("bounded as a hand-over is": the wait lapses, the run
+// parks, its browser released and drained before the seal); at the approval park, "the drain at a park" above.
+test.todo("the drain at a pause at the cap's refusal with a browser session open: the release completes its browser.release task before the pause is sealed. Waits on #2097: a browser call the cap refuses does not pause the run on the runner (it answers the call refused and the run goes on to complete), and a model request refused beside an open session is not reached under the cap's holds, so no run pauses at its cap with a session open yet");

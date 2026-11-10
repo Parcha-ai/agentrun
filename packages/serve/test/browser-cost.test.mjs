@@ -5,11 +5,12 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DatabaseSync } from "node:sqlite";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { paidCall, paidHolds, takePaidRefusal, useSpend } from "../dist/cap.js";
-import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const START = "https://example.test/start";
 const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
@@ -635,14 +636,10 @@ test("capped, a reopened run holds every session its custody still tracks, not o
   await second.harness.close(ctx);
 });
 
-/** Every TOOL_COST in a run's store, as written. */
-const toolCosts = (data, runId) => {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
-  } finally {
-    db.close();
-  }
+/** Every TOOL_COST in a run's journal, in the one store, as written. */
+const toolCosts = async (store, runId) => {
+  const { entries } = await journalRecords(store.readJournal(runId), ctx);
+  return entries.filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
 };
 
 /** The browser charges `booked` summed by the call each names, against the rows: each call's tool_use row carries what
@@ -657,15 +654,15 @@ function assertFolded(rows, booked) {
   for (const row of carrying) assert.equal(row.usage.requests, 0);
 }
 
-test("through the API: an uncapped run's browser minutes are its cost, folded into its browser calls' rows on its timeline, and /usage's browser_time meter in seconds and dollars", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 120_000 }, async (t) => {
+test("through the API: an uncapped run's browser minutes are its cost, folded into its browser calls' rows on its timeline, and /usage's browser_time meter in seconds and dollars", { skip: "follow-up: #2096 (on the runner each browser charge, the session's reserve among them, is a Tool cost row of its own, not folded into its call's row; ported to the store, #2095)", timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.deepEqual((await api("GET", "/capabilities")).body.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page 3 times." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
-  const booked = toolCosts(data, started.body.run_id);
+  const booked = await toolCosts(store, started.body.run_id);
   assert.ok(booked.length >= 4, JSON.stringify(booked));
   assertFolded(rows, booked);
   // The release's charge is booked under the session's last call: it lands on the last browser call's row.
@@ -691,7 +688,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
   // split. At $36 an hour every millisecond is $0.00001, so what the live run has spent is never rounded away.
   withEnv(t, { ...KEYS, [PRICE_ENV]: "36" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER", PRICE_ENV]);
   const gate = join(await scratch(t), "gate");
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/browse/runs", { input: { content: `Browse the example page 2 times, then answer once ${gate} exists.` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -730,7 +727,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
   assert.ok(updates.at(-1).usage.usd > before, JSON.stringify([before, updates.map((row) => row.usage)]));
   assert.ok(!pages.some((page) => page.reset), "no reset: an update of the row it had");
   assert.ok(!pages.flatMap((page) => page.rows).some((row) => /^Tool cost/.test(row.summary ?? "")), "no row of its own");
-  const booked = toolCosts(data, runId);
+  const booked = await toolCosts(store, runId);
   assert.equal(booked.at(-1).final, true);
   assertFolded([...new Map([...view.values(), ...rows].map((row) => [row.id, row])).values()], booked);
   // One session of well under a minute, topped up to Browserbase's 60 s minimum: $0.60 at $36 an hour.
@@ -740,7 +737,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
 
 test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", { skip: "follow-up: #2097 (a browser call refused at the cap completes the run instead of pausing it)", timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("capped", { tools: ["browser"] }))).status, 201);
   // The first call holds $0.018 (two stretches of 270 s at $0.12 an hour); the second would hold that again beside the
   // session's $0.009 reserve, past $0.02.
@@ -756,7 +753,7 @@ test("through the API: a capped run whose next browser call would pass its cap i
   let booked = [];
   for (const deadline = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
     try {
-      booked = toolCosts(data, started.body.run_id);
+      booked = await toolCosts(store, started.body.run_id);
     } catch (error) {
       if (!/database is locked/.test(error.message)) throw error;
     }
@@ -767,14 +764,14 @@ test("through the API: a capped run whose next browser call would pass its cap i
   assert.ok(view.cost.usd <= 0.02, `the run's cost ${view.cost.usd} is within its cap`);
 });
 
-test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 120_000 }, async (t) => {
+test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", { skip: "follow-up: #2096 (on the runner an unpriced browser charge is counted on the tools meter as its own row, not on browser_time; ported to the store, #2095)", timeout: 120_000 }, async (t) => {
   withEnv(t, { ...KEYS, FAUX_BROWSER_PROVIDER: "steel" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("unpriced", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/unpriced/runs", { input: { content: "Browse the example page 2 times." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
-  const booked = toolCosts(data, started.body.run_id);
+  const booked = await toolCosts(store, started.body.run_id);
   assert.ok(booked.length >= 2 && booked.every((row) => row.usd === null && row.charged_by === "steel"), JSON.stringify(booked));
   assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, null, "its cost is unknown");
   const lines = (await api("GET", "/usage?group_by=meter")).body.lines;
@@ -785,15 +782,15 @@ test("through the API: a provider with no price books its time as an unknown cos
   assert.equal(lines.find((line) => line.meter === "tools"), undefined, "no other tool charged anything");
 });
 
-test("through the API: a browser call counts once among the run's paid tool calls, its release's charge included: one call is 1, two are 2", { skip: "follow-up: #2095 (reads a per-run file the runner path no longer writes)", timeout: 120_000 }, async (t) => {
+test("through the API: a browser call counts once among the run's paid tool calls, its release's charge included: one call is 1, two are 2", { skip: "follow-up: #2096 (on the runner the session's reserve books as a paid tool call of its own: two calls read 3; ported to the store, #2095)", timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
   for (const [times, said] of [[1, "1 paid tool call"], [2, "2 paid tool calls"]]) {
     const started = await api("POST", "/agents/browse/runs", { input: { content: `Browse the example page ${times} times.` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
-    const booked = toolCosts(data, started.body.run_id);
+    const booked = await toolCosts(store, started.body.run_id);
     // Each call's own charge, and the release's under the last call: one charge more than calls, never a call more.
     assert.equal(booked.length, times + 1, JSON.stringify(booked));
     assert.equal(new Set(booked.map((charge) => charge.call)).size, times);

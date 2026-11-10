@@ -12,7 +12,7 @@ import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
-import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
+import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, nodeToolUnbound, RUNNER_NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
 import { approvalsOf } from "./approvals.js";
@@ -218,6 +218,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     // An MCP tool is said once, by mcpGrant above.
     if (tool.startsWith("mcp:")) continue;
     if (!allows(NODE_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${tool}.`, host: false, tool });
+    // A tool a model node takes on main's per-run process but not on the runner, where every run goes (the browser, the
+    // file tools): refused at the save, never a workflow accepted and then failed at its run's claim (#2098).
+    else if (!allows(RUNNER_NODE_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: nodeToolUnbound(tool), host: false, tool });
   }
   for (const tool of named.calls) {
     if (tool.startsWith("mcp:")) continue;
@@ -228,7 +231,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never, approvalsOf(revision.approvals)) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: tool });
     else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never, approvalsOf(revision.approvals)) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to deny ${denyPlace(permissionFrom(tool, settings as never, (revision.toolSettings ?? {}) as never).from)}.`, host: true, denied: tool });
   }
-  for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {
+  for (const tool of new Set([...named.nodes.filter((name) => allows(RUNNER_NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {
     unset("definition.workflow", tool);
     unavailable("definition.workflow", granted, tool);
   }

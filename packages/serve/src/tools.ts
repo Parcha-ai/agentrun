@@ -52,6 +52,11 @@ export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
  *  in place of the browser vendors' REST APIs (the tests' fake). Absent under --faux, none is made: no network. */
 export const FAUX_VENDOR_API_ENV = "AGENTRUN_SERVE_FAUX_VENDOR_API";
 
+/** A root entry of a run whose browser was not all let go when the run was (its release failed, or custody gave up on a
+ *  session): the sessions still held, each by tag, state and its vendor's session id, for a reconcile or a sweep to release
+ *  and book. Neither a call nor a message: the timeline passes over it. */
+export const BROWSER_UNRELEASED_KIND = "agentrun.browser.unreleased";
+
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
 export const asked = (question: string) => `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.`;
 
@@ -98,6 +103,9 @@ export type ToolHost = {
    *  (its bound runs from then, across claims). Undefined: nothing to keep. Absent on
    *  the old per-run process, whose wait keeps the process (and so the browser) anyway. */
   personWait?(hold: (harness: Harness, callId: string, since: number) => Promise<{ readonly lapsed: Promise<string>; drop(): void } | undefined>): void;
+  /** On the runner: runs at each pass's end (a kernel fault's restart within the claim as well as its last), once the
+   *  Harness is closed: a binding lets go of what it holds in memory for the pass (adapter-loop.ts HostLifecycle.afterPass). */
+  afterPass?(close: () => void | Promise<void>): void;
   /** On the runner: stages the run row's `summary` on the next commit that writes a root entry of `kind` whose data `test`
    *  takes (adapter-loop AdapterRun.rowSummaryOn): a hand-over's wait sets the row's waiting summary in its waiting
    *  entry's commit, and its answer's commit clears it, so the server tells run.needs_input for a run held in its claim. */
@@ -543,27 +551,54 @@ const browserTool: ToolEntry = {
       const waited = await hands.wait(callId, open, since);
       return "refused" in waited ? undefined : waited;
     });
+    type HeldRow = { conversationId: number; state: string; tag: string; resourceId: string | null };
+    const heldRows = async (harness: Harness): Promise<HeldRow[]> => Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, HeldRow> } | undefined)?.rows ?? {});
     host.beforeRelease(async (harness) => {
       try {
         if (refused) return;
-        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
-        for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
-          const conversation = await harness.conversation(id as never, context);
-          if (conversation) await browser.release(conversation as never, "close", context);
+        let failed: unknown;
+        try {
+          for (const id of new Set((await heldRows(harness)).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+            const conversation = await harness.conversation(id as never, context);
+            if (conversation) await browser.release(conversation as never, "close", context);
+          }
+          await browser.drain(harness as never, context);
+        } catch (error) {
+          failed = error;
         }
-        await browser.drain(harness as never, context);
+        // What custody still holds once its releases are done: a session whose release failed (still releasing, or live) or
+        // that custody gave up on (lost, billed in full when it did). Such a session can outlive the run at its vendor, so
+        // it is said, never swallowed: in the runner's log, and as a marker in the run's journal (BROWSER_UNRELEASED_KIND)
+        // naming each session, which the next claim's reconcile (a park's) or a sweep (an end's) releases and books from.
+        const left = await heldRows(harness).catch(() => [] as HeldRow[]);
+        if (failed !== undefined || left.length) {
+          const why = failed === undefined ? "" : `: ${redactedAnswer((failed as Error)?.message ?? String(failed), [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])])}`;
+          runLog(`its browser was not all let go when it let the run go${why}; still held: ${left.map((row) => `${row.tag} (${row.state})`).join(", ") || "none read"}`);
+          const sessions = left.map((row) => ({ tag: row.tag, state: row.state, vendor_session: row.resourceId }));
+          await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_UNRELEASED_KIND, data: { sessions, at: new Date().toISOString(), ...(failed === undefined ? {} : { failed: true }) } })), context)
+            .catch((error: unknown) => runLog(`its browser's unreleased-session marker was not written: ${(error as Error)?.message ?? String(error)}`));
+        }
         // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
         // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
         await spend.ledgerIdle();
       } finally {
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
         // holds go, and the asks with them.
-        await view.close();
-        hands.close();
+        await closePass();
         await viewers.released();
         person.dropAsks(host.where.root);
       }
     });
+    // The pass's in-memory browser goes at each pass's end, a kernel fault's restart within the claim among them: its live
+    // view's server and tokens, the person's holds, pi-browser's driver attachments and idle timers. The sessions stay, in
+    // the journal, for the next pass's reconcile to take up; their viewers are handed over again there (beforeResume).
+    let passClosed: Promise<void> | undefined;
+    const closePass = (): Promise<void> => (passClosed ??= (async () => {
+      await view.close().catch(() => undefined);
+      hands.close();
+      await browser.close().catch(() => undefined);
+    })());
+    host.afterPass?.(closePass);
     return { tools, extensions: [extension] };
   },
 };
@@ -614,6 +649,13 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
 /** Every name a revision may name, those a workflow's model node may, and those a workflow's call node may run. */
 export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => !TOOLS[name]!.callOnly);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
+/** The tools a workflow's model node takes on the runner, where every run goes: the NODE_TOOLS that bind through a
+ *  ToolHost alone. The file tools (read, write, edit) need the run's Workspace, and the browser a computer and its
+ *  lifecycle (its release at the run's end, its live view), which the workflow loop does not claim: a node naming one
+ *  is refused when its definition is saved (runnable.ts), and at the claim of a run saved before (workflow-spec.ts). */
+export const RUNNER_NODE_TOOLS: readonly string[] = Object.freeze(NODE_TOOLS.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL));
+/** Why a workflow's model node can't take `tool` here (one of NODE_TOOLS outside RUNNER_NODE_TOOLS), and what to do. */
+export const nodeToolUnbound = (tool: string): string => `A workflow's model node names ${tool}, which a workflow's model node can't use here yet (it needs the run's ${tool === "browser" ? "computer" : "workspace"}): give ${tool} to an agentic agent, or have the node use ${RUNNER_NODE_TOOLS.join(" or ")}.`;
 export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => TOOLS[name]!.effect !== undefined);
 /** Whether `name` is one of `allowed`. */
 export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(name);
@@ -718,7 +760,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: RUNNER_NODE_TOOLS.includes(name), calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
 
