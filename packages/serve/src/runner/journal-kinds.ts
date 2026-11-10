@@ -133,6 +133,8 @@ export interface CallStartData {
   /** Written as the call reached its gate through a CLI's own MCP client, before any answer: nothing is sent until its
    *  agentrun.call.sent mark (KINDS.callSent). */
   readonly parked?: true;
+  /** When it was written (ms, the loop's clock): the Timeline dates the call's row by it. */
+  readonly at?: number;
 }
 
 export type CallStatus = "done" | "failed" | "refused" | "interrupted";
@@ -141,6 +143,8 @@ export interface CallEndData {
   readonly callId: string;
   readonly status: CallStatus;
   readonly output?: unknown;
+  /** When it was written (ms, the loop's clock): the Timeline dates the result's row by it. */
+  readonly at?: number;
 }
 
 /** What a call that already ended answers when it is asked for again (a parked call's resume, a CLI's re-issue of its id):
@@ -162,6 +166,8 @@ export interface MessageData {
    *  answer's output tokens when known. The loop reads it as pi's stopReason (loop.ts cutLast). */
   readonly stopReason?: "length";
   readonly outputTokens?: number;
+  /** When it was written (ms, the loop's clock): the Timeline dates the message's row by it. */
+  readonly at?: number;
 }
 
 /** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, or "not metered". */

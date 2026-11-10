@@ -39,15 +39,17 @@ export async function runReflect(store: Store, runId: string, context: Context):
 function piShaped(entries: readonly EntryLike[]): EntryLike[] {
   return entries.map((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
+    const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
       const text = typeof data.text === "string" ? data.text : "";
-      if (data.role === "person") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text }] };
+      if (data.role === "person") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text, ...timestamp }] };
       // A model turn's text; its stop reason is the answer's (a cut at the output limit reads "length", as pi's does).
       const stopReason = data.stopReason === "length" ? "length" : "stop";
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}) }] };
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}), ...timestamp }] };
     }
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }] }] };
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
@@ -55,7 +57,7 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // text), as pi's own interrupted result does, never an empty failure.
       const failed = data.status !== undefined && data.status !== "done";
       const content = data.output === undefined && data.status === "interrupted" ? endedAnswer("", { status: "interrupted" }).text : (data.output ?? "");
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}) }] };
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...timestamp }] };
     }
     return entry;
   });
@@ -115,7 +117,18 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const entries = await runEntries(store, runId, context);
   const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
   const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, rows);
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+}
+
+/** `rows` with none dated 1970: a row the renderer found no time for (an entry of a CLI record written before its entries
+ *  carried `at`; the store's entry rows keep no write time of their own) reads the run's start, the earliest time it can
+ *  have, never epoch 0. Every other row is as the renderer dated it. */
+async function datedRows(store: Store, runId: string, rows: TimelineEvent[]): Promise<TimelineEvent[]> {
+  if (!rows.some((row) => Date.parse(row.timestamp) === 0)) return rows;
+  const run = await store.runs.get(runId);
+  if (!run) return rows;
+  const started = new Date(run.startedAt).toISOString();
+  return rows.map((row) => (Date.parse(row.timestamp) === 0 ? { ...row, timestamp: started, created_at: started } : row));
 }
 
 /** What was said to a run (its hearing), from the one store's entries, as runs.ts noteTurns fed it from the stream: each
