@@ -93,10 +93,10 @@ test("a token's save let through against no credential never lands over one the 
   assert.ok(seen.includes(`Bearer ${TOKEN}`), "the bearer is what a refresh lists with");
 });
 
-test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's removal of it is refused, never a crash", async (t) => {
+test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's sign-in start on it is refused, never a crash", async (t) => {
   const server = await serve(t);
   const token = asToken(server);
-  const odd = await token("DELETE", "/settings/mcp-servers/%");
+  const odd = await token("POST", "/settings/mcp-servers/%/oauth/start", { url: "https://mcp.example.test/mcp" });
   assert.equal(odd.status, 403, odd.text);
   assert.equal(odd.json?.error?.message, gate.SECRET_WRITE_REFUSAL);
 });
@@ -141,8 +141,9 @@ test("every operation on a secret's route is in the one gate's registry, or said
       if (method === "get" || method === "head" || typeof op?.operationId !== "string") continue;
       const reason = gate.notSecretWriteReason(op.operationId);
       if (!gate.isSecretWriteOperation(op.operationId) && !reason) unregistered.push(`${method.toUpperCase()} ${path} (${op.operationId})`);
-      // Registered, and no secret write whatever its request, with no body to decide by: said so with why, or it is one.
-      else if (!reason && !gate.writesSecret(op.operationId, undefined) && !body(op)) noReason.push(op.operationId);
+      // Registered, no secret write by its request alone, with no body and no stored row to decide by: said so with why,
+      // or it is one.
+      else if (!reason && !gate.writesSecret(op.operationId, undefined) && !body(op) && !gate.readsStore(op.operationId)) noReason.push(op.operationId);
     }
   }
   assert.deepEqual(unregistered, [], `unregistered operations on a secret's route: ${unregistered.join(", ")}`);

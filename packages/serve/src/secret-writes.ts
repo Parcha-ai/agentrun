@@ -115,6 +115,9 @@ export const notSecretWriteReason = (operationId: string): string | undefined =>
 /** The operations any plane registered. */
 export const registeredOperations = (): string[] => [...registry.keys()];
 
+/** Whether `operationId`'s request is decided by what is stored as well as by its body (a stored predicate). */
+export const readsStore = (operationId: string): boolean => storedPredicates.has(operationId);
+
 /** Whether `operationId` is a registered secret write at all: only then does the dispatch check read its body. */
 export const isSecretWriteOperation = (operationId: string): boolean => registry.has(operationId);
 
