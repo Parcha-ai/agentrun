@@ -6,10 +6,11 @@
 // vendors are the tests' fakes.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
 import { SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
@@ -490,18 +491,21 @@ test("a run whose process went with its server, and whose browser sign-in the ne
   assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).unshown, undefined, "no longer hidden");
 });
 
-test("after the seal key changed, a run that was never handed the sign-in (it browsed signed out) is taken up across a restart as any other run", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
+test("after the agent's sign-in stops opening, a run that was never handed it (it browsed signed out) is taken up across a restart as any other run", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
-  // The agent's sign-in is made under one seal key.
+  // The agent's sign-in is made.
   const before = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
   assert.equal((await before.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
   await follow(before.api, (await before.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id, ["completed"]);
   await before.close();
-  // Under another, a run is launched signed out, and its server goes while it browses.
-  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  // Its pointer no longer opens (sealed under another key: a store refuses a server handed another key itself, so the row
+  // is resealed in place), so a run is launched signed out, and its server goes while it browses.
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  assert.ok(Number(db.prepare("UPDATE sign_ins SET pointer_sealed = ?").run(randomBytes(64)).changes) >= 1, "the agent has a sign-in");
+  db.close();
   const first = await crashable(t, data);
   const gate = join(dir, "gate");
   const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;

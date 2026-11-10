@@ -97,7 +97,7 @@ export class McpServersOverStore {
   private readonly stopped = new AbortController();
 
   constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, network: OAuthNetwork = systemNetwork) {
-    // The server never starts without a seal key (seal-key.ts ensureSealKey), so there is no keyless registry: every
+    // The server never starts without a seal key (seal-key.ts bootSealKey), so there is no keyless registry: every
     // credential is kept sealed under it.
     const sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
     if (!sealKey) throw new Error(`MCP servers' credentials are kept under the server's seal key (${SEAL_KEY_ENV}), and none was handed over: the server does not start without one.`);
