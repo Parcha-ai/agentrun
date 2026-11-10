@@ -46,10 +46,10 @@ test("served: capabilities.features.computers names the kinds offered now", asyn
 test("served: the Archil routes turn Mode 2 on and off, never echoing the key", async (t) => {
   const { api } = await serve(t, { runner: false });
   assert.deepEqual((await api("GET", "/workspace/archil")).body, { on: false, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } });
-  const on = await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "archil-served-key-0001" } });
+  const on = await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } });
   assert.equal(on.status, 200);
   assert.deepEqual([on.body.on, on.body.secret.set], [true, true]);
-  assert.ok(!JSON.stringify(on.body).includes("archil-served-key-0001"));
+  assert.ok(!JSON.stringify(on.body).includes("fake-test-key"));
   assert.equal((await api("PUT", "/workspace/archil", { diskId: "d", region: "r", s3Url: "https://s3.archil.example", keys: { ARCHIL_DISK_TOKEN: "x" } })).status, 422);
   assert.equal((await api("DELETE", "/workspace/archil")).body.on, false);
 });
@@ -61,7 +61,7 @@ test("served handed no seal key: the server makes its own at the start (seal-key
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual([saved.body.ready, saved.body.secrets[0].set, saved.body.secrets[0].source], [true, true, "console"]);
   assert.deepEqual((await api("POST", "/computers/faux-sandbox/test")).body, { ok: true, detail: "Faux sandbox: the faux account answered (no computer was made)" }, "the saved key opens under the key the server made");
-  const on = await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "archil-served-key-0002" } });
+  const on = await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } });
   assert.equal(on.status, 200, JSON.stringify(on.body));
   assert.deepEqual([on.body.on, on.body.secret.set], [true, true]);
 });
