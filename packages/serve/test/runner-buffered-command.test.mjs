@@ -144,6 +144,59 @@ test("a buffered row whose delivery throws once while its loop keeps running is 
   assert.deepEqual(value, { state: "ended" });
 });
 
+test("a buffered row whose delivery always throws is tried REPLAY_TRIES times in all, said once as left, and never tried again on the claim: it stays for the run's next claim", { timeout: 30_000 }, async () => {
+  const { REPLAY_TRIES } = await import("../dist/runner/dispatch.js");
+  const launched = defer();
+  const finish = defer();
+  const leftSaid = defer();
+  const tries = [];
+  const inner = {
+    start() {
+      return finish.promise.then(() => ({ state: "ended" }));
+    },
+    async command(command) {
+      tries.push(command.id);
+      throw new Error("this row can never be delivered");
+    },
+    async stop() {
+      finish.resolve();
+    },
+  };
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (line) => {
+    warned.push(String(line));
+    if (/ times and not delivered/.test(String(line))) leftSaid.resolve();
+  };
+  try {
+    const dispatch = createDispatchLoop({
+      launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
+      resolve: () => () => inner,
+    })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+    const { value, seen } = await noUnhandled(async () => {
+      const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" });
+      assert.deepEqual(await dispatch.command(answer(11, "call-1")), { taken: true });
+      launched.resolve();
+      // The dispatch gives the row up while its loop still runs: it says so once, then the loop is ended.
+      await leftSaid.promise;
+      const triedThen = tries.length;
+      finish.resolve();
+      const ended = await run;
+      return { ended, triedThen };
+    });
+    assert.equal(REPLAY_TRIES, 5);
+    assert.deepEqual(tries, Array(REPLAY_TRIES).fill(11), `tried ${REPLAY_TRIES} times in all, never more`);
+    assert.equal(value.triedThen, REPLAY_TRIES, "it had stopped trying before the loop ended");
+    assert.equal(warned.filter((line) => / times and not delivered/.test(line)).length, 1, `left said once: ${JSON.stringify(warned)}`);
+    assert.match(warned.find((line) => / times and not delivered/.test(line)), new RegExp(`tried ${REPLAY_TRIES} times and not delivered \\(this row can never be delivered\\); it and the 0 after it are left untaken, for the run's next claim`));
+    assert.equal(warned.length, 2, `one line as it starts trying again, one as it gives the row up: ${JSON.stringify(warned)}`);
+    assert.deepEqual(seen, []);
+    assert.deepEqual(value.ended, { state: "ended" });
+  } finally {
+    console.warn = warn;
+  }
+});
+
 test("an approve for a parked call, buffered on a resume claim whose loop closes before it is ready, stays untaken in the store: the next claim takes it, and the call runs once as approved", { timeout: 90_000 }, async (t) => {
   const opened = await stores({ runners: 1 });
   await opened.server.settings.put("tool-settings", { web_fetch: { permission: "ask" } });
