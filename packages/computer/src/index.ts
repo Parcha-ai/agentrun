@@ -105,7 +105,8 @@ export {
 	browserbaseRest,
 } from "./browserbase.js";
 export { KERNEL_API_URL, KERNEL_MAX_LIFETIME_MS, type KernelBrowserSettings, KernelProvider, type KernelProviderOptions, type KernelRequest, kernelRest } from "./kernel.js";
-export { DAEMON_IN_COMPUTER, drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
+export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
+export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
 export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
