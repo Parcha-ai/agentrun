@@ -2,6 +2,7 @@
 // sets nothing up: on a data directory the server has not set up it is refused in words a person can act on, before it
 // claims anything. Beside a server's store it claims a queued run, runs it to its end, and closes releasing its runs.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +34,8 @@ test("beside the server's store, a runner process claims a queued run, runs it t
   await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const faux = fauxLoops({ turns: 2, turnMs: 10 });
-  const process = await startRunnerProcess({ dataDir: dir, loops: 4, name: "runner-a", createLoop: faux.createLoop });
+  // The server's seal key handed over: a runner never makes one (seal-key.ts), and this store had no server start to.
+  const process = await startRunnerProcess({ dataDir: dir, loops: 4, name: "runner-a", createLoop: faux.createLoop, env: { ...globalThis.process.env, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } });
   let closed = false;
   t.after(async () => {
     if (!closed) await process.close();

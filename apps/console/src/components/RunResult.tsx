@@ -20,14 +20,14 @@ export function RunResult({ run, rows, files = [], onOpen }: { run: Run; rows: T
       <div className="space-y-8">
         {written.map(([k, text]) => (
           <section key={k}>
-            <p className="caps mb-2 text-[11px] text-muted-foreground">{k.replace(/_/g, " ")}</p>
+            <p className="caps mb-2 text-label text-muted-foreground">{k.replace(/_/g, " ")}</p>
             <article className="report max-w-none border bg-card p-5" onClick={open} dangerouslySetInnerHTML={{ __html: markdown(text, linked) }} />
           </section>
         ))}
         {(!written.length || Object.keys(rest as object).length > 0) && (
           <section>
-            <p className="caps mb-2 text-[11px] text-muted-foreground">{written.length ? "The rest of the output" : "Output"}</p>
-            <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.8]">{JSON.stringify(rest, null, 2)}</pre>
+            <p className="caps mb-2 text-label text-muted-foreground">{written.length ? "The rest of the output" : "Output"}</p>
+            <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.8]">{JSON.stringify(rest, null, 2)}</pre>
           </section>
         )}
       </div>

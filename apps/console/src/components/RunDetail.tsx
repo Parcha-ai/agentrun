@@ -11,12 +11,12 @@ import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
+import { Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { BY_THE_MINUTE } from "@/lib/computers";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
-import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
 import type { ComputerHoldAnswer, Computers, HandBackOutcome, Run, RunComputer, RunFile, TimelineRow } from "@/lib/v2";
 
@@ -107,7 +107,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
-  const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
+  const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
+  // A Graph tab that went away (the graph's read was refused) leaves the run's default tab open, never a blank view.
+  const tab = picked === "graph" && !graphView ? defaultTab : picked;
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
@@ -196,28 +198,21 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
-      <div className="flex border-b px-5 md:px-8" role="tablist">
-        {tabs.map(([id, name]) => (
-          <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
-            className={cn("caps -mb-px whitespace-nowrap border-b-2 px-3 py-3 text-[12px] max-sm:px-2.5 max-sm:py-2", tab === id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>
-            {name}
-          </button>
-        ))}
-      </div>
+      <Tabs tabs={tabs.map(([id, label]) => ({ id, label }))} value={tab} onChange={setTab} />
       {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
-            <section className="border border-border-strong/60 p-4"><p className="caps text-[11px] text-muted-foreground">Cancelled</p>
-              <p className="mt-2 text-[14px] text-muted-foreground">This run was cancelled. It keeps what it did before; it takes no more messages.</p></section>
+            <section className="border border-border-strong/60 p-4"><p className="caps text-label text-muted-foreground">Cancelled</p>
+              <p className="mt-2 text-lead text-muted-foreground">This run was cancelled. It keeps what it did before; it takes no more messages.</p></section>
           )}
           {run.status === "completed" && run.review && (
-            <section className="border border-warning/50 bg-warning/10 p-4" aria-label="Needs review"><p className="caps text-[11px] text-warning-text">Needs review</p>
-              <p className="mt-2 text-[14px]">{run.review.reason}</p>
-              <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
+            <section className="border border-warning/50 bg-warning/10 p-4" aria-label="Needs review"><p className="caps text-label text-warning-text">Needs review</p>
+              <p className="mt-2 text-lead">{run.review.reason}</p>
+              <p className="mt-1 font-mono text-small text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
-          {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
-          {askRefused && askRefused.at !== ask?.asked_at && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {askRefused.text}</p>}
+          {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
+          {askRefused && askRefused.at !== ask?.asked_at && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text" role="alert">Your answer wasn't taken: {askRefused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : ask ? <ComputerAskCard key={askKey} ask={ask} onAnswer={onHandBack ? answerAsk : undefined}
                 open={tab !== "screen" ? <Button size="sm" variant="primary" onClick={() => setTab("screen")}>Open the screen</Button> : null} />
@@ -227,7 +222,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
-            <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
+            <p className="font-mono text-body text-muted-foreground">This run gave no answer.</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}

@@ -3,7 +3,8 @@
 // the run once, at the latest cap, with one follow-up turn in the server's words; a raise the rule refuses is refused in
 // its words and the run stays parked; a raise above the cap but still short of the request's need resumes it, and the
 // next request, refused at the new figures, parks it again with a fresh pending budget. Each test names the main test it
-// mirrors. The run's cap after a raise is the server's to keep (E2); here a closure the test raises with the command.
+// mirrors. The spec gives the launch's cap and nothing more, as the run's spec does (adapter-run-spec.ts): a raise is the
+// raise row alone, and the cap the run is held to after it is the loop's to keep, from its raise entries.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,10 +35,11 @@ async function reached(event, what) {
   }
 }
 
-/** One pi run on the adapter loop under a cap that `raise(usd)` moves, as the server keeps a raised run's cap. The runner
- *  runs until `stopRunner()`, and a new one until the test ends: raises sent between them meet the run unclaimed.
- *  `first`: the first runner's own store and journal hooks and lease (startOne's options). */
-async function cappedRun(t, script, first = {}) {
+/** One pi run on the adapter loop under its launch's cap (`capUsd`, default CAP), its spec's figure fixed as the run's
+ *  spec's is: `raise(usd)` only writes the raise row. The runner runs until `stopRunner()`, and a new one until the test
+ *  ends: raises sent between them meet the run unclaimed. `first`: the first runner's own store and journal hooks and
+ *  lease (startOne's options). */
+async function cappedRun(t, script, first = {}, { capUsd = CAP } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-"));
   // The stores' clock: real time plus `clock.skewMs`, so a case runs a lost claim out by moving the store's now past its
   // until, never by waiting for a short real lease.
@@ -54,15 +56,15 @@ async function cappedRun(t, script, first = {}) {
   });
   await server.agents.create({ id: "agent-1", name: "Raise" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
-  let capUsd = CAP;
   const sent = [];
   const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
-  // The cap's rules as E2 hands them to the loop (which imports no cap): its park, raise check and follow-up.
-  const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  // The cap's rules as the run's spec hands them to the loop (which imports no cap): the launch's figure, its park at the
+  // cap the loop holds the run to when it parks, its raise check and follow-up.
+  const specCapRule = { capUsd, park: (refusal, capNow = capUsd) => cap.parkOf(refusal, capNow), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
-    cap: runCap,
-    runCap: ({ capUsd: () => capUsd, modelOf: () => SONNET }),
+    cap: specCapRule,
+    runCap: { capUsd: () => capUsd, modelOf: () => SONNET },
   }), { restartLimit: MAX_RESTARTS });
   // A lease no stall of a loaded machine outlasts: the run moves between runners here by its park's release, never by a
   // lease that ran out, and a claim lost and retaken would hand the resume to a loop these tests do not count.
@@ -83,14 +85,21 @@ async function cappedRun(t, script, first = {}) {
       await sleep(20);
     }
   };
-  /** A person's raise: the server keeps the new cap (E2) and writes the raise row. */
-  const raise = async (usd, { keep = true } = {}) => {
-    if (keep && usd > capUsd) capUsd = usd;
-    return sendCommand(server, "run-1", { kind: "raise", body: { capUsd: usd } });
+  /** A person's raise: the raise row, all the server writes (runs-over-store raiseCap). */
+  const raise = (usd) => sendCommand(server, "run-1", { kind: "raise", body: { capUsd: usd } });
+  /** The run once a claim has let it go (no runner) in one of `states`, not before `ms`. */
+  const settledIn = async (states, ms = 20_000) => {
+    const from = Date.now();
+    for (;;) {
+      const row = await server.runs.get("run-1");
+      if (states.includes(row.state) && row.runner === null) return row;
+      if (Date.now() - from > ms) throw new Error(`not in ${states.join("/")} within ${ms} ms: ${JSON.stringify(row)}`);
+      await sleep(20);
+    }
   };
   /** The store's now moved past every claim's until (the steady lease): a claim whose runner was lost is claimable. */
   const runOut = () => void (clock.skewMs += STEADY.leaseMs * 2);
-  return { server, store, sent, settled, raise, stopRunner: () => runners.at(-1).close(), startOne, runOut };
+  return { server, store, sent, settled, settledIn, raise, stopRunner: () => runners.at(-1).close(), startOne, runOut };
 }
 
 async function openStore(dir, role, now) {
@@ -332,7 +341,7 @@ test("a raise that reaches the loop once its pause is journaled, before the run 
 test("a raise not above the run's cap is refused in the rule's words, and the run stays parked", async (t) => {
   const w = await cappedRun(t, [{ say: "done" }]);
   await w.settled("parked");
-  const row = await w.raise(CAP, { keep: false });
+  const row = await w.raise(CAP);
   const refused = await (async () => {
     for (const from = Date.now(); Date.now() - from < 10_000; await sleep(20)) {
       const now = await commandOf(w.server, row.id);
@@ -363,4 +372,73 @@ test("a raise above the cap but short of the request's need resumes the run once
   assert.equal(budgets[1].pending.cap_usd, short, "at the raised cap");
   assert.equal(again.summary, budgets[1].words);
   assert.equal(w.sent.length, 0, "no request reached the provider");
+});
+
+/** Waits for `done()` to hold, failing in `what`'s words after `ms`. */
+const until = async (done, what, ms = 20_000) => {
+  for (const from = Date.now(); !(await done()); await sleep(20)) if (Date.now() - from > ms) throw new Error(`not within ${ms} ms: ${what}`);
+};
+
+// The cap a raised run is held to is the raise's, at every admission, model requests included: the spec's figure is the
+// launch's, and the raise row is all the server writes.
+test("a run refused at its cap, parked and raised, is held to the raised cap: its next model request is admitted, never refused at the launch's cap", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }], {}, { capUsd: 0.0001 });
+  await w.settled("parked");
+  assert.equal(w.sent.length, 0, "the refused request never reached the provider");
+  const raised = await w.raise(1);
+  // The raise row taken (its takenAt), read from the store's command rows: never the journal while a claim writes it.
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the raise taken");
+  const row = await w.settledIn(["ended", "parked", "failed"]);
+  const budgets = await rootEntries(w.server, "agentrun.budget");
+  assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), [0.0001], "parked once, at the launch's cap, never again after the raise");
+  assert.equal(followUpsSent(w.sent, 1), 1, `the follow-up's request reached the provider, admitted under $1: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+});
+
+/** A runner lost once its raise entry has landed: its store claims once, and after the raise entry's commit no commit of
+ *  its lands and its renews are refused, so it is stuck after the raise was taken and before the resumed turn sent
+ *  anything (an order of events, no timing), and it claims no more. `reached`: once its next commit is asked for. */
+const lostAfterRaise = () => {
+  let lost = false;
+  let told = () => {};
+  const reached = new Promise((resolve) => (told = resolve));
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+        return async (batches, ...rest) => {
+          if (lost) {
+            told();
+            return new Promise(() => {});
+          }
+          const result = await value.call(target, batches, ...rest);
+          if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.raise")) lost = true;
+          return result;
+        };
+      },
+    });
+  return { hooks: { storeOf: (store) => claimsOnce(store, () => lost), journalOf }, reached };
+};
+
+test("a raised run taken over by another runner after its raise entry landed is held to the raised cap there: its next model request is admitted", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }], {}, { capUsd: 0.0001 });
+  await w.settled("parked");
+  await w.stopRunner();
+  await w.raise(1);
+  // The resuming runner takes the raise (its entry lands) and is stuck before its follow-up is sent; its claim then runs
+  // out (the store's clock moved past its until), ordered by that event, never by a short real lease.
+  const lost = lostAfterRaise();
+  w.startOne(lost.hooks);
+  await reached(lost.reached, "the resuming runner asks to commit after its raise entry landed");
+  assert.equal((await rootEntries(w.server, "agentrun.raise")).length, 1, "the raise entry landed");
+  assert.equal(w.sent.length, 0, "nothing sent before the takeover");
+  w.runOut();
+  // The next runner claims it once that lease ran out, from "running": its cap is read from the run's raise entry.
+  w.startOne();
+  const row = await w.settledIn(["ended", "parked", "failed"], 30_000);
+  const budgets = await rootEntries(w.server, "agentrun.budget");
+  assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), [0.0001], "parked once, at the launch's cap, never again on the new claim");
+  assert.equal(followUpsSent(w.sent, 1), 1, `the follow-up's request reached the provider, admitted under $1: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
 });
