@@ -170,6 +170,11 @@ export const liveViewerById = async (store: LiveViewerStore, sealKey: Buffer, ru
 
 /** The two addresses a run's viewer answers under: the computer family's, one for every kind, and the browser's own. */
 export type LiveFamily = "computer" | "browser";
+/** Whether `family`'s address reaches `handover`'s viewer: the computer family's (/computer/live) is one address for every
+ *  computer kind, the browser among them (GET /computer names a browser's viewer there, and the console opens only that
+ *  link); the browser's own (/browser/live) reaches a browser's viewer alone. */
+export const familyReaches = (family: LiveFamily, handover: LiveHandover): boolean => family === "computer" || (handover.kind ?? "browser") === "browser";
+
 /** Where the viewer answers through the server, for run `runId`, under `family`'s address: the owner's link, its token in
  *  the fragment. */
 export const viewerLink = (runId: string, handover: LiveHandover, family: LiveFamily = "browser"): string => `/v2/runs/${encodeURIComponent(runId)}/${family}/live/v/${handover.id}#t=${handover.token}`;

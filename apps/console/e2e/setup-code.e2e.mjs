@@ -161,7 +161,7 @@ try {
     await fill(page, "wrong-code-0000000000x");
     await page.click('button[type="submit"]');
     await page.waitForSelector('[role="alert"]', { timeout: 15_000 });
-    check("a wrong code is refused in words", ((await page.textContent('[role="alert"]')) ?? "").includes("That setup code is not the one in the server's log."));
+    check("a wrong code is refused in words", ((await page.textContent('[role="alert"]')) ?? "").includes("That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here."));
     await fill(page, code);
     await page.click('button[type="submit"]');
     check("the code from the server's log sets the password and signs in", await signedIn(page).then(() => true, () => false));
