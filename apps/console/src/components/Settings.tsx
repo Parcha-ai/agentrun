@@ -12,7 +12,7 @@ export function Settings({ active, offered, children }: { active: SettingsPage; 
         <nav aria-label="Settings" className="flex shrink-0 gap-1 border-b px-6">
           {SETTINGS_PAGES.filter((p) => offered.includes(p.id)).map((p) => (
             <a key={p.id} href={`#/settings/${p.id}`} aria-current={active === p.id ? "page" : undefined}
-              className={cn("caps -mb-px border-b-2 px-3 py-3 text-[12px]", active === p.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}>{p.label}</a>
+              className={cn("caps -mb-px border-b-2 px-3 py-3 text-small", active === p.id ? "border-primary text-primary-text" : "border-transparent text-muted-foreground hover:text-foreground")}>{p.label}</a>
           ))}
         </nav>
       )}

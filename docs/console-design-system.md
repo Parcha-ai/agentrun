@@ -7,8 +7,9 @@ you add or restyle anything a person sees there.
 - **Primitives** are in `apps/console/src/components/ui`: one component for each control and message.
 - **The catalogue** is the Storybook (`npm run storybook` in `apps/console`, port 6006), under "Design system".
   It shows every token and every primitive in the light and the dark theme, side by side.
-- **The checks** are `src/design-system.test.ts`, `src/lib/utils.test.ts` and `src/components/ui/primitives.test.tsx`.
-  `npm test` in `apps/console` runs them.
+- **The checks** are `src/design-system.test.ts`, `src/design-system.sources.test.ts`, `src/lib/utils.test.ts` and
+  `src/components/ui/primitives.test.tsx`. `npm test` in `apps/console` runs them, and a line that breaks a rule
+  fails with what to write instead.
 
 ## The look, in six rules
 
@@ -124,7 +125,7 @@ Controls in one row share one height. A target someone taps is at least 24px eac
 | --- | --- |
 | `z-raised` | Over its neighbours in one panel: a chart's hover label. |
 | `z-sticky` | Stays while the page scrolls under it. |
-| `z-overlay` | What dims the page under a dialog. |
+| `z-overlay` | A scrim of your own over the page. `Dialog` draws its own. |
 | `z-dialog` | A dialog's panel, a full-screen viewer. |
 | `z-popover` | A menu, a picker's list, a tip. Above a dialog, which can open one. |
 | `z-toast` | A toast, over everything. |
@@ -161,20 +162,34 @@ Import from `@/components/ui`.
 | An action | `Button`: `solid` (the page's one main action), `primary`, `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
 | A row or a card someone presses | A plain `<button>` or `<a>` with `hover:bg-accent` and `text-left` | `Button`. |
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
-| A text field | `Field` around `Input` or `Textarea` | A bare `<input>` with its own classes. |
+| A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
+| A field with an icon or buttons inside its edge | A box with `fieldBoxClass` around `<Input bare>` or `<Textarea bare>` | A field with `outline-none` and no focus of its own. |
 | A choice from a list | `Picker` (opens under its field); `NativeSelect` for a short list in a dense row | A bare `<select>`. |
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
-| Any of several | `Checkbox` | |
+| Any of several | `Checkbox`; a native input with `accent-primary` where a row has its own layout | |
 | On or off, taking effect at once | `Switch` | A checkbox. |
 | A page's views | `Tabs` | |
 | A place in the navigation | `NavItem` | |
 | A message that stays until its cause is gone | `Banner`; `bar` for the strip across the top of the shell | A coloured paragraph. |
 | A word that what you just did worked | `useToast()` | A banner that removes itself. |
 | A task that must finish or be dropped first | `Dialog` | A fixed `div`. |
-| "Are you sure?" before something that cannot be undone | `ConfirmDialog` | `window.confirm`. |
+| "Are you sure?" before something that cannot be undone | `ConfirmDialog`; for one row's action, an inline `role="alertdialog"` in the row, as below | `window.confirm`. |
 | Actions behind one button | `Menu` with `MenuItem`s | A `Picker`. |
 | A few more words on hover | `Tip` | A `title` as the only way to learn something. |
 | Work with no length to show | `Spinner`, with words beside it | A spinner alone. |
+
+### Patterns built from primitives
+
+- **A toned panel** is a card that asks for something: an approval, a question, a paused run. It is
+  `border border-warning/50 bg-warning/5 p-4` with a `caps text-label text-warning-text` heading, and holds
+  `Button`s and fields. A message with no controls of its own is a `Banner`.
+- **A read that failed** is `<Banner tone="error" actions={<Button size="xs">Try again</Button>}>` with the server's
+  words in a `font-mono` paragraph.
+- **An inline confirm** replaces a row's button with the question, the action by name and Cancel, in a
+  `role="alertdialog"` with an `aria-label`. The keyboard starts on Cancel, Escape cancels, and the focus returns to
+  the button. The shell's "Sign out everywhere" is the model.
+- **The file viewer** (`RunFiles.tsx`) is a native `<dialog>` opened with `showModal()`. It predates `Dialog` and
+  keeps its own press-outside rule; new dialogs use `Dialog`.
 
 ### Messages: which one
 
@@ -234,6 +249,7 @@ These hold for every change. The primitives already do them; keep them when you 
 | Check | What it holds |
 | --- | --- |
 | `src/design-system.test.ts` | Every colour token has a light and a dark value. Tailwind names only tokens. The type scale, layers, durations and weights match this guide. Every text pair is 4.5:1 and every edge pair 3:1, in both themes. |
+| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no rounded corner, no shadow but `shadow-float`, no duration off the scale, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
 | `src/lib/utils.test.ts` | `cn()` knows the console's scales, so `text-body text-primary-text` keeps both classes. |
 | `src/components/ui/primitives.test.tsx` | Each primitive's keyboard and screen-reader contract, and that every design-system story renders in both themes. |
 

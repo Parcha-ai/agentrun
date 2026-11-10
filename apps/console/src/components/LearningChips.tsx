@@ -58,7 +58,7 @@ function KeptNothing({ agentId, said, link }: { agentId: string; said: string; l
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <a href={learningHash(agentId)} aria-label={`Kept nothing: ${said}`} className="inline-flex">{chip}</a>
-      <span className="text-[12px] text-muted-foreground">{said}</span>
+      <span className="text-small text-muted-foreground">{said}</span>
     </span>
   );
 }
@@ -70,7 +70,7 @@ function SkillsChip({ agentId, refs, link, kind, pending }: { agentId: string; r
   const said = `${label}: ${refs.map((r) => r.name).join(", ")}`;
   const Icon = pending ? Hourglass : kind === "skill" ? Wrench : Workflow;
   const chip = (
-    <Chip tone={pending ? "warning" : undefined} className={cn(!pending && "border-primary/50 bg-primary/10 text-primary", link && "cursor-pointer")}>
+    <Chip tone={pending ? "warning" : undefined} className={cn(!pending && "border-primary/50 bg-primary/10 text-primary-text", link && "cursor-pointer")}>
       <Icon className="size-3" aria-hidden />{label}
     </Chip>
   );
@@ -87,7 +87,7 @@ function NotesChip({ agentId, refs, link, kind, replaces = 0 }: { agentId: strin
   const quiet = kind === "given" || kind === "read";
   const Icon = quiet ? BookOpen : kind === "pending" ? Hourglass : Sparkles;
   const chip = (
-    <Chip tone={kind === "pending" ? "warning" : undefined} className={cn(kind === "learned" ? "border-primary/50 bg-primary/10 text-primary" : quiet ? "border-border-strong/70 text-foreground/80" : "", link && "cursor-pointer transition-colors group-hover/tip:border-foreground/70")}>
+    <Chip tone={kind === "pending" ? "warning" : undefined} className={cn(kind === "learned" ? "border-primary/50 bg-primary/10 text-primary-text" : quiet ? "border-border-strong/70 text-foreground/80" : "", link && "cursor-pointer transition-colors group-hover/tip:border-foreground/70")}>
       <Icon className="size-3" aria-hidden />{label}
     </Chip>
   );
@@ -96,10 +96,10 @@ function NotesChip({ agentId, refs, link, kind, replaces = 0 }: { agentId: strin
   if (!link || (!linked.length && kind !== "pending")) return <span title={said} aria-label={said} className="inline-flex">{chip}</span>;
   const tip = (
     <>
-      <span className="caps block text-[10px] text-muted-foreground">{kind === "given" ? "This run started with" : kind === "read" ? "This run read" : kind === "learned" ? "This run kept" : "Waits for your OK before any run reads it"}</span>
+      <span className="caps block text-micro text-muted-foreground">{kind === "given" ? "This run started with" : kind === "read" ? "This run read" : kind === "learned" ? "This run kept" : "Waits for your OK before any run reads it"}</span>
       {refs.length > 0 && <ul className="mt-1 space-y-0.5">{refs.map((r) => <li key={r.file} className="font-semibold">{r.name}</li>)}</ul>}
       {replaces > 0 && <span className="mt-1 block text-muted-foreground">Replaces {replaces === 1 ? "1 older note" : `${replaces} older notes`}.</span>}
-      <span className="mt-1.5 block text-[11px] text-muted-foreground">Open in Learning</span>
+      <span className="mt-1.5 block text-label text-muted-foreground">Open in Learning</span>
     </>
   );
   return (

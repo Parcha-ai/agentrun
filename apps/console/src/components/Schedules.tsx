@@ -4,6 +4,7 @@ import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { Field as UiField, Input, NativeSelect, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
@@ -78,20 +79,20 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
       </div>
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
-        : !triggers.length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">No triggers yet. A schedule starts an agent's runs at the times you set; a webhook starts one on each signed request. Each run is capped.</p>
+        : !triggers.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">No triggers yet. A schedule starts an agent's runs at the times you set; a webhook starts one on each signed request. Each run is capped.</p>
         : (
           <ul className="border">
             {triggers.map((t) => (
               <li key={t.id} data-trigger={t.id} className="grid grid-cols-1 gap-x-6 gap-y-1.5 border-b px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <a href={hashOf(t.id)} className="min-w-0 break-words text-[15px] font-semibold hover:underline">{t.name}</a>
+                    <a href={hashOf(t.id)} className="min-w-0 break-words text-prose font-semibold hover:underline">{t.name}</a>
                     <Chip>{KIND_WORDS[t.source.kind]}</Chip>
                     {!t.enabled && <Chip tone="muted">Paused</Chip>}
                   </div>
-                  <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName)}</p>
+                  <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName)}</p>
                 </div>
-                <div className="min-w-0 font-mono text-[12px] text-muted-foreground md:text-right">
+                <div className="min-w-0 font-mono text-small text-muted-foreground md:text-right">
                   {t.source.kind === "schedule" && <p>{t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>}
                   <p className="mt-1 break-words">{lastWords(t)}</p>
                 </div>
@@ -121,8 +122,8 @@ function whatWords(t: Trigger, agentName: (id: string) => string): string {
 function NotASchedule() {
   return (
     <div className="p-5 md:p-8">
-      <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
-      <p className="mt-4 border px-4 py-6 text-[13px] text-muted-foreground">This trigger sends its firings to a run: this page doesn't open it yet.</p>
+      <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+      <p className="mt-4 border px-4 py-6 text-body text-muted-foreground">This trigger sends its firings to a run: this page doesn't open it yet.</p>
     </div>
   );
 }
@@ -210,25 +211,25 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   const content = typeof runs.target.input.content === "string" ? runs.target.input.content : null;
   return (
     <div className="p-5 md:p-8">
-      <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+      <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <><span title={cronOf(trigger)}>{whenWords(runs.source as Schedule["source"])}</span>{` · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</>}</p>
+          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <><span title={cronOf(trigger)}>{whenWords(runs.source as Schedule["source"])}</span>{` · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</>}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>
           {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
-            <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Make a new secret?">
+            <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
               <Button size="sm" variant="solid" onClick={() => { setRotating(false); void rotate(); }}>Yes, make a new one</Button>
               <Button size="sm" variant="ghost" onClick={() => setRotating(false)}>Keep</Button>
             </span>
           ))}
           {!confirming ? <Button size="sm" variant="destructive" onClick={() => setConfirming(true)} disabled={busy !== null}><Trash2 aria-hidden /> Delete</Button> : (
-            <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Delete this trigger?">
+            <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-small" role="alertdialog" aria-label="Delete this trigger?">
               <span>Delete for good? Its runs stay.</span>
               <Button size="sm" variant="destructive" onClick={() => { setConfirming(false); void remove(); }}>Yes, delete</Button>
               <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Keep</Button>
@@ -238,31 +239,31 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       </div>
       {said && <ProblemCard problem={said} className="mt-4" />}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
-      <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-[13px] sm:grid-cols-[max-content_minmax(0,1fr)]">
-        <dt className="caps text-[11px] text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(runs.target.agent_id)}`} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
-        <dt className="caps text-[11px] text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
-        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
+      <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
+        <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(runs.target.agent_id)}`} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
+        <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
+        <dt className="caps text-label text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
         {hook ? <>
-          <dt className="caps text-[11px] text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-[12px]">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-[12px] text-muted-foreground">{HOOK_URL_HINT}</span></dd>
-          <dt className="caps text-[11px] text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
-          <dt className="caps text-[11px] text-muted-foreground">Accepts</dt>
-          <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-[12px]">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
+          <dt className="caps text-label text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-small">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-small text-muted-foreground">{HOOK_URL_HINT}</span></dd>
+          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
+          <dt className="caps text-label text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
         </> : gh ? <>
-          <dt className="caps text-[11px] text-muted-foreground">Accepts</dt>
-          <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-[12px]">{gh.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul><p className="mt-1 text-[12px] text-muted-foreground">From this server's GitHub App (Settings → GitHub).</p></dd>
+          <dt className="caps text-label text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-small">{gh.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul><p className="mt-1 text-small text-muted-foreground">From this server's GitHub App (Settings → GitHub).</p></dd>
         </> : <>
-          <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
+          <dt className="caps text-label text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
         </>}
       </dl>
       <section className="mt-6" aria-label="Firings">
         <h2 className="text-lg font-semibold">Firings</h2>
-        {!firings.length ? <p className="mt-2 font-mono text-[12px] text-muted-foreground">Not fired yet.</p> : (
+        {!firings.length ? <p className="mt-2 font-mono text-small text-muted-foreground">Not fired yet.</p> : (
           <ul className="mt-3 border">
             {firings.map((f) => (
-              <li key={f.key} data-firing={f.key} className="flex flex-col gap-1 border-b px-4 py-2.5 text-[13px] last:border-b-0 sm:flex-row sm:items-start sm:gap-4">
-                <span className="flex shrink-0 items-center gap-2"><Chip tone={TONE[f.status]}>{FIRING_LABEL[f.status]}</Chip><span className="font-mono text-[12px] text-muted-foreground">{at(f.nominal_at)}</span></span>
+              <li key={f.key} data-firing={f.key} className="flex flex-col gap-1 border-b px-4 py-2.5 text-body last:border-b-0 sm:flex-row sm:items-start sm:gap-4">
+                <span className="flex shrink-0 items-center gap-2"><Chip tone={TONE[f.status]}>{FIRING_LABEL[f.status]}</Chip><span className="font-mono text-small text-muted-foreground">{at(f.nominal_at)}</span></span>
                 <span className="min-w-0 flex-1 break-words">{f.status === "started" ? FIRED_BY[f.by] : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
-                {f.run_id && <a href={`#/runs/${encodeURIComponent(f.run_id)}`} className="shrink-0 font-mono text-[12px] underline-offset-2 hover:underline">Run {runLabel(f.run_id)}</a>}
+                {f.run_id && <a href={`#/runs/${encodeURIComponent(f.run_id)}`} className="shrink-0 font-mono text-small underline-offset-2 hover:underline">Run {runLabel(f.run_id)}</a>}
               </li>
             ))}
           </ul>
@@ -285,22 +286,12 @@ function ScheduleEdit({ v2, go, id, minEvery }: FormProps & { id: string }) {
 
 /** One input with its label, its hint, and the issue under it (`data-issue`: the field the server names). */
 function Field({ label, field, issue, hint, children }: { label: string; field: string; issue?: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <label className="block">
-        <span className="caps text-[11px] text-muted-foreground">{label}</span>
-        <span className="mt-1 block">{children}</span>
-      </label>
-      {hint && <p className="mt-1 text-[12px] text-muted-foreground">{hint}</p>}
-      {issue && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue={field}>{issue}</p>}
-    </div>
-  );
+  return <UiField className="min-w-0" label={label} hint={hint} error={issue ? <span data-issue={field}>{issue}</span> : undefined}>{children}</UiField>;
 }
 
 /** An empty cap field's placeholder: the picked agent's own default cap as served (definition.max_cost_usd), which an
  *  empty field takes; none when the agent has none, never a made-up example. */
 const capPlaceholder = (agentCap: number | undefined) => (agentCap !== undefined ? `${dollars(agentCap)}, the agent's default` : undefined);
-const INPUT = "h-10 w-full border bg-background px-3 font-mono text-[13px]";
 const ZONES: string[] = typeof (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf === "function" ? (Intl as unknown as { supportedValuesOf: (key: string) => string[] }).supportedValuesOf("timeZone") : [];
 
 /** Every agent, a page at a time, for the agent picker. */
@@ -366,59 +357,59 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Cron" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
-      <a href={trigger ? hashOf(trigger.id) : "#/triggers"} className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Triggers"}</a>
-      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><CalendarClock className="size-5 text-primary" aria-hidden />{trigger ? "Edit schedule" : "New schedule"}</h1>
-      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-[13px] text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <a href={trigger ? hashOf(trigger.id) : "#/triggers"} className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Triggers"}</a>
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><CalendarClock className="size-5 text-primary-text" aria-hidden />{trigger ? "Edit schedule" : "New schedule"}</h1>
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
-        <Field label="Name" field="name" issue={issues.name}><input name="name" className={INPUT} value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="nightly triage" /></Field>
+        <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="nightly triage" /></Field>
         <fieldset className="min-w-0">
-          <legend className="caps text-[11px] text-muted-foreground">When</legend>
+          <legend className="caps text-label text-muted-foreground">When</legend>
           <div className="mt-1 flex flex-wrap gap-2" role="radiogroup">
             {kinds.map(({ kind, label }) => (
-              <label key={kind} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-[13px] ${draft.kind === kind ? "border-primary text-primary" : ""}`}>
+              <label key={kind} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-body ${draft.kind === kind ? "border-primary text-primary-text" : ""}`}>
                 <input type="radio" name="kind" value={kind} checked={draft.kind === kind} onChange={() => set("kind")(kind)} className="accent-primary" />{label}
               </label>
             ))}
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><input name="cron" className={INPUT} value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
-            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><input name="at" type="datetime-local" step={60} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
+            {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><Input name="cron" value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
+            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><Input name="at" type="datetime-local" step={60} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
             {draft.kind === "every" && (
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
                 <span className="flex gap-2">
-                  <input name="every" inputMode="decimal" className={INPUT} value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="5" />
-                  <select name="everyUnit" aria-label="Unit" className="h-10 border bg-background px-2 font-mono text-[13px]" value={draft.everyUnit} onChange={(e) => set("everyUnit")(e.target.value as Draft["everyUnit"])}>
+                  <Input name="every" inputMode="decimal" value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="5" />
+                  <NativeSelect id="schedule-every-unit" name="everyUnit" aria-label="Unit" className="px-2" value={draft.everyUnit} onChange={(e) => set("everyUnit")(e.target.value as Draft["everyUnit"])}>
                     <option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours">hours</option>
-                  </select>
+                  </NativeSelect>
                 </span>
               </Field>
             )}
             {draft.kind === "cron" && (
               <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The zone the cron line runs in.">
-                <input name="timezone" list="schedule-zones" className={INPUT} value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
+                <Input name="timezone" list="schedule-zones" value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
               </Field>
             )}
-            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={startInstant ? `= ${utcWhen(startInstant)}` : undefined}><input name="startAt" type="datetime-local" step={60} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
+            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={startInstant ? `= ${utcWhen(startInstant)}` : undefined}><Input name="startAt" type="datetime-local" step={60} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
           </div>
           {ZONES.length > 0 && <datalist id="schedule-zones">{ZONES.map((z) => <option key={z} value={z} />)}</datalist>}
-          {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
+          {restarts && <p className="mt-3 text-small text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
+          <NativeSelect name="agent" className="w-full" value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
             <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
             {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
             {draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) && <option value={draft.agentId}>{draft.agentId}</option>}
-          </select>
+          </NativeSelect>
         </Field>
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
         {!trigger && (
           <div>
-            <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" name="enabled" checked={draft.enabled} onChange={(e) => set("enabled")(e.target.checked)} className="accent-primary" /> On from now (off: made paused)</label>
-            {issues.enabled && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue="enabled">{issues.enabled}</p>}
+            <label className="flex items-center gap-2 text-body"><input type="checkbox" name="enabled" checked={draft.enabled} onChange={(e) => set("enabled")(e.target.checked)} className="accent-primary" /> On from now (off: made paused)</label>
+            {issues.enabled && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="enabled">{issues.enabled}</p>}
           </div>
         )}
       </div>
@@ -443,7 +434,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <Button type="button" size="sm" onClick={copy}><Copy aria-hidden /> {label}</Button>
-      {said && <span className="font-mono text-[11px] text-muted-foreground" role="status">{said}</span>}
+      {said && <span className="font-mono text-label text-muted-foreground" role="status">{said}</span>}
     </span>
   );
 }
@@ -451,7 +442,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 /** A signing secret, shown this once (the server keeps it sealed and never sends it again), with Copy. */
 export function SecretOnce({ label, secret, url }: { label: string; secret: string; url?: string }) {
   return (
-    <section aria-label={label} className="mt-4 space-y-3 border border-primary/50 p-4 text-[13px]">
+    <section aria-label={label} className="mt-4 space-y-3 border border-primary/50 p-4 text-body">
       {url && <Copyable title="URL" text={url} label="Copy URL" hint={HOOK_URL_HINT} />}
       <Copyable title="Signing secret" text={secret} label="Copy secret" />
       <p className="text-warning-text" role="note">You won't see this secret again.</p>
@@ -462,9 +453,9 @@ export function SecretOnce({ label, secret, url }: { label: string; secret: stri
 function Copyable({ title, text, label, hint }: { title: string; text: string; label: string; hint?: string }) {
   return (
     <div className="min-w-0">
-      <span className="caps text-[11px] text-muted-foreground">{title}</span>
-      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all border bg-muted/40 px-2 py-1 font-mono text-[12px]">{text}</code><CopyButton text={text} label={label} /></div>
-      {hint && <p className="mt-1 text-[12px] text-muted-foreground">{hint}</p>}
+      <span className="caps text-label text-muted-foreground">{title}</span>
+      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all border bg-muted/40 px-2 py-1 font-mono text-small">{text}</code><CopyButton text={text} label={label} /></div>
+      {hint && <p className="mt-1 text-small text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -505,15 +496,15 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       setSaving(false);
     }
   };
-  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
+  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
   if (made) {
     return (
       <div className="max-w-2xl p-5 md:p-8">
         {back}
-        <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary" aria-hidden />{made.name}</h1>
-        <p className="mt-2 text-[13px] text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
+        <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary-text" aria-hidden />{made.name}</h1>
+        <p className="mt-2 text-body text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
         {made.secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.secret} /> : (
-          <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-[13px]">
+          <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-body">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
             {made.note && <p role="note">{made.note}</p>}
           </section>
@@ -526,32 +517,32 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
       {back}
-      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary" aria-hidden />New webhook</h1>
-      <p className="mt-2 text-[13px] text-muted-foreground">Each signed request to its URL starts a capped run of the agent. Its URL and signing secret show once it is made.</p>
-      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-[13px] text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary-text" aria-hidden />New webhook</h1>
+      <p className="mt-2 text-body text-muted-foreground">Each signed request to its URL starts a capped run of the agent. Its URL and signing secret show once it is made.</p>
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
-        <Field label="Name" field="name" issue={issues.name}><input name="name" className={INPUT} value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="on deploy" /></Field>
+        <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="on deploy" /></Field>
         <fieldset className="min-w-0">
-          <legend className="caps text-[11px] text-muted-foreground">Signature</legend>
+          <legend className="caps text-label text-muted-foreground">Signature</legend>
           <div className="mt-1 flex flex-wrap gap-2" role="radiogroup">
             {SIGNATURES.map((sig) => (
-              <label key={sig} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-[13px] ${draft.signature === sig ? "border-primary text-primary" : ""}`}>
+              <label key={sig} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-body ${draft.signature === sig ? "border-primary text-primary-text" : ""}`}>
                 <input type="radio" name="signature" value={sig} checked={draft.signature === sig} onChange={() => set("signature")(sig)} className="accent-primary" />{SIGNATURE_WORDS[sig]}
               </label>
             ))}
           </div>
-          {issues["source.signature"] && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
+          {issues["source.signature"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
+          <NativeSelect name="agent" className="w-full" value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
             <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
             {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
-          </select>
+          </NativeSelect>
         </Field>
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
@@ -613,15 +604,15 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       setSaving(false);
     }
   };
-  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
-  const title = <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><GitPullRequest className="size-5 text-primary" aria-hidden />New GitHub trigger</h1>;
+  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
+  const title = <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><GitPullRequest className="size-5 text-primary-text" aria-hidden />New GitHub trigger</h1>;
   if (readError) return <div className="max-w-2xl p-5 md:p-8">{back}{title}<ProblemCard problem={readError} onRetry={() => setTries((n) => n + 1)} className="mt-4" /></div>;
   if (connected === null) return <ListSkeleton label="Reading GitHub's connection" rows={3} />;
   if (!connected) {
     return (
       <div className="max-w-2xl p-5 md:p-8">
         {back}{title}
-        <p className="mt-4 border px-4 py-6 text-[13px]">
+        <p className="mt-4 border px-4 py-6 text-body">
           Connect GitHub first: <a href="#/settings/github" className="underline underline-offset-2">Settings → GitHub</a>. A GitHub trigger takes events from this server's GitHub App.
         </p>
       </div>
@@ -631,35 +622,35 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
       {back}{title}
-      <p className="mt-2 text-[13px] text-muted-foreground">Each event it takes from this server's GitHub App starts a capped run of the agent.</p>
-      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-[13px] text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <p className="mt-2 text-body text-muted-foreground">Each event it takes from this server's GitHub App starts a capped run of the agent.</p>
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
-        <Field label="Name" field="name" issue={issues.name}><input name="name" className={INPUT} value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
+        <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
         <fieldset className="min-w-0">
-          <legend className="caps text-[11px] text-muted-foreground">Events</legend>
+          <legend className="caps text-label text-muted-foreground">Events</legend>
           <div className="mt-1 space-y-1">
             {GITHUB_EVENTS.map(({ event, action, label }) => {
               const key = `${event}:${action}`;
               return (
-                <label key={key} className="flex items-center gap-2 text-[13px]">
+                <label key={key} className="flex items-center gap-2 text-body">
                   <input type="checkbox" name="event" value={key} checked={draft.events.includes(key)} onChange={() => toggle(key)} className="accent-primary" />
-                  {label} <span className="font-mono text-[11px] text-muted-foreground">{event} {action}</span>
+                  {label} <span className="font-mono text-label text-muted-foreground">{event} {action}</span>
                 </label>
               );
             })}
           </div>
-          {issues["source.accept"] && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue="source.accept">{issues["source.accept"]}</p>}
+          {issues["source.accept"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.accept">{issues["source.accept"]}</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
+          <NativeSelect name="agent" className="w-full" value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
             <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
             {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
-          </select>
+          </NativeSelect>
         </Field>
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-64`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
       </div>
       <div className="mt-6 flex flex-wrap gap-2">

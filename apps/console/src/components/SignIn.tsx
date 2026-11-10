@@ -1,5 +1,7 @@
 import { ChevronRight, KeyRound } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Field, fieldBoxClass, Input } from "@/components/ui/field";
 import type { AuthMode } from "@/lib/auth";
 import type { ImportOffer } from "@/lib/client";
 import { cn } from "@/lib/utils";
@@ -57,52 +59,51 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
     setBusy(false); setProblem(p);
   };
   return (
-    <main className="grid min-h-dvh place-items-center bg-[#080808] p-6 text-[#f5f5f5]">
-      <div className="w-full max-w-[440px] border border-[#333] p-8">
-        <span className="flex items-center gap-1.5 font-mono text-[22px] font-semibold" aria-label="AgentRun"><ChevronRight className="size-5 text-primary" aria-hidden /><span>agent<span className="text-primary">.run()</span></span></span>
+    <main className="grid min-h-dvh place-items-center bg-background p-6 text-foreground">
+      <div className="w-full max-w-[440px] border bg-card p-8">
+        <span className="flex items-center gap-1.5 font-mono text-figure font-semibold" aria-label="AgentRun"><ChevronRight className="size-5 text-primary-text" aria-hidden /><span>agent<span className="text-primary-text">.run()</span></span></span>
         <h1 className="mb-3 mt-8 text-2xl">{COPY[mode].title}</h1>
-        <p className="mb-6 text-[15px] leading-relaxed text-[#aaa]">{COPY[mode].body}</p>
+        <p className="mb-6 text-prose leading-relaxed text-muted-foreground">{COPY[mode].body}</p>
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
             {asksCode && (
-              <Field label="Setup code" note="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.">
-                <input id="setup-code" name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className={input} />
+              <Field label="Setup code" id="setup-code" hint="Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.">
+                <Input name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="text-lead" />
               </Field>
             )}
-            <Field label={FIELD[mode].label} note={setup ? "12 characters or more." : undefined}>
-              <span className="flex items-center gap-3 border border-[#444] bg-black px-3 focus-within:border-[#f5f5f5]">
-                <KeyRound className="size-4 text-[#888]" aria-hidden />
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={FIELD[mode].autocomplete} autoFocus
-                  aria-label={FIELD[mode].label} className="h-10 min-w-0 flex-1 bg-transparent font-mono text-[14px] outline-none" />
+            <Field label={FIELD[mode].label} hint={setup ? "12 characters or more." : undefined}>
+              <span className={cn("flex items-center gap-3 px-3", fieldBoxClass)}>
+                <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+                <Input bare type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={FIELD[mode].autocomplete} autoFocus
+                  aria-label={FIELD[mode].label} className="h-control-md flex-1 text-lead" />
               </span>
             </Field>
             {setup && (
-              <Field label="Again" note={again && again !== password ? "The two passwords differ." : undefined}>
-                <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again" className={input} />
+              <Field label="Again" hint={again && again !== password ? "The two passwords differ." : undefined}>
+                <Input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again" className="text-lead" />
               </Field>
             )}
             {offered && (
-              <label className="flex items-start gap-3 text-[14px]">
+              <label className="flex items-start gap-3 text-lead">
                 <input type="checkbox" name="import" checked={importSessions} onChange={(e) => setImportSessions(e.target.checked)} className="mt-1 size-4 accent-primary" />
                 <span>
                   <span className="block">Import this machine's Claude Code, Codex and pi sessions</span>
-                  <span className="mt-1 block text-[12px] text-[#888]" aria-live="polite">{offerNote(offer)}</span>
+                  <span className="mt-1 block text-small text-muted-foreground" aria-live="polite">{offerNote(offer)}</span>
                 </span>
               </label>
             )}
-            <button type="submit" disabled={!ready || busy}
-              className={cn("caps h-10 w-full border text-[13px]", ready && !busy ? "border-primary bg-primary text-black hover:bg-primary/90" : "border-[#555] bg-[#555] text-[#999]")}>
+            <Button type="submit" variant="solid" disabled={!ready || busy} aria-busy={busy || undefined} className="w-full text-body">
               {busy ? "Signing in" : setup ? "Set password and continue" : "Continue"}
-            </button>
-            {problem && <p className="font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>}
+            </Button>
+            {problem && <p className="font-mono text-body text-destructive-text" role="alert">{problem}</p>}
             {!setup && (
-              <p className="text-[12px] leading-relaxed text-[#888]">
+              <p className="text-small leading-relaxed text-muted-foreground">
                 {/* The npx wrapper's command first (it takes reset-password, on its own store, ~/.agentrun), then the server's own. The
                     page is public: the data directory stays a placeholder. */}
-                Forgot it? Where the server runs: <code className="font-mono text-[#ccc]">npx @parcha/agentrun reset-password</code> (add{" "}
-                <code className="font-mono text-[#ccc]">--data DIR</code> if you started it with one). For a server you started yourself:{" "}
-                <code className="font-mono text-[#ccc]">agentrun-serve reset-password --data DIR</code> (in the image:{" "}
-                <code className="font-mono text-[#ccc]">--data /data</code>). The next visit here sets a new one.
+                Forgot it? Where the server runs: <code className="font-mono text-foreground">npx @parcha/agentrun reset-password</code> (add{" "}
+                <code className="font-mono text-foreground">--data DIR</code> if you started it with one). For a server you started yourself:{" "}
+                <code className="font-mono text-foreground">agentrun-serve reset-password --data DIR</code> (in the image:{" "}
+                <code className="font-mono text-foreground">--data /data</code>). The next visit here sets a new one.
               </p>
             )}
           </form>
@@ -119,16 +120,4 @@ function offerNote(offer: ImportOffer): string {
   if ("counting" in offer) return `Counting sessions… ${EACH}`;
   if (offer.sessions === null || offer.projects === null) return `The count isn't known. ${EACH}`;
   return `${count(offer.sessions, "session")} in ${count(offer.projects, "project")}. ${EACH}`;
-}
-
-const input = "h-10 w-full border border-[#444] bg-black px-3 font-mono text-[14px] outline-none focus:border-[#f5f5f5]";
-
-function Field({ label, note, children }: { label: string; note?: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="caps mb-2 block text-[12px] font-semibold">{label}</span>
-      {children}
-      {note && <span className="mt-1.5 block text-[12px] text-[#888]">{note}</span>}
-    </label>
-  );
 }

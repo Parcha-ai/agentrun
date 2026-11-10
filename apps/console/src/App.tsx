@@ -25,6 +25,8 @@ import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
+import { Banner } from "@/components/ui/banner";
+import { Button } from "@/components/ui/button";
 import { type AuthMode, authMode, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { trackHistory } from "@/lib/back";
@@ -220,7 +222,7 @@ export function App() {
 /** Before the console knows who is signed in: a quiet page, or, while the server can't be reached, that said with the
  *  next try (never the password page, where a password would go nowhere). */
 function Starting() {
-  return useLink().state === "offline" ? <Unreached /> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground" role="status">Connecting…</p>;
+  return useLink().state === "offline" ? <Unreached /> : <p className="p-8 text-center font-mono text-body text-muted-foreground" role="status">Connecting…</p>;
 }
 
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
@@ -511,17 +513,17 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     }} onSignOutEverywhere={() => {
       v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} banners={<>
-      {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
+      {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {imported && (
-        <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8" role="status">
+        <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-body md:px-8" role="status">
           <span className="flex-1">{importLine(imported)}</span>
-          {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-[11px] hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
+          {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
       {caps?.models?.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
     </>}>
       {where.section === "playground" && startError
-        ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
+        ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />

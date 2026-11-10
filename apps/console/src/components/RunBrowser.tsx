@@ -79,7 +79,7 @@ export function BrowserPanel({ runId, browser, opens, followUp }: {
     <section aria-label="Browser" className="border">
       <header className="flex items-center gap-3 border-b px-4 py-2.5">
         <Globe className="size-4 text-muted-foreground" aria-hidden />
-        <span className="caps flex-1 text-[12px] font-semibold">{browser.state === "live" ? "Live" : "Browser"}</span>
+        <span className="caps flex-1 text-small font-semibold">{browser.state === "live" ? "Live" : "Browser"}</span>
       </header>
       {browser.state === "live" && src
         // The viewer's page (pi-browser live-view/viewer.ts) needs its own scripts, and its own origin: its WebSocket goes
@@ -88,10 +88,10 @@ export function BrowserPanel({ runId, browser, opens, followUp }: {
         ? <iframe key={session.current.n} src={src} title="The run's browser" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className="block aspect-[16/10] w-full bg-background" />
         : browser.state === "live"
         // A viewer that is not this run's own on this origin: said, never framed, and its value not shown.
-        ? <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">The live view can't be shown here.</p>
+        ? <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">The live view can't be shown here.</p>
         : browser.state === "signed_out"
-        ? <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">Signed out: sign in to watch.</p>
-        : <p className="px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">
+        ? <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">Signed out: sign in to watch.</p>
+        : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">
             {opens ? "Waiting for the browser. The agent's page shows here once it opens one." : `The browser closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`}
           </p>}
     </section>
