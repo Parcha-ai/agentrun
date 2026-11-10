@@ -113,7 +113,7 @@ describe("AgentEditor, tools a person chose by hand", () => {
   };
   const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true }] };
 
-  it("keeps a hand-picked set when the harness changes", async () => {
+  it("keeps a hand-picked set when the harness changes, less what the new harness doesn't run, which a switch back ticks again", async () => {
     const { host, click, checked, done } = await setup({ agent: null, caps: both, step: "tools" });
     const fetchBox = host.querySelector<HTMLInputElement>('input[type=checkbox][value="web_fetch"]');
     click(fetchBox);
@@ -121,6 +121,11 @@ describe("AgentEditor, tools a person chose by hand", () => {
     expect(picked).not.toContain("web_fetch");
     click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
     click(host.querySelector('input[type=radio][value="codex"]'));
+    click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
+    // codex runs only the file tools here (no `harnesses` served: the server's own rule): ask_person comes off.
+    expect(checked()).toEqual(picked.filter((t) => t !== "ask_person"));
+    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click(host.querySelector('input[type=radio][value="pi"]'));
     click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
     expect(checked()).toEqual(picked);
     done();
@@ -131,8 +136,9 @@ describe("AgentEditor, tools a person chose by hand", () => {
     let saved: { tools?: string[] } | undefined;
     const { host, click, checked, done } = await setup({ agent, caps: both, step: "tools", onSave: async (fields: { tools?: string[] }) => { saved = fields; return null; } });
     expect(checked()).toEqual([]);
-    // A save sends none: it never widens what the agent can do.
+    // A save (of another edit: with none, Save is off) sends none: it never widens what the agent can do.
     const { act } = await import("react");
+    click(host.querySelector('fieldset[aria-label="Approvals"] input[type="radio"][value="never"]'));
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /Save revision/i.test(b.textContent ?? ""))!.click(); });
     expect(saved?.tools ?? []).toEqual([]);
     done();

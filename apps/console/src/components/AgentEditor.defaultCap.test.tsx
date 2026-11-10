@@ -60,9 +60,10 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect([sent[0]!.max_cost_usd, sent[0]!.maxCostText, sent[0]!.workflow]).toEqual([4, undefined, { nodes: [] }]);
   });
 
-  it("an untouched save sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {
+  it("a save of another edit sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {
     const sent: Record<string, unknown>[] = [];
-    const { type, save } = mount({ agent: capped, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    const { host, type, save } = mount({ agent: capped, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    act(() => { host.querySelector<HTMLInputElement>('input[name="thinking"]')!.click(); });
     await save();
     type("4");
     await save();
@@ -75,7 +76,8 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
   it("an agent with no cap, saved with the field still empty, sends none: there is nothing to clear", async () => {
     const sent: Record<string, unknown>[] = [];
     const bare = { ...capped, definition: { ...capped.definition, max_cost_usd: undefined } };
-    const { save } = mount({ agent: bare, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    const { host, save } = mount({ agent: bare, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    act(() => { host.querySelector<HTMLInputElement>('input[name="thinking"]')!.click(); });
     await save();
     expect(sent[0]?.max_cost_usd).toBeUndefined();
   });
