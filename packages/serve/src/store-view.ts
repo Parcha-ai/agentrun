@@ -225,13 +225,20 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
   // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
   // makes no extra store read.
+  // The run's command rows, read once for what needs them: a hand-over's answers, and the person's messages not yet taken.
+  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
+  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
   const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
-    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
     : undefined;
   // The agent's ask on its desktop or phone, read the same way (computer-commands.ts): only a run with one fetches its rows.
   const computerAsk = records.entries.some((e) => e.kind === COMPUTER_HANDOVER_KIND)
-    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await store.commands(runId, 0), deps.now?.() ?? Date.now())
+    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
     : undefined;
+  // The person's messages its runner has not taken yet (steer rows neither taken nor refused): the file path's `submitted`.
+  // A run that waits on its person (a parked question) and has just been answered reads as going on from the answer's
+  // row, never input_required again until its runner places it, as main's run read once the message was submitted.
+  const submitted = terminal || row.kind !== "agentic" ? 0 : (await commandsNow()).filter((command) => command.kind === "steer" && command.takenAt === null && command.refused === null).length;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
   const view: RunView = {
     id: row.id,
@@ -243,7 +250,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     // The store's "stopped" state is a cancellation; its moment reads cancelled.
     cancel: row.state === "stopped",
     working,
-    submitted: 0,
+    submitted,
     updatedAt: iso(updatedAtMs),
     rows,
     turns,

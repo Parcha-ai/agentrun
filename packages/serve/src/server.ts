@@ -50,7 +50,7 @@ import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
-import { ASK_PERSON_WAITING } from "./runner/journal-kinds.js";
+import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunLearning } from "./run-learning-served.js";
 import { runCutValues } from "./run-cut.js";
@@ -3109,9 +3109,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       for (const row of await store.runs.list({ state })) {
         open.add(row.id);
         // A run waits on its person once its runner has let it go: parked, or running with no runner. Or held in its claim
-        // waiting on the answer to its question (adapter-loop waitInClaim: ask_person with its browser open), which its
-        // row's summary says; a new ask there sets it anew, so each is read and told once.
-        const waitsInClaim = row.state === "running" && row.runner !== null && row.summary === ASK_PERSON_WAITING;
+        // waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its browser hand-over,
+        // tools.ts), which its row's summary says (HELD_WAITS); a new ask sets it anew, so each is read and told once.
+        const waitsInClaim = row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
         if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
       }
     }

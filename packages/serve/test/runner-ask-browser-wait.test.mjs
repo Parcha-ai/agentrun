@@ -163,8 +163,11 @@ test("ask_person with the browser granted but no session open parks as before: p
   assert.equal(view.body.pending?.kind, "question", JSON.stringify(view.body.pending));
   assert.equal(w.ops().filter((op) => op.op === "create").length, 0, "no session was opened");
   assert.equal((await w.records()).entries.some((entry) => entry.kind === "runner.request" && entry.data?.model === WAIT_HOLD), false, "no person time held");
-  // The answer resumes it from the park, as today.
+  // The answer resumes it from the park, as today; from the answer's row on, the run reads as going on, never as still
+  // waiting on its question (a client's runs.wait right after the message returned input_required again).
   assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Yes." })).status, 202);
+  const answered = await w.server.api("GET", `/runs/${w.runId}`);
+  assert.notEqual(answered.body.status, "input_required", `right after the answer: ${JSON.stringify({ status: answered.body.status, state: answered.body.state })}`);
   await follow(w.server.api, w.runId, ["completed"]);
 });
 

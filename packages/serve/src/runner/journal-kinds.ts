@@ -73,6 +73,11 @@ export const KINDS = {
  *  view reads the question from the call, never from here, so the model's text is never copied into the row. The server
  *  tells run.needs_input for a run held in its claim by this summary (server.ts readEnds). */
 export const ASK_PERSON_WAITING = "Waiting for your reply";
+/** The run row's summary while its agent's browser hand-over (browser_request_handoff) waits on the person, its claim
+ *  held: set by the ask's waiting entry's commit, cleared by its answer's (tools.ts, through AdapterRun.rowSummaryOn). */
+export const HANDOVER_WAITING = "Waiting for you in the browser";
+/** The summaries of a run held in its claim while it waits on its person: the server tells run.needs_input by them. */
+export const HELD_WAITS: ReadonlySet<string> = new Set([ASK_PERSON_WAITING, HANDOVER_WAITING]);
 
 /** How a browser hand-over ended: the person's two answers, or its expiry. */
 export type HandoverOutcome = "done" | "cancelled" | "expired";

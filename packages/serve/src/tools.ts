@@ -38,7 +38,7 @@ import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
 import { runnerSecrets } from "./runner/redact.js";
-import type { HandoverAnswered } from "./runner/journal-kinds.js";
+import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
@@ -98,6 +98,10 @@ export type ToolHost = {
    *  (its bound runs from then, across claims). Undefined: nothing to keep. Absent on
    *  the old per-run process, whose wait keeps the process (and so the browser) anyway. */
   personWait?(hold: (harness: Harness, callId: string, since: number) => Promise<{ readonly lapsed: Promise<string>; drop(): void } | undefined>): void;
+  /** On the runner: stages the run row's `summary` on the next commit that writes a root entry of `kind` whose data `test`
+   *  takes (adapter-loop AdapterRun.rowSummaryOn): a hand-over's wait sets the row's waiting summary in its waiting
+   *  entry's commit, and its answer's commit clears it, so the server tells run.needs_input for a run held in its claim. */
+  rowSummaryOn?(kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void;
   /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
    *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
    *  (browser-person.ts personHands `answered`). */
@@ -373,7 +377,16 @@ const browserTool: ToolEntry = {
       carry: (tag, seconds) => spend.carry(tag, seconds),
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
       redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
-      note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+      note: async (kind, data) => {
+        // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
+        // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
+        if (kind === "agent.handover" && data.state === "waiting" && typeof data.id === "string" && host.rowSummaryOn) {
+          const id = data.id;
+          host.rowSummaryOn(kind, (entry) => entry.id === id && entry.state === "waiting", HANDOVER_WAITING);
+          host.rowSummaryOn(kind, (entry) => entry.id === id && entry.state !== "waiting", null);
+        }
+        await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
+      },
       holdMs: windows.holdMs,
       // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
       waiting: async (tag) => (await opened?.commit(async (tx) => {

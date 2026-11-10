@@ -197,6 +197,10 @@ export type AdapterRun = PiRun & {
    *  spec's per-claim resources let go of what they hold at once on it (the run's Archil mount credential). Absent where
    *  no loop gave one (a spec built alone). */
   readonly signal?: AbortSignal;
+  /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
+   *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
+   *  summary). Absent where no loop gave one. */
+  readonly rowSummaryOn?: (kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null) => void;
 };
 
 /** What the adapter loop hands a run's tool host: the run's decisions, paid calls and proxied models, on its one cap. */
@@ -759,7 +763,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await pauseFor?.(refusal);
           },
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal };
+        const passGate = gate;
+        const rowSummaryOn = (kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void => {
+          if (passGate.sealed) return;
+          passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
+        };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal, rowSummaryOn };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
