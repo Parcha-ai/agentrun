@@ -13,7 +13,7 @@
 // the tier, as its provider bills it), and its cost is that catalog entry, tiers included, for the cap's judgement.
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
-import { chooseModel, runModels, type Tier } from "../model.js";
+import { chooseModel, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 
@@ -59,12 +59,13 @@ type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
 type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string };
 
-/** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`), resolved from `env` as main
- *  resolves a run's model, on a wire of `wires` (the caller's; default Messages alone). `upstream`: what the route's own
+/** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`; a claimed run's pin, sent as
+ *  pinned: chooseModel's PinnedModel), resolved from `env` as main resolves a run's model, on a wire of `wires` (the
+ *  caller's; default Messages alone). `upstream`: what the route's own
  *  translation sends with (a test's stand-in for the provider); absent, the network. `redact`: the runner's one redactor,
  *  which the translation's error text passes through (absent, one over every secret `env` holds). Refuses, in main's
  *  words, a model this host cannot run. */
-export async function routeOf(model: string | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
+export async function routeOf(model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
   const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
