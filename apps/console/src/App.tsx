@@ -27,7 +27,7 @@ import { Playground, type StartResult, startFailure } from "@/components/Playgro
 import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
-import { SignIn } from "@/components/SignIn";
+import { SessionUnread, SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
@@ -117,6 +117,10 @@ function setupCodeOnce(): string | null {
   return capturedSetup.code;
 }
 
+/** The wait before the `n`th next read of a session that couldn't be read (0 first): 1 s, doubling to 30 s, and never an
+ *  end: a server that takes minutes to start (a host's first start, a redeploy) is read until it answers. */
+export const sessionRetryMs = (n: number): number => Math.min(1000 * 2 ** n, 30_000);
+
 /** How often the console reads an import under way, and how many failed reads in a row end its watch. */
 export const IMPORT_POLL_MS = 1000;
 const IMPORT_READ_TRIES = 30;
@@ -163,13 +167,17 @@ export function App() {
   }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
   const [codeNeeded, setCodeNeeded] = useState(false);
-  /** The mode the server's session asks for now. */
-  const sessionMode = async () => {
+  /** The mode the server's session asks for now, and whether its setup takes the printed code. */
+  const sessionRead = async () => {
     const r = await v2.session();
-    setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
     const probe = noAccounts(r) ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
-    return authMode(r, probe);
+    return { mode: authMode(r, probe), codeNeeded: setupTakesCode(r) };
+  };
+  const sessionMode = async () => {
+    const read = await sessionRead();
+    setCodeNeeded(read.codeNeeded);
+    return read.mode;
   };
   const readSession = async () => setAuth(await sessionMode());
   recheck.current = async () => {
@@ -181,7 +189,41 @@ export function App() {
     } catch { /* the session could not be read: the console stays as it is, and the next refusal checks again */ }
     finally { checking.current = false; }
   };
-  useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The first read of the session decides the page. One that fails (the server's answer unreadable, a proxy's page in its
+  // place, the connection cut) is said as it is and tried again, 1 s after the first, doubling to 30 s, with Retry now:
+  // never a sign-in, which would claim the server has a password when the page can't know (#2222).
+  const [sessionUnread, setSessionUnread] = useState<{ problem: string; starting: boolean } | null>(null);
+  const [sessionTry, setSessionTry] = useState(0);
+  // Only the newest read decides, and only while nothing has: an older one (a Retry now before it answered) that lands
+  // after a newer one opened setup or sign-in, or after the owner signed in, changes nothing.
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    sessionRead().then(
+      (read) => {
+        if (!live || authNow.current !== null) return;
+        setCodeNeeded(read.codeNeeded);
+        setAuth(read.mode);
+        setSessionUnread(null);
+      },
+      (e) => {
+        if (!live || authNow.current !== null) return;
+        const ms = sessionRetryMs(sessionTry);
+        // A refusal with no error of the server's own (http_error) is another's page in its place: the status alone. A
+        // gateway's 502, 503 or 504 page is the host's edge while the server starts (on Render, about a minute after a
+        // one-click create; again at a redeploy or a wake): said as starting, and asked again, with no end.
+        const refusal = e instanceof ClientError ? e : null;
+        const foreign = refusal?.code === "http_error";
+        const starting = foreign && [502, 503, 504].includes(refusal!.status);
+        setSessionUnread({
+          problem: refusal === null ? problemOf(e) : starting ? `Its address answered ${refusal.status}, not the server.` : `GET /v2/auth/session answered ${refusal.status}${foreign ? ", not as this server answers" : `: ${refusal.message}`}`,
+          starting,
+        });
+        timer = setTimeout(() => setSessionTry((n) => n + 1), ms);
+      },
+    );
+    return () => { live = false; clearTimeout(timer); };
+  }, [v2, sessionTry]); // eslint-disable-line react-hooks/exhaustive-deps
   // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
   // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown; one that
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
@@ -206,6 +248,7 @@ export function App() {
     })();
     return () => { live = false; };
   }, [v2, auth]);
+  if (auth === null && sessionUnread !== null) return <SessionUnread problem={sessionUnread.problem} starting={sessionUnread.starting} onRetry={() => setSessionTry((n) => n + 1)} />;
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
