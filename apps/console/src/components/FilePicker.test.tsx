@@ -62,6 +62,15 @@ describe("FilePicker", () => {
     expect(page.text()).toContain("three.txt is not added: a run names at most 2 files here.");
   });
 
+  it("takes a null largest upload as no limit: a file of any size is sent, and no size is said", () => {
+    const page = open({ max_upload_bytes: null, max_files_per_run: 20 });
+    expect(page.text()).toContain("up to 20 files");
+    expect(page.text()).not.toMatch(/\bB each\b|takes files up to/);
+    page.pick(file("big.bin", 4096), file("one.txt"));
+    expect(page.pending.map((p) => p.file.name)).toEqual(["big.bin", "one.txt"]);
+    expect(page.text()).not.toContain("takes files up to");
+  });
+
   it("says a refusal the server gives in its words, with the file's name, and drops the file", async () => {
     const page = open();
     page.pick(file("notes.md"));
