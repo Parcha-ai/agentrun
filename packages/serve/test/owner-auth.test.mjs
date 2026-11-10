@@ -14,7 +14,7 @@ import { ROUTES } from "../dist/server.js";
 import { writesSecret } from "../dist/secret-writes.js";
 import { builtConsole, call, CONSOLE_INDEX, cookieOf, scratch, serve } from "./support.mjs";
 
-const { Owner, resetPassword, SIGN_IN_PEERS } = owner;
+const { Owner, peerKey, resetPassword, SignInLimit, SIGN_IN_MAX_WAIT_MS, SIGN_IN_PEERS } = owner;
 
 const json = { "content-type": "application/json" };
 /** Test passwords, none a real one. */
@@ -164,11 +164,52 @@ test("sign-in: the password gives a session cookie, HttpOnly, SameSite=Strict, P
   assert.match(https.headers["set-cookie"][0], /^__Host-agentrun-session=.*; Secure$/);
 });
 
-test("sign-in tries are limited per address: the eleventh in 15 minutes is a 429, and a forwarded-for header does not reset it", async (t) => {
+// key-gate: documentation-range addresses (RFC 5737, RFC 3849) as forwarded clients under test
+const CLIENT = "192.0.2.10";
+const OTHER = "198.51.100.20";
+const V6 = (host) => `2001:db8:1:2::${host}`;
+
+test("sign-in tries are limited per address: the eleventh in 15 minutes waits a second and says so, and with no trusted proxy a forwarded-for header is never read", async (t) => {
   const server = await owned(t);
-  for (let i = 0; i < 10; i++) assert.equal((await signIn(server, "not the password", { ...page(server), "x-forwarded-for": `10.0.0.${i}`, "x-agentrun-client-ip": `10.0.1.${i}` })).status, 401);
-  const limited = await signIn(server, PASSWORD, { ...page(server), "x-forwarded-for": "10.9.9.9" });
+  for (let i = 0; i < 10; i++) assert.equal((await signIn(server, "not the password", { ...page(server), "x-forwarded-for": `${CLIENT}${i}`, "x-agentrun-client-ip": OTHER })).status, 401);
+  const limited = await signIn(server, PASSWORD, { ...page(server), "x-forwarded-for": OTHER });
   assert.deepEqual([limited.status, limited.json.error.code], [429, "rate_limited"]);
+  const wait = limited.json.error.retry_after_ms;
+  assert.ok(wait > 0 && wait <= 1000, `the first wait past the free tries is a second at most: ${wait}`);
+  assert.equal(limited.headers["retry-after"], "1");
+  assert.match(limited.json.error.message, /from this address; try again in 1 s/);
+});
+
+test("behind a trusted proxy each visitor counts by the address it forwards for: a guesser's limit never holds the owner, and one IPv6 /64 is one address", async (t) => {
+  const server = await owned(t, { trustedProxies: ["loopback"] });
+  const from = (client) => ({ ...page(server), "x-forwarded-for": client });
+  for (let i = 0; i < 10; i++) assert.equal((await signIn(server, "not the password", from(CLIENT))).status, 401);
+  assert.equal((await signIn(server, "not the password", from(CLIENT))).status, 429, "the guesser waits");
+  assert.equal((await signIn(server, PASSWORD, from(OTHER))).status, 200, "the owner, at another address, signs in");
+  // A client that puts its own X-Forwarded-For in front: the proxy appends the address it saw, and that one counts.
+  assert.equal((await signIn(server, "not the password", from(`${OTHER}, ${CLIENT}`))).status, 429, "a forged first hop is not the client");
+  for (let i = 0; i < 10; i++) assert.equal((await signIn(server, "not the password", from(V6(i.toString(16))))).status, 401);
+  assert.equal((await signIn(server, "not the password", from(V6("ffff")))).status, 429, "another address in the same /64 is the same visitor");
+  assert.equal((await signIn(server, "not the password", from("2001:db8:1:3::1"))).status, 401, "the next /64 is another");
+});
+
+test("a sign-in body sent slowly holds nothing of the limit: eleven left unfinished, the owner's sign-in still goes through", async (t) => {
+  const server = await owned(t);
+  const { connect } = await import("node:net");
+  const open = [];
+  for (let i = 0; i < 11; i++) {
+    const socket = connect(server.port, "127.0.0.1"); // key-gate: loopback, the server under test
+    await new Promise((resolve) => socket.once("connect", resolve));
+    socket.write(`POST /v2/auth/sign-in HTTP/1.1\r\nhost: 127.0.0.1:${server.port}\r\norigin: ${page(server).origin}\r\ncontent-type: application/json\r\ncontent-length: 64\r\n\r\n{"password":"not`);
+    open.push(socket);
+  }
+  t.after(() => { for (const socket of open) socket.destroy(); });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal((await signIn(server, PASSWORD)).status, 200, "the unfinished bodies took none of this address's tries");
+});
+
+test("the trusted proxies must parse: a start with one that does not is refused, naming the option", async (t) => {
+  await assert.rejects(serve(t, { accounts: true, openSetup: true, trustedProxies: ["not-an-address"] }), /trustedProxies: .*not-an-address/);
 });
 
 test("every cookie write is the page's: sign-in, setup and sign-out from another origin are 403, a form body is 415, and a cookie writes /v2 only from the page", async (t) => {
@@ -398,19 +439,92 @@ test("a setup code is compared as bytes: one with characters outside ASCII is a 
   assert.equal((await setup(server, { password: PASSWORD, code })).status, 403, "the odd code was the first of the five");
 });
 
-test("the sign-in limit keeps a bounded table: expired addresses are swept, a full table refuses a new address, and a limited one stays limited", async (t) => {
-  mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
-  t.after(() => mock.timers.reset());
-  const owner = new Owner(await scratch(t), true);
-  for (let i = 0; i < 10; i++) assert.equal(owner.allow("held"), "ok");
-  assert.equal(owner.allow("held"), "limited");
-  for (let i = 1; i < SIGN_IN_PEERS; i++) assert.equal(owner.allow(`peer-${i}`), "ok");
-  assert.equal(owner.allow("one-more"), "full", "a full table refuses a new address");
-  assert.equal(owner.allow("held"), "limited", "a flood of new addresses never resets a limited one");
-  assert.equal(owner.allow("peer-1"), "ok", "an address already counted still counts");
-  mock.timers.tick(15 * 60_000);
-  assert.equal(owner.allow("one-more"), "ok", "expired addresses are swept");
-  assert.equal(owner.allow("held"), "ok");
+const shape = (answer) => (answer.ok ? { ok: true, untracked: answer.untracked } : answer);
+// Let a try in and end it at once, a right password: the server's count of tries under way is back where it was.
+const tried = (limit, address) => { const answer = limit.allow(address); if (answer.ok) answer.done(false); return shape(answer); };
+
+test("the sign-in limit keeps a bounded table: expired addresses are swept, a full table counts a new address by the server's budget only, and a waiting one keeps waiting", () => {
+  let now = 1_000_000;
+  const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
+  for (let i = 0; i < 10; i++) assert.equal(tried(limit, "held").ok, true);
+  assert.equal(tried(limit, "held").ok, false);
+  for (let i = 1; i < SIGN_IN_PEERS; i++) assert.deepEqual(tried(limit, `peer-${i}`), { ok: true, untracked: false });
+  assert.deepEqual(tried(limit, "one-more"), { ok: true, untracked: true }, "a full table lets a new address in, uncounted by itself");
+  assert.equal(tried(limit, "held").ok, false, "a flood of new addresses never resets a waiting one");
+  assert.deepEqual(tried(limit, "peer-1"), { ok: true, untracked: false }, "an address already counted still counts");
+  now += 15 * 60_000;
+  assert.deepEqual(tried(limit, "one-more"), { ok: true, untracked: false }, "expired addresses are swept");
+  assert.equal(tried(limit, "held").ok, true);
+});
+
+test("past its free tries an address waits a second, then twice that each time, never more than a minute, and is told how long", () => {
+  let now = 0;
+  const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
+  for (let i = 0; i < 10; i++) assert.equal(tried(limit, "a").ok, true);
+  const waits = [];
+  for (let i = 0; i < 9; i++) {
+    const held = tried(limit, "a");
+    assert.equal(held.ok, false);
+    assert.equal(held.by, "address");
+    waits.push(held.retryAfterMs);
+    now += held.retryAfterMs;
+    assert.equal(tried(limit, "a").ok, true, "let in once the wait is over");
+  }
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+  assert.equal(SIGN_IN_MAX_WAIT_MS, 60_000);
+  assert.equal(tried(limit, "b").ok, true, "another address is not held");
+});
+
+test("wrong passwords past the server's budget hold every address, a minute at most, so a spread of addresses gains nothing and the owner can always try again", () => {
+  let now = 0;
+  const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
+  for (let i = 0; i < 100; i++) {
+    const guess = limit.allow(`guesser-${i}`);
+    assert.equal(guess.ok, true);
+    guess.done(true);
+  }
+  const held = tried(limit, "owner");
+  assert.deepEqual([held.ok, held.by, held.retryAfterMs], [false, "server", 1000]);
+  now += 1000;
+  assert.equal(tried(limit, "owner").ok, true, "after the wait the owner's try goes through");
+  for (let i = 0; i < 10; i++) { now += SIGN_IN_MAX_WAIT_MS; const guess = limit.allow(`guesser-x${i}`); assert.equal(guess.ok, true, `guesser ${i} after a minute`); guess.done(true); }
+  const later = tried(limit, "owner");
+  assert.deepEqual([later.ok, later.by, later.retryAfterMs], [false, "server", SIGN_IN_MAX_WAIT_MS], "110 wrong in the window: the wait is a minute, never more");
+  now += 15 * 60_000;
+  assert.equal(tried(limit, "owner").ok, true, "a quiet window clears the budget");
+});
+
+test("a try let in holds its place in the server's budget until it ends, so tries at once never outrun it: within the budget no more than its places, past it one at a time", () => {
+  let now = 0;
+  const limit = new SignInLimit(SIGN_IN_PEERS, () => now);
+  const under = [];
+  for (let i = 0; i < 100; i++) {
+    const answer = limit.allow(`spread-${i}`);
+    assert.equal(answer.ok, true, `try ${i} at once`);
+    under.push(answer);
+  }
+  assert.deepEqual(shape(limit.allow("one-more")), { ok: false, retryAfterMs: 1000, by: "server" }, "the 101st at once waits, though nothing has failed yet");
+  under[0].done(false);
+  under[0].done(true);
+  const more = limit.allow("one-more");
+  assert.equal(more.ok, true, "a right password frees its place, once");
+  more.done(true);
+  for (const answer of under.slice(1)) answer.done(true);
+  now += 1000;
+  const alone = limit.allow("owner");
+  assert.equal(alone.ok, true, "past the budget, after the wait, one try goes in");
+  assert.deepEqual(shape(limit.allow("another")), { ok: false, retryAfterMs: 1000, by: "server" }, "and only one at a time");
+  alone.done(false);
+});
+
+test("the limit's key: IPv4 as it is, IPv4-mapped IPv6 as IPv4, IPv6 by its /64, anything else as given", () => {
+  assert.equal(peerKey(CLIENT), CLIENT);
+  assert.equal(peerKey(`::ffff:${CLIENT}`), CLIENT);
+  assert.equal(peerKey(V6("1")), "2001:db8:1:2::/64");
+  assert.equal(peerKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), "2001:db8:1:2::/64");
+  assert.notEqual(peerKey("2001:db8:1:3::1"), peerKey(V6("1")));
+  assert.equal(peerKey("::1"), "0:0:0:0::/64");
+  assert.equal(peerKey("unknown"), "unknown");
 });
 
 test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTRUN_PUBLIC_URL, setup with no code is a 403 and with the printed code a 201; AGENTRUN_PUBLIC_URL wins when both are set", { timeout: 60_000 }, async (t) => {
@@ -440,10 +554,10 @@ test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTR
   assert.match(both.out, /^AGENTRUN_BASE_URL=https:\/\/agents\.example\.com\/v2$/m);
 });
 
-test("a sign-in from a new address when the limit's table is full is a 429 at the route, with retry-after, and the log says sign_in_table_full", async (t) => {
+test("a sign-in from a new address when the limit's table is full goes through, held by the server's budget only, and the log says sign_in_table_full", async (t) => {
   const lines = [];
   const server = await owned(t, { signInAddresses: 0, log: (line) => lines.push(line) });
   const full = await signIn(server, PASSWORD);
-  assert.deepEqual([full.status, full.json.error?.code, full.headers["retry-after"], full.headers["set-cookie"]], [429, "rate_limited", "900", undefined], full.text);
+  assert.equal(full.status, 200, full.text);
   assert.ok(lines.some((line) => / event=auth_failed route=\/v2\/auth\/sign-in reason=sign_in_table_full$/.test(line)), lines.join("\n"));
 });

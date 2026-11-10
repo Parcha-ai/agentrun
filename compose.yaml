@@ -10,7 +10,8 @@
 # through that socket: no socket, no network but the server's egress proxy (the hosts of AGENTRUN_BOX_ALLOW), every
 # capability dropped, the server's own uid, and of the data volume only that run's work/ and its proxy's socket.
 # The port is published on this machine's loopback only; put a reverse proxy with TLS in front of it before you publish it
-# anywhere else.
+# anywhere else, and set AGENTRUN_TRUSTED_PROXIES to the address the server sees it come from (Docker's bridge, in the
+# private ranges: uniquelocal), so the sign-in limit counts each visitor by its own address.
 services:
   agentrun:
     image: ghcr.io/parcha-ai/agentrun-server:${AGENTRUN_VERSION:-beta}
@@ -38,6 +39,7 @@ services:
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
+      AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}
       AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}

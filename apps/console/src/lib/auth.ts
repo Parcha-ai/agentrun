@@ -25,7 +25,11 @@ export const setupTakesCode = (r: { status: number; body: unknown }): boolean =>
 /** A refused sign-in or setup, in plain words; otherwise the server's own message. */
 export function signInProblem(e: ClientError): string {
   if (e.status === 401) return "That is not the password.";
-  if (e.status === 429) return "Too many sign-ins from here. Try again in 15 minutes.";
+  // The server says how long (a second at first, a minute at most); a refusal without it says "in a minute".
+  if (e.status === 429) {
+    const s = e.retryAfterMs === undefined ? 60 : Math.max(1, Math.ceil(e.retryAfterMs / 1000));
+    return `Too many sign-ins. Try again in ${s === 1 ? "a second" : s >= 60 ? "a minute" : `${s} seconds`}.`;
+  }
   if (e.status === 403 && /has its owner/.test(e.message)) return "This server has its owner already: sign in.";
   if (e.status === 403 && /a new one is in the server's log/.test(e.message)) return "That setup code expired or was voided after too many wrong tries: a new one is in the server's log (on Render, the Logs tab).";
   if (e.status === 403 && /takes the setup code/.test(e.message)) return "Enter the setup code from the server's log.";

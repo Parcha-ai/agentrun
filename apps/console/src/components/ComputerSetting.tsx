@@ -1,4 +1,4 @@
-import { pickable, pickKind, whyNot } from "@/lib/computers";
+import { BY_THE_MINUTE, METERED, pickable, pickKind, whyNot } from "@/lib/computers";
 import { cn } from "@/lib/utils";
 import type { Computer, ComputerKindView } from "@/lib/v2";
 
@@ -52,7 +52,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-baseline gap-2"><span className="text-[13px] font-semibold">{p.name}</span>{p.metered && <span className="caps text-[11px] text-muted-foreground">Metered</span>}</span>
                     {/* A browser's time is counted in a run's cap; a sandbox's, desktop's or phone's vendor minutes are not. */}
-                    {p.metered && picked.kind !== "browser" && <span className="mt-0.5 block text-[12px] text-muted-foreground">This provider bills by the minute through your own vendor account, and those minutes aren&apos;t counted in a run&apos;s spending cap.</span>}
+                    {p.metered && BY_THE_MINUTE.has(picked.kind) && <span className="mt-0.5 block text-[12px] text-muted-foreground">{METERED}</span>}
                     {!p.ready && p.why && <span className="mt-0.5 block text-[12px]">{p.why}</span>}
                   </span>
                 </label>
