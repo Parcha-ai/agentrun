@@ -777,9 +777,11 @@ for (const down of ["503", "timeout"]) {
     assert.equal(said, "The tool said: The MCP server docs's credential can't be used right now: the sign-in server didn't answer; try again.");
     assert.doesNotMatch(said, /update it|sign in again/);
     assert.equal(calls(), 0, "nothing was sent with the expired token");
-    assert.equal(tries(), 2, "the refresh was tried twice");
+    // Its request left: sent once, never again with the same refresh token (a provider may revoke the grant on its reuse).
+    assert.equal(tries(), 1, "the refresh was sent once");
     assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed", "the sign-in stands: no one is asked to sign in again");
-    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs.
+    // The authorization server answers again: the next launch refreshes with the refresh token it kept, and runs (after no
+    // answer, once the lease the silent refresh held has ended).
     as.heal();
     assert.equal(await run(), "The tool said: 5");
     assert.equal(calls(), 1);
