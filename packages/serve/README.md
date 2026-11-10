@@ -709,7 +709,9 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   container with docker compose up from compose.yaml (its named data volume is how boxes reach a run's files)`. On an
   older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`. A daemon of another
   machine makes it unavailable too, whether `DOCKER_HOST` names it or the current Docker context does (`DOCKER_CONTEXT`,
-  else the saved current one, read once with `docker context inspect`): that daemon has none of this machine's paths. An agent that
+  else the saved current one, read once with `docker context inspect`): that daemon has none of this machine's paths.
+  Another machine's is `ssh://`, or `tcp://` to a host that isn't loopback; `unix://`, `npipe://` (Docker Desktop on
+  Windows) and `tcp://` to loopback are this machine's. An agent that
   names a Docker computer is refused at its run's start in those words, and one with no computer runs on the runner,
   with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its

@@ -269,13 +269,19 @@ test("a server whose AGENTRUN_DOCKER_HOST_ADDRESSES holds an entry that is no IP
   await assert.rejects(serve(t, { data: await dataDir(t), faux: PROBE }), { message: `AGENTRUN_DOCKER_HOST_ADDRESSES is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): "host.docker.internal" is not an IP address` });
 });
 
-test("the daemon docker reaches: DOCKER_HOST when set, else the current context's endpoint as the CLI resolves it; unix:// is this machine's, and a context that can't be read is taken as this machine's", async () => {
+test("a daemon is another machine's only over ssh://, or tcp:// to a host that isn't loopback; unix://, npipe:// and tcp:// to loopback are this machine's", async () => {
+  const { remoteEndpoint } = await import("../dist/box-paths.js");
+  for (const endpoint of ["ssh://builder@docker.example.com", "ssh://docker.example.com:2222", "tcp://docker.example.com:2376", "tcp://203.0.113.7:2376", "tcp://[2001:db8::7]:2376"]) assert.equal(remoteEndpoint(endpoint), true, endpoint);
+  for (const endpoint of ["unix:///var/run/docker.sock", "npipe:////./pipe/docker_engine", "tcp://localhost:2375", "tcp://127.0.0.1:2375", "tcp://127.1.2.3:2375", "tcp://[::1]:2375", "fd://", ""]) assert.equal(remoteEndpoint(endpoint), false, endpoint);
+});
+
+test("the daemon docker reaches: DOCKER_HOST when set, else the current context's endpoint as the CLI resolves it; this machine's is none, and a context that can't be read is taken as this machine's", async () => {
   const { remoteDockerOf } = await import("../dist/box-paths.js");
   const asked = [];
   const context = (answer) => async (args) => (asked.push(args), answer);
   const never = async () => assert.fail("DOCKER_HOST decides: no context is read");
-  for (const host of ["tcp://docker.example.com:2376", "ssh://builder@docker.example.com", "npipe:////./pipe/docker_engine"]) assert.equal(await remoteDockerOf({ DOCKER_HOST: host }, never), host);
-  assert.equal(await remoteDockerOf({ DOCKER_HOST: "unix:///var/run/docker.sock" }, never), undefined);
+  for (const host of ["tcp://docker.example.com:2376", "ssh://builder@docker.example.com"]) assert.equal(await remoteDockerOf({ DOCKER_HOST: host }, never), host);
+  for (const host of ["unix:///var/run/docker.sock", "npipe:////./pipe/docker_engine", "tcp://localhost:2375"]) assert.equal(await remoteDockerOf({ DOCKER_HOST: host }, never), undefined, host);
   for (const host of [undefined, "", "  "]) {
     const env = host === undefined ? {} : { DOCKER_HOST: host };
     assert.equal(await remoteDockerOf(env, context({ code: 0, stdout: '"tcp://docker.example.com:2376"\n', stderr: "" })), "tcp://docker.example.com:2376", String(host));
@@ -290,7 +296,7 @@ test("the daemon docker reaches: DOCKER_HOST when set, else the current context'
 // context whose endpoint it is, or the CLI's saved current context is one (each read through the fake docker), Docker
 // computers aren't offered, in words naming the endpoint.
 test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_CONTEXT or the saved current context: Docker computers aren't offered, saying why", { timeout: 240_000 }, async (t) => {
-  const words = (endpoint) => `this server's Docker daemon (${endpoint}) isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
+  const words = (endpoint) => `this server's Docker daemon (${endpoint}) is another machine's: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
   for (const [given, endpoint] of [
     [{ env: { DOCKER_HOST: "tcp://docker.example.com:2376" } }, "tcp://docker.example.com:2376"],
     [{ env: { DOCKER_CONTEXT: "builder" }, contexts: { builder: "tcp://builder.example.com:2376" } }, "tcp://builder.example.com:2376"],

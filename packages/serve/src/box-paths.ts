@@ -30,15 +30,35 @@ export const OLD_ENGINE = "Docker Engine <26 can't mount a named volume's subpat
  *  computer mounts the run's folder (and the computer's daemon) by this server's own paths, which that daemon doesn't
  *  have. */
 export const remoteDockerWords = (endpoint: string): string =>
-  `this server's Docker daemon (${endpoint}) isn't a local unix socket: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
+  `this server's Docker daemon (${endpoint}) is another machine's: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
 
-/** The daemon `env`'s docker reaches, when it is not a local unix socket: DOCKER_HOST when set, else the current
- *  context's endpoint as the CLI resolves it (DOCKER_CONTEXT, else the saved current context), read as the computer
- *  package's Docker provider reads it (`docker context inspect`); undefined for a unix:// socket. A context that can't be
- *  read is taken as this machine's: its Docker provider still refuses at create where it isn't. `docker` is the tests'. */
+/** Loopback, by name or address: a daemon this machine reaches over its own loopback. */
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?)$/i;
+
+/** Whether a daemon endpoint is another machine's: ssh://, or tcp:// to a host that is not this machine's loopback.
+ *  Everything else is this machine's: unix:// (and fd://), npipe:// (Docker Desktop on Windows), tcp:// to loopback. Its
+ *  Docker provider still applies its own allow-list rule to those (the provider's check where it isn't on the host). */
+export function remoteEndpoint(endpoint: string): boolean {
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(endpoint)?.[1]?.toLowerCase();
+  if (scheme === "ssh") return true;
+  if (scheme !== "tcp") return false;
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname;
+  } catch {
+    return true;
+  }
+  return !LOOPBACK.test(host);
+}
+
+/** The daemon `env`'s docker reaches, when it is another machine's (remoteEndpoint): DOCKER_HOST when set, else the
+ *  current context's endpoint as the CLI resolves it (DOCKER_CONTEXT, else the saved current context), read as the
+ *  computer package's Docker provider reads it (`docker context inspect`); undefined for this machine's. A context that
+ *  can't be read is taken as this machine's: its Docker provider still refuses at create where it isn't. `docker` is
+ *  the tests'. */
 export async function remoteDockerOf(env: NodeJS.ProcessEnv, docker: DockerCall = dockerCall(env)): Promise<string | undefined> {
   const host = env.DOCKER_HOST?.trim();
-  if (host) return host.startsWith("unix://") ? undefined : host;
+  if (host) return remoteEndpoint(host) ? host : undefined;
   const ran = await docker(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]);
   if (ran.code !== 0) return undefined;
   let endpoint: unknown;
@@ -47,7 +67,7 @@ export async function remoteDockerOf(env: NodeJS.ProcessEnv, docker: DockerCall 
   } catch {
     return undefined;
   }
-  return typeof endpoint === "string" && endpoint !== "" && !endpoint.startsWith("unix://") ? endpoint : undefined;
+  return typeof endpoint === "string" && remoteEndpoint(endpoint) ? endpoint : undefined;
 }
 
 /** remoteDockerOf, once per process for each environment's docker. */
