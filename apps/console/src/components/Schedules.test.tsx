@@ -160,6 +160,18 @@ describe("a new schedule", () => {
     // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
     expect(named).toMatchObject({ Name: "name", "Cron line": "cron", "Time zone": "timezone", Agent: "Agent", "Each run is asked": "content" });
   });
+  it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.choose("every");
+    const ids = [...t.host.querySelectorAll("[id]")].map((e) => e.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+    // "Every" is also the kind's own choice above; the field's label is the one whose control is the amount.
+    const every = [...t.host.querySelectorAll("label")].find((l) => l.textContent === "Every" && (l.control as HTMLInputElement | null)?.name === "every")!;
+    expect(every).toBeTruthy();
+    const unit = t.host.querySelector('button[aria-label="Unit"]')!;
+    expect(unit.id).toBe("schedule-every-unit");
+    expect(unit.id).not.toBe(every.control!.id);
+  });
   it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: null });

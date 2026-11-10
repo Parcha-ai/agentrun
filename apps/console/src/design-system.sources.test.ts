@@ -50,10 +50,15 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
 ];
 
 /** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
- *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. */
+ *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. A tag in a comment, or
+ *  one that is the text of a string, is no control and is not read. */
 function controlTags(text: string): { line: number; text: string }[] {
   const tags: { line: number; text: string }[] = [];
+  // Comments become spaces of the same shape, so every line number stays what it was.
+  const blank = (c: string) => c.replace(/[^\n]/g, " ");
+  text = text.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|\s)\/\/.*$/gm, blank);
   for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
+    if (/["'`]/.test(text[m.index - 1] ?? "")) continue;
     let end = m.index + m[0].length;
     for (let depth = 0, quote = ""; end < text.length; end++) {
       const c = text[end]!;
@@ -112,6 +117,12 @@ describe("the console's sources follow the design system", () => {
     expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="more > 10" className="accent-primary" />')[0]!)).toBe(false);
     expect(breaks(rule("field-by-hand"), one('<input\n  type="hidden" name="manifest" />')[0]!)).toBe(false);
     expect(breaks(rule("field-by-hand"), one('<input\n  name="q" />')[0]!)).toBe(true);
+    // A tag in a comment or as a string's text is no control; the real one after it keeps its line.
+    expect(one('// <input name="q" />\nconst x = 1;')).toEqual([]);
+    expect(one('{/* <button className="caps border">Go</button> */}')).toEqual([]);
+    expect(one('/**\n * e.g. <select name="a">\n */')).toEqual([]);
+    expect(one("const example = '<input name=\"q\" />';")).toEqual([]);
+    expect(controlTags('// <input name="q" />\n<p>see https://a.example/x</p>\n<input name="real" />')).toEqual([{ line: 3, text: '<input name="real" />' }]);
   });
   it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
     const rule = (id: string) => RULES.find((r) => r.id === id)!;
