@@ -9,6 +9,8 @@ import { CAP_MODES } from "./cap.js";
 import { APPROVALS } from "./approvals.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** An inline agent's source or kind in its external reference (POST /runs): no colon, which the reference's key splits on. */
+export const EXTERNAL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SKILL_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[^/\\\u0000][^\\\u0000]*$/;
 
 export type Json = Record<string, unknown>;

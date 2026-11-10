@@ -4,16 +4,33 @@
   "title": "Market monitor digest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["window", "quiet", "items", "digest", "delivery"],
+  "required": [
+    "window",
+    "quiet",
+    "items",
+    "digest",
+    "delivery"
+  ],
   "properties": {
     "window": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["from", "to"],
+      "required": [
+        "from",
+        "to"
+      ],
       "description": "the lookback window the run covered, both ends inclusive",
       "properties": {
-        "from": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
-        "to": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        "from": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "to": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
       }
     },
     "quiet": {
@@ -26,7 +43,15 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["competitor", "category", "date", "claim", "so_what", "source_url", "confidence"],
+        "required": [
+          "competitor",
+          "category",
+          "date",
+          "claim",
+          "so_what",
+          "source_url",
+          "confidence"
+        ],
         "properties": {
           "competitor": {
             "type": "string",
@@ -34,7 +59,15 @@
             "maxLength": 120,
             "description": "the company as the owner named it, or \"Market\" for a topic item"
           },
-          "category": { "enum": ["launch", "pricing", "hiring", "funding", "news"] },
+          "category": {
+            "enum": [
+              "launch",
+              "pricing",
+              "hiring",
+              "funding",
+              "news"
+            ]
+          },
           "date": {
             "type": "string",
             "format": "date",
@@ -66,7 +99,11 @@
             "description": "for a change found by comparing two versions of a page: the older version (an archive snapshot)"
           },
           "confidence": {
-            "enum": ["high", "medium", "low"],
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
             "description": "high: the company's own page or a filing says it; medium: one credible outlet; low: inferred or one weak source"
           }
         }
@@ -81,28 +118,77 @@
     "delivery": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["via", "status"],
+      "required": [
+        "via",
+        "status"
+      ],
       "properties": {
-        "via": { "enum": ["slack", "email", "none"] },
-        "to": { "type": "string", "description": "the channel id or email address posted to" },
+        "via": {
+          "enum": [
+            "slack",
+            "email",
+            "none"
+          ]
+        },
+        "to": {
+          "type": "string",
+          "description": "the channel id or email address posted to"
+        },
         "status": {
-          "enum": ["posted", "returned_only", "failed"],
+          "enum": [
+            "posted",
+            "returned_only",
+            "failed"
+          ],
           "description": "returned_only: no channel was set or no server for it is saved"
         },
-        "error": { "type": "string", "maxLength": 500 }
+        "error": {
+          "type": "string",
+          "maxLength": 500
+        }
       }
     },
     "dropped_repeats": {
       "type": "array",
       "maxItems": 30,
       "description": "changes found this run that the previous digest already reported, left out of items",
-      "items": { "type": "string", "maxLength": 300 }
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      }
     },
     "unreachable": {
       "type": "array",
       "maxItems": 30,
-      "description": "sources that could not be read this run, as URLs, so a silent week is told apart from a blind one",
-      "items": { "type": "string", "maxLength": 500 }
+      "description": "each page the plan needed and could not read this run, with why, so a silent week is told apart from a blind one. Never a 404 recovered from (the page found elsewhere), nor a company that publishes no pricing.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "reason"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "reason": {
+            "enum": [
+              "blocked",
+              "not_found",
+              "error",
+              "skipped"
+            ],
+            "description": "blocked: a challenge or access-denied page; not_found: gone, nothing in its place; error: a timeout or server error; skipped: left out for the budget"
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "what the page answered, in a few words: \"bot-protection challenge (403)\", \"timed out\""
+          }
+        }
+      }
     }
   }
 }

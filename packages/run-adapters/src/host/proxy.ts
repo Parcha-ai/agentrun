@@ -1038,7 +1038,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (!keepReading) controller.abort();
     });
     let head = "";
+    /** At least the answer's last USAGE_WINDOW characters, at most twice that: cut back only once it doubles, so keeping
+     *  it costs each piece its own length, never a copy of the window (`lastOf` reads the window from it). */
     let tail = "";
+    const lastOf = (text: string): string => (text.length > USAGE_WINDOW ? text.slice(-USAGE_WINDOW) : text);
     let length = 0;
     /** The provider's answer, once it reached the client whole. */
     let answered: { ok: boolean } | undefined;
@@ -1062,6 +1065,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** The start of the line being read (LINE_START) and of the last whole lines (LINE_STARTS). */
     let lineStart = "";
     let lineLength = 0;
+    /** The line being read, whole while it is no longer than the window (a longer one is read from the window as it ends). */
+    let line = "";
+    /** Whether the answer is a whole JSON body rather than an event stream, once its first character says so. */
+    let wholeBody: boolean | undefined;
     const starts: string[] = [];
     /** Tells the harness the provider stopped this answer on its content filter, when `text` (the answer so far, or the
      *  kept window of it) says so: once, and never failing the answer. */
@@ -1194,22 +1201,29 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           // The provider's content-filter stop, and its cut at the output limit, read before the client has the piece that
           // carries it: the harness ends the turn before its client acts on the stop (asks for the answer again, or ends
           // the turn its own way).
-          // A line longer than the window is read as it ends, from its start, while the lines just before it (an event's
-          // name) are still the last starts kept: a piece may carry the lines after it too.
-          const window = (tail + text).slice(-USAGE_WINDOW);
+          // Each line is read once, as it ends, never the window again for every piece: a long answer comes in tens of
+          // thousands of pieces, and reading the window for each held the runner's one thread for most of a minute.
+          // A line longer than the window is read as it ends, from the window, its start among the last starts kept
+          // while the lines just before it (an event's name) still are: a piece may carry the lines after it too.
           const lines = text.split("\n");
           for (let at = 0; at < lines.length; at++) {
-            if (lineStart.length < LINE_START) lineStart += lines[at]!.slice(0, LINE_START - lineStart.length);
-            lineLength += lines[at]!.length;
+            const part = lines[at]!;
+            if (lineStart.length < LINE_START) lineStart += part.slice(0, LINE_START - lineStart.length);
+            lineLength += part.length;
+            line = lineLength <= USAGE_WINDOW ? line + part : "";
             if (at < lines.length - 1) {
               starts.push(lineStart);
               if (starts.length > LINE_STARTS) starts.shift();
-              if (upstream.ok && lineLength > USAGE_WINDOW) tellStops(window);
+              if (upstream.ok && lineLength > 0) tellStops(lineLength > USAGE_WINDOW ? lastOf(tail + text) : line);
               lineStart = "";
               lineLength = 0;
+              line = "";
             }
           }
-          if (upstream.ok && lines.length > 1) tellStops(window);
+          // A whole JSON body (no event stream) may be printed across lines, so no one line holds its stop: while it fits the
+          // window, it is read whole at each piece that may close it (ends in "}"), which is a few pieces, never one each.
+          if (wholeBody === undefined && text.trimStart() !== "") wholeBody = (tail + text).trimStart().startsWith("{");
+          if (upstream.ok && wholeBody && length + text.length <= USAGE_WINDOW && text.trimEnd().endsWith("}")) tellStops(tail + text);
           // A client gone after the stop was told is written nothing more: the answer is read on for its usage alone.
           const out = relay.push(text);
           await write(out);
@@ -1217,7 +1231,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           length += text.length;
           sentOf.push(out);
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
-          tail = (tail + text).slice(-USAGE_WINDOW);
+          tail += text;
+          if (tail.length > 2 * USAGE_WINDOW) tail = tail.slice(-USAGE_WINDOW);
         }
         // What the relay held at the answer's end: an error event's or an error body's rest, cut.
         const rest = relay.end();
@@ -1274,7 +1289,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } else {
       let unread = false;
       try {
-        usage = policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
+        usage = policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${lastOf(tail)}`);
       } catch (error) {
         say(`model proxy (${policy.id}): the usage could not be read; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         usage = { input: 0, output: 0, cacheRead: 0 };
@@ -1315,7 +1330,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
     // An answer whose stop no piece showed before it ended (a whole JSON body): read whole once it is booked.
-    if (seen?.ok) tellStops(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
+    if (seen?.ok) tellStops(length <= USAGE_WINDOW ? tail : `${head}\n${lastOf(tail)}`);
     settled();
   };
 
