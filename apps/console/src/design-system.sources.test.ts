@@ -8,7 +8,8 @@ const files = Object.entries(sources)
   .filter(([path]) => !/\.test\.tsx?$/.test(path) && !path.startsWith("./fixtures/") && !path.startsWith("./design/") && path !== "./lib/api.generated.ts")
   .map(([path, text]) => ({ path: path.slice(2), lines: text.split("\n") }));
 
-type Rule = { id: string; says: string; fix: string; find: RegExp; unless?: RegExp; skip?: (path: string) => boolean };
+/** `tag`: the rule reads a whole opening tag of these elements, however many lines it is written on, as one line. */
+type Rule = { id: string; says: string; fix: string; find: RegExp; unless?: RegExp; skip?: (path: string) => boolean; tag?: boolean };
 const outsideUi = (path: string) => path.startsWith("components/ui/");
 const PALETTE = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
 const RULES: Rule[] = [
@@ -33,11 +34,11 @@ const RULES: Rule[] = [
   { id: "dark-variant", says: "Tokens change with the theme; a component never does.", fix: "the token whose two values you need, or a new one", find: /(?<![\w-])dark:[a-z]/ },
   { id: "focus-removed", says: "outline-none comes with a focus-visible: replacement.", fix: "drop outline-none (the global ring shows), or add focus-visible:outline-offset-0 and friends",
     find: /(?<![\w:-])outline-none\b/, unless: /focus-visible:(?!outline-none)|focus:(?!outline-none)|data-\[focus\]|tabIndex=\{-1\}/ },
-  { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /<button\b[^\n]*?className=[^\n]*?["`]caps\b[^"`]*\bborder\b(?!-[blrtxy]\b)|<button\b[^\n]*?className=[^\n]*?["`][^"`]*\bcaps\b[^"`]*\bborder\b(?!-[blrtxy]\b)/, skip: outsideUi },
+  { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /^<button\b.*["`\s]caps\s[^"`]*\bborder\b(?!-[blrtxy]\b)|^<button\b.*["`\s]border\s[^"`]*\bcaps\b/, skip: outsideUi, tag: true },
   { id: "field-by-hand", says: "A field is Input, Textarea, NativeSelect or Picker.", fix: "the primitive from @/components/ui, inside a Field",
-    find: /<(?:select|textarea)\b|<input\b(?![^>]*type="(?:hidden|file|checkbox|radio)")/, skip: outsideUi },
+    find: /^<(?:select|textarea)\b|^<input\b(?!.*\btype="(?:hidden|file|checkbox|radio)")/, skip: outsideUi, tag: true },
   { id: "choice-by-hand", says: "A checkbox or a radio shows in the brand's colour.", fix: "Checkbox or Radio from @/components/ui, or accent-primary on the input; a segment's own radio is sr-only",
-    find: /<input\b[^>]*type="(?:checkbox|radio)"/, unless: /sr-only|accent-primary/, skip: outsideUi },
+    find: /^<input\b.*\btype="(?:checkbox|radio)"/, unless: /sr-only|accent-primary/, skip: outsideUi, tag: true },
 ];
 
 /** An exception: the rule, the file, a string the line holds, and why the guide's sentence does not apply to it. */
@@ -48,10 +49,28 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
 ];
 
-const hits = RULES.flatMap((rule) => files.filter((f) => !rule.skip?.(f.path)).flatMap((f) => f.lines.flatMap((line, i) => {
-  if (/^\s*(?:\/\/|\/?\*)/.test(line)) return [];
-  return rule.find.test(line) && !rule.unless?.test(line) ? [{ rule: rule.id, file: f.path, line: i + 1, text: line.trim() }] : [];
-})));
+/** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
+ *  braces (an arrow function, a comparison) is not the tag's end. */
+function controlTags(text: string): { line: number; text: string }[] {
+  const tags: { line: number; text: string }[] = [];
+  for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
+    let end = m.index + m[0].length;
+    for (let depth = 0; end < text.length; end++) {
+      const c = text[end];
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+      else if (c === ">" && depth === 0) break;
+    }
+    tags.push({ line: text.slice(0, m.index).split("\n").length, text: text.slice(m.index, end + 1).replace(/\s+/g, " ") });
+  }
+  return tags;
+}
+
+const breaks = (rule: Rule, text: string) => rule.find.test(text) && !rule.unless?.test(text);
+const hits = RULES.flatMap((rule) => files.filter((f) => !rule.skip?.(f.path)).flatMap((f) => {
+  if (rule.tag) return controlTags(f.lines.join("\n")).filter((t) => breaks(rule, t.text)).map((t) => ({ rule: rule.id, file: f.path, line: t.line, text: t.text }));
+  return f.lines.flatMap((line, i) => (!/^\s*(?:\/\/|\/?\*)/.test(line) && breaks(rule, line) ? [{ rule: rule.id, file: f.path, line: i + 1, text: line.trim() }] : []));
+}));
 const allowed = (h: (typeof hits)[number]) => ALLOWED.some((a) => a.rule === h.rule && a.file === h.file && h.text.includes(a.has));
 
 describe("the console's sources follow the design system", () => {
@@ -65,6 +84,18 @@ describe("the console's sources follow the design system", () => {
       expect(found, `Write instead: ${rule.fix}.`).toEqual([]);
     });
   }
+  it("reads a control's whole opening tag, however it is wrapped", () => {
+    const rule = (id: string) => RULES.find((r) => r.id === id)!;
+    const one = (source: string) => controlTags(source).map((t) => t.text);
+    const wrapped = '<button type="button" onClick={() => go(a > b)}\n  className="caps border px-2">Go</button>';
+    expect(one(wrapped)).toEqual(['<button type="button" onClick={() => go(a > b)} className="caps border px-2">']);
+    expect(breaks(rule("button-by-hand"), one(wrapped)[0]!)).toBe(true);
+    expect(breaks(rule("button-by-hand"), one('<button type="button"\n  className={cn("flex w-full border-b text-left", on && "caps")}>')[0]!)).toBe(false);
+    expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" checked={on}\n  className="mt-1 accent-primary" />')[0]!)).toBe(false);
+    expect(breaks(rule("choice-by-hand"), one('<input type="radio"\n  name="x" />')[0]!)).toBe(true);
+    expect(breaks(rule("field-by-hand"), one('<input\n  type="hidden" name="manifest" />')[0]!)).toBe(false);
+    expect(breaks(rule("field-by-hand"), one('<input\n  name="q" />')[0]!)).toBe(true);
+  });
   it("every exception still names a line that needs it", () => {
     const stale = ALLOWED.filter((a) => !hits.some((h) => h.rule === a.rule && h.file === a.file && h.text.includes(a.has))).map((a) => `${a.rule} ${a.file} "${a.has}"`);
     expect(stale).toEqual([]);
