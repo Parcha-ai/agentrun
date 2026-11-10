@@ -83,12 +83,32 @@ export function secretsWritableFields(facts: SecretWriterFacts): { secrets_writa
 /** Whether an operation's request, with this body (undefined when it has none, as a DELETE), writes a secret. */
 export type SecretPredicate = (body: unknown) => boolean;
 
-const registry = new Map<string, SecretPredicate>();
+/** What a request is besides its body, for a predicate that must read what is stored: the route's path parameters (in
+ *  the order its pattern names them) and the server's one store. */
+export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown };
+/** Whether a request writes a secret by what it would do to what is stored (drop or replace a sealed credential), read
+ *  from the store: beside the body's predicate, in the same one check. */
+export type StoredSecretPredicate = (body: unknown, request: SecretRequest) => Promise<boolean>;
 
-/** A plane's secret write: operation `operationId` (the API document's), and which bodies of it write a secret. */
-export function registerSecretWrite(operationId: string, predicate: SecretPredicate): void {
+const registry = new Map<string, SecretPredicate>();
+const storedPredicates = new Map<string, StoredSecretPredicate>();
+const notSecretWrites = new Map<string, string>();
+
+/** A plane's secret write: operation `operationId` (the API document's), and which bodies of it write a secret; with
+ *  `stored`, also which requests of it would drop or replace a secret the store holds. */
+export function registerSecretWrite(operationId: string, predicate: SecretPredicate, stored?: StoredSecretPredicate): void {
   registry.set(operationId, predicate);
+  if (stored) storedPredicates.set(operationId, stored);
 }
+
+/** An operation on a secret's route that writes no secret, said so on purpose, with why: never an oversight, and never
+ *  read by the dispatch's check (it stays out of the registry above). */
+export function registerNotSecretWrite(operationId: string, reason: string): void {
+  notSecretWrites.set(operationId, reason);
+}
+
+/** Why `operationId` writes no secret, when a plane said so (registerNotSecretWrite). */
+export const notSecretWriteReason = (operationId: string): string | undefined => notSecretWrites.get(operationId);
 
 /** The operations any plane registered. */
 export const registeredOperations = (): string[] => [...registry.keys()];
@@ -96,9 +116,17 @@ export const registeredOperations = (): string[] => [...registry.keys()];
 /** Whether `operationId` is a registered secret write at all: only then does the dispatch check read its body. */
 export const isSecretWriteOperation = (operationId: string): boolean => registry.has(operationId);
 
-/** Whether this request of `operationId`, with `body`, writes a secret (its plane's predicate). An unregistered operation
- *  writes none. */
+/** Whether this request of `operationId`, with `body`, writes a secret by its body (its plane's predicate). An
+ *  unregistered operation writes none. */
 export const writesSecret = (operationId: string, body: unknown): boolean => registry.get(operationId)?.(body) === true;
+
+/** Whether this request of `operationId` writes a secret: by its body, or by what it would drop or replace in the store
+ *  (its plane's stored predicate). The dispatch's one check asks this. */
+export async function writesSecretFor(operationId: string, body: unknown, request: SecretRequest): Promise<boolean> {
+  if (writesSecret(operationId, body)) return true;
+  const stored = storedPredicates.get(operationId);
+  return stored ? (await stored(body, request)) === true : false;
+}
 
 // ---- the API document's marks ----------------------------------------------------------------------------------------
 

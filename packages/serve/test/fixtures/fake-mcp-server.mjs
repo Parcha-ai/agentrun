@@ -1,7 +1,8 @@
 // A remote MCP server for tests, on loopback: Streamable HTTP through the official SDK (@modelcontextprotocol/server),
 // speaking the 2026-07-28 revision (with the SDK's 2025 fallback) or, with `era: "legacy"`, 2025-era `initialize` only.
 // With a `token` it answers 401 to a request without `Authorization: Bearer <token>`; with `oauth` too, its 401 names
-// protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL, and `token`
+// protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL (or be a
+// function answering it, read at each request, for a server that moves to another), and `token`
 // may be a check of the Authorization header (fake-oauth-server.mjs `accepts`). Every request is logged: method, tool, and
 // whether an Authorization header came, never its value; a tool call whose client closed its request before the answer is
 // logged again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
@@ -50,7 +51,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     if (req.url === "/.well-known/oauth-protected-resource" || req.url === "/.well-known/oauth-protected-resource/mcp") {
       if (!oauth) return void res.writeHead(404).end();
       res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "string" ? oauth : `${base}/auth`] }));
+      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
     if (req.url !== "/mcp") return void res.writeHead(404).end();
     inspect?.(req.headers);

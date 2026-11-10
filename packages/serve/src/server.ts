@@ -86,7 +86,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
-import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecret, writesSecretsAllowed } from "./secret-writes.js";
+import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
@@ -2294,7 +2294,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
-      if (writesSecret(found.name, body)) {
+      const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => (part === undefined ? "" : decodeURIComponent(part)));
+      if (await writesSecretFor(found.name, body, { params, store })) {
         authFailed(`/v2${path}`, "secret_without_session");
         throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
       }
