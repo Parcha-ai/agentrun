@@ -79,9 +79,14 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-auto font-mono text-2xl font-semibold">Triggers</h1>
-        <Button size="lg" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
-        <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
-        <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
+        {/* With no trigger yet the panel below offers the three, each with what it is for: the page says each once. */}
+        {!(triggers && !triggers.length) && (
+          <>
+            <Button size="lg" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
+            <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
+            <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
+          </>
+        )}
       </div>
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
@@ -113,7 +118,7 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
 
 
 /** A server with no trigger yet: what a trigger is, and the three things that can start a run, each with its own way
- *  in. The page's buttons above stay; these say what each one is for. */
+ *  in. These stand in for the page's three buttons, which show once there is a trigger. */
 function FirstTrigger({ go }: { go: (hash: string) => void }) {
   const kinds = [
     { Icon: CalendarClock, name: "Schedule", what: "At the times you set: a cron line, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
@@ -130,7 +135,7 @@ function FirstTrigger({ go }: { go: (hash: string) => void }) {
           <li key={name} className="flex flex-col border bg-background p-4">
             <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{name}</p>
             <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{what}</p>
-            <Button size="sm" className="mt-4 self-start" onClick={() => go(to)}>{action}</Button>
+            <Button size="sm" variant={to === "#/triggers/new" ? "solid" : "outline"} className="mt-4 self-start" onClick={() => go(to)}>{action}</Button>
           </li>
         ))}
       </ul>

@@ -154,6 +154,8 @@ describe("the schedules list", () => {
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
     expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
     expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    // Each is on the page once: the header's three show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 
