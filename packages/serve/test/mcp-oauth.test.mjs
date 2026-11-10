@@ -416,7 +416,7 @@ test("a token given with no expiry is taken to last an hour: a launch after that
 });
 
 
-test("a stop aborts a refresh waiting on its authorization server: it returns within its bound, writes nothing, refuses writes after, and the next start asks for a sign-in again", { timeout: 60_000 }, async (t) => {
+test("a stop while a refresh waits on its authorization server drops the claim's credentials at once, writes nothing, holds the refresh lease to its end, and the next start asks for a sign-in again", { timeout: 60_000 }, async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key });
   // Ported to the runner's claim step over the server's own store (the switch). A refresh once sent is never cut short
@@ -439,15 +439,15 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
   const launch = launchOn(t, server, key, { signal: stop.signal, bounds });
   assert.equal((await reached).form.grant_type, "refresh_token", "the refresh reached the authorization server");
   const { step, when } = await launch;
-  const at = Date.now();
   stop.abort();
   assert.deepEqual({ ...step.credentials }, {}, "the stopped claim holds nothing at once, and its gateway can send nothing after");
-  // The refresh on the wire is awaited within its own bound and then let go: its lease is released, nothing kept.
-  await when(async () => (await store.mcp.server("docs")).refreshHolder === null);
-  assert.ok(Date.now() - at < bounds.requestMs * bounds.tries + 1_000, `the refresh let go in ${Date.now() - at} ms, within its bound`);
+  // The refresh on the wire may have spent the refresh token, so its lease is held to its end: no claim sends that token
+  // again meanwhile. Nothing is kept.
+  assert.notEqual((await store.mcp.server("docs")).refreshHolder, null, "the lease is held");
   assert.ok((await sealedNow()).equals(before), "nothing written: the token set is as it was");
 
-  // The next start refreshes with the refresh token it kept, which the authorization server spent: a sign-in again.
+  // Once the held lease runs out, the next start refreshes with the refresh token it kept, which the authorization server
+  // spent: a sign-in again.
   const { step: next } = await launchOn(t, server, key);
   await when(() => next.credentials.docs?.unopened !== undefined);
   assert.equal(next.credentials.docs.unopened, "its sign-in expired or was revoked: sign in again in Settings → MCP servers");
