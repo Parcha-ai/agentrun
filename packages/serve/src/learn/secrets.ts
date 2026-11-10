@@ -68,7 +68,7 @@ function places(text: string, form: string): Span[] {
 export const PRINT_MAX = 4096;
 
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
- *  any case, base64) and each secret-shaped run replaced by "[redacted]": what the checker prints never holds a secret,
+ *  any case, base64, a hex identifier in it folded) and each secret-shaped run replaced by "[redacted]": what the checker prints never holds a secret,
  *  wherever it was found, a file's name included. Every form is found in `text` as given, and overlapping finds are
  *  redacted as one, so one value never hides part of another from the search. A text that still holds a value or a
  *  shape after that (a form not found as it stands: percent encoded, split by whitespace, an NFKC variant), or that is
@@ -80,6 +80,7 @@ export function redactSecrets(text: string, values: readonly string[], max = PRI
   const found = [
     ...[...forms].flatMap((form) => places(text, form)),
     ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
+    ...given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle)))),
     ...SHAPES.flatMap(([, pattern]) => spans(text, pattern)),
   ].sort((a, b) => a[0] - b[0]);
   const merged: Span[] = [];
@@ -122,23 +123,49 @@ function percentDecode(text: string, plusIsSpace: boolean): string {
 
 const asJson = (value: string) => JSON.stringify(value).slice(1, -1);
 
+/** The separators a hex identifier is written with: a UUID's dashes, and the underscores, colons and dots of others. */
+const SEPARATORS = /[-_:.]/g;
+/** The fewest hex digits a run of a value must hold to be matched folded: a UUID's 32 and a Kernel profile's 20 do; a
+ *  short hex run (a port, a year, a word made of a-f) does not, as its folded form would match too much text. */
+const FOLD_MIN = 16;
+/** A text as a folded needle is looked for in it: lowercased, its separators gone. */
+const folded = (text: string) => text.toLowerCase().replace(SEPARATORS, "");
+
+/** The hex identifiers of `value`, folded: each maximal run of hex digits and separators holding at least FOLD_MIN hex
+ *  digits, lowercased, its separators gone. A sign-in pointer (`ctx/<uuid>`, `agentrun-<hex>`) is found so however its
+ *  hex is written: uppercased, its dashes dropped or moved. Nothing else of a value is folded: a key in mixed case is
+ *  found as written. */
+function foldedOf(value: string): string[] {
+  const out = new Set<string>();
+  for (const run of value.match(/[0-9a-f_:.-]+/gi) ?? []) {
+    const digits = folded(run);
+    if (digits.length >= FOLD_MIN) out.add(digits);
+  }
+  return [...out];
+}
+
+/** A folded needle as it stands in a text: its hex digits in order, in any case, a separator allowed between any two. */
+const foldedPattern = (needle: string) => new RegExp([...needle].join("[-_:.]?"), "i");
+
 /** What a matcher looks for of `value`: its forms as they stand in a squeezed text (plain, as JSON writes it, base64 or
- *  base64url), and its hex, in any case. */
-function needlesOf(value: string): { plain: string[]; hex: string } {
+ *  base64url), its hex, in any case, and its hex identifiers folded (foldedOf). */
+function needlesOf(value: string): { plain: string[]; hex: string; folded: string[] } {
   const raw = Buffer.from(value, "utf8");
-  return { plain: [...new Set([squeeze(value), squeeze(asJson(value)), ...base64Needles(raw)])], hex: raw.toString("hex") };
+  return { plain: [...new Set([squeeze(value), squeeze(asJson(value)), ...base64Needles(raw)])], hex: raw.toString("hex"), folded: foldedOf(value) };
 }
 
 const longEnough = (value: string) => [...value].length >= MIN_SECRET;
 
 /** A matcher for `values` in a text: plain, split by whitespace, as JSON writes it, percent or form encoded, base64 or
- *  hex. Values shorter than MIN_SECRET are left out. */
+ *  hex, and each hex identifier in a value folded: in any case, its separators dropped or moved (foldedOf). Values
+ *  shorter than MIN_SECRET are left out. */
 export function valueMatcher(values: readonly string[]): (text: string) => boolean {
   const needles = values.filter(longEnough).map(needlesOf);
   if (!needles.length) return () => false;
   return (text) => {
     const views = [...new Set([squeeze(text), squeeze(percentDecode(text, false)), squeeze(percentDecode(text, true))])];
     const lower = views.map((view) => view.toLowerCase());
-    return needles.some((n) => views.some((view) => n.plain.some((needle) => view.includes(needle))) || lower.some((view) => view.includes(n.hex)));
+    const flat = needles.some((n) => n.folded.length) ? views.map(folded) : [];
+    return needles.some((n) => views.some((view) => n.plain.some((needle) => view.includes(needle))) || lower.some((view) => view.includes(n.hex)) || n.folded.some((needle) => flat.some((view) => view.includes(needle))));
   };
 }
