@@ -29,7 +29,7 @@ import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { type ModelRef, providerModels, runModels } from "../model.js";
+import { type ModelRef, type PinnedModel, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
@@ -46,7 +46,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { imageWaitWords } from "../workspace/computer-deps.js";
 import type { AdapterRun, AdapterRunSpec, RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, hostToolCtxOf, learnedWorkflowHostTool, modelAskOf } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
@@ -79,10 +79,11 @@ type RevisionBody = {
 };
 
 /** The run's model and the catalog that prices it, as main chooses a CLI run's (app.ts wireModels and runModels): on the
- *  harness's own wire where its entry says its model is chosen there, else as the run's usual models. */
-async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string | undefined): Promise<{ model: ModelRef; models: AdapterNeeds["models"]; unpriced: ReadonlySet<string> }> {
+ *  harness's own wire where its entry says its model is chosen there (a pin there is its own provider/model-id, never a
+ *  gateway's), else as the run's usual models, a pin sent as pinned (modelAskOf). */
+async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined): Promise<{ model: ModelRef; models: AdapterNeeds["models"]; unpriced: ReadonlySet<string> }> {
   if (entry.onWire(env)) {
-    const choice = await entry.model(env, ref, true);
+    const choice = await entry.model(env, typeof ref === "object" ? `${ref.pinned.provider}/${ref.pinned.modelId}` : ref, true);
     if (!choice) throw new Error(`${entry.id} does not run here.`);
     if ("why" in choice) throw new Error(choice.why);
     return { model: choice.model, models: await providerModels(env) as unknown as AdapterNeeds["models"], unpriced: new Set() };
@@ -221,8 +222,7 @@ export async function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, d
   // environment main's server gives its runs: the server's data directory named (DATA_ENV), so the CLI's install is
   // looked up there (the data's harnesses directory), never under the runner's HOME.
   const env: NodeJS.ProcessEnv = { ...deps.env, [DATA_ENV]: deps.data };
-  const ref = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : body.model;
-  const chosen = await modelsOf(entry, env, ref);
+  const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
