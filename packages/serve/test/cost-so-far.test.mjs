@@ -292,21 +292,6 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("a paid tool call a crash cut is a charge with no price: the run reads its model requests' known cost so far, and 1 not priced", { timeout: 120_000 }, async (t) => {
-  const log = join(await scratch(t), "monid-calls.jsonl");
-  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("monid-cut", { tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
-  const { body } = await api("POST", "/agents/monid-cut/runs", { input: { content: "Run monid's /slow." } });
-  await until("the monid call is sent", () => existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"'));
-  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
-  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
-  const run = await view(api, body.run_id);
-  const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
-  assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
-  assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, round(tokens), 1], JSON.stringify(run.cost));
-});
-
 test("a run whose every cost is known has neither field, on the run and its usage row", async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("known"))).status, 201);

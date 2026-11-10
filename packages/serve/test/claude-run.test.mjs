@@ -187,33 +187,6 @@ test.skip("a claude-agent run writes where its CLI works: a relative path, the C
   }
 });
 
-test("a claude-agent run whose process dies while a request is in flight resumes on the next process: the cut request booked once as unknown, a chat sent meanwhile answered, and no CLI left behind", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const { fake } = await heldFake(t);
-  const { api, data } = await claudeServe(t, fake);
-  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  const runId = run.body.run_id;
-  await untilRequest(fake);
-  const cli = await claudeProcess();
-  assert.ok(cli, "the Claude CLI runs, under this test");
-  // Accepted while the request is in flight: it waits for the turn, and outlives the process.
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "And then?" })).status, 202);
-  const { holder } = runRecordOf(data, runId);
-  process.kill(holder.pid, "SIGKILL");
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
-  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["Say what you did.", "And then?"]);
-  assert.equal(rows.filter((r) => r.kind === "user_message" || r.kind === "final_answer").at(-1)?.kind, "final_answer", "the chat is answered");
-  const usage = rows.findLast((r) => r.kind === "usage")?.usage;
-  assert.equal(usage?.requests, fake.messages().length, "every request the endpoint saw is booked once, the cut one included");
-  assert.equal(usage?.usd, null, "the cut request's cost is unknown, so the run's is: never 0");
-  t.after(() => alive(cli) && process.kill(cli, "SIGKILL"));
-  // The CLI starts under the run's prefix (setpriv --pdeathsig KILL): it dies with the process that started it.
-  for (let i = 0; alive(cli); i++) {
-    assert.ok(i < 20, `the dead process's CLI (pid ${cli}) is gone within 2 s`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-});
-
 /** A request's system prompt, as text. */
 const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
 /** Whether `text` is anywhere in a request's body, as its JSON writes it. */

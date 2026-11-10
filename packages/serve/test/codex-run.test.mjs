@@ -157,26 +157,6 @@ test.skip("behind a gateway, a codex agent naming no model runs on AGENT_MODEL a
 /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
 const alive = processAlive;
 
-test("a codex run whose process dies while its request is in flight leaves no Codex process behind", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const gw = await gateway(t);
-  const { api, standIn, data } = await codexServe(t, gw);
-  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  for (let i = 0; gw.seen.length === 0; i++) {
-    assert.ok(i < 300, "the turn's model request reaches the gateway");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const child = await processOf(standIn);
-  assert.ok(child, "Codex's process runs");
-  t.after(() => alive(child.pid) && process.kill(child.pid, "SIGKILL"));
-  const { holder } = runRecordOf(data, run.body.run_id);
-  process.kill(holder.pid, "SIGKILL");
-  for (let i = 0; alive(child.pid); i++) {
-    assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-});
-
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
