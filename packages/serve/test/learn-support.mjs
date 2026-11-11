@@ -113,10 +113,6 @@ export async function learningKept(server, runId) {
  *  tools, learned_workflow among them, land with tl-untangle's cli-tools-builder (b697d0e9bc). pi's cases, the tool's
  *  description and the gate's run. LEARN_WORKFLOWS_PROBE runs them. */
 export const CLI_TOOLS_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "tl-untangle's cli-tools-builder (b697d0e9bc): a CLI harness's host tools on the switch, learned_workflow among them";
-/** Why a codex or opencode case on a learned skill waits (tl-places): the served start doesn't lay the learned skill into
- *  CODEX_HOME/skills (a direct cliRunSpecFromLaunch lays it); fixed on main after the merge. LEARN_WORKFLOWS_PROBE runs
- *  them. */
-export const SEED_LAY_SERVED_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "tl-places: the served start doesn't lay the learned skill into CODEX_HOME/skills; fixed on main after the merge";
 
 /** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store. */
 export const keptProposal = (server, runId) => overStore(server, (store) => store.learning.proposal(runId));

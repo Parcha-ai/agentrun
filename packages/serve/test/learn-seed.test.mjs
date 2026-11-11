@@ -16,9 +16,6 @@ import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./lea
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
-// Waits on the switch's run view (tl-untangle): a final answer past its cap is cut short ("…"), so a prompt the faux
-// model says back is not read whole.
-const ANSWER_CUT_TODO = "the switch's run view (tl-untangle): a run's final answer is served whole";
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const note = (name, description, type, extra = "", body = `${description}.\n`) => `---\nname: ${name}\ndescription: ${description}\ntype: ${type}\n${extra}---\n${body}`;
 const REFUND = note("Refund policy path", "Shopify stores keep their policies at /policies/", "reference");
@@ -220,7 +217,7 @@ test("the server's switch off: an agent that says learning: true learns nothing,
   assert.equal((await (await serve(t, { data: join(dir, "c") })).api("GET", "/capabilities")).body.features.learning, "off", "the environment's switch, when no option names one");
 });
 
-test("an index naming notes main does not hold whole: the run reads its first 200 lines, as Claude Code loads its own, and gets the whole file in work/.learning", { timeout: 120_000, skip: ANSWER_CUT_TODO }, async (t) => {
+test("an index naming notes main does not hold whole: the run reads its first 200 lines, as Claude Code loads its own, and gets the whole file in work/.learning", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const lines = Array.from({ length: 250 }, (_, i) => `- [Note ${i + 1}](note-${i + 1}.md) — line ${i + 1}`);
   await learned(api, data, "long", { instructions: "Answer the question." }, { "MEMORY.md": `${lines.join("\n")}\n` });
