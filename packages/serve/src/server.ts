@@ -820,15 +820,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 const START_WAIT_MARGIN_MS = 30_000;
 
 /** `take()`, tried again every 250 ms while `held(error)` says the server this one replaces still holds what it takes, up
- *  to `until` (epoch ms); `waiting` is told once, as the wait begins. Past `until`, or on any other error, it throws. */
-async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknown) => boolean, until: number, waiting: () => void): Promise<T> {
+ *  to `until` (epoch ms); `waiting` is told this wait's `until` once, as it begins. Past `until`, or on any other error,
+ *  it throws. */
+async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknown) => boolean, until: number, waiting: (until: number) => void): Promise<T> {
   let told = false;
   for (;;) {
     try {
       return await take();
     } catch (error) {
       if (!held(error) || Date.now() >= until) throw error;
-      if (!told) (told = true), waiting();
+      if (!told) (told = true), waiting(until);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
@@ -871,10 +872,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const replacedUntil = Date.now() + replacedDrainMs + START_WAIT_MARGIN_MS;
   const sayReplaced = noticeOf(options);
   let replacedTold = false;
-  const waitingForReplaced = () => {
+  const waitingForReplaced = (until: number) => {
     if (replacedTold) return;
     replacedTold = true;
-    sayReplaced(`another server holds this data root: waiting up to ${Math.ceil((replacedUntil - Date.now()) / 1000)} s for the previous server to stop`);
+    sayReplaced(`another server holds this data root: waiting up to ${Math.max(1, Math.ceil((until - Date.now()) / 1000))} s for the previous server to stop`);
   };
   const onSqlite = storeTarget(data).kind === "sqlite";
   const store = await whileReplaced(() => openStore({
