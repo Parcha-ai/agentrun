@@ -57,6 +57,7 @@ import type {
 	ComputerRef,
 	ComputerSpec,
 	CreatedComputer,
+	NetworkForm,
 	NetworkPolicy,
 	NetworkSpec,
 	Refusal,
@@ -105,6 +106,8 @@ export function browserbaseLabelsProblem(labels: unknown): string | undefined {
 
 /** A browser takes no mount. */
 export const MOUNT: readonly MountKind[] = [];
+/** The network a Browserbase browser runs on: Browserbase's own, open; it cannot be closed or narrowed. */
+export const NETWORK: readonly NetworkForm[] = ["open"];
 
 /** The one configuration it offers, the kind registry's entry (kinds.ts): a browser with a CDP target and a live view. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp", "stream"] }];
@@ -236,7 +239,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		return {
 			kind: "browser",
 			lifetime: "vendor",
-			network: ["open"],
+			network: [...NETWORK],
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",
