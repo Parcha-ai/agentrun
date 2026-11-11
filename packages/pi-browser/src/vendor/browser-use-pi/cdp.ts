@@ -3,9 +3,15 @@
 // license's full text is in this package's NOTICE, and UPSTREAM.json beside this file records the source.
 // Changes: one connection over a socket the caller opens (core/dial.ts openDial); no lazy connection, no macOS approval
 // prompt and no target bookkeeping; untyped params and results in place of devtools-protocol's types, so the package
-// takes no dependency for them.
+// takes no dependency for them; a connection that closes, fails or never opens fails with CDPConnectionClosedError, the
+// name the package's failures read as a dropped connection (core/failures.ts), so a call reconnects.
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void };
+
+/** The connection to the browser closed, failed or never opened: a dropped connection, not the page's error. */
+export class CDPConnectionClosedError extends Error {
+  override name = "CDPConnectionClosedError";
+}
 
 /** Explicit commands over one flattened CDP WebSocket. No proxies. */
 export class CDP {
@@ -33,8 +39,8 @@ export class CDP {
         socket.close();
       }
     });
-    socket.addEventListener("close", () => this.fail(new Error("CDP connection closed. Inspect state before retrying.")));
-    socket.addEventListener("error", () => this.fail(new Error("CDP connection failed.")));
+    socket.addEventListener("close", () => this.fail(new CDPConnectionClosedError("CDP connection closed. Inspect state before retrying.")));
+    socket.addEventListener("error", () => this.fail(new CDPConnectionClosedError("CDP connection failed.")));
   }
 
   /** The connection over `socket`, once it is open; a socket that does not open within the timeout (at least 15 s) is closed and refused. */
@@ -52,8 +58,8 @@ export class CDP {
         } else resolve();
       };
       const open = () => finish();
-      const failed = () => finish(new Error("Could not connect to CDP endpoint."));
-      const timer = setTimeout(() => finish(new Error("CDP connection timed out.")), connectMs);
+      const failed = () => finish(new CDPConnectionClosedError("Could not connect to CDP endpoint."));
+      const timer = setTimeout(() => finish(new CDPConnectionClosedError("CDP connection timed out.")), connectMs);
       socket.addEventListener("open", open, { once: true });
       socket.addEventListener("error", failed, { once: true });
       socket.addEventListener("close", failed, { once: true });
@@ -62,7 +68,7 @@ export class CDP {
   }
 
   send<T = any>(method: string, params: object = {}, sessionId?: string): Promise<T> {
-    if (this.socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("CDP connection is closed."));
+    if (this.socket.readyState !== WebSocket.OPEN) return Promise.reject(new CDPConnectionClosedError("CDP connection is closed."));
     if (this.pending.size >= 256) return Promise.reject(new Error("Too many pending CDP commands (256)."));
     const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
@@ -87,7 +93,7 @@ export class CDP {
   }
 
   close() {
-    this.fail(new Error("CDP connection closed."));
+    this.fail(new CDPConnectionClosedError("CDP connection closed."));
     this.socket.close();
   }
 }

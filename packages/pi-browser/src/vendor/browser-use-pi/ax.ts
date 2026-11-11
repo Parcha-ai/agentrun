@@ -9,7 +9,8 @@
 // appends after the field's whole text (not End, which stops at a line's end) and paces its characters by a delay; press
 // takes modifier combinations (Shift+Tab, Control+A); the hit-test also checks the point on each enclosing page of a
 // same-origin iframe, so an overlay over the iframe covers its target; a select and a native date or time fill, which
-// set the value directly, go through the same hit-test first, so a disabled, hidden or covered control is refused. The
+// set the value directly, go through the same hit-test first, so a disabled, hidden or covered control is refused; an
+// action's failure keeps a named error (a dropped connection's) as its cause. The
 // AX-id scheme, the POINT_JS hit-test (point), scroll then centre, press and release click, insertText plus a real last
 // key, the settle wait and the one-line change result are Pi's.
 import { setTimeout as delay } from "node:timers/promises";
@@ -462,7 +463,9 @@ export class AxHelpers {
     try {
       detail = await body(page, id);
     } catch (error) {
-      throw new Error(`${op} ${this.describe(display, id)} failed: ${error instanceof Error ? error.message : String(error)}`);
+      // A named error is kept as the cause, so a dropped connection (CDPConnectionClosedError) still reads as one through
+      // the wrap; a plain one's text is already in the message.
+      throw new Error(`${op} ${this.describe(display, id)} failed: ${error instanceof Error ? error.message : String(error)}`, error instanceof Error && error.name !== "Error" ? { cause: error } : undefined);
     }
     const settled = await this.settle();
     return `[ok] ${op} ${this.describe(display, id)}${detail} -> ${await this.change(before, settled.probe)}${this.flushDialogs()}`;

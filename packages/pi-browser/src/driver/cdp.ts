@@ -17,7 +17,7 @@ import type { Located, Target } from "../core/clip.js";
 import type { ScreenshotOptions } from "../core/images.js";
 import type { PageDriver, RunAction } from "../core/tools.js";
 import { AxHelpers, UnknownIdError } from "../vendor/browser-use-pi/ax.js";
-import { CDP } from "../vendor/browser-use-pi/cdp.js";
+import { CDP, CDPConnectionClosedError } from "../vendor/browser-use-pi/cdp.js";
 import { Page } from "../vendor/browser-use-pi/page.js";
 import { NAVIGATED_SNAPSHOT_ERROR, NO_HYDRATED_SNAPSHOT_ERROR, STALE_SNAPSHOT_ID_ERROR } from "../core/failures.js";
 
@@ -126,7 +126,11 @@ export function cdpDriver(): DriverFactory<PageDriver> {
       if (actions.every((a) => a.op === "goto")) return;
       if (!ax.hydrated || !ax.taken) throw stale(NO_HYDRATED_SNAPSHOT_ERROR);
       if (!checked) {
-        const now = await ax.probe().catch(() => undefined);
+        // A probe the page can't answer is a navigated page; a dropped connection is said as one, not as a stale snapshot.
+        const now = await ax.probe().catch((error: unknown) => {
+          if (error instanceof CDPConnectionClosedError) throw error;
+          return undefined;
+        });
         if (!now || now.doc !== ax.taken.doc) throw stale(NAVIGATED_SNAPSHOT_ERROR);
       }
       for (const action of actions) {

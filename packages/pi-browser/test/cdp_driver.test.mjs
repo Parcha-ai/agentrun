@@ -9,6 +9,7 @@ import test from "node:test";
 import { drivingGuarded } from "../dist/core/driving-guard.js";
 import { cdpDriver, CDP_CODE_REFUSED } from "../dist/driver/cdp.js";
 import { BROWSER_TOOLS, NAVIGATED_SNAPSHOT_ERROR, pageTools } from "../dist/index.js";
+import { classifyBrowserError } from "../dist/core/failures.js";
 import { fakeAxPage } from "./fixtures/fake-ax-page.mjs";
 
 async function open(t) {
@@ -117,6 +118,30 @@ test("a tab the page opens is followed (the old ids dropped, the rest of the bat
   assert.equal(page.calls.filter((c) => c.method === "Target.attachToTarget" && c.params.targetId === "PAGE").length, 2, "back on the opener");
   // Nothing changed since: the next snapshot is the page's alone.
   assert.match(await driver.snapshot(), /^\[page\] /);
+});
+
+test("a dropped connection fails as one (CDPConnectionClosedError, through an action's wrap too), so the tools report it dropped and tell custody", async (t) => {
+  const { page, driver } = await open(t);
+  await driver.snapshot();
+  await page.close(); // the browser's socket goes; the provider would still run the browser
+  const failed = await driver.run({ actions: [{ op: "click", id: "0-11" }] }).then(() => undefined, (error) => error);
+  assert.ok(failed instanceof Error, "the click failed");
+  assert.equal(classifyBrowserError(failed, true).code, "browser_unavailable", `read as a dropped connection: ${failed.message}`);
+  // An action already checked (a guarded batch's second) fails inside the action's own wrap: its cause keeps the name.
+  const wrapped = await driver.run({ actions: [{ op: "click", id: "0-11" }], checked: true }).then(() => undefined, (error) => error);
+  assert.match(wrapped.message, /^click \[0-11\] button "Add" failed: /);
+  assert.equal(wrapped.cause?.name, "CDPConnectionClosedError");
+  assert.equal(classifyBrowserError(wrapped, true).code, "browser_unavailable");
+  await assert.rejects(driver.url(), { name: "CDPConnectionClosedError" });
+  // Through pageTools' run: custody is told the connection dropped (port.dropped), and the run is not repeated.
+  let dropped = 0;
+  const session = { driver, tag: "ar-run-1-1", sessionId: "sess-1", record: { lastUrl: "https://example.test/form" }, notice: null, interrupted: null, recorded: false, effects: null, downloads: null };
+  const port = { session: async () => session, dispatching: async () => {}, journal: async () => {}, mark: async () => {}, settle: async () => {}, ended: async () => false, dropped: async () => { dropped += 1; }, navigated: async () => {} };
+  const call = { callId: "c1", conversationId: 1, signal: undefined, label: "node", redact: (value) => value, evidence: { file: async () => ({ path: "evidence/x.md" }) } };
+  const said = await pageTools().run({ actions: [{ op: "click", id: "0-11" }] }, port, call);
+  assert.equal(said.isError, true);
+  assert.equal(JSON.parse(said.content[0].text).code, "browser_unavailable", said.content[0].text);
+  assert.ok(dropped >= 1, "custody was told the connection dropped");
 });
 
 test("through the driving guard (one action at a time), an action that opens a tab stops the batch: the goto after it is never sent", async (t) => {
