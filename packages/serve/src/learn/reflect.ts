@@ -196,11 +196,14 @@ const exampleDraft = (fetches: boolean) =>
 
 /** A skill's or a workflow draft's block: the name its block gives, and its text whole. */
 export type LearnedBlock = { readonly name: string; readonly text: string };
+/** One block of an answer, by its kind and the name (a note's file) it gives. */
+export type BlockRef = { readonly kind: typeof NOTE_BLOCK | typeof SKILL_BLOCK | typeof WORKFLOW_BLOCK; readonly name: string };
 /** What an end-of-run turn's answer proposes: each note's file name and whole text, and each skill's and workflow
- *  draft's name and text (only when it gives one), as the answer gives them; `empty` when it gives none; `unparsed`
+ *  draft's name and text (only when it gives one), as the answer gives them, and `order`, every block of every kind in
+ *  the order the answer gave them (a count cap counts in it: learn/check.ts); `empty` when it gives none; `unparsed`
  *  when it tries and not in the format, with why. */
 export type Reflection =
-  | { readonly ok: true; readonly notes: readonly { readonly file: string; readonly text: string }[]; readonly skills?: readonly LearnedBlock[]; readonly workflows?: readonly LearnedBlock[] }
+  | { readonly ok: true; readonly notes: readonly { readonly file: string; readonly text: string }[]; readonly skills?: readonly LearnedBlock[]; readonly workflows?: readonly LearnedBlock[]; readonly order: readonly BlockRef[] }
   | { readonly ok: false; readonly reason: "empty" }
   | { readonly ok: false; readonly reason: "unparsed"; readonly detail: string };
 
@@ -241,6 +244,7 @@ export function parseReflection(answer: unknown): Reflection {
   if (answer.length > ANSWER_MAX) return { ok: false, reason: "unparsed", detail: `the answer is over ${ANSWER_MAX} characters` };
   const lines = answer.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Record<string, { name: string; text: string }[]> = { [NOTE_BLOCK]: [], [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
+  const order: BlockRef[] = [];
   /** The first skill or draft opened in three backticks, outside every block: what the answer tried, when it holds no other. */
   let shortFenced: string | undefined;
   for (let i = 0; i < lines.length; i++) {
@@ -268,13 +272,16 @@ export function parseReflection(answer: unknown): Reflection {
     // The same block given again word for word is that block once; another under the same name is ambiguous.
     const given = blocks[open.kind]!.find((block) => block.name === name);
     if (given && given.text !== text) return { ok: false, reason: "unparsed", detail: open.kind === NOTE_BLOCK ? "two of the answer's notes have one file name" : `two of the answer's ${open.kind}s have one name` };
-    if (!given) blocks[open.kind]!.push({ name, text });
+    if (!given) {
+      blocks[open.kind]!.push({ name, text });
+      order.push({ kind: open.kind as BlockRef["kind"], name });
+    }
     i = end;
   }
   const notes = blocks[NOTE_BLOCK]!.map(({ name, text }) => ({ file: name, text }));
   const skills = blocks[SKILL_BLOCK]!;
   const workflows = blocks[WORKFLOW_BLOCK]!;
-  if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) };
+  if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), order };
   // A skill or a draft opened in the fence a note may use: it tried, in the wrong fence (its front matter, if any, is no
   // loose note).
   if (shortFenced) return { ok: false, reason: "unparsed", detail: `a ${shortFenced}'s block must open with four backticks: \`\`\`\`${shortFenced} <name>` };
