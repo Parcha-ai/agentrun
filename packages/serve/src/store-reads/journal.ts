@@ -10,7 +10,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
-import { labelled, type Reflect } from "../learning-run.js";
+import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
@@ -50,6 +50,12 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // A model turn's text; its stop reason is the answer's (a cut at the output limit reads "length", as pi's does).
       const stopReason = data.stopReason === "length" ? "length" : "stop";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}), ...timestamp }] };
+    }
+    // The end-of-run turn's answer, as the CLI record keeps it (adapter-loop.ts answered): a model turn that ended, so the
+    // timeline shows it as pi's end-of-run turn shows its own (labelled then marks it the learning's).
+    if (entry.kind === KINDS.endOfRunTurn && data.role === "model") {
+      const text = typeof data.text === "string" ? data.text : "";
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
     if (entry.kind === KINDS.callStart) {
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
@@ -112,7 +118,7 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
  *  (withPaidCosts). A CLI run's record carries no per-request cost, so the usage row the renderer folds from its model
  *  turns is put in its booking's words (bookedUsage): its model requests at what the run's model proxy booked them at,
  *  and its paid tool calls at what they charged, as a pi run's usage row counts them. The end-of-run turn's rows are
- *  labelled as the server labels them (learning-run.ts labelled). */
+ *  labelled as the server labels them (reflect-range.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);

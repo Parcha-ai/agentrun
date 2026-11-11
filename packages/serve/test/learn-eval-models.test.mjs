@@ -9,7 +9,8 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { agreement, fateOf, gradeRunId } from "../scripts/learn-eval-score.mjs";
-import { judgeProposal } from "../dist/grade.js";
+import fauxEval from "./fixtures/faux-eval.mjs";
+import { gradeOnFaux } from "./learn-support.mjs";
 import { scratch, withEnv } from "./support.mjs";
 
 const run = promisify(execFile);
@@ -46,19 +47,17 @@ test("agreement: each note by each grade model's decision (kept, held, dropped);
   assert.deepEqual(a.split, [{ case: "refund-limit", file: "refund-limit.md", by: { a: "held", b: "kept", c: "held" } }]);
 });
 
-test("a grade on a named grade model whose name holds a / is judged, not refused for its run id: the real judge path, on the faux grader", async (t) => {
+test("a grade on a named grade model whose name holds a / is judged, not refused for its run id: the runner's grade path (gradePrompt, parseVerdict), on the faux grader", async (t) => {
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: join(await scratch(t), "calls.jsonl") });
-  const env = { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: new URL("./fixtures/faux-eval.mjs", import.meta.url).pathname };
   const c = HELD_OUT.find((one) => one.label === "keep");
-  const judge = (runId) => judgeProposal({
-    runId, agent: { instructions: c.instructions, harness: "pi" }, env, signal: AbortSignal.timeout(60_000), asked: c.transcript.filter((turn) => turn.role === "user").map((turn) => turn.text),
-    main: { active: [], superseded: [] }, proposed: c.notes, gradeModel: GRADERS[1],
+  const judge = (runId) => gradeOnFaux(fauxEval, {
+    runId, instructions: c.instructions, asked: c.transcript.filter((turn) => turn.role === "user").map((turn) => turn.text),
+    active: [], superseded: [], proposed: c.notes,
   });
   const judged = await judge(gradeRunId(c.id, "default", 0, 1));
-  assert.ok("verdict" in judged, `judged, not ${judged.reason}: ${judged.error?.message}`);
-  // The tag the script built before named the model itself, and the grade refused its run id.
-  const before = await judge(`eval-${c.id}-default-0-${GRADERS[1]}`);
-  assert.equal(before.reason, "grade_failed", "a run id holding the model's / is refused");
+  assert.ok("verdict" in judged, `judged, not ${judged.failed?.message}`);
+  // The tag the script built before named the model itself, and the grade's prompt refused its run id.
+  await assert.rejects(judge(`eval-${c.id}-default-0-${GRADERS[1]}`), /the run id is not 1 to 128 letters/, "a run id holding the model's / is refused");
 });
 
 test("agreement counts every grade model asked for: one that failed every case leaves no note judged by all, never 100% agreement", () => {

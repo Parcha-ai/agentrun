@@ -5,12 +5,10 @@
 // learning itself cost a run (its look-back and its grade). Null until both sides count 2. A run with learning off, or
 // one seeded with no note (every note retired), is on neither side.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, LEARN, learner, made, SWITCH_TODO, savedOf, started } from "./learn-support.mjs";
-import { runDir, serve, storeRun } from "./support.mjs";
+import { ended, LEARN, learner, made, savedOf, started } from "./learn-support.mjs";
+import { serve, storeRun } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const median = (values) => {
@@ -18,12 +16,12 @@ const median = (values) => {
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
-/** Run `runId` as its store row and its serve.json give it: its time to the answer, its job's own cost, and what its
- *  learning cost (none for a run with learning off). A run that looked back answered before its row ended, and its
- *  job's cost and its look-back's add up to its row's cost. */
-function figuresOf(data, runId) {
+/** Run `runId` as its store row and its learning end in the store give it: its time to the answer, its job's own cost,
+ *  and what its learning cost. A run that looked back answered before its row ended, and its job's cost and its
+ *  look-back's add up to its row's cost. */
+async function figuresOf(data, runId) {
   const row = storeRun(data, runId);
-  const { learning } = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
+  const { learning } = await savedOf(data, runId);
   const started = Date.parse(row.startedAt);
   if (!learning) return { duration: (Date.parse(row.endedAt) - started) / 1000, cost: row.costUsd };
   assert.ok(Date.parse(learning.answered_at) < Date.parse(row.endedAt), "it answered before it looked back");
@@ -32,8 +30,8 @@ function figuresOf(data, runId) {
   return { duration: (Date.parse(learning.answered_at) - started) / 1000, cost: learning.job_cost_usd, learning: learning.look_back_usd + (learning.cost_usd?.grade ?? 0) };
 }
 /** A side of `impact` as the runs `runIds` give it. */
-function sideOf(data, runIds) {
-  const runs = runIds.map((runId) => figuresOf(data, runId));
+async function sideOf(data, runIds) {
+  const runs = await Promise.all(runIds.map((runId) => figuresOf(data, runId)));
   return {
     runs: runs.length,
     median_duration_s: Math.round(median(runs.map((run) => run.duration)) * 10) / 10,
@@ -43,7 +41,7 @@ function sideOf(data, runIds) {
   };
 }
 
-test("an agent's impact: null before any note and until each side counts 2 runs; then before its first note against runs seeded with one, each side's time to the answer, its job's own cost and what learning cost, from the store's rows and each run's learning; a run with learning off and one seeded with no note are on neither side; a restarted server, which holds none of the runs, reads the same from the learning ledger", { timeout: 240_000, skip: SWITCH_TODO }, async (t) => {
+test("an agent's impact: null before any note and until each side counts 2 runs; then before its first note against runs seeded with one, each side's time to the answer, its job's own cost and what learning cost, from the store's rows and each run's learning; a run with learning off and one seeded with no note are on neither side; a restarted server, which holds none of the runs, reads the same from the store", { timeout: 240_000 }, async (t) => {
   const first = await serve(t, { learning: "on", faux: LEARN });
   let { api } = first;
   const { data } = first;
@@ -76,7 +74,7 @@ test("an agent's impact: null before any note and until each side counts 2 runs;
   await define({ plan: [["check-units.md", UNITS]], once: true });
   after.push((await runOnce()).run_id);
   const both = await impact();
-  assert.deepEqual(both, { before: sideOf(data, before), after: sideOf(data, after) });
+  assert.deepEqual(both, { before: await sideOf(data, before), after: await sideOf(data, after) });
   assert.deepEqual([both.before.runs, both.after.runs, both.before.cost_runs, both.after.cost_runs], [3, 2, 3, 2]);
   assert.ok(both.before.median_cost_usd > 0 && both.after.median_learning_usd > 0, JSON.stringify(both));
 
@@ -87,10 +85,9 @@ test("an agent's impact: null before any note and until each side counts 2 runs;
   assert.equal((await runOnce()).learning.state, "dropped");
   assert.deepEqual(await impact(), both, "the run seeded with no note counts on neither side");
 
-  // A server started again holds none of these runs: each run's notes at its start, its answer's time and its costs
-  // come from its ledger line.
-  for (const runId of [...before, ...after]) await savedOf(data, runId);
+  // A server started again holds none of these runs: each run's notes at its start (its launch), its answer's time and
+  // its costs (its learning end) come from the store.
   await first.close();
   ({ api } = await serve(t, { learning: "on", faux: LEARN, data }));
-  assert.deepEqual(await impact(), both, "the same, from the ledger");
+  assert.deepEqual(await impact(), both, "the same, from the store");
 });
