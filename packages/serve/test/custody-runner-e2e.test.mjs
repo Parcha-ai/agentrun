@@ -188,7 +188,11 @@ for (const harness of ["pi", "claude-agent"]) {
     assert.match(JSON.stringify(rows), /No such endpoint for the key/, "the vendor's echo came back to the run");
     // The agent wrote what it saw into a file: the file is there, and says nothing of a key.
     assert.ok(fileTexts.some((file) => file.text.includes("What I saw")), "the agent's note is in its folder");
-    // The run's own process holds none of them: not in its environment, not in /proc/self/environ.
-    assert.deepEqual(findPlanted([{ where: "the run's process environment", text: JSON.stringify(env) }], values), []);
+    // The run's own process holds none of them, nor the seal key this process (the server's and its runner's) holds in
+    // AGENTRUN_SEAL_KEY: not in its environment, not in /proc/self/environ. The report is that process's own: it holds
+    // the report's path, a variable it inherited from here, so a seal key passed down the same way would be found.
+    assert.ok(env.env?.CUSTODY_E2E_ENV_REPORT, "the report is the run's process environment, inherited from this one");
+    assert.equal(process.env.AGENTRUN_SEAL_KEY, seal, "this process holds the seal key the scan looks for");
+    assert.deepEqual(findPlanted([{ where: "the run's process environment", text: JSON.stringify(env) }], [...values, seal]), []);
   });
 }
