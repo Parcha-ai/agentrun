@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string) => Promise<Agent> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -67,7 +67,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     learningLog: async (_id: string, cursor: string) => { calls.push(`log after ${cursor}`); return (fake.log ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
-    promoteWorkflow: async (_id: string, name: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name); },
+    promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -1327,6 +1327,33 @@ describe("the Learning tab's Make this an agent", () => {
     await t.click(/^Cancel$/);
     expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
     expect(t.card("check-refunds")!.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("a retry after a lost answer is the same request: the second Yes sends the first one's Idempotency-Key, so the server answers with the agent it made", async () => {
+    const keys: string[] = [];
+    const made = (n: string) => ({ ...agent(true), agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent);
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async (n, key) => { keys.push(key); if (keys.length === 1) throw new TypeError("Failed to fetch"); return made(n); } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    expect(t.host.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await t.click(/^Yes, make the agent$/);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
+  });
+
+  it("Esc while it makes the agent keeps the confirm up: no second promotion can start until the first answers", async () => {
+    let answer!: (made: Agent) => void;
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: () => new Promise<Agent>((resolve) => (answer = resolve)) });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    await t.key(t.host.querySelector('[role="alertdialog"]')!, "Escape");
+    expect(t.host.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(t.button(/^Make check-refunds an agent$/)).toBeUndefined();
+    await act(async () => answer({ ...agent(true), agent_id: "check-refunds", kind: "workflow", definition: { version: 1, name: "check-refunds", workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent));
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
   });
 
   it("a refusal with no problems (no longer active) says so in the problem card's words, nothing made", async () => {
