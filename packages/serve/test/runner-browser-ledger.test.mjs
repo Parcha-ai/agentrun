@@ -99,12 +99,15 @@ test("a priced browser call is held and settled on the claim's own booking, its 
   const call = booking.seen.filter((step) => step.name === "this browser call");
   assert.equal(call.length, 1, `the call held once on the booking: ${JSON.stringify(booking.seen)}`);
   assert.ok(call[0].holdUsd > 0, "at a figure");
-  assert.ok(booking.seen.some((step) => step.op === "settle" && step.id === call[0].id), "and settled there");
+  // The call's step is a hold: given back when the call returns; its charge is a step of its own.
+  assert.ok(booking.seen.some((step) => step.op === "settle" && step.id === call[0].id && step.usd === 0), "and given back there");
+  const charged = booking.seen.filter((step) => step.op === "admit" && step.name === "this browser session's time").length;
+  assert.ok(charged >= 1, `the call's charge is booked there: ${JSON.stringify(booking.seen)}`);
   await run.release();
   booking.released();
-  const released = booking.seen.filter((step) => step.op === "admit" && step.name === "this browser session's time");
-  assert.equal(released.length, 1, `the release is one more request on the booking: ${JSON.stringify(booking.seen)}`);
-  const settledAt = booking.seen.findIndex((step) => step.op === "settle" && step.id === released[0].id);
+  const times = booking.seen.filter((step) => step.op === "admit" && step.name === "this browser session's time");
+  assert.equal(times.length, charged + 1, `the release is one more request on the booking: ${JSON.stringify(booking.seen)}`);
+  const settledAt = booking.seen.findIndex((step) => step.op === "settle" && step.id === times.at(-1).id);
   assert.ok(settledAt >= 0 && settledAt < booking.seen.findIndex((step) => step.op === "released"), `settled before the run's release returned: ${JSON.stringify(booking.seen)}`);
   assert.ok(booking.spent() > 0, "the booking counts the session's time");
   assert.ok(!asked.includes("spent"), `the process's own spend was never asked (no paidCall): ${JSON.stringify(asked)}`);
