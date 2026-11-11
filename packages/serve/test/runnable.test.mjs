@@ -150,3 +150,24 @@ test("a save whose checks run while another request changes the current revision
   third.release();
   await assert.rejects(savingC, (error) => error.code === "input_invalid" && /^definition\.version is 4 /.test(error.message));
 });
+
+test("a shell tool on the runner is let by where the runner's shell is here (shellOf): bash on Archil's exec in Mode 2, every one in a computer that mounts the folder, none with no shell or none asked", async () => {
+  const { blockersOf } = await import("../dist/runnable.js");
+  const revision = (computer) => ({ kind: "agentic", instructions: "Answer.", tools: ["read", "bash", "bash_background"], place: { mode: "runner" }, ...(computer ? { computer } : {}) });
+  const asked = [];
+  const at = (shell) => async (setting) => { asked.push(setting); return shell; };
+  const shells = async (computer, shellOf) => (await blockersOf({}, revision(computer), {}, { offers: [{ id: "pi", available: true }], ...(shellOf ? { shellOf } : {}) })).filter((one) => one.field.startsWith("definition.tools")).map((one) => [one.field, one.tool]);
+  // Mode 2, no computer: bash runs on Archil's serverless exec; the background tools still run in a box alone.
+  assert.deepEqual(await shells({ kind: "none" }, at("local")), [["definition.tools[2]", "bash_background"]]);
+  // A place alone is asked as no computer.
+  assert.deepEqual(await shells(undefined, at("local")), [["definition.tools[2]", "bash_background"]]);
+  assert.deepEqual(asked, [{ kind: "none" }, { kind: "none" }]);
+  // A desktop whose provider mounts the folder: its place reads runner, and its shell runs every tool.
+  assert.deepEqual(await shells({ kind: "desktop", provider: "e2b" }, at("computer")), []);
+  // Mode 1, no computer, and a check that asks nothing: no shell at all, in the words it always had.
+  for (const shellOf of [at("none"), undefined]) {
+    const refused = (await blockersOf({}, revision({ kind: "none" }), {}, { offers: [{ id: "pi", available: true }], ...(shellOf ? { shellOf } : {}) })).filter((one) => one.field.startsWith("definition.tools"));
+    assert.deepEqual(refused.map((one) => one.tool), ["bash", "bash_background"]);
+    assert.match(refused[0].message, /^bash runs only in a box, and this agent's place is the runner, which has no shell \(a shell needs a sandbox computer\), /);
+  }
+});
