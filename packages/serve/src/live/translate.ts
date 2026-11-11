@@ -161,7 +161,7 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   const tasks = commit.tasks.filter(mine);
   const submissions = commit.submissions.filter(mine);
   // The end-of-run turn's input placed in this commit: its messages from there on are the turn's.
-  state.reflectFrom ??= reflectFrom(submissions);
+  state.reflectFrom ??= reflectFrom(submissions, entries);
   const tag = (entry: EntryRecord) => (state.reflectFrom !== undefined && Number(entry.id) >= state.reflectFrom ? { agent_label: REFLECT_LABEL } : {});
   for (const entry of entries) {
     const message = modelOf(entry);
@@ -223,6 +223,16 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
     if (entry.kind === KINDS.message) {
       const said = dataOf<MessageData>(entry);
       const message = { role: ROLE[said.role] ?? "user", content: said.role === "model" ? [{ type: "text", text: said.text }] : said.text, ...(typeof said.at === "number" ? { timestamp: said.at } : {}) };
+      const synthetic = { ...entry, model: [message] } as unknown as EntryRecord;
+      state.entries.push(synthetic);
+      events.push({ type: "message_start", message, ...tag(entry) }, { type: "message_end", entry: synthetic, ...tag(entry) });
+      continue;
+    }
+    if (entry.kind === KINDS.endOfRunTurn && dataOf<{ role?: unknown }>(entry).role === "person") {
+      // A CLI run's end-of-run turn asked (adapter-loop.ts answering): its prompt, in a commit of its own, is the turn's
+      // message, as a pi run's placed input is, so a stream already open shows the turn at once.
+      const text = dataOf<{ text?: unknown }>(entry).text;
+      const message = { role: "user", content: typeof text === "string" ? text : "" };
       const synthetic = { ...entry, model: [message] } as unknown as EntryRecord;
       state.entries.push(synthetic);
       events.push({ type: "message_start", message, ...tag(entry) }, { type: "message_end", entry: synthetic, ...tag(entry) });
