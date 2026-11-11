@@ -106,10 +106,11 @@ test("a claude-agent run under a small cap parks at it once its booked spend lea
   const { row, view, turns } = await cliRun(t, "claude-agent", "Claude Code makes five cent calls.", { capUsd: 0.035 });
   const spent = eight(turns.reduce((sum, turn) => sum + (turn.bookedUsd ?? turn.usd ?? 0), 0));
   assert.equal(row.state, "parked", `the run parks at its cap, never runs on: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
-  // Its first call is booked at $0.01; the next needs about $0.035 of room (its input and a 1,024-token answer at Sonnet's
-  // price), more than the $0.025 left, so it is never sent.
-  assert.deepEqual([turns.length, spent], [1, 0.01], `one request ran, booked at its price: ${JSON.stringify(turns)}`);
-  assert.match(row.summary, /^Not sent: this run has spent \$0\.01 of its \$0\.035 cap/, `the park names the booked spend: ${row.summary}`);
+  // Each call is booked at $0.01. The second is priced warm from the first (the cap's expected mode: the 10 tokens of
+  // input it reported and what the body grew by, and a 1,024-token answer at Sonnet's price), within the $0.025 left, so
+  // it runs; the third needs as much again, more than the $0.015 left, so it is never sent.
+  assert.deepEqual([turns.length, spent], [2, 0.02], `two requests ran, each booked at its price: ${JSON.stringify(turns)}`);
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.035 cap/, `the park names the booked spend: ${row.summary}`);
   assert.equal(eight(view?.cost?.usd ?? 0), spent, `and its view says that spend, never $0: ${JSON.stringify(view?.cost)}`);
 });
 

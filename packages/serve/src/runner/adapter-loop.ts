@@ -992,7 +992,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
-          return (capBuilt ??= runCap({ sessions, ...specNow.runCap, capUsd: capNow, previousOf: (model) => (previous?.model === model ? previous : undefined) }));
+          // Its previous request is the session's own (requestEnded), unless the spec names one (a test's warm cache).
+          return (capBuilt ??= runCap({ sessions, previousOf: (model) => (previous?.model === model ? previous : undefined), ...specNow.runCap, capUsd: capNow }));
         };
         /** A request of this claim ended (`request_end`): one of the harness's own (no host label, no side call) that
          *  answered with its input reported is the session's previous request from now. */
