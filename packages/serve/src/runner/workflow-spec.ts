@@ -629,7 +629,7 @@ function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Cl
   // Nothing read yet: unread, so a policy asked before the first read fails closed too.
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
   // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, undefined, true);
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, true);
   return async (tool) => {
     current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };

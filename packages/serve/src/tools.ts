@@ -110,8 +110,8 @@ export type ToolHost = {
    *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
    *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
    *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
-   *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
-   *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
+   *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
+   *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
    *  and the sign-in verify the runner saves. */
@@ -453,9 +453,9 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return watched as never;
     };
-    // Each session's viewer reaches the server as it launches, and goes as it ends: on the runner through the store, under
-    // the run's claim (host.liveViewers); on the old per-run process, in the run's directory, never work/.
-    const viewers = live.sessionHandovers(host.where.root, host.liveViewers);
+    // Each session's viewer reaches the server as it launches, and goes as it ends: through the store, under the run's claim
+    // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
+    const viewers = live.sessionHandovers(host.liveViewers);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
