@@ -23,10 +23,12 @@ const until = async (done, what) => {
   }
 };
 
-/** Opens a session of `script` on `store`, with `gate`; its io's signal is the returned controller's. */
-async function opened(store, key, script, ran, gate) {
+/** Opens a session of `script` on `store`, with `gate`; its io's signal is the returned controller's. The text it streams
+ *  goes to `said`, when given. */
+async function opened(store, key, script, ran, gate, said) {
   const controller = new AbortController();
-  const session = await fauxAdapter({ script: () => script }).open(spec(key, ran), { store, writer: await store.open(key), models, signal: controller.signal, onEvent: () => {}, ...(gate ? { gate } : {}) });
+  const onEvent = (event) => { if (event.type === 'text') said?.push(event.delta); };
+  const session = await fauxAdapter({ script: () => script }).open(spec(key, ran), { store, writer: await store.open(key), models, signal: controller.signal, onEvent, ...(gate ? { gate } : {}) });
   return { session, controller };
 }
 
@@ -74,4 +76,24 @@ test('a call its gate parked after its request was answered runs once when the t
   await second.session.close();
   assert.deepEqual(asked, [['first', 'step:parked:0'], ['again', 'step:parked:0']], 'asked again under its own id');
   assert.deepEqual(ran, [{ q: 'x' }], 'ran once');
+});
+
+test('a reply of two calls whose first parked says each call\'s text once: the parked call\'s before the park, the second\'s on the recovery', async () => {
+  const script = [{ calls: [{ call: 'lookup', args: { q: 'a' }, say: 'Looking up a.' }, { call: 'lookup', args: { q: 'b' }, say: 'Looking up b.' }] }, { end: true }];
+  const store = memorySessionStore();
+  const ran = [];
+  const [before, after] = [[], []];
+  let parkedAt;
+  const first = await opened(store, 'step:two', script, ran, async (call) => { parkedAt = call.callId; return { park: true }; }, before);
+  await first.session.send('go');
+  await until(() => parkedAt !== undefined, 'the first call reached its gate');
+  first.controller.abort(new Error('the run parked'));
+  await first.session.close();
+  assert.deepEqual([parkedAt, before], ['step:two:0.0', ['Looking up a.']], 'parked on the first call, its text said, the second\'s not yet');
+  const second = await opened(store, 'step:two', script, ran, async () => 'allow', after);
+  await second.session.recover();
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  await second.session.close();
+  assert.deepEqual(after, ['Looking up b.'], 'the recovery says the second call\'s text, and never the parked one\'s again');
+  assert.deepEqual(ran, [{ q: 'a' }, { q: 'b' }], 'both ran once, in order');
 });
