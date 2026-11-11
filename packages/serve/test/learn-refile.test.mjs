@@ -86,7 +86,7 @@ test("keptOf and mergeChangeOf: a re-filed skill merges as its note, held when p
 /** A learning run of run-1, which proposed NOTE and SKILL; its faux grader keeps NOTE and re-files SKILL as a note.
  *  `existing`: a note's text main holds at report-format.md first. Answers its end, the folder's notes and skills after,
  *  and the words its learning ended with. */
-async function refileRun(t, { existing, skill, committed, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
+async function refileRun(t, { existing, skill, committed, edited = {}, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(tmpdir(), "learn-refile-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
@@ -124,6 +124,12 @@ async function refileRun(t, { existing, skill, committed, race = {}, notes: runN
     try {
       const made = await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "first attempt", graded: {}, files: committed });
       assert.equal(made.ok, true, JSON.stringify(made));
+      // `edited`: notes a person edits on main after that commit, before the resume reads it.
+      for (const [file, text] of Object.entries(edited)) {
+        const oid = (await readSnapshot(folder.workspace)).notes.find((note) => note.file === file).oid;
+        const edit = await learningCommit(folder.workspace, { kind: "person", action: "edited", file, text, ifMatch: `"${oid}"` });
+        assert.equal(edit.ok, true, JSON.stringify(edit));
+      }
     } finally {
       await folder.end();
     }
@@ -516,4 +522,16 @@ test("the checks: a note the merge's shared checks refuse holds no rule, so its 
   assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["supersedes", a.file]], JSON.stringify(checked.problems));
   const next = checkProposal({ base, changes: [change(c), change(b)] });
   assert.deepEqual([next.ok, next.notes.map(({ file }) => file)], [true, [c.file, b.file]]);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62FG35): a resume reads what this run's merge saved at its own commit, never main's text
+// now: a person's edit of the note after the commit (before the runner came back) never unsays what the run learned.
+test("a resumed merge reads each note as its own commit saved it: a person's edit on main since never unsays it", async (t) => {
+  const edited = "---\nname: Retries\ndescription: Retry a flaky fetch three times\ntype: feedback\n---\nRetry a flaky fetch three times, a person said.\n";
+  const { end, learning, words, notes } = await refileRun(t, { committed: [{ path: NOTE.file, text: NOTE.text }], edited: { [NOTE.file]: edited }, notes: [NOTE], files: [], answer: verdictOf([{ file: NOTE.file, decision: "keep", why: "useful" }]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes[NOTE.file], /a person said/, "main holds the person's edit");
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), [NOTE.file], JSON.stringify(learning));
+  assert.equal(words, "Learned: Retries");
 });
