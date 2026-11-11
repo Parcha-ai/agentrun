@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf } from "../dist/timeline/index.js";
 import { runModels } from "../dist/model.js";
 import { agent, follow, responsesEndpoint, serve } from "./support.mjs";
 

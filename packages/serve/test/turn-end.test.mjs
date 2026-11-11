@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { REQUEST_STARTED, runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { spentIn } from "../dist/cap.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "../dist/turn-end.js";
 import { Turns } from "../dist/turns.js";

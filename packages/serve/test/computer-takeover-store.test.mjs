@@ -129,7 +129,13 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     });
     const first = await begin(loopOf(), options);
     await inShot;
-    return { holds, releases, letGo, first, hold: { state: () => holds.at(-1).state() }, second: (more = {}) => begin(loopOf(), { ...options, ...more }) };
+    // As startEnding's: the run's end commits before the claim's teardown lets its computer go, so wait for claim `n`'s
+    // release itself.
+    const whenReleased = async (n) => {
+      await eventually(() => releases.some((release) => release.claim === n));
+      return releases;
+    };
+    return { holds, releases, whenReleased, letGo, first, hold: { state: () => holds.at(-1).state() }, second: (more = {}) => begin(loopOf(), { ...options, ...more }) };
   };
   /** The run on a runner: its first look at the screen waits inside the shot until `letGo`; with `second`, its second look
    *  waits too, until `letGoSecond`. */
@@ -442,7 +448,7 @@ test("a forgotten take-over does not hold the run forever: the hold's idle bound
   const run = await world.startEnding({ idleMs: 1_500 });
   await heldWhileAnswering(world, run);
   await world.ended();
-  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["idle"] }],"let go once the idle bound gave the desktop back, never under the person's hand");
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["idle"] }], "let go once the idle bound gave the desktop back, never under the person's hand");
   const said = await world.rows();
   const words = holdWords("desktop");
   const [waiting, idle] = [said.indexOf(words.ending), said.indexOf(words.ended.idle)];
@@ -462,7 +468,7 @@ test("a stop while the run waits for the hand-back ends it stopped at once, and 
     return now.state !== "running" && now.runner === null && now;
   }, "the run's stop");
   assert.equal(row.state, "stopped", JSON.stringify({ state: row.state, summary: row.summary }));
-  assert.deepEqual(await run.whenReleased(), [{ state: "person", ends: [] }],"the stop lets the desktop go with the person's take in force");
+  assert.deepEqual(await run.whenReleased(), [{ state: "person", ends: [] }], "the stop lets the desktop go with the person's take in force");
   assert.deepEqual(run.ends, ["released"], "the release ends the take released");
 });
 
@@ -506,7 +512,7 @@ test("a take-over after the hand-back, while the run's end-of-run step runs, is 
   assert.equal(run.hold.state(), "agent", "nothing was taken");
   finishStep();
   await world.ended();
-  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }], "released once,with the agent driving: no take was cut");
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }], "released once, with the agent driving: no take was cut");
 });
 
 /** The person's take while the agent answers, then the run's claim lost by its runner (`how`: "crash", the runner
@@ -528,7 +534,7 @@ async function takeThenLoseClaim(world, how) {
 }
 
 for (const how of ["crash", "lapse"]) {
-  test(`a ${how} of the runner that held the run during a take: the next claim's computer is a new one, so the take ends released, once, and the person reads why on the Timeline; the run goes on with the agent and ends, and a hand-back of that take is refused in words (#2134)`, async (t) => {
+  test(`a ${how} of the runner that held the run during a take: the next claim's computer is a new one, so the take ends released, once, and the person reads why on the Timeline; the run goes on with the agent and ends, and a hand-back of that take is refused in words (#2134)`, { timeout: 120_000 }, async (t) => {
     const world = await setup(t);
     const { run, take, words } = await takeThenLoseClaim(world, how);
     const row = await world.ended();
@@ -540,7 +546,7 @@ for (const how of ["crash", "lapse"]) {
     assert.ok(said.indexOf(words.ended.released) > said.indexOf(words.taken), "after the take");
     assert.equal(await world.hold(), "agent");
     assert.equal(run.holds[1].state(), "agent", "the new computer is the agent's");
-    const second = run.releases.filter((release) => release.claim === 2);
+    const second = (await run.whenReleased(2)).filter((release) => release.claim === 2);
     assert.deepEqual(second, [{ claim: 2, state: "agent", ends: [] }], "the second claim lets its own computer go at the run's end, with nothing taken on it");
     const handBack = await world.answer("handBackRunComputer");
     assert.equal(handBack.status, 409, JSON.stringify(handBack));

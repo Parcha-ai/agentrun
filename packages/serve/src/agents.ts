@@ -1,6 +1,5 @@
 // How a request waits out a busy store: SQLite's busy or locked, or the agent home's own `busy`, retried step by step
 // (whenFree), then answered home_busy. The agents themselves are over the one store (agents-store.ts).
-import { AgentHomeError } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
 import { isObject } from "./validate.js";
 
@@ -31,7 +30,7 @@ export async function whenFree<T>(act: () => T | Promise<T>, delaysMs: readonly 
 
 /** A store another writer holds: SQLite's busy or locked, or the agent home's own `busy` (a home held past its deadline, or a
  *  store a stopped writer left mid-write). Every answer of the server maps it the same way: home_busy. */
-export const storeBusy = (error: unknown) => sqliteBusy(error) || (error instanceof AgentHomeError && error.code === "busy");
+export const storeBusy = (error: unknown) => sqliteBusy(error);
 
 /** The answer to a request the agent store stayed busy for. */
 export const homeBusy = () => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
