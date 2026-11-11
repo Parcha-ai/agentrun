@@ -22,7 +22,7 @@ import {
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -436,6 +436,7 @@ class SqliteStore implements Store {
         const row = await db.get<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE external_ref = ?`, ref);
         return row && agentOf(row);
       },
+      hasExternalVersion: async (agentId, version) => (await db.get<{ id: string }>("SELECT id FROM revisions WHERE agent_id = ? AND external_version = ?", agentId, version)) !== undefined,
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
       archive: async (id, archived, why) =>
@@ -806,13 +807,7 @@ class SqliteStore implements Store {
         db.transaction(async (tx) => {
           // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
           // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
-          const reopened = await tx.runCounted(
-            `UPDATE runs SET state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL
-              WHERE id = ? AND state = 'ended' AND imported_from IS NULL
-                AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
-                AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`,
-            runId,
-          );
+          const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
           if (reopened === 0) throw new RunFinal(runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
@@ -843,7 +838,7 @@ class SqliteStore implements Store {
             }
           }
           // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
-          await refuseLeftovers(tx, claim.runId, patch.state, at);
+          await refuseLeftovers(tx, claim.runId, patch.state, at, d);
           // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch, under
           // SIGN_IN_HANDED_LOCK): this run saves unless another run already holds one of the handed pointers (a running run,
           // or — within signInSettleMs of leaving running, a vendor's settle window — one that left running less than that

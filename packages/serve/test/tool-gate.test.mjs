@@ -765,9 +765,8 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  // Idle with nothing pending. The status word a person's stop leaves is the reopen-stopped work's (mcp-gate.test.mjs's
-  // stopped-literal case waits on it the same way), not this case's.
-  assert.deepEqual([stopped.state, stopped.pending], ["idle", null], "stopped: idle, nothing pending");
+  // A person's stop ends the turn, not the run: input_required and idle with nothing pending, as main's stop leaves one.
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
   // On the runner a parked call has its call's row and no result row of its own (the park writes none).
@@ -795,8 +794,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
-test.skip("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);

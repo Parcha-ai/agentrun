@@ -109,6 +109,10 @@ export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
  *  adapter (src/harness-opencode) takes it only under its own guard (AGENTRUN_OPENCODE_STANDIN=1, under a test runner). */
 export const OPENCODE_STANDIN_ENV = "AGENTRUN_SERVE_OPENCODE_STANDIN";
 
+/** Whether a test's stand-in runs in place of harness `id`'s own CLI in `env` (CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV):
+ *  its adapter then loads nothing installed, so a run of it needs no first-use install. */
+export const standsIn = (id: string, env: NodeJS.ProcessEnv): boolean => (id === codexFacts.id && Boolean(env[CODEX_STANDIN_ENV])) || (id === openCodeFacts.id && Boolean(env[OPENCODE_STANDIN_ENV]));
+
 /** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
  *  is never taken from one (runs.ts lastLogLine). */
 export const HARNESS_LOG_EVENT = "harness";

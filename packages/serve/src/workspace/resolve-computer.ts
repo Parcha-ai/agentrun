@@ -18,7 +18,7 @@
 // serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
-import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { checkGpu, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import type { MountCheck } from "./attach.js";
@@ -220,6 +220,24 @@ export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick
   const mounts = mountsFolder(kind, entry, serving, mode);
   if (kind === "sandbox" && !mounts) return "none";
   return shellPlaceOf(mounts, mode);
+}
+
+/** What a choice of computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note) and
+ *  said by the save's refusal of a tool it leaves out. A computer that mounts the folder leaves nothing out. */
+export const SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">, string>> = Object.freeze({
+  local: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer.",
+  none: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands.",
+});
+
+/** The host tools a run with its shell at `shell` gets, by name: the kernel registry's own list (hostToolDefs), never a
+ *  second one: the file tools always, bash with a shell, the five background tools on a computer. */
+export const hostToolsOf = (shell: ShellPlace): string[] => hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name);
+
+/** A computer choice as an agent's settings show it: where its runs have their shell (runShellOf), the host tools that
+ *  gives, and what it leaves out, in words (none for a computer that mounts the folder). */
+export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
+  const shell = runShellOf(setting, mode, registry);
+  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: SHELL_NOTES[shell] }) };
 }
 
 /** The server's default where an agent has no computer setting: in Mode 1 a sandbox on the first provider that binds a
