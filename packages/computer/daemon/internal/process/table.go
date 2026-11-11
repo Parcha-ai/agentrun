@@ -33,6 +33,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
@@ -109,6 +110,8 @@ type proc struct {
 	terminal *os.File
 	streams  map[string]*stream
 	changed  chan struct{}
+	// exiting: the program has exited, and its streams are being drained of what it wrote; ended closes after that.
+	exiting  bool
 	ended    chan struct{}
 	exitCode *int
 	signal   string
@@ -119,6 +122,12 @@ type stream struct {
 	ring
 	reader *os.File
 	eof    bool
+	// drained: the program has exited and every byte it wrote to this stream before then is in the ring and the log.
+	drained bool
+	// owed is what collect still has to handle before the stream is drained: the bytes left unread in it when collect
+	// first looked after the program exited (sampled), less what it has handled since.
+	owed    int
+	sampled bool
 }
 
 // notify wakes every read and wait parked on p. Hold p.mu.
@@ -333,7 +342,10 @@ func (p *proc) releaseRings() int64 {
 	return freed
 }
 
-// collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO.
+// collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO. Once
+// the program has exited, it also marks the stream drained when it has handled all the program wrote (markDrained):
+// watch's deadline wakes a read parked on an empty stream for that, and the stream is read on with no deadline after
+// it, for what a process left in the group still writes.
 func (p *proc) collect(s *stream) {
 	buf := make([]byte, 32<<10)
 	for {
@@ -354,9 +366,14 @@ func (p *proc) collect(s *stream) {
 			t.trim()
 			t.mu.Unlock()
 		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			_ = s.reader.SetReadDeadline(time.Time{})
+			err = nil
+		}
 		if err != nil {
 			break
 		}
+		p.markDrained(s, n)
 	}
 	p.lockInput()
 	p.mu.Lock()
@@ -364,7 +381,7 @@ func (p *proc) collect(s *stream) {
 	if p.pty {
 		p.input, p.terminal = nil, nil
 	}
-	s.eof = true
+	s.eof, s.drained = true, true
 	p.notify()
 	p.mu.Unlock()
 	p.unlockInput()
@@ -385,12 +402,83 @@ func (p *proc) watch() {
 		p.input = nil
 	}
 	p.unlockInput()
+	p.drain()
 	p.mu.Lock()
 	p.exitCode, p.signal, p.endedAt = code, signal, time.Now()
 	close(p.ended)
 	p.notify()
 	p.mu.Unlock()
 	p.table.hold(0)
+}
+
+// drain waits, once the program has exited, until every stream holds all it wrote: so a wait that returns, and a read
+// that says exited, come after the last of its output is in the rings and the log, never while a pipe still holds some.
+// It has no time limit: what it waits for is bytes already written, and what a process left in the group writes later
+// is never waited for (markDrained).
+func (p *proc) drain() {
+	p.mu.Lock()
+	p.exiting = true
+	p.mu.Unlock()
+	for _, s := range p.streams {
+		// Wakes a read parked on an empty stream, so collect sees the stream has nothing left. A stream that takes no
+		// deadline (closed already) is drained as it is.
+		if err := s.reader.SetReadDeadline(time.Now()); err != nil {
+			p.mu.Lock()
+			s.drained = true
+			p.mu.Unlock()
+		}
+	}
+	for {
+		p.mu.Lock()
+		done := true
+		for _, s := range p.streams {
+			done = done && s.drained
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		if done {
+			return
+		}
+		<-changed
+	}
+}
+
+// markDrained is collect's count, between reads, of handled bytes once the program has exited; handled is what it
+// handled since the last call. The first call after the exit takes how many bytes are left unread in the stream: every
+// byte the program wrote is in the ring and log already or among them, since collect holds no unhandled bytes between
+// reads. The stream is drained once collect has handled that many more, or once it reads empty. Bytes a process left
+// in the group writes after that are read on as before but never waited for, so they can't hold the end.
+func (p *proc) markDrained(s *stream, handled int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.exiting || s.drained {
+		return
+	}
+	if !s.sampled {
+		s.owed, s.sampled = unread(s.reader), true
+	} else {
+		s.owed -= handled
+	}
+	if s.owed <= 0 || unread(s.reader) == 0 {
+		s.drained = true
+		p.notify()
+	}
+}
+
+// unread is how many bytes wait in a pipe or terminal to be read (FIONREAD); one that can't be asked counts as empty.
+func unread(f *os.File) int {
+	conn, err := f.SyscallConn()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	_ = conn.Control(func(fd uintptr) {
+		var count int32
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCINQ, uintptr(unsafe.Pointer(&count))); errno == 0 {
+			n = int(count)
+		}
+	})
+	return n
 }
 
 // release closes what the daemon holds of a process that is dropped from the table, or never started.

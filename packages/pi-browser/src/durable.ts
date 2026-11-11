@@ -119,6 +119,7 @@ export type BrowserExtensionHandle = {
 
 export { createWebExtension, type WebExtensionOptions } from "./durable/web.js";
 export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./durable/store.js";
+export { HANDOFF_POLL_MS } from "./core/custody.js";
 
 const PLANE = "default";
 const UNCONFIGURED: BrowserConfig = { label: "", run: "", policy: DEFAULT_BROWSER_POLICY };

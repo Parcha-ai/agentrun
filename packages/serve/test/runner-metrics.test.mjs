@@ -4,7 +4,7 @@
 // are shaped as pi writes them (mirroring pi-durable-agent's agent-store-metrics fixtures).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST } from "../dist/timeline/index.js";
 import { runMetrics } from "../dist/runner/metrics.js";
 
 const answer = { conversationId: 1, id: 2, kind: "pi.assistant", model: [{ role: "assistant", provider: "anthropic", model: "claude-opus-5-5", content: [{ type: "toolCall", id: "c1", name: "read", arguments: {} }], stopReason: "toolUse", usage: { input: 100, output: 20, cacheRead: 40, cacheWrite: 3, cost: { total: 0.02 } } }] };
@@ -58,4 +58,16 @@ test("bookedSpend counts a request the booking holds no answer for yet (no runne
   // Once it is booked, it is counted at its cost.
   const answered = [...entries, e(7, 5, "runner.turn", { turn: 2, usd: 0.001, bookedUsd: 0.001, usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, rule: "answered" })];
   assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, unpriced: 0, requests: 2, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 } });
+});
+
+test("bookedSpend reads an answer with no price of its own as a cost unknown, never the hold the cap booked it at ($0 with no cap)", async () => {
+  const { bookedSpend } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const entries = [
+    e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }),
+    e(7, 2, "runner.request", { turn: 1, model: "not-a-catalog-model", heldUsd: 0 }),
+    // Answered at no known price (a model serve has no price for): the booking's rule books it at its hold for the cap.
+    e(7, 3, "runner.turn", { turn: 1, usd: null, bookedUsd: 0, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
+  ];
+  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0, unpriced: 1, requests: 1, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } });
 });

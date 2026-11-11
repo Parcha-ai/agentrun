@@ -7,8 +7,8 @@
 // A pi run has no workflow decision receipts, so the decisions list is empty; a workflow run (when it joins the runner)
 // passes its decisions. `effort` is the level the run ran at and `model`, on a harness other than pi, the model its
 // revision named — both as storedMetrics added them, resolved by the caller from the run's launch and harness.
-import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMetrics, timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { RUNNER_RECORDS, type SessionRecord, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMetrics, timelineOf } from "../timeline/index.js";
+import { answeredUnpriced, RUNNER_RECORDS, type SessionRecord, sessionSpendOf } from "@parcha/agentrun-kernel";
 import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS, WORKFLOW_SESSION } from "./journal-kinds.js";
 
@@ -56,10 +56,11 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
       continue;
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
     if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
-    const usd = typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
+    // An answer with no price of its own was booked at its hold for the cap (answeredUnpriced): as a cost it is unknown.
+    const usd = answeredUnpriced(d) ? null : typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
     if (usd === null) unpriced += 1;
     else known += usd;
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
@@ -79,7 +80,9 @@ export function costIsBooked(entries: readonly EntryLike[], cli: boolean): boole
  *  session's is unknown, never 0 for it. */
 export function bookedCapSpend(entries: readonly EntryLike[]): number | null {
   let spent = 0;
-  for (const conversation of sessionConversations(entries).values()) {
+  // Every conversation that holds booking records, keyed or not, as bookedSpend reads them.
+  const booking = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn).map((e) => Number(e.conversationId)));
+  for (const conversation of booking) {
     const records = entries.filter((e) => Number(e.conversationId) === conversation && e.kind !== KINDS.sessionKey).map((e) => ({ kind: e.kind, data: (e.data ?? null) as SessionRecord["data"] }));
     const read = sessionSpendOf(records).spentUsd;
     if (read === null) return null;

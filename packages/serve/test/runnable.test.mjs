@@ -6,11 +6,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
 import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
 import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, serve, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */
@@ -113,23 +112,6 @@ test("a workflow whose tier has no model on this host saves with a warning", asy
   assert.match(saved.body.warnings[0].message, /fast tier/);
 });
 
-// SKIP (follow-up #2078): it plants a store an earlier version wrote, which this version refuses at start
-test.skip("a revision saved before these checks is refused at its run with the same reasons (409)", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const store = openStore(data);
-  try {
-    const { id } = store.createAgent({ name: "old", id: "old" });
-    await store.commitRevision(id, { kind: "agentic", instructions: "Answer.", tools: ["read", "bash"] }, { setCurrent: true });
-  } finally {
-    store.close();
-  }
-  const server = await startServe({ data, port: 0, faux: new URL("./fixtures/faux-model.mjs", import.meta.url).pathname });
-  t.after(() => server.close());
-  const run = await client(server.baseUrl, server.token)("POST", "/agents/old/runs", { input: { content: "hi" } });
-  assert.deepEqual([run.status, run.body.error.code, run.body.error.details.unbound], [409, "agent_not_runnable", ["bash"]]);
-  assert.match(run.body.error.message, /bash/);
-});
-
 test("a save whose checks run while another request changes the current revision is held to its If-Match: 412, never a stale 200", async (t) => {
   const { store } = await storeOn(t);
   const body = (extra) => checkDefinitionBody(agent("x", extra), { creating: false });
@@ -167,4 +149,26 @@ test("a save whose checks run while another request changes the current revision
   await commitAgent(store, two, body({ instructions: "Answer in a sentence.", version: 3 }));
   third.release();
   await assert.rejects(savingC, (error) => error.code === "input_invalid" && /^definition\.version is 4 /.test(error.message));
+});
+
+test("a shell tool on the runner is let by where the runner's shell is here (shellOf): bash on Archil's exec in Mode 2; none with no shell, none asked, or a computer that mounts the folder from a runner place", async () => {
+  const { blockersOf } = await import("../dist/runnable.js");
+  const revision = (computer) => ({ kind: "agentic", instructions: "Answer.", tools: ["read", "bash", "bash_background"], place: { mode: "runner" }, ...(computer ? { computer } : {}) });
+  const asked = [];
+  const at = (shell) => async (setting) => { asked.push(setting); return shell; };
+  const shells = async (computer, shellOf) => (await blockersOf({}, revision(computer), {}, { offers: [{ id: "pi", available: true }], ...(shellOf ? { shellOf } : {}) })).filter((one) => one.field.startsWith("definition.tools")).map((one) => [one.field, one.tool]);
+  // Mode 2, no computer: bash runs on Archil's serverless exec; the background tools still run in a box alone.
+  assert.deepEqual(await shells({ kind: "none" }, at("local")), [["definition.tools[2]", "bash_background"]]);
+  // A place alone is asked as no computer.
+  assert.deepEqual(await shells(undefined, at("local")), [["definition.tools[2]", "bash_background"]]);
+  assert.deepEqual(asked, [{ kind: "none" }, { kind: "none" }]);
+  // A desktop whose provider mounts the folder: its place reads runner, so a shell there would share the folder with the
+  // runner-only tools (browser's downloads): refused as before, not let by this check.
+  assert.deepEqual(await shells({ kind: "desktop", provider: "docker" }, at("computer")), [["definition.tools[1]", "bash"], ["definition.tools[2]", "bash_background"]]);
+  // Mode 1, no computer, and a check that asks nothing: no shell at all, in the words it always had.
+  for (const shellOf of [at("none"), undefined]) {
+    const refused = (await blockersOf({}, revision({ kind: "none" }), {}, { offers: [{ id: "pi", available: true }], ...(shellOf ? { shellOf } : {}) })).filter((one) => one.field.startsWith("definition.tools"));
+    assert.deepEqual(refused.map((one) => one.tool), ["bash", "bash_background"]);
+    assert.match(refused[0].message, /^bash runs only in a box, and this agent's place is the runner, which has no shell \(a shell needs a sandbox computer\), /);
+  }
 });

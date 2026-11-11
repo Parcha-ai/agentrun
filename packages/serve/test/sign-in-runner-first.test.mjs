@@ -52,7 +52,7 @@ async function runner(t) {
     const root = join(s.dir, "runs", run);
     mkdirSync(join(root, "work"), { recursive: true });
     const env = { [FAUX_ENV]: "faux", [tools.FAUX_BROWSER_ENV]: FAUX_BROWSER, [tools.FAUX_VENDOR_API_ENV]: FAUX_VENDORS, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }), ...keysOf(run) };
-    return { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, handoverInJournal: true, store: s.store, claim: claims[run], sealKey: KEY, ...more };
+    return { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, store: s.store, claim: claims[run], sealKey: KEY, ...more };
   };
   const saved = async (agent, vendor) => {
     const row = await s.store.signIns.get(`agent-${agent}`, vendor);

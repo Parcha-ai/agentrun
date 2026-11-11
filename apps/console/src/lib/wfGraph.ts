@@ -5,6 +5,7 @@
 // web badges; a map's items as a grid of cells, one per item, each in its state; a decision's verdict on its card; and
 // the selected node or item. Every label, branch name and value is data from a workflow document or a run: it reaches the
 // drawing only as text nodes, and every attribute is a number, a fixed word or a node's path.
+import { mcpCallTool } from "./mcp";
 import type { NodeMeta } from "./workflowDoc";
 
 export type GraphInput = { nodes: { path: string; kind: string; label?: string; via?: string }[] };
@@ -101,7 +102,8 @@ function look(ctx: Ctx, path: string) {
 function group(ctx: Ctx, node: Node, shape: string) {
   const l = look(ctx, node.path);
   const meta = ctx.marks.meta?.[node.path];
-  let title = `${node.label} (${node.kind}${node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${meta.model ? ` ${meta.model}` : ""}` : ""})`;
+  const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
+  let title = `${node.label} (${node.kind}${mcp ? `: ${mcp.tool} on ${mcp.server}, an MCP server's tool` : node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${meta.model ? ` ${meta.model}` : ""}` : ""})`;
   if (l.state) title += `: ${l.state.replace("-", " ")}`;
   if (l.tag) title += `${l.state ? ", " : ": "}${l.tag.toLowerCase()}`;
   if (meta?.questions?.length) title += `\n${meta.questions.map((q) => `• ${q.text}`).join("\n")}`;
@@ -128,8 +130,8 @@ function tag(g: SVGElement, x: number, y: number, word: string, cls = "tag") {
 const isDecision = (ctx: Ctx, node: Node) => !!ctx.marks.meta?.[node.path]?.decision;
 const cardH = (ctx: Ctx, node: Node) => (isDecision(ctx, node) ? HD : H);
 
-/** A card: a square coloured by who works, the label, the kind (and a call's transport or tool), the state's word or the
- *  verdict, the diff's tag on its top edge. A decision card adds a row: its provider, its model, and badges for images and
+/** A card: a square coloured by who works, the label, the kind (and a call's transport or tool: an MCP server's tool as
+ *  "<tool> on <server>" with an MCP badge), the state's word or the verdict, the diff's tag on its top edge. A decision card adds a row: its provider, its model, and badges for images and
  *  the web. */
 function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
   const l = look(ctx, node.path);
@@ -138,8 +140,10 @@ function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
   const verdict = ctx.marks.verdict?.[node.path];
   const word = l.state in WORD ? WORD[l.state] : l.state;
   const nq = meta?.questions?.length ?? 0;
-  const kind = node.kind + (meta?.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : "") + (meta?.decision && nq ? ` · ${nq} ${nq === 1 ? "question" : "questions"}` : "");
-  const badges = [meta?.images?.length ? "IMG" : "", meta?.web ? "WEB" : ""].filter(Boolean);
+  // An MCP server's tool (`mcp:<server>/<tool>`) reads as "<tool> on <server>", with an MCP badge; any other by its name.
+  const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
+  const kind = node.kind + (mcp ? ` · ${mcp.tool} on ${mcp.server}` : meta?.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : "") + (meta?.decision && nq ? ` · ${nq} ${nq === 1 ? "question" : "questions"}` : "");
+  const badges = [meta?.images?.length ? "IMG" : "", meta?.web ? "WEB" : "", mcp ? "MCP" : ""].filter(Boolean);
   const badgeW = badges.reduce((s, b) => s + tagWidth(b) + 4, 0);
   if (l.selected) g.appendChild(el("rect", { x: x - 4, y: y - 4, width: W + 8, height: h + 8, class: "sel" }));
   add(g, [

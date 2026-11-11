@@ -38,12 +38,26 @@ const MAX_BACKOFF_MS = 30_000;
 export const wholeMs = (ms: number) => Math.max(1, Math.ceil(ms));
 /** The wait before try `tries + 1`: doubling up to its cap, and never under the server's own (`floor`). */
 export const backoff = (tries: number, floor = 0) => Math.max(floor, Math.min(MAX_BACKOFF_MS, BACKOFF_MS * 2 ** (tries - 1)));
-/** Waits `ms`, or rejects with the signal's reason once it aborts. */
+/**
+ * Waits `ms` by the wall clock (Date.now), or rejects with the signal's reason once it aborts. A timer can fire up to a
+ * millisecond before the wall clock says `ms` have passed (its loop clock counts whole milliseconds), so the rest is
+ * waited out: a server's Retry-After is never cut short.
+ */
 export function pause(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(() => (signal?.removeEventListener("abort", stop), resolve()), wholeMs(ms));
+    const until = Date.now() + wholeMs(ms);
+    let timer: ReturnType<typeof setTimeout>;
+    const arm = (left: number) => {
+      timer = setTimeout(() => {
+        const rest = until - Date.now();
+        if (rest > 0) return arm(rest);
+        signal?.removeEventListener("abort", stop);
+        resolve();
+      }, left);
+    };
     const stop = () => (clearTimeout(timer), reject(signal!.reason));
+    arm(wholeMs(ms));
     signal?.addEventListener("abort", stop, { once: true });
   });
 }
