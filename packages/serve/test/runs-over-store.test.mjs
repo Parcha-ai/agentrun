@@ -479,7 +479,19 @@ test("startRun records the server's learning off as no learning", async () => {
 test("a learning run whose seed cannot be read starts with nothing (given empty, seed null, section empty)", async () => {
   const store = await freshStore();
   const run = await startRun(store, learningDeps({ seedFor: async () => ({ failed: "no git here" }) }), entryOf(), { input: { content: "hi" } });
-  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning, { given: [], seed: null, section: "" });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning, { given: [], seed: null, section: "", seedFailed: "unreadable" });
+});
+
+test("a learning run whose start can't be made from the seed it read starts with nothing, saying it was not copied", async () => {
+  const store = await freshStore();
+  // A seed read whole whose notes can't be read into the start (here, a notes field that is no object).
+  const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: { ...learningSeed(), notes: null } }) }), entryOf(), { input: { content: "hi" } });
+  const learning = readLaunchBody((await store.runs.launch(run.id)).body).learning;
+  assert.deepEqual(learning, { given: [], seed: null, section: "", seedFailed: "not_copied" });
+});
+
+test("a launch's seedFailed outside its list is read as none", () => {
+  assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined);
 });
 
 // ---- cancel ---------------------------------------------------------------------------------------------------------

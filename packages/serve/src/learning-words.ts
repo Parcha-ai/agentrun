@@ -83,6 +83,7 @@ const rulesIn = (problems: readonly Pick<Problem, "rule" | "path">[]) => [...new
 export const STOPPED = {
   unreadable: "the agent's notes could not be read, so the run started without them",
   notCopied: "the agent's notes could not be copied into the run, so the run started without them",
+  noSeed: "the run started without the agent's notes",
   serverStopped: "the server stopped while it set up the run's notes, so the run started without them",
   cancelled: "the run was cancelled",
   cancelledLooking: "the run was cancelled while it looked back",

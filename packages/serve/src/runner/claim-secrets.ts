@@ -2,11 +2,13 @@
 // key), never from this process's environment or a pipe (the old per-run process read its own over a pipe; the runner is
 // one process for many runs). Scoped to the run as the old per-run environment was: the keys its revision's tools unlock
 // and its model needs (runs.ts keysFor/needsOf), and its decision provider keys (decisions.ts decisionKeysFor, Parallel's
-// where a web tool resolves there), and no other. So a run that names no monid never gets the monid key, and two runs on
+// where a web tool resolves there), and no other; an agentic run's learned workflows add the keys of the decision
+// providers they name, read once the claim's seed lay chose them (learnedDecisionKeys). So a run that names no monid never gets the monid key, and two runs on
 // one runner never see each other's keys: each claim reads its own, into its own environment. (MCP credentials are the
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
-import { decisionKeysFor } from "../decisions.js";
-import { GATEWAY_KEY_ENV, PROVIDER_KEYS } from "../model.js";
+import { decisionKeysFor, providersNamed } from "../decisions.js";
+import type { LearnedWorkflow } from "../learning.js";
+import { GATEWAY_KEY_ENV, PROVIDER_KEYS, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
@@ -33,16 +35,7 @@ export interface ClaimSecretsDeps {
  *  decision provider keys. A fresh object per claim, so no run's keys reach another's. */
 export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
-  // Every candidate secret into a working environment, then scoped to the run below so a key the run does not need is never
-  // put on the environment its tools run under. The server process's own environment value wins over the store's by the same
-  // name (the secrets rule 4: env always overrides a pasted value), so a key set where the server starts is not shadowed by a
-  // stale one saved in the store.
-  const working: NodeJS.ProcessEnv = { ...base };
-  // A name present with no value (`-e NAME`, an empty optional secret) is not a key: the store's saved one stands.
-  for (const name of CANDIDATES) {
-    const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
-    if (value !== undefined) working[name] = value;
-  }
+  const working = await workingEnv(deps);
   const needs = await needsOf(revision);
   // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
@@ -53,6 +46,46 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   return env;
+}
+
+/** Every candidate secret in a working environment over the runner's base, read for one claim and scoped by its caller, so
+ *  a key the run does not need is never put on the environment its tools run under. The server process's own environment
+ *  value wins over the store's by the same name (the secrets rule 4: env always overrides a pasted value), so a key set
+ *  where the server starts is not shadowed by a stale one saved in the store. */
+async function workingEnv(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
+  const working: NodeJS.ProcessEnv = { ...withoutSecrets(deps.env ?? {}) };
+  // A name present with no value (`-e NAME`, an empty optional secret) is not a key: the store's saved one stands.
+  for (const name of CANDIDATES) {
+    const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
+    if (value !== undefined) working[name] = value;
+  }
+  return working;
+}
+
+/** The decision keys a run's learned workflows need, beside those claimSecrets scoped to its revision (whose own nodes
+ *  are all needsOf reads, so an agentic run gets none there): the keys of the providers the chosen workflows' typed
+ *  questions name (decisions.ts providersNamed, Jev for a node that names none), but any provider `allowed` refuses (the
+ *  run's gate), read as claimSecrets reads its keys and scoped by decisionKeysFor. `workflows`: those the claim's seed
+ *  lay chose for the run's learned_workflow tool (runner/learning-seed.ts), so this read comes after the lay. A
+ *  workflow that does not parse or inspect names no provider: the tool refuses it before any node runs. No workflow, or
+ *  no provider left, reads nothing. A fresh object per call, so no run's keys reach another's. */
+export async function learnedDecisionKeys(deps: ClaimSecretsDeps, workflows: readonly Pick<LearnedWorkflow, "workflow">[], allowed: (provider: string) => boolean): Promise<Record<string, string>> {
+  if (!workflows.length) return {};
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  const named = new Set<string>();
+  for (const { workflow } of workflows) {
+    let nodes: Record<string, unknown>[];
+    try {
+      const doc: unknown = JSON.parse(workflow);
+      nodes = workflowNodes(doc, inspectWorkflow(doc));
+    } catch {
+      continue;
+    }
+    for (const id of providersNamed(nodes)) named.add(id);
+  }
+  const providers = [...named].filter((id) => allowed(id));
+  if (!providers.length) return {};
+  return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false });
 }
 
 /** Every model key a model route reads by name: each of pi-ai's providers' (model.ts PROVIDER_KEYS) and the gateway's. */

@@ -41,6 +41,9 @@ export interface ProviderEntry {
   readonly keys: readonly { readonly name: string; readonly required: boolean }[];
   /** The mounts its computers take; none means it cannot mount the run's folder. */
   readonly mounts: readonly string[];
+  /** The network forms its computers make ("none", "open", "allow"), as its module's NETWORK declares them. Absent (a
+   *  test's fixture): nothing is said of its network. */
+  readonly network?: readonly string[];
   readonly metered: boolean;
   readonly capabilities: readonly KindCapabilities[];
 }
@@ -78,11 +81,24 @@ export interface ComputerRoutesOptions {
 
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
  *  its keys as SecretMeta under `secrets`, each named "computer:<provider>:<KEY>", and `required`, the names of the ones
- *  it needs. */
-export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string } & ShellChoice;
+ *  it needs. `network`: what this server's allow-list means for a vendor-hosted computer, in words (networkWords). */
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string; network?: string } & ShellChoice;
 /** A choice's shell (workspace runShellOf, in this server's mode), the host tools it gives (the kernel registry's
  *  hostToolDefs for that shell) and what it leaves out in words (absent on a computer that mounts the folder). */
 export type ShellChoice = { shell: ShellPlace; host_tools: string[]; shell_note?: string };
+
+/** A computer with no network: its programs run in a network of their own, so a run's allow-list is never offered it. */
+export const NO_NETWORK_WORDS = "no network, so this server's allow-list isn't offered";
+/** A computer on the vendor's own network: open, which this server's allow-list doesn't reach. */
+export const VENDOR_NETWORK_WORDS = "the vendor's own network; this server's allow-list doesn't apply";
+
+/** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
+ *  makes "none" alone or "open" alone; none where the allow-list applies (Docker), or nothing is declared. */
+export function networkWords(network: readonly string[] | undefined): string | undefined {
+  if (network?.length === 1 && network[0] === "none") return NO_NETWORK_WORDS;
+  if (network?.length === 1 && network[0] === "open") return VENDOR_NETWORK_WORDS;
+  return undefined;
+}
 /** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). */
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
@@ -143,7 +159,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
+          const network = networkWords(provider.network);
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
