@@ -19,7 +19,8 @@ export function fileable(text: string): { text: string; json: boolean; broken: n
   let json = false;
   if (/^\s*[[{]/.test(text)) {
     try {
-      laid = JSON.stringify(JSON.parse(text), null, 2);
+      JSON.parse(text);
+      laid = laidOut(text);
       json = true;
     } catch {
       // Not JSON after all: filed as it is.
@@ -40,6 +41,40 @@ export function fileable(text: string): { text: string; json: boolean; broken: n
     return pieces;
   });
   return { text: broken ? lines.join("\n") : laid, json, broken };
+}
+
+/** Valid JSON `text` laid out a value a line, two spaces an indent, as JSON.stringify(value, null, 2) lays it out, but
+ *  from the text's own tokens: a number is copied as written, never parsed, so an integer past 2^53 or a long decimal
+ *  is filed exactly as the server sent it. */
+export function laidOut(text: string): string {
+  let out = "";
+  let depth = 0;
+  const pad = () => "\n" + "  ".repeat(depth);
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j;
+    } else if (c === "{" || c === "[") {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j]!)) j++;
+      if (text[j] === (c === "{" ? "}" : "]")) {
+        out += c + text[j];
+        i = j;
+      } else {
+        depth++;
+        out += c + pad();
+      }
+    } else if (c === "}" || c === "]") {
+      depth--;
+      out += pad() + c;
+    } else if (c === ",") out += "," + pad();
+    else if (c === ":") out += ": ";
+    else if (!/\s/.test(c)) out += c;
+  }
+  return out;
 }
 
 /** The model's text for `text`, longer than `clip` characters: the filed text's first lines, whole, within `clip`, then

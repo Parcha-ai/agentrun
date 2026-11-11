@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
-import { FILED_LINE_MAX } from "../dist/filed-answer.js";
+import { FILED_LINE_MAX, fileable, laidOut } from "../dist/filed-answer.js";
 import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -456,4 +456,15 @@ test("a server that echoes a Basic credential's bare token never shows it: the t
   const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [{ name: "echo_auth", inputSchema: schema }] } }, credentials: { fake: { url: fake.url, headers: { authorization: `Basic ${basic}` } } }, work: () => work });
   const answer = textOf(await gateway.call("fake", "echo_auth", {}, { signal: signal() }));
   assert.equal(answer, "token [redacted] and header [redacted]", "neither the bare token nor the header shows");
+});
+
+test("a filed JSON answer keeps its numbers as the server wrote them: an id past 2^53 and a long decimal are never rounded, and the layout is JSON.stringify's", () => {
+  const big = '{"id":9007199254740993,"price":0.1000000000000000055511151231257827,"tags":["a",{"x":[]}],"empty":{},"s":"a,b:{c}[d] \\"q\\""}';
+  const filed = fileable(big);
+  assert.equal(filed.json, true);
+  assert.match(filed.text, /"id": 9007199254740993,/, "the id as sent, not 9007199254740992");
+  assert.match(filed.text, /"price": 0\.1000000000000000055511151231257827,/);
+  assert.equal(filed.text.replace("9007199254740993", "9007199254740992").replace("0.1000000000000000055511151231257827", "0.1"), JSON.stringify(JSON.parse(big), null, 2), "laid out exactly as JSON.stringify(value, null, 2), numbers aside");
+  const plain = JSON.stringify({ a: [1, 2, { b: null, c: true }], d: "x" });
+  assert.equal(laidOut(plain), JSON.stringify(JSON.parse(plain), null, 2));
 });
