@@ -16,16 +16,17 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
-import { readJson } from "./files.js";
-import { currentLearning, holdsForOk, type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, PROPOSAL, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
-import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 import type { Workspace } from "./workspace/index.js";
+import { launchOf } from "./handed-values.js";
+import { learningStartOf } from "./run-launch.js";
+import { runLearningEnd } from "./store-reads/learning.js";
+import type { Store } from "./store/store.js";
 
 /** The agent view's first pages, and the most a page holds. */
 const NOTES_PAGE = 50;
@@ -491,18 +492,8 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   });
 }
 
-/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
- *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
-export async function runLearning(run: Run, shown: Shown, secrets: readonly string[], data: string) {
-  // What it held for its owner's OK as it reads now (learning.ts currentLearning); its record stays as the merge wrote it.
-  const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
-  if (!learning) return null;
-  const pin = await readPin(run.dir).catch(() => undefined);
-  return runLearningBody({ id: run.id, learning, seed: pin?.seed ?? null, settled: run.settled }, shown, secrets);
-}
-
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
- *  settled: the one shape, read from a run's files (runLearning) or from the one store (store-reads/learning.ts
+ *  settled: the one shape, read from the one store (store-reads/learning.ts
  *  runLearningOverStore). */
 export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean }, shown: Shown, secrets: readonly string[]) {
   const { learning } = input;
@@ -534,25 +525,31 @@ function addedPatch(text: string): string {
   return `@@ -0,0 +1${added.length === 1 ? "" : `,${added.length}`} @@\n${added.join("")}`;
 }
 
-/** GET /runs/{id}/learning/diff: once merged, its merge commit against its parent, as its merge's script wrote it
- *  (`.agentrun/diffs/<run>.json`); before, its proposal (new notes only) against its seed; a run that proposed nothing,
- *  no file. A file's patch is withheld when too large (as the script wrote it), or when it holds one of the host's
- *  secrets now. */
-export async function runDiff(data: string, run: Run, shown: Shown) {
-  const learning = run.meta.learning;
-  if (!learning) throw new ApiError("not_found", "the run does not learn, so it proposed nothing");
+/** GET /runs/{id}/learning/diff over the one store: once merged (its learning end, store-reads/learning.ts
+ *  runLearningEnd), its merge commit against its parent, as its merge's script wrote it (`.agentrun/diffs/<run>.json` in
+ *  its agent's learning folder); before, its kept proposal (new notes only, from its learning_proposals row) against its
+ *  seed; a run that proposed nothing, no file, against the seed its launch's learning start names. A run that does not
+ *  learn (no learning start and no learning end) is not_found. A file's patch is withheld when too large (as the script
+ *  wrote it), or when it holds one of the host's secrets now (`shown`). */
+export async function runDiffOverStore(data: string, store: Store, runId: string, shown: Shown) {
+  const [end, kept, launch, row] = await Promise.all([runLearningEnd(store, runId), store.learning.proposal(runId), launchOf(store, runId), store.runs.get(runId)]);
+  const start = launch ? learningStartOf(launch) : undefined;
+  if (!row || (!end && !start)) throw new ApiError("not_found", "the run does not learn, so it proposed nothing");
   const file = (name: string, status: string, patch: string) => {
     const path = shown.name(name);
     return Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
   };
-  if (learning.merged) {
-    const folder = learningFolderOf(data, run.agentId);
-    const diff = await readRunDiff(folder.workspace, run.id).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
-    if (!diff || diff.merge !== learning.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
+  if (end?.merged) {
+    const folder = learningFolderOf(data, row.agentId);
+    const diff = await readRunDiff(folder.workspace, runId).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
+    if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
     return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }
-  const proposal = await readJson(join(run.dir, PROPOSAL));
-  const notes = isObject(proposal) && typeof proposal.seed === "string" && Array.isArray(proposal.notes) ? proposal.notes.filter((note): note is { file: string; text: string } => isObject(note) && typeof note.file === "string" && NOTE_FILE.test(note.file) && typeof note.text === "string") : undefined;
-  if (notes) return { base: proposal!.seed as string, head: null, files: notes.map((note) => file(note.file, "added", addedPatch(note.text))) };
-  return { base: (await readPin(run.dir).catch(() => undefined))?.seed ?? null, head: null, files: [] };
+  const kept_ = isObject(kept?.proposal) ? kept.proposal.proposal : undefined;
+  const proposal = isObject(kept_) && typeof kept_.seed === "string" && Array.isArray(kept_.notes) ? { seed: kept_.seed, notes: kept_.notes } : undefined;
+  if (proposal) {
+    const notes = proposal.notes.filter((note): note is { file: string; text: string } => isObject(note) && typeof note.file === "string" && NOTE_FILE.test(note.file) && typeof note.text === "string");
+    return { base: proposal.seed, head: null, files: notes.map((note) => file(note.file, "added", addedPatch(note.text))) };
+  }
+  return { base: start?.seed ?? null, head: null, files: [] };
 }
