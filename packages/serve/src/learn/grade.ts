@@ -573,7 +573,8 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
     // whichever says so, and never rests on one grading model's reading of Risky.
     const marked = decided === "keep" && runMarkedRisky(texts.get(item.file));
     // A draft held in code (an MCP tool with no declared price, LS-07) waits whatever the grade: its why is the hold's.
-    const holds = decided !== "drop" ? (held[item.file] ?? []) : [];
+    // Never over a Planted one: that drops the whole proposal (PLANTED below), whatever else holds it.
+    const holds = decided !== "drop" && !PLANTED.test(asked) ? (held[item.file] ?? []) : [];
     if (holds.length) {
       items.push({ file: item.file, keep: true, pending: true, origin: origin as "you" | "run", question: "Unpriced", why: oneLine(holds.join("; "), REASON_MAX) });
       continue;

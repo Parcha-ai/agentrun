@@ -675,17 +675,25 @@ export function draftMcpTools(doc: unknown): string[] {
   return [...found];
 }
 
-/** Every call node in `doc` (a parsed workflow.json), nested ones too, in document order: walked with a stack of its own,
- *  never the call stack, so no draft's nesting can throw here whatever reached it first (decodedStrings bounds it at
- *  the check). */
+/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions, as the
+ *  DSL's inspection visits them (its root, a chain's steps, a parallel's branches, a map's and a loop's body, a route's
+ *  branches' bodies, a nested workflow's root), never an object in a call's args, a schema or any other data, however
+ *  it is shaped. Walked with a stack of its own, never the call stack, so no draft's nesting can throw here. */
 function callNodes(doc: unknown): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
-  const stack: unknown[] = [doc];
+  const asNode = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
+  const stack: unknown[] = [asNode(doc)?.root];
   while (stack.length) {
-    const value = stack.pop();
-    if (!value || typeof value !== "object") continue;
-    const children = Array.isArray(value) ? value : Object.values(value as Record<string, unknown>);
-    if (!Array.isArray(value) && (value as Record<string, unknown>).node === "call") out.push(value as Record<string, unknown>);
+    const node = asNode(stack.pop());
+    if (!node) continue;
+    if (node.node === "call") out.push(node);
+    const children: unknown[] =
+      node.node === "chain" && Array.isArray(node.steps) ? node.steps
+        : node.node === "parallel" && Array.isArray(node.branches) ? node.branches
+          : (node.node === "map" || node.node === "loop") ? [node.body]
+            : node.node === "route" && asNode(node.branches) ? Object.values(node.branches as Record<string, unknown>).map((branch) => asNode(branch)?.body)
+              : node.node === "workflow" ? [asNode(node.workflow)?.root]
+                : [];
     for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
   }
   return out;

@@ -159,7 +159,7 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
  *  (mcp-probe.ts McpPrices). A server the store can't read gives no price: held. */
 async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
   const files = ((proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).filter((one): one is { file: string; text: string } => typeof one?.file === "string" && one.file.endsWith("/workflow.json") && typeof one.text === "string");
-  const { unpricedCalls, unpricedLine } = await import("../learn/skills.js");
+  const { draftMcpTools, unpricedCalls, unpricedLine } = await import("../learn/skills.js");
   const rows = new Map<string, Promise<McpServerRow | undefined>>();
   const priced = new Map<string, number | undefined>();
   const held: Record<string, string[]> = {};
@@ -170,8 +170,9 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     } catch {
       continue;
     }
-    // Every MCP tool the draft names, its price read first (unpricedCalls asks synchronously).
-    for (const name of new Set((text.match(/mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}/g) ?? []))) {
+    // Every MCP tool its call nodes run, as the workflow's own read reads them (draftMcpTools over the parsed JSON: an
+    // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
+    for (const name of draftMcpTools(doc)) {
       const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
       if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
       const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
