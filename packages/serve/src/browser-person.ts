@@ -20,7 +20,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, type Stats, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "./timeline/index.js";
 
 /** The ask's directory in the run's directory (never in work/). */
 export const BROWSER_ASK_DIR = "browser-ask";

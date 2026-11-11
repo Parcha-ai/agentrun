@@ -74,6 +74,7 @@ export type ConformanceCase =
   | "park-on-ask"
   | "approval-names-its-call"
   | "approval-double-click"
+  | "approval-race"
   | "message-never-answers"
   | "end-of-run-answer"
   | "fault-effects-once"
