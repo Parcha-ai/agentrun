@@ -8,7 +8,8 @@ export const TICK_MS = 50;
 export const STALL_MS = 50;
 
 /** A running deadline: `clear()` stops it; `held()` is the time it gave back so far, the process held up, so a bound
- *  reckoned from the deadline's due time (a Postgres commit's) moves with it. */
+ *  reckoned from the deadline's due time (a Postgres commit's) moves with it. A hold that ended since the last look is
+ *  counted as `held()` reads it, never left for a look that would come after the bound was reckoned. */
 export type RunnableDeadline = { clear(): void; held(): number };
 
 /** Calls `expire` once `ms` of the time this process could run have passed, counted from now on the monotonic clock
@@ -41,6 +42,9 @@ export function runnableDeadline(ms: number, expire: () => void): RunnableDeadli
       clearInterval(ticks);
       clearTimeout(timer);
     },
-    held: () => held,
+    held: () => {
+      look();
+      return held;
+    },
   };
 }

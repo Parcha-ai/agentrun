@@ -267,6 +267,15 @@ async function withUnique(error: Error, cause: unknown, columnsOf: (index: strin
 }
 
 /** A Postgres error as the store's own: a refused row StoreConstraint, a lock or a conflict StoreBusy. */
+/** Whether `error` says the database ended the session (its idle-in-transaction timeout, SQLSTATE 25P03), or that the
+ *  connection is gone and takes no more statements: a transaction's work on it was rolled back by the database. */
+export function sessionEnded(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  if (e?.code === "25P03") return true;
+  const message = typeof e?.message === "string" ? e.message : "";
+  return /not queryable|Connection terminated/i.test(message);
+}
+
 function typed(error: unknown, deadlineMs?: number): Error {
   // Already the store's own (a failed statement's error, met again at the commit of a callback that caught it).
   if (error instanceof Fenced || error instanceof RunFinal || error instanceof StoreClosed || error instanceof StoreDeadline || error instanceof StoreConstraint || error instanceof StoreBusy || error instanceof Unanswered) return error;
@@ -566,6 +575,15 @@ export class PgConnection implements StoreConnection {
       }
       let live = true;
       let broken: Error | undefined;
+      // The database may end the session while the transaction waits between statements (its idle-in-transaction timeout:
+      // this process held up past the deadline and its slack): heard here, a statement or the commit after it answers
+      // StoreDeadline (home_busy, retryable), since the database rolled the transaction back and nothing of it was written.
+      let ended: Error | undefined;
+      const onEnded = (error: Error) => {
+        ended ??= error;
+      };
+      client.on("error", onEnded);
+      const lost = (error: unknown): StoreDeadline | undefined => (ended !== undefined || sessionEnded(error) ? new StoreDeadline(deadlineMs) : undefined);
       const check = () => {
         if (!live) throw new Error("the store's transaction is over: its handle takes no more statements");
       };
@@ -586,9 +604,11 @@ export class PgConnection implements StoreConnection {
         try {
           return await step(client, statement, columnsOf, deadlineMs);
         } catch (error) {
-          // A statement that failed has aborted the transaction: no later statement of it runs.
-          broken ??= error as Error;
-          throw error;
+          // A statement that failed has aborted the transaction: no later statement of it runs. On a session the database
+          // ended, it is the transaction's deadline.
+          const failure = lost(error) ?? (error as Error);
+          broken ??= failure;
+          throw failure;
         }
       };
       const tx: Tx = {
@@ -622,6 +642,7 @@ export class PgConnection implements StoreConnection {
       const abandon = (error: Error) => {
         live = false;
         timer?.clear();
+        client.off("error", onEnded);
         // Its socket destroyed here: with no query in flight (a deadline between statements) pg's own end would send a
         // Terminate and wait for a FIN a silent connection never answers.
         (client as unknown as { connection?: { stream?: { destroy(): void } } }).connection?.stream?.destroy();
@@ -648,16 +669,27 @@ export class PgConnection implements StoreConnection {
         }
         live = false;
         timer?.clear();
+        client.off("error", onEnded);
         await rollBackAndRelease(client);
         throw error;
       }
       live = false;
       timer?.clear();
+      // Ended before its commit is sent: nothing of it was written, and the commit is never sent on a gone session.
+      const endedBefore = ended;
       try {
+        if (endedBefore) throw endedBefore;
         // A callback that caught a failed statement's error and went on still rolls back: Postgres aborted the transaction.
         if (broken) throw broken;
         await answered(client.query("COMMIT"), Math.max(COMMIT_FLOOR_MS, deadlineAt + (timer?.held() ?? 0) - performance.now()), "its commit");
       } catch (error) {
+        if (endedBefore !== undefined || (error as { code?: unknown } | null)?.code === "25P03") {
+          client.off("error", onEnded);
+          client.release(error as Error);
+          if (read) return value;
+          throw new StoreDeadline(deadlineMs);
+        }
+        client.off("error", onEnded);
         if (error instanceof Unanswered) {
           client.release(error);
           // A read's snapshot has nothing to land: what it read stands.
@@ -667,6 +699,7 @@ export class PgConnection implements StoreConnection {
         await rollBackAndRelease(client);
         throw typed(error, deadlineMs);
       }
+      client.off("error", onEnded);
       client.release();
       return value;
     });
