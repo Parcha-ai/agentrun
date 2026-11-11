@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { readLaunchBody, learningStartOf, seedFailed } = await import("../dist/run-launch.js");
+const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
 const { givenOf, learnedOf } = await import("../dist/learning.js");
 
 const dirs = [];
@@ -470,15 +470,10 @@ test("a learning run whose start can't be made from the seed it read starts with
   const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: { ...learningSeed(), notes: null } }) }), entryOf(), { input: { content: "hi" } });
   const learning = readLaunchBody((await store.runs.launch(run.id)).body).learning;
   assert.deepEqual(learning, { given: [], seed: null, section: "", seedFailed: "not_copied" });
-  assert.equal(seedFailed(learning), "not_copied");
 });
 
-test("seedFailed: a start's own reason; a start with no commit, no seedNotes and no reason (an older launch) was not copied; a read seed none", () => {
-  assert.equal(seedFailed({ given: [], seed: null, section: "", seedFailed: "unreadable" }), "unreadable");
-  assert.equal(seedFailed({ given: [], seed: null, section: "" }), "not_copied");
-  assert.equal(seedFailed({ given: [], seed: "abc", section: "", seedNotes: 0 }), undefined);
-  assert.equal(seedFailed({ given: [], seed: null, section: "", seedNotes: 0 }), undefined, "an empty folder's seed is no failure");
-  assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined, "a reason out of its list is read as none");
+test("a launch's seedFailed outside its list is read as none", () => {
+  assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined);
 });
 
 // ---- cancel ---------------------------------------------------------------------------------------------------------
