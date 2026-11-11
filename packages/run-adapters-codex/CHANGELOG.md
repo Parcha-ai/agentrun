@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.34 (2026-11-11)
+
+- The server checks a harness's pinned binary (claude-agent's CLI, Codex, OpenCode: its sha256, then the version it reports) without holding its event loop, so requests, timers and store answers go on while a binary of hundreds of MiB is hashed and run. Before, the first check in a process held every request for one to several seconds (GET /v2/capabilities, a server's start, an adapter made for a run). The binary is now hashed off the loop a chunk at a time and run as a child the loop does not wait on. A pass is kept for the adapter's own check, which then reads nothing, and two checks of one binary at once read it once. New: `checkedOnceAsync` and `sha256OfFileAsync` (kernel host), `verifyClaudeAgentCliAsync` (claude-agent), and `verifyCodexAsync` and `verifyCodexBinaryAsync` (Codex). Who breaks: a program that calls the kernel's `checkedOnce` with its own check. A check is now a `BinaryCheck`, a generator that yields each probe (`{ kind: "sha256", path }` or `{ kind: "run", path, args, env, timeoutMs }`) and is given back its answer, so one check runs either way.
+- A codex, opencode or claude-agent run that reads one of its skills' files (`read_skill_file`) now shows the call and its result on the run's Timeline, as pi's tool calls are shown. On the runner, the adapter's own skill reader ran outside the run's record, so the Timeline had no row for it. The read now goes through the host's tool path (the record, the rule before a side effect, the host's hooks on its result); a new `SessionIO.hostTool` hands an adapter's own tool to the host, and the kernel's `hostedTool(io, tool)` applies it.
+  - Upgrading: nothing to change.
+
 ## 0.1.0-beta.32 (2026-11-10)
 
 - The code copied from the upstream durable harness is now AgentRun's own: the port froze, and the pristine upstream copies, the named patches, the import tables, `scripts/port-durable-harness.mjs` and `npm run verify:port` are gone. `vendor/durable-harness/UPSTREAM.json` still records where each copy came from, and each copy keeps its header and NOTICE its attribution. With it go the kernel's paths that never run:

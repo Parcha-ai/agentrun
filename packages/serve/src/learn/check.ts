@@ -5,8 +5,8 @@
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
-import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-import { type DraftDryRun, draftProblems, type DraftReader, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
+import { type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -97,12 +97,13 @@ const MODES: Record<string, string> = { "120000": "a link: never followed", "040
 /** Why a run's path is none of what it may propose. */
 const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.md, and workflows/<name>/ with its workflow.json and README.md";
 
-/** `problem` as it may be printed: its path and detail cut of `values` and of secret shapes, whole when over PRINT_MAX. */
+/** `problem` as it may be printed: its path and detail cut of `values` and of every shape learning refuses, a bank's
+ *  numbers too (redactLearned: a name refused for one never prints it), whole when over PRINT_MAX. */
 export const printable = (problem: Problem, values: readonly string[]): Problem => ({
   // A rule is one of Rule's words as the checks write it; a kept row read back is untrusted, so it is cut too.
-  rule: redactSecrets(problem.rule, values) as Problem["rule"],
-  ...(problem.path === undefined ? {} : { path: redactSecrets(problem.path, values) }),
-  detail: redactSecrets(problem.detail, values),
+  rule: redactLearned(problem.rule, values) as Problem["rule"],
+  ...(problem.path === undefined ? {} : { path: redactLearned(problem.path, values) }),
+  detail: redactLearned(problem.detail, values),
 });
 
 type Add = (rule: Rule, detail: string, path?: string) => void;
@@ -110,7 +111,7 @@ type Add = (rule: Rule, detail: string, path?: string) => void;
 /** No secret's shape or the host's values in a file's name: a writer picks its files' names, and they reach main, the
  *  index and the logs. */
 function nameScanned(path: string, refused: (text: string) => boolean, add: Add): void {
-  for (const kind of secretShapes(path)) add("secret_shape", `its name holds text shaped like a secret (${kind})`, path);
+  for (const kind of learnedSecretShapes(path)) add("secret_shape", `its name holds text shaped like a secret (${kind})`, path);
   if (refused(path)) add("secret_value", "its name holds a value the host named as secret", path);
 }
 
@@ -148,23 +149,31 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
   let found = false;
   const hidden = hiddenCharacter(text);
   if (hidden) found = (add("invisible_unicode", `it holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see, at character ${hidden.at}`, path), true);
-  for (const kind of secretShapes(text)) found = (add("secret_shape", `it holds text shaped like a secret (${kind})`, path), true);
+  for (const kind of learnedSecretShapes(text)) found = (add("secret_shape", `it holds text shaped like a secret (${kind})`, path), true);
   if (refused(text)) found = (add("secret_value", "it holds a value the host named as secret", path), true);
   return found ? undefined : text;
 }
 
-/** A skill's SKILL.md or a draft's README.md at `path`, its front matter read as YAML reads it (skills.ts frontValues:
- *  its escapes decoded, the value a harness is served): a hidden character, a secret's shape or the host's value there
- *  is refused as one in its text is, though the text as stored spells it in escapes. True when it found one. */
-function frontScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
+/** A learned file at `path` as it is read later, its escapes decoded: a skill's SKILL.md or a draft's README.md, its front
+ *  matter read as YAML reads it (skills.ts frontValues, the value a harness is served); a draft's workflow.json, every
+ *  string it decodes to, keys too, as JSON.parse reads it (skills.ts decodedStrings, what draftProblems and a learned
+ *  call's run read). A hidden character, a secret's shape or the host's value there is refused as one in its text is,
+ *  though the text as stored spells it in escapes. True when it found one. */
+function decodedScanned(path: string, text: string, refused: (text: string) => boolean, add: Add, deep = true): boolean {
   const place = learnedPlace(path);
-  if (!place || place.kind === "workflow") return false;
+  if (!place) return false;
+  const decoded = place.kind === "workflow" ? decodedStrings(text) : frontValues(text);
+  // Nested past the bound: refused on its own where its item is checked (`deep`), unread where the whole answer is
+  // scanned (unstorable), which a draft so deep never reaches storage past.
+  if (decoded === "too_deep") return deep ? (add("workflow", `its workflow.json nests deeper than ${DECODED_DEPTH}`, path), true) : false;
+  const [values, read] = [decoded, place.kind === "workflow" ? "its JSON, read as JSON reads it," : "its front matter, read as YAML reads it,"];
   let found = false;
-  for (const value of frontValues(text)) {
+  for (const value of values) {
     const hidden = hiddenCharacter(value);
-    if (hidden) found = (add("invisible_unicode", `its front matter, read as YAML reads it, holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
-    for (const kind of secretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
-    if (refused(value)) found = (add("secret_value", "its front matter, read as YAML reads it, holds a value the host named as secret", path), true);
+    if (hidden) found = (add("invisible_unicode", `${read} holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
+    // Learning's shapes, a bank's numbers beside their words too (learnedSecretShapes), as the text's own scan reads them.
+    for (const kind of learnedSecretShapes(value)) found = (add("secret_shape", `${read} holds text shaped like a secret (${kind})`, path), true);
+    if (refused(value)) found = (add("secret_value", `${read} holds a value the host named as secret`, path), true);
   }
   return found;
 }
@@ -186,7 +195,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   const readmeOf = `${path.slice(0, path.lastIndexOf("/"))}/README.md`;
   if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("skill_status", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
   const text = textOf(path, change.bytes, refused, add);
-  if (text === undefined || frontScanned(path, text, refused, add)) return;
+  if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy);
@@ -231,7 +240,7 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
     if (change.path === INDEX_FILE) continue;
     nameScanned(change.path, refused, add);
     const text = change.bytes ? textOf(change.path, change.bytes, refused, add) : undefined;
-    if (text !== undefined) frontScanned(change.path, text, refused, add);
+    if (text !== undefined) decodedScanned(change.path, text, refused, add, false);
   }
   return problems;
 }

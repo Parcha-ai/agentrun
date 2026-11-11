@@ -9,6 +9,11 @@
 import type { MessageOrigin } from "../timeline/index.js";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 
+/** The phase row before a message a CLI run sends again (adapter-loop.ts CliRecord.sending): its runner was lost after
+ *  sending it, before the message was recorded, so the model may read it twice, and the turn it starts is paid like any
+ *  other. */
+export const MESSAGE_SENT_AGAIN = "Your message was sent again after the runner restarted: it may have reached the model before, and this turn is paid again.";
+
 export const KINDS = {
   /** A tool call about to run: written before it runs (and before the flush that precedes a side effect). */
   callStart: "agentrun.call.start",
@@ -20,6 +25,11 @@ export const KINDS = {
   callEnd: "agentrun.call.end",
   /** A message: the person's, a steer, or the model's. */
   message: "agentrun.message",
+  /** A message a CLI run took mid-turn is about to be sent as a turn of its own (adapter-loop.ts sendAfterTurn): its
+   *  command row's id, committed and flushed before the send. Its row is taken only after the send, so a runner lost in
+   *  between leaves this mark with the row untaken: the next claim sends it again and says so (MESSAGE_SENT_AGAIN). Neither
+   *  a call nor a message, so the reader passes over it. */
+  messageSending: "agentrun.message.sending",
   /** A pi input the person did not type (a trigger's message): pi's user entry under the host's kind, its `data.origin`
    *  the Timeline's attribution (pi-durable-agent's originMatcher reads a host's user entry's own origin). The model
    *  reads it as any message. */

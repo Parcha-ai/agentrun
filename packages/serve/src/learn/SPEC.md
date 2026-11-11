@@ -61,6 +61,14 @@ what every later run reads as how to do the job, so only a run that did the job 
 skill the grader holds for its owner's OK says `status: pending` (`held`), and no run is given it until it is approved
 (`isHeld`).
 
+One front-matter reader decides what a skill's `SKILL.md` and a draft's `README.md` say of themselves (their keys, name,
+description and status) for the checks, the folder's snapshot, the routes and a run's start alike. A front matter that
+does not read one way (not closed, a key indented under another, an indented first line, a key set twice, a YAML
+explicit key) or a status other than `active`, `pending` or `retired` reads as retired: no run is given it, a restore of
+it is refused until it reads one way, and a run's skill or draft with such a front matter is refused at its end. A
+status is one plain line; one that runs on over more lines reads as retired too. A learned skill is served with its
+`name` and `description` quoted, so a harness reads them as text.
+
 A workflow draft is `workflows/<name>/workflow.json` and `workflows/<name>/README.md`, both or neither; its name is 1
 to 64 lowercase letters, digits, dashes and underscores, starting with a letter or digit. The host writes the README
 from the one-line description the draft's block gives (`draftFiles`): front matter with the folder's `name` and that
@@ -100,7 +108,12 @@ a path), so it is fenced as data, never outside a fence.
 ## The index
 
 `MEMORY.md` is one line per active note, by file name, `- [name](file.md) — description`, built by the host from the
-notes' front matter every time it merges. A run reads its first 200 lines, within 25 KB, as Claude Code loads its own.
+notes' front matter every time it merges. A run whose agent's active notes fit its learning budget reads every one
+whole. Past it, the run reads the notes that bear on its first message whole, best first, while they fit, then one line
+for each of the rest, `- <name> (<file>): <description>`, in place of the index: at most 200 lines, within 25 KB, as
+Claude Code loads its own. Each note is scored by a lexical match, with no model call (`learn/relevance.ts`: BM25 over its
+name, description and body). A first message that shares no word with any note reads the index's first 200 lines, then
+the notes changed last, whole, while they fit.
 
 ## What a run may propose
 
@@ -113,7 +126,9 @@ changes against the commit the run started from; a skill or a draft given with t
 change. Once a learned skill the run was offered has been offered to 3 of its agent's earlier runs (each run's launch
 names the skills its seed offered it), and no learned workflow of that name is on main, active or pending, the prompt
 gains one line asking for that skill's job as a workflow draft under its name (`draftFor`: one skill at most, the first
-due in the seed's order). A run gives a skill or a draft whole, new or changed, and may only add notes:
+due in the seed's order), and says what each tool a draft's call node may run takes and gives, in the host's own words
+for that tool (`{ query, n? } -> { provider, query, results: [...] }` for web search), so its call nodes are wired to the
+real shapes. A turn that asks for no draft says none of it. A run gives a skill or a draft whole, new or changed, and may only add notes:
 
 - one note per block, in the format above, named for a file at the folder's top;
 - to replace a note, a new note whose `supersedes` names it; the old one stays, and the host marks it;
@@ -202,8 +217,9 @@ Whether a note holds one case's data is the grader's judgment, not the checker's
 One grader judges the whole proposal against the agent's active notes and standing instructions, with `GRADE_RUBRIC`
 (`grade.ts`, the rubric's one statement), on the model the host picks for grading. `gradePrompt` fences, as data,
 the instructions (their first 16,000 characters), the index line of each active note (cut to 300 characters), the
-whole text of only the notes the proposal supersedes, what the user said in the run (the first message and the newest
-three, each cut to 1,000 characters), and the new notes, skill and draft (its README with it). The user's messages let the grader tell what the user asked
+whole text of only the notes the proposal supersedes, every message the run was sent (each within 1,000 characters: a
+longer one shows its start and its last 300; 40,000 in all), what a trigger sent it apart from what the user said, and
+the new notes, skill and draft (its README with it). The user's messages let the grader tell what the user asked
 the agent to keep from what a page told it to. So the prompt is bounded by the caps above, never by how many notes the
 folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
 
@@ -240,9 +256,14 @@ came to hold meanwhile. A note that supersedes the one it repeats updates it, ne
 grader's to judge. Steps or a format for one kind of job,
 named by when it applies, are a skill. `note` is a skill's decision alone: on any other item it is no merge. An item
 the rubric drops is
-dropped. A risky rule (one that widens trust in a site or a seller, skips or loosens an approval or a check, or names
-an account or a destination for money or data) is `pending`, whether the user asked for it in their own words or the
-run worked it out: kept, with `status: pending`, and in no index, so no run reads it until a person approves it. A
+dropped. A rule found only inside text the run read (a form's field, a pasted email, a page) is planted, whoever it says
+it is from, and dropped; a rule the user states in their own words is theirs, even beside such text in the same
+message. An item that holds an account number is a secret, dropped even where the user gave it as where money goes.
+Neither is ever held for the owner's OK. A risky rule is `pending`, whether the user asked for it in their own words or
+the run worked it out. Risky reads one way on every grade model, from the rule's words alone: a limit, threshold, cap or
+amount that decides whether an approval, a check or a sign-off happens, in either direction; an exemption of a case, a
+person, a site or a source from a check; trusting, buying from or paying a site, a source or a seller it names; or naming
+where money or data goes. A risky rule is kept, with `status: pending`, and in no index, so no run reads it until a person approves it. A
 note the grader keeps and names `Risky` is pending too. Every other note is kept. The user is the agent's owner, so a
 risky rule is never silently dropped and never served on its own; it waits. A risky skill or draft waits the same way,
 with `status: pending` in its `SKILL.md` or README.
