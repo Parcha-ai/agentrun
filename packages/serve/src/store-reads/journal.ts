@@ -5,15 +5,16 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { CAPS, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { CAPS, costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
-import { labelled, type Reflect } from "../learning-run.js";
+import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
+import { bookedSpend } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -49,6 +50,12 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // A model turn's text; its stop reason is the answer's (a cut at the output limit reads "length", as pi's does).
       const stopReason = data.stopReason === "length" ? "length" : "stop";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}), ...timestamp }] };
+    }
+    // The end-of-run turn's answer, as the CLI record keeps it (adapter-loop.ts answered): a model turn that ended, so the
+    // timeline shows it as pi's end-of-run turn shows its own (labelled then marks it the learning's).
+    if (entry.kind === KINDS.endOfRunTurn && data.role === "model") {
+      const text = typeof data.text === "string" ? data.text : "";
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
     if (entry.kind === KINDS.callStart) {
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
@@ -111,15 +118,45 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
 
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
- *  (withPaidCosts). The usage row the renderer folds from the model turns is dropped for a CLI run: its record carries no
- *  per-request cost, so the run's cost reads from its stored total (costView over no usage row), as it did before this
- *  rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the server labels them
- *  (learning-run.ts labelled). */
+ *  (withPaidCosts). A CLI run's record carries no per-request cost, so the usage row the renderer folds from its model
+ *  turns is put in its booking's words (bookedUsage): its model requests at what the run's model proxy booked them at,
+ *  and its paid tool calls at what they charged, as a pi run's usage row counts them. The end-of-run turn's rows are
+ *  labelled as the server labels them (reflect-range.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
-  const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  const rows = cli ? bookedUsage(rendered, entries, options) : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+}
+
+/** A CLI run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every session of the
+ *  run): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
+ *  costsofar/1), in the renderer's words (`Cost` once ended, else `Cost so far`). The renderer's own row is replaced in
+ *  place; a run that booked a request and rendered none gets one at the end. One that booked none keeps its rows, with no
+ *  usage row. */
+function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
+  const model = bookedSpend(entries, "model");
+  const paid = bookedSpend(entries, "paid");
+  const at = rows.findIndex((row) => row.kind === "usage");
+  const kept = rows.filter((row) => row.kind !== "usage");
+  if (!model.requests && !paid.requests) return kept;
+  const usd = model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
+  const unpriced = model.unpriced + paid.unpriced;
+  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
+  const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
+  const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
+  const summary = `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
+  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+  const last = rows[rows.length - 1];
+  const base: TimelineEvent = at >= 0 ? rows[at]! : {
+    ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,
+    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null,
+  };
+  const row: TimelineEvent = { ...base, kind: "usage", summary, usage };
+  const out = [...kept];
+  out.splice(at >= 0 ? at : out.length, 0, row);
+  return out;
 }
 
 /** `rows` with none dated 1970: a row the renderer found no time for (an entry of a CLI record written before its entries

@@ -212,6 +212,23 @@ test("a new row after the cursor comes as a change, not a reset", async () => {
   assert.deepEqual(next.rows.map((r) => r.id), ["e2"]);
 });
 
+test("a page never reads working without the message row the view read it from: the view is read first, then the rows (#2307)", async () => {
+  // The run's message is committed between the page's two reads, whichever goes first: the first read sees the journal
+  // before it, the second after. A page whose status says working holds the message row the status was read from.
+  const message = { id: "e1", kind: "user_message", agent_label: null, summary: "Go.", text: "Go." };
+  const queued = { status: "queued", state: "working", cost: { usd: 0 }, poll_after_ms: 1000 };
+  let reads = 0;
+  let committed = false;
+  const read = () => {
+    const seen = committed;
+    if (++reads === 1) committed = true;
+    return seen;
+  };
+  const tl = runTimelines({ context: BACKGROUND_CONTEXT, pollMs: 5, timelineRows: async () => (read() ? [message] : []), runView: async () => (read() ? working : queued) });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.ok(page.status !== "working" || page.rows.some((one) => one.kind === "user_message"), `a working page holds the message row: ${page.status} ${JSON.stringify(page.rows.map((one) => one.kind))}`);
+});
+
 test("more changed rows than the limit sets has_more and returns the limit", async () => {
   const tl = timeline({ rows: [row("e1", "a"), row("e2", "b"), row("e3", "c")], view: working });
   const page = await tl.page({}, "run-1", 0, 0, 2);

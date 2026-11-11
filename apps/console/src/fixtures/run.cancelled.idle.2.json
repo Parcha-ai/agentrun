@@ -17,6 +17,9 @@
     "status": "cancelled",
     "state": "idle",
     "title": "Summarize the design workshop recording from Tuesday.",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:32.338Z",
     "updated_at": "2026-10-28T21:19:54.701Z",
     "ended_at": "2026-10-28T19:33:35.235Z",

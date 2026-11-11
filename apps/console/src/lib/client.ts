@@ -53,10 +53,10 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-/** `limits`: this server's own (the largest upload, the most files a run names); absent on an older server. */
+/** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
- *  provider's key, or another default model. Absent on an older server. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
+ *  provider's key, or another default model. */
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -118,7 +118,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
     /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
      *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
-     *  where the server offers none (`{ offer: false }`, or a 404 from an older server) or refuses the read. */
+     *  where the server offers none (`{ offer: false }`, or a 404: a server without accounts has no such route, and once
+     *  the owner is set it is none to a caller not signed in) or refuses the read. */
     setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
@@ -285,7 +286,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
-    listMcpServers: () => call<{ servers: McpServer[]; file_unreadable?: true }>("GET", "/settings/mcp-servers"),
+    listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
     previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
     /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
     saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),

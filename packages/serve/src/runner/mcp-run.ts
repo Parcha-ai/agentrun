@@ -134,7 +134,6 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
-    liveCredentials: true,
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
