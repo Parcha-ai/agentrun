@@ -91,8 +91,8 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: string }>>();
 const SERVED_KEPT = 32;
 function servedOnce(store: Store, runId: string, input: string, values: readonly string[]): string {
-  let served = servedByStore.get(store);
-  if (!served) servedByStore.set(store, (served = new Map()));
+  let served = servedByStore.get(store.origin);
+  if (!served) servedByStore.set(store.origin, (served = new Map()));
   const key = wholeAnswerFor(values).key;
   const last = served.get(runId);
   if (last && last.key === key && last.input === input) return last.out;

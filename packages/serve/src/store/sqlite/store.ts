@@ -342,6 +342,8 @@ class SqliteStore implements Store {
   readonly sealedSecrets: SealedSecrets;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** The store this one is a snapshot of, or itself (Store.origin). */
+  readonly origin: Store;
   /** Where this store's data is: its connection's (StoreConnection.where). */
   readonly where: string;
   /** The deadlines' clock now (fence.ts storeNow): the database's on Postgres, this store's clock bound on SQLite. */
@@ -355,9 +357,10 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: StoreConnection, now: () => number) {
+  constructor(db: StoreConnection, now: () => number, origin?: Store) {
     this.#db = db;
     this.#now = now;
+    this.origin = origin ?? this;
     this.where = db.where;
     const d = db.dialect;
     const clock = (): StoreNow => storeNow(d, now);
@@ -1437,7 +1440,7 @@ class SqliteStore implements Store {
   }
 
   async snapshot<T>(read: (store: Store) => Promise<T>): Promise<T> {
-    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now)), { read: true });
+    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.origin)), { read: true });
   }
 
   /** How many journals the store keeps (open, of a claim not released). */

@@ -194,8 +194,9 @@ export async function wholeAnswers(store: Store, runId: string, context: Context
   // rest of the answer is past what it read, so that row is read again too.
   const cut = (row: TimelineEvent) => row.kind === "final_answer" && row.text !== null && (row.text.length >= CAPS.text || row.text.endsWith("...") || row.text === "[redacted]");
   if (!rows.some(cut)) return rows;
-  let kept = answersServed.get(store);
-  if (!kept) answersServed.set(store, (kept = new Map()));
+  // Kept by the store a snapshot was taken of: each snapshot's own store is a new object, and would never hit.
+  let kept = answersServed.get(store.origin);
+  if (!kept) answersServed.set(store.origin, (kept = new Map()));
   const keyOf = (row: TimelineEvent) => `${runId}\0${row.id}\0${whole.key}`;
   let uncut: Map<string, string | null> | undefined;
   const out: TimelineEvent[] = [];
