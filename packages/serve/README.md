@@ -788,8 +788,10 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
-own network, whatever the list says.
+Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
+vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
+only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
+`AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
 `npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers

@@ -166,3 +166,32 @@ test("a learning run's merge never makes a held item active: it can't mark a not
     await folder.end();
   }
 });
+
+// A skill's or a draft's retired_from is read by the one front-matter reader (frontMatter, #2255): its quoting decoded
+// one way, and only on one plain line, as its status is. Only `active` read that way restores active; anything else is
+// held again (fail closed), and one the writer could not take out whole is refused, never half-edited.
+test("a skill's retired_from is read by the one front-matter reader: only a plain or quoted active restores active; an unclear one restores held, one on two lines is refused", async () => {
+  const { learnedStatus, restorable, restoredLearned, retiredFrom, retiredLearned } = await import("../dist/learn/skills.js");
+  const skill = (extra) => `---\nname: tables\ndescription: Answer comparisons with a table\nstatus: retired\n${extra}---\nUse a table.\n`;
+  const back = (text) => learnedStatus(restoredLearned(text));
+  assert.equal(back(skill("retired_from: active\n")), "active", "recorded active: back active");
+  assert.equal(back(skill('retired_from: "active"\n')), "active", "quoted, as the reader decodes it");
+  assert.equal(back(skill("retired_from: pending\n")), "pending", "recorded pending: held again");
+  assert.equal(back(skill("")), "pending", "none recorded: held (fail closed)");
+  for (const unclear of ["retired_from: activ\n", "retired_from: Active\n", 'retired_from: ""\n', "retired_from: active pending\n"]) {
+    assert.equal(retiredFrom(skill(unclear)), "pending", unclear);
+    assert.equal(back(skill(unclear)), "pending", `${unclear}: never active`);
+  }
+  // On more than one line no writer takes it out whole: refused, never restored at all.
+  for (const split of ["retired_from: >\n  active\n", "retired_from:\n  active\n", 'retired_from: "act\n  ive"\n']) {
+    assert.equal(retiredFrom(skill(split)), "pending", split);
+    assert.equal(restorable(skill(split)), false, split);
+    assert.throws(() => restoredLearned(skill(split)), /not one plain line/, split);
+  }
+  // A retire records what it was, read one way: active only when it read active; held, or already retired, records pending.
+  const active = "---\nname: tables\ndescription: Answer comparisons with a table\n---\nUse a table.\n";
+  assert.equal(retiredFrom(retiredLearned(active)), "active");
+  assert.equal(retiredFrom(retiredLearned(active.replace("---\nUse", "status: pending\n---\nUse"))), "pending");
+  assert.equal(retiredFrom(retiredLearned(skill("retired_from: active\n"))), "pending", "a retire of what reads retired never records active");
+  assert.equal(learnedStatus(retiredLearned(active)), "retired");
+});

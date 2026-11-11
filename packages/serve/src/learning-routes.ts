@@ -16,7 +16,7 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, restore, restoredLearned, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, restorable, restore, restoredLearned } from "./learn/index.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -420,6 +420,11 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             const status = learnedStatus(current!.text);
             const kind = learned.kind === "skill" ? "skill" : "workflow";
             if (status !== "retired") throw new ApiError("bad_request", `The ${kind} is not retired: it is ${status}.`);
+            // Read as retired since its front matter reads no way, or its status (or the retired_from its retire recorded) is
+            // set on more than one line, which no writer edits (learnedStatus, restorable): refused until it is written so.
+            if (!restorable(current!.text)) throw refused([printable({ rule: kind, path: file, detail: UNCLEAR_FRONT }, input.refuse)]);
+            // Back to the status its retire recorded (restoredLearned: retired_from, read by the one reader), never active
+            // unless it was active: a held skill or draft waits for its owner's OK again.
             text = restoredLearned(current!.text);
             const problems = skillProblems(text, learned.name).map((detail) => printable({ rule: kind, path: file, detail }, input.refuse));
             const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
