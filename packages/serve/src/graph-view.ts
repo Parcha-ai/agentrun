@@ -9,11 +9,14 @@
 // fail it). Once the run ended, the store.
 import type { Context } from "@earendil-works/chord";
 import { llmAnswers, type NodeLine, readLiveView, readNodeLog } from "./pause.js";
+import { KINDS } from "./runner/journal-kinds.js";
 import type { Store } from "./store/store.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
 type Item = { index: number; status: GraphNodeStatus; executionPath: string; label?: string; branches?: Record<string, string> };
-type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string; branch?: string; items?: Item[] };
+type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string; branch?: string; items?: Item[]; model?: string; tier?: string };
+/** The model nodes (graph.ts's model kinds): each runs on its tier's model, else the run's own. */
+const MODEL_KINDS = new Set(["agent", "decide", "extract", "report"]);
 
 export type GraphInput = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
@@ -224,6 +227,23 @@ export async function runGraph(given: GraphInput) {
   const calls = llmAnswers(lines).slice(given.llmRead ?? 0).map((line) => (isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
   const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
   const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
+  // Each model node's model once it ran: its tier's, as the run's claims kept it (KINDS.nodeModel, workflow-spec.ts
+  // modelOf), else the default tier's, as modelOf falls back; the tier beside it when the node names one. A decision
+  // node's model is its provider's, from its newest receipt. Any other node has none.
+  const { runEntries } = await import("./store-reads/journal.js");
+  const tierModels = new Map<string, string>();
+  for (const entry of await runEntries(given.store, id, given.context)) {
+    const data = (entry.data ?? {}) as { tier?: unknown; model?: unknown };
+    if (entry.kind === KINDS.nodeModel && typeof data.tier === "string" && typeof data.model === "string") tierModels.set(data.tier, data.model);
+  }
+  for (const node of graph.nodes) {
+    const own = nodes[node.path]!;
+    if (!MODEL_KINDS.has(node.kind) || own.status === "pending" || own.status === "not_run") continue;
+    const tier = definition(node.path)?.tier;
+    const model = tierModels.get(typeof tier === "string" ? tier : "default") ?? tierModels.get("default");
+    if (model) Object.assign(own, { model, ...(typeof tier === "string" ? { tier } : {}) });
+  }
+  for (const decision of decisions) if (typeof decision.node === "string" && typeof decision.model === "string" && nodes[decision.node]) nodes[decision.node]!.model = decision.model;
   const startedMs = Date.parse(given.run.startedAt);
   const endMs = given.run.endedAt ? Date.parse(given.run.endedAt) : Date.now();
   return {

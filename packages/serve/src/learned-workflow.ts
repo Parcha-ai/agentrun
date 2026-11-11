@@ -101,6 +101,9 @@ export type LearnedWorkflowRun = {
   models: RunModels;
   /** The run's model a model node of `tier` runs on: the tier's, else the run's own. */
   modelOf(tier: string | undefined): ModelRef | undefined;
+  /** That model as a person reads it, the id the run's route names it by: what a node's trace says it ran on (its
+   *  `model`). Absent, or answering nothing: the ref modelOf gives, as `<provider>/<modelId>`. */
+  modelName?(tier: string | undefined): string | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
   /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
@@ -236,8 +239,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     runners.set(tier ?? "default", runner);
     return runner;
   };
+  // Each model node's model and tier by its label, as it runs: its node.end puts them on its trace. A map's items share a
+  // label and a tier, so one entry holds for each of them. Only a model node runs here: a call node never has one.
+  const ranOn = new Map<string, { model: string; tier?: string }>();
   const runNode = async (request: Parameters<NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>[0]) => {
     if (request.tools?.length) throw new Error(`${NODE_TOOLS_REFUSED}: its node "${request.label}" names ${request.tools.join(", ")}`);
+    const tier = typeof request.tier === "string" ? request.tier : undefined;
+    const ref = run.modelOf(tier);
+    const model = run.modelName?.(tier) ?? (ref ? `${ref.provider}/${ref.modelId}` : undefined);
+    if (model && typeof request.label === "string") ranOn.set(request.label, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
     return (await runnerFor(request.tier as string | undefined))(request);
   };
@@ -260,7 +270,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const onEvent = (event: { type: string; label: string; detail?: unknown }) => {
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0 });
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ranOn.get(String(event.label)) });
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);

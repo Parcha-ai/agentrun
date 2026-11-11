@@ -57,6 +57,10 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** A workflow run's model for a tier, as its claim resolved it (workflow-spec.ts modelOf): `{ tier, model }`, the tier
+   *  its nodes asked for (`default` for none) and the model id the run's route sent them to. Written once per tier a claim
+   *  resolves, on the root, for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a call nor a message. */
+  nodeModel: "agentrun.node.model",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
