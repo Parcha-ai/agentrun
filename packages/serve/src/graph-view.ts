@@ -56,7 +56,7 @@ export async function runGraph(given: GraphInput) {
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
     import("@parcha/agentrun-dsl/graph"),
     import("@parcha/pi-durable-agent/workflow"),
-    import("@parcha/agentrun-pi/durable"),
+    import("./workflow/readers.js"),
   ]);
   const { id } = given.run;
   const graph = workflowGraph(given.workflow);

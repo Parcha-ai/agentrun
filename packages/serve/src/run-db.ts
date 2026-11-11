@@ -7,7 +7,7 @@
 // guard). The one read-write open is the checkpoint when the server takes the run back (runs.ts), with no process left.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { forgetWalWalk, walHasCommit } from "@parcha/agentrun-pi/durable";
+import { forgetWalWalk, walHasCommit } from "./workflow/wal.js";
 import { profilePragmas } from "@parcha/pi-durable-disk/internals";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
@@ -69,7 +69,7 @@ const READ_TRIES = 3;
 export function readRunDbSync<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): T {
   for (let attempt = 1; ; attempt++) {
     for (const observer of observers) observer({ file, mode: "read", held });
-    // A WAL is opened only once it holds a commit SQLite's recovery takes (agentrun-pi walHasCommit).
+    // A WAL is opened only once it holds a commit SQLite's recovery takes (workflow/wal.ts walHasCommit).
     const immutable = !walHasCommit(`${file}-wal`);
     const before = immutable ? fileMark(file) : undefined;
     runDbTestHooks.afterPlan?.(file);

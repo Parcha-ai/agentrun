@@ -7,7 +7,7 @@ import { appendFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { durableDecisions } from "@parcha/agentrun-pi/durable";
+import { durableDecisions } from "../dist/workflow/readers.js";
 import { decisionKeysFor, decisionsOf, providerMissing } from "../dist/decisions.js";
 import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";

@@ -1,6 +1,6 @@
 // The take-back's checkpoint of a run's database (run-db.ts checkpointRunDb) against the server's lock-free readers,
 // which do not wait on it: every reader path (run-db.ts readRunDbSync: readStore, tookMessage, cap.ts, import-summary,
-// import.ts; and agentrun-pi's `unlocked` read: durableDecisions) reads in other processes, over and over, while runs'
+// import.ts; and workflow/readers.ts's `unlocked` read: durableDecisions) reads in other processes, over and over, while runs'
 // processes write and exit with their WAL kept and the server checkpoints after each. No read fails, and none sees
 // fewer rows than one before it: the checkpoint copies into the database file only pages the WAL also holds, and lets
 // go of the WAL by removing it, never by cutting a file a reader still reads. And no reader makes or removes a WAL: SQLite's

@@ -36,7 +36,7 @@ Run `npm run demo -- --no-evidence` to make every source fail the evidence check
 
 For a first edit, change `keep: { path: 'answersQuestion', gte: 0.8 }` to `gte: 0.99` in `typed-research.ts`, then rerun `npm run demo`. The scripted evidence probability is `0.95`, so it now stops. No rebuild is needed for this TypeScript example. Restore `0.8` before running the unchanged acceptance tests. This changes a real execution rule; changing a prompt alone will not change the scripted model responses.
 
-The [configured research walkthrough](live-research.md) wires the same workflow to Jev and your saved Pi default, and includes independently labeled evidence cases.
+The [configured research walkthrough](live-research.md) wires the same workflow to Jev and your own agents, and includes independently labeled evidence cases.
 
 ## Use in your own app
 

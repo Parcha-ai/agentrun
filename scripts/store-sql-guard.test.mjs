@@ -29,6 +29,8 @@ const TODAY = [
   "packages/serve/src/import-summary.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
+  // The copy of pi/src/durable/readers.ts serve runs (its workflow code moved into serve; pi's copy goes with pi).
+  "packages/serve/src/workflow/readers.ts",
 ];
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
 const SQLITE_FILE = /\.sqlite\b/;
@@ -170,6 +172,8 @@ const TODAY_DRIVER = [
   "packages/serve/src/agents.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
+  // The copy of pi/src/durable/readers.ts serve runs, as on TODAY.
+  "packages/serve/src/workflow/readers.ts",
 ];
 
 test("no SQLite driver taken outside the store, but for today's files on the list", () => {

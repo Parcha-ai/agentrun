@@ -44,7 +44,7 @@ npm run demo
 npm run eval:research
 ```
 
-It plans subquestions, researches them in parallel, screens evidence, and writes a report. The evaluation checks six labeled cases with scripted responses. [Connect real Jev and Pi models](live-research.md).
+It plans subquestions, researches them in parallel, screens evidence, and writes a report. The evaluation checks six labeled cases with scripted responses. [Connect real Jev decisions and your agents](live-research.md).
 
 ## Every example
 

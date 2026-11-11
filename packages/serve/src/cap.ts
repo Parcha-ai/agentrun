@@ -45,7 +45,7 @@
 // (RunSpend.wait, budget.ts): a model node's request before it is sent, a call node's call and a decision before they are
 // admitted again. A refusal inside a call node's effect is told to the call (capRefusals), never only to the model.
 import { readRunDbSync } from "./run-db.js";
-import { durableDecisions } from "@parcha/agentrun-pi/durable";
+import { durableDecisions } from "./workflow/readers.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
@@ -580,7 +580,7 @@ export function decisionSpentIn(storeFile: string): number {
   if (existsSync(storeFile)) try { receipts = durableDecisions(storeFile, { unlocked: true }); } catch { receipts = []; }
   for (const receipt of receipts) {
     const usd = figureOf(receipt.cost_usd);
-    // A stored receipt row names its decision `decision_id` (agentrun-pi decision-recovery.ts rowOf).
+    // A stored receipt row names its decision `decision_id` (workflow/decision-recovery.ts rowOf).
     const id = typeof receipt.decision_id === "string" ? receipt.decision_id : typeof receipt.id === "string" ? receipt.id : undefined;
     if (id !== undefined && usd !== undefined && usd > 0) receipted.set(id, (receipted.get(id) ?? 0) + usd);
   }
