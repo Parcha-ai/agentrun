@@ -409,7 +409,7 @@ go through `work/` by path.
     connect, over a minute old); a live run's, of any server of this user's, stays.
   - On a Mac, where Docker runs in a VM, a socket bound in from the Mac does not connect, so the proxy runs inside the
     VM instead: one container per server, `agentrun-egress-<12 hex of the data root>`, labelled `agentrun.egress`. It
-    is `node:22-bookworm-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
+    is `node:22.23.5-trixie-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
     `<data>/egress/`, the list as its one variable, a read-only root, no capability, the server's uid:gid, 256 MiB and
     256 processes. It listens on a Unix socket in a tmpfs volume of the same name, owned by the server's uid, and the
     box mounts that volume read-only at `/run/agentrun/egress/`. The box keeps `--network none`, its `socat` and its

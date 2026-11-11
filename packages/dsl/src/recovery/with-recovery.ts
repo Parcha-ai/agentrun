@@ -94,8 +94,10 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
             throw error;
           }
           // A cut call (a cancel, the run's failure) has no outcome: a later open finds it asked and unanswered. A call
-          // that ended on its own failed, and the next process asks again.
-          if (!driver.signal.aborted && !params.signal?.aborted) driver.decisionEnded(params.executionPath, decisionId, "failed", null);
+          // that ended on its own failed, and the next process asks again; so does one that never left (`unsent`, a host's
+          // refusal before it sent anything), whatever stopped the run meanwhile: nothing went out to answer.
+          const unsent = error instanceof DecisionProviderError && error.unsent === true;
+          if (unsent || (!driver.signal.aborted && !params.signal?.aborted)) driver.decisionEnded(params.executionPath, decisionId, "failed", null);
           throw error;
         }
         const cost = typeof result.cost_usd === "number" && Number.isFinite(result.cost_usd) ? result.cost_usd : null;

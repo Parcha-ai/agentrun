@@ -31,8 +31,7 @@ async function started(api, id, instructions, harness = "claude-agent", tools = 
   return run.body.run_id;
 }
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
-test.skip("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
+test("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true], ["opencode", true]]);
   const runId = await started(api, "chat", "Answer the question.");
@@ -197,8 +196,7 @@ test.skip("a run cancelled while its harness's request is out, and never opened 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "the carried-back cost is unknown, never the first request's alone");
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
-test.skip("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
+test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "later", "Second turn unpriced.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -370,7 +368,8 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
+// SKIP (follow-up #2058): the reopened run completes, but its answer reads the earlier turn's ("Answer 1.") where its own
+// turn showed none: the store's answer is the run's last model text, not the last turn's.
 test.skip("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer that turn's own (none), without waiting for another message", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "answerless", "The second turn answers nothing.");
@@ -421,6 +420,37 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal(await answer(api, runId), "Answer 2.");
   });
 }
+
+test("pi: a message sent while the turn a steered message started works reaches that turn too; the run does not end until both are answered", { timeout: 90_000 }, async (t) => {
+  // The first turn holds; a message steered into it is answered in a turn of its own after it (steeredIn), which holds
+  // too; a second message sent while that turn works is placed in it, never left for the run's end and a reopen.
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const [go, goToo] = [join(await scratch(t), "go"), join(await scratch(t), "go-too")];
+  assert.equal((await api("POST", "/agents", agent("held-twice", { tools: [] }))).status, 201);
+  const run = await api("POST", "/agents/held-twice/runs", { input: { content: `Hold twice, until ${go} and then ${goToo}.` } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
+  await writeFile(go, "");
+  // The steered message's turn holds on the second file: the second message lands while it works.
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => (r.kind === "final_answer" || r.kind === "text_block") && r.summary === "Answer 1."); i++) {
+    assert.ok(i < 300, "the first turn's answer");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and also?" })).status, 202);
+  await writeFile(goToo, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  // Settled: no reopen is still to come.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const said = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block").map((r) => r.summary);
+  assert.equal(said.length, 3, `an answer for the input and for each message: ${JSON.stringify(said)}`);
+  // One end: the second message was answered in the claim, never left for the run's end to open it again.
+  const ends = storeEntries(data, runId).filter((entry) => entry.kind === "agentrun.end");
+  assert.equal(ends.length, 1, `the run ended once, after both messages were answered: ${ends.length} ends`);
+});
 
 test("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });

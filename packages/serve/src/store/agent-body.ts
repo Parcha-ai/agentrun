@@ -47,8 +47,9 @@ export type PromptVariant = { role: "base" | "overlay" | "generic" | "question";
 
 export type RevisionPlace = { mode: string; box?: string };
 /** A revision's computer (computer-setting.ts): its kind and the provider that serves it, ids its host knows, and a
- *  sandbox's GPUs, a type its provider names and how many; `place` is its v2 view. */
-export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
+ *  sandbox's GPUs, a type its provider names and how many; `place` is its v2 view. `image`: one the provider offers for
+ *  the kind, absent for its default. */
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } };
 /** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
@@ -72,17 +73,19 @@ function placeOf(place: unknown): RevisionPlace {
 /** A GPU type as a body keeps it: the vendor's own name ("T4", "A100-80GB", "RTX-PRO-6000"). */
 const GPU_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** A computer as a body keeps it: `{kind, provider?, gpu?}`, nothing else: kind and provider ids, and gpu `{type, count}`,
- *  a GPU type name and a whole count from 1. */
+/** A computer as a body keeps it: `{kind, provider?, image?, gpu?}`, nothing else: kind and provider ids, image a name
+ *  with no spaces around it, and gpu `{type, count}`, a GPU type name and a whole count from 1. */
 function computerOf(computer: unknown): RevisionComputer {
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "gpu")) invalid("the computer is not {kind, provider?, gpu?}, kind and provider each an id (lowercase letters, digits and dashes)");
-  const ok = computer as { kind: string; provider?: string; gpu?: unknown };
+  const image = isObject(computer) ? computer.image : undefined;
+  const named = (value: unknown) => typeof value === "string" && value !== "" && value === value.trim();
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "image" && key !== "gpu")) invalid("the computer is not {kind, provider?, image?, gpu?}, kind and provider each an id (lowercase letters, digits and dashes), image a name");
+  const ok = computer as { kind: string; provider?: string; image?: string; gpu?: unknown };
   const gpu = ok.gpu;
   if (gpu !== undefined && (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count") || typeof gpu.type !== "string" || !GPU_TYPE.test(gpu.type) || !Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1)) {
     invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
   }
   const kept = gpu as { type: string; count: number } | undefined;
-  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}) };
+  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any
