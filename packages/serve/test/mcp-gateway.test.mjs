@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
-import { FILED_LINE_MAX, fileable, laidOut } from "../dist/filed-answer.js";
+import { FILED_LINE_MAX, LAYOUT_DEPTH_MAX, fileable, laidOut, layoutBound } from "../dist/filed-answer.js";
 import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -467,4 +467,27 @@ test("a filed JSON answer keeps its numbers as the server wrote them: an id past
   assert.equal(filed.text.replace("9007199254740993", "9007199254740992").replace("0.1000000000000000055511151231257827", "0.1"), JSON.stringify(JSON.parse(big), null, 2), "laid out exactly as JSON.stringify(value, null, 2), numbers aside");
   const plain = JSON.stringify({ a: [1, 2, { b: null, c: true }], d: "x" });
   assert.equal(laidOut(plain), JSON.stringify(JSON.parse(plain), null, 2));
+});
+
+test("a deeply nested JSON answer is never padded without end: the indent stops at LAYOUT_DEPTH_MAX, and past the layout bound the answer is filed as written, in readable lines", () => {
+  // 10,000 arrays around a 40,000-character string: laid out at two spaces a level, about 200 million spaces.
+  const deep = "[".repeat(10_000) + JSON.stringify("x".repeat(40_000)) + "]".repeat(10_000);
+  const started = Date.now();
+  const filed = fileable(deep);
+  assert.ok(Date.now() - started < 2_000, "filed at once");
+  assert.equal(filed.json, true, "still JSON, filed as .json");
+  assert.equal(filed.laid, false, "past the bound: filed as written, not laid out");
+  assert.equal(laidOut(deep), undefined);
+  assert.ok(filed.text.length <= layoutBound(deep), "the filed text stays within the bound");
+  assert.equal(filed.text.replaceAll("\n", ""), deep, "the answer's characters, whole and in order");
+  const lines = filed.text.split("\n");
+  assert.ok(lines.length > 1 && lines.every((line) => line.length <= FILED_LINE_MAX), "every line read shows whole");
+  assert.ok(filed.broken > 0);
+  // Nesting within the bound is laid out, its indent capped at LAYOUT_DEPTH_MAX levels.
+  const nested = "[".repeat(40) + "1" + "]".repeat(40);
+  const laid = fileable(nested);
+  assert.equal(laid.laid, true);
+  assert.equal(Math.max(...laid.text.split("\n").map((line) => line.length - line.trimStart().length)), 2 * LAYOUT_DEPTH_MAX, "no indent past the cap");
+  assert.equal(laid.text.replace(/\s/g, ""), nested, "the tokens as written");
+  assert.ok(laid.text.length <= layoutBound(nested));
 });

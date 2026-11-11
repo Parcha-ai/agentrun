@@ -1492,7 +1492,8 @@ asked by default.
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
   model reads the text blocks and embedded text resources joined (GitHub's `get_file_contents` answers a file as one);
   past 60,000 characters it reads the answer's first lines, whole, and the rest is filed under the run's
-  `evidence/mcp/<server>/` as lines (JSON laid out a value a line, a line past 10,000 characters broken), the text
+  `evidence/mcp/<server>/` as lines (JSON laid out a value a line, its indent capped at 32 levels, and filed as
+  written when the layout would pass twice its size and 64 KiB; a line past 10,000 characters broken), the text
   naming the file and the `read` offset that goes on, so a run with `read` and no shell pages through it. With blocks
   that are neither (an image, a blob), the whole answer is filed there as JSON and the text says where. On pi, every
   host tool's answer reaches the model whole within the host's result bound, as each CLI harness is told. A tool's own error (`isError`) reaches the

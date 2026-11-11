@@ -4,30 +4,40 @@
 //
 // pi's read pages by line, at most 50 KB a call, and shows only the first 50 KB of a line longer than that (its note
 // then asks for bash). So the file keeps the answer's lines, never one line of JSON around it: JSON is laid out a value
-// a line, and a line longer than FILED_LINE_MAX characters is broken into pieces of that length, said in the note. The
-// start shown is the file's first lines, whole, so the note's offset is where the file goes on.
+// a line (within a bound, past which it is filed as written), and a line longer than FILED_LINE_MAX characters is broken
+// into pieces of that length, said in the note. The start shown is the file's first lines, whole, so the note's offset is
+// where the file goes on.
 import { type Workspace, workspaceErrorWords } from "./workspace/index.js";
 
 /** The longest line a filed answer keeps: at three bytes of UTF-8 a character at most, well within the 50 KB pi's read
  *  shows of one line. */
 export const FILED_LINE_MAX = 10_000;
 
-/** `text` as it is filed: JSON (an object or an array) laid out a value a line, and each line past FILED_LINE_MAX
- *  characters broken into pieces of that length (never inside a surrogate pair); `broken`, how many lines were. */
-export function fileable(text: string): { text: string; json: boolean; broken: number } {
-  let laid = text;
+/** The deepest indent a laid-out answer gets, in levels: a value nested deeper starts its own line at this indent. */
+export const LAYOUT_DEPTH_MAX = 32;
+
+/** The most a laid-out answer may grow to, in characters, for `text`: twice its length and 64 Ki more. Past it, the
+ *  answer is filed as written (its lines broken at FILED_LINE_MAX), so no answer's layout costs more memory than that. */
+export const layoutBound = (text: string) => 2 * text.length + 64 * 1024;
+
+/** `text` as it is filed: JSON (an object or an array) laid out a value a line when that stays within layoutBound
+ *  (`laid`), and each line past FILED_LINE_MAX characters broken into pieces of that length (never inside a surrogate
+ *  pair); `broken`, how many lines were. */
+export function fileable(text: string): { text: string; json: boolean; laid: boolean; broken: number } {
+  let laid: string | undefined;
   let json = false;
   if (/^\s*[[{]/.test(text)) {
     try {
       JSON.parse(text);
-      laid = laidOut(text);
       json = true;
+      laid = laidOut(text);
     } catch {
       // Not JSON after all: filed as it is.
     }
   }
+  const filed = laid ?? text;
   let broken = 0;
-  const lines = laid.split("\n").flatMap((line) => {
+  const lines = filed.split("\n").flatMap((line) => {
     if (line.length <= FILED_LINE_MAX) return [line];
     broken++;
     const pieces: string[] = [];
@@ -40,17 +50,20 @@ export function fileable(text: string): { text: string; json: boolean; broken: n
     }
     return pieces;
   });
-  return { text: broken ? lines.join("\n") : laid, json, broken };
+  return { text: broken ? lines.join("\n") : filed, json, laid: laid !== undefined, broken };
 }
 
 /** Valid JSON `text` laid out a value a line, two spaces an indent, as JSON.stringify(value, null, 2) lays it out, but
  *  from the text's own tokens: a number is copied as written, never parsed, so an integer past 2^53 or a long decimal
- *  is filed exactly as the server sent it. */
-export function laidOut(text: string): string {
+ *  is filed exactly as the server sent it. The indent stops growing at LAYOUT_DEPTH_MAX levels, and undefined is the
+ *  answer when the layout would pass layoutBound(text): deep or dense nesting is never padded without end. */
+export function laidOut(text: string): string | undefined {
+  const bound = layoutBound(text);
   let out = "";
   let depth = 0;
-  const pad = () => "\n" + "  ".repeat(depth);
+  const pad = () => "\n" + "  ".repeat(Math.min(depth, LAYOUT_DEPTH_MAX));
   for (let i = 0; i < text.length; i++) {
+    if (out.length > bound) return undefined;
     const c = text[i]!;
     if (c === '"') {
       let j = i + 1;
@@ -74,7 +87,7 @@ export function laidOut(text: string): string {
     else if (c === ":") out += ": ";
     else if (!/\s/.test(c)) out += c;
   }
-  return out;
+  return out.length > bound ? undefined : out;
 }
 
 /** The model's text for `text`, longer than `clip` characters: the filed text's first lines, whole, within `clip`, then
@@ -92,7 +105,7 @@ export async function filedAnswer(work: Workspace | (() => Workspace), folder: s
   if (shown === 0) shown = 1;
   const head = lines.slice(0, shown).join("\n");
   const how = [
-    ...(filed.json ? ["its JSON laid out a value a line"] : []),
+    ...(filed.laid ? ["its JSON laid out a value a line"] : []),
     ...(filed.broken ? [`${filed.broken} line${filed.broken > 1 ? "s" : ""} longer than ${FILED_LINE_MAX.toLocaleString("en-US")} characters broken into pieces of that length`] : []),
   ];
   const cut = `\n[cut at line ${shown} of ${total} (${head.length} of ${filed.text.length} characters${how.length ? `; ${how.join("; ")}` : ""}); `;
