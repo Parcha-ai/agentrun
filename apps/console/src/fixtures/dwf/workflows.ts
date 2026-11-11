@@ -1,5 +1,5 @@
-// The decision-workflow demo's workflows, as the console's fixtures draw them: five use cases (batch-20, kyb,
-// jury, doc-valid, merchant-mcc) written by hand in the DSL's v2 shape. Every company is invented.
+// The decision-workflow demo's workflows, as the console's fixtures draw them: three use cases (batch-20, kyb,
+// jury) written by hand in the DSL's v2 shape. Every company is invented.
 
 const yes = (description: string) => ({ type: "boolean", description });
 const PAGES = { type: "object", required: ["name", "pageCount", "pages", "text"], properties: { name: { type: "string" }, pageCount: { type: "integer" }, pages: { type: "array" }, text: { type: "string" } } };
@@ -143,75 +143,6 @@ export const juryWorkflow = {
           agree: { body: { node: "code", label: "auto-decide", code: "(s) => ({ decision: s.agreement.mean >= 0.5 ? 'decline' : 'approve' })", as: "decision" } },
           disagree: { body: { node: "code", label: "human-review", code: "(s) => ({ decision: 'review', spread: s.agreement.spread })", as: "decision" } },
         },
-      },
-    ],
-  },
-  output: { schemaId: "Result", path: "decision" },
-};
-
-export const docValidWorkflow = {
-  v: 2,
-  name: "coi-validity",
-  schemas: {
-    Pages: PAGES,
-    Result: ANY,
-    Input: { type: "object", required: ["documents"], properties: { documents: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 1 } } },
-    DocChecks: DOC_CHECKS,
-  },
-  input: { schemaId: "Input" },
-  root: {
-    node: "chain",
-    steps: [
-      { node: "call", label: "render-pages", via: "tool", tool: "pdf_pages", args: { path: "{documents.0}", maxPages: 2 }, out: "Pages", as: "pages", deadline_s: 60 },
-      { node: "judge", label: "inspect-certificate", provider: "jev", state: { page: "<page1>", text: "{pages.text}" }, images: { "<page1>": "{pages.pages.0.image}" }, out: "DocChecks", as: "checks" },
-      {
-        node: "route", label: "validity", provider: "jev",
-        state: { checks: "{checks}", answers: "{checks$answers}" },
-        instructions: "Is this certificate valid enough to accept without a person looking at it?",
-        branches: {
-          valid: { criteria: "Not altered, sealed, signed and legible, each with high confidence.", body: { node: "code", label: "accept", code: "(s) => ({ status: 'accepted' })", as: "result" } },
-          doubtful: {
-            criteria: "Any sign of alteration, or a missing seal, signature or legible name.",
-            body: { node: "chain", steps: [
-              { node: "code", label: "flag", code: "(s) => ({ flag: true })", as: "review" },
-              { node: "escalate", label: "send-to-review", when: { predicate: "field_equals", path: "review.flag", value: true }, kind: "document_review", stage: "verification", summary: "A person checks the certificate." },
-            ] },
-          },
-        },
-        unsure: { branch: "doubtful", gte: 0.8 },
-      },
-    ],
-  },
-  output: { schemaId: "Result", path: "result" },
-};
-
-export const merchantWorkflow = {
-  v: 2,
-  name: "merchant-mcc",
-  schemas: {
-    Page: PAGE,
-    Result: ANY,
-    Input: { type: "object", required: ["merchant", "url"], properties: { merchant: { type: "string" }, url: { type: "string" } } },
-    Prohibited: PROHIBITED,
-    Codes: { type: "array", items: { type: "object", properties: { mcc: { type: "string" }, name: { type: "string" } } } },
-  },
-  input: { schemaId: "Input" },
-  root: {
-    node: "chain",
-    steps: [
-      { node: "call", label: "fetch-storefront", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
-      { node: "code", label: "candidate-codes", code: "(s) => ({ codes: [{ mcc: '5993', name: 'Cigar stores and stands' }, { mcc: '5999', name: 'Miscellaneous retail' }, { mcc: '5912', name: 'Drug stores and pharmacies' }, { mcc: '5441', name: 'Candy, nut and confectionery stores' }] })", as: "mcc" },
-      { node: "pick", label: "pick-mcc", provider: "jev", itemsPath: "mcc.codes", describe: "{item.mcc} {item.name}", instructions: "Which merchant category code fits what this storefront sells?", state: { merchant: "{merchant}", page_text: "{page.text}" }, allowNone: true, as: "code" },
-      { node: "judge", label: "prohibited-goods", provider: "parallel", model: "fast", state: { merchant: "{merchant}", url: "{url}" }, out: "Prohibited", as: "risk" },
-      {
-        node: "route", label: "by-risk", provider: "jev",
-        state: { code: "{code}", risk: "{risk$answers}" },
-        instructions: "How risky is onboarding this merchant?",
-        branches: {
-          low: { criteria: "No prohibited goods, a standard code.", body: { node: "code", label: "approve", code: "(s) => ({ decision: 'approve' })", as: "decision" } },
-          high: { criteria: "Prohibited goods likely, or a high-risk code.", body: { node: "code", label: "enhanced-review", code: "(s) => ({ decision: 'review' })", as: "decision" } },
-        },
-        unsure: { branch: "high", gte: 0.7 },
       },
     ],
   },
