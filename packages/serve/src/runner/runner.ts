@@ -21,6 +21,14 @@ import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
+/** How long a claim lasts unless renewed, unless told (RunnerOptions.leaseMs). */
+export const RUNNER_LEASE_MS = 30_000;
+/** A claim not renewed by its until less this is lost here, unless told (RunnerOptions.stopMarginMs). */
+export const RUNNER_STOP_MARGIN_MS = 5_000;
+/** The longest close() takes with the default lease (Runner.close): the drain, then the loops' stop, which waits for a
+ *  loop that does not stop until its claim would run out (the lease less its margin, 25 s). A stop deadline that cuts the
+ *  process sooner cuts a run's end short, and the run waits out its lease before another runner resumes it. */
+export const runnerCloseBoundMs = (drainMs: number): number => drainMs + RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
 /** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
 export const RUNNER_RENEW_EVERY_MS = 10_000;
 /** A runner's name when none is given: its host, its process and a part of a random id. */
@@ -154,9 +162,9 @@ export function startRunner(options: RunnerOptions): Runner {
     createLoop,
     name = runnerName(),
     loops = RUNNER_LOOPS,
-    leaseMs = 30_000,
+    leaseMs = RUNNER_LEASE_MS,
     renewEveryMs = RUNNER_RENEW_EVERY_MS,
-    stopMarginMs = 5_000,
+    stopMarginMs = RUNNER_STOP_MARGIN_MS,
     pollMs = 1_000,
     commandPollMs = 500,
     resumeTries = 3,
@@ -388,7 +396,7 @@ export function startRunner(options: RunnerOptions): Runner {
    * so it throws EndNotWithdrawn and the run is left as it stands, not final, its stop untaken (endRefused retries it). A
    * lost claim (Fenced) writes neither.
    */
-  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn") => {
     // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
     const data = { ...given, summary: redact(given.summary) };
     // Unknown means it may withdraw: false only once the journal was read and no call of it waits.
@@ -406,7 +414,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A stopped end withdraws every call still waiting for its answer (an ask with no answer), in this commit: the
       // approval card of a run whose loop could not start reads answered, never waiting for good.
       if (data.state === "stopped" && root) {
-        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString());
+        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString(), withdrawnAs);
         mayWithdraw = withdrawn.length > 0;
         for (const answer of withdrawn) {
           const answerId = (await journal.mintId()) as unknown as EntryId;
@@ -429,7 +437,7 @@ export function startRunner(options: RunnerOptions): Runner {
    *  call and the journal would not take it or could not be read: the refusal is then the run's (endRefused). */
   const endStopped = async (claim: Claim, stop: Command): Promise<boolean> => {
     try {
-      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
+      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn");
       return true;
     } catch (error) {
       if (!(error instanceof EndNotWithdrawn)) throw error;

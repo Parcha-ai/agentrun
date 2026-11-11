@@ -27,6 +27,7 @@ import {
 	type InputActionsResult,
 	MAX_CHUNK_BYTES,
 	MAX_UI_NODES,
+	PROTOCOL_VERSION,
 	type Rect,
 	type ScreenWatchResult,
 	type UiNode,
@@ -41,7 +42,9 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -56,6 +59,8 @@ export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
 export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
 /** A phone mounts no folder. */
 export const MOUNT: readonly MountKind[] = [];
+/** The network a cloud phone runs on: the vendor's own, open; it cannot be closed or narrowed. */
+export const NETWORK: readonly NetworkForm[] = ["open"];
 /** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
 /** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
@@ -392,7 +397,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			os: "android",
 			daemon: "none",
 			lifetime: "vendor",
-			network: ["open"],
+			network: [...NETWORK],
 			isolation: "vm",
 			groups: [...PHONE_GROUPS],
 			maxLifetimeMs: this.#maxLifetimeMs,
@@ -409,6 +414,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (spec?.[field] !== undefined) refusals.push({ field, message: `${field}: a cloud phone's size and folders are the vendor's, and cannot be asked for` });
 		}
 		if (spec?.mount !== undefined) refusals.push({ field: "mount", message: "mount: a cloud phone mounts no folder" });
+		refusals.push(...checkGpu(spec?.gpu, this.capabilities()));
 		return refusals;
 	}
 
@@ -973,7 +979,7 @@ class AdbClient implements ComputerClient {
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
 		const reported = abi.value.trim();
-		this.#hello = { version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
+		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
 		return ok(this.#hello);
 	}
 
