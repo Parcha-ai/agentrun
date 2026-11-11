@@ -37,9 +37,9 @@ export interface RunnerHarness {
   adapter(launch: HarnessLaunch, extra?: Readonly<Record<string, unknown>>): Promise<AgentAdapter>;
 }
 
-type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
+type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; claudeAgentExecutable(): string | undefined };
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
-type CodexPackage = { codexAdapter(options: Record<string, unknown>): AgentAdapter };
+type CodexPackage = { codexAdapter(options: Record<string, unknown>): AgentAdapter; verifyCodexAsync(found?: { path: string; packageVersion?: string }): Promise<unknown> };
 const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 
 /** Every harness the runner runs, by name. */
@@ -58,6 +58,9 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
     record: "loop",
     adapter: async (launch, extra = {}) => {
       const claude = (await import(CLAUDE_PACKAGE)) as ClaudePackage;
+      // The CLI the adapter checks, checked first off the event loop: a pass is kept, and the adapter's own check answers
+      // from it; a failure is the adapter's to report (warm).
+      if (!extra.standIn) await claude.verifyClaudeAgentCliAsync((extra.cliPath as string | undefined) ?? claude.claudeAgentExecutable());
       return claude.claudeAgentAdapter({
         model: launch.model,
         provider: { origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}) },
@@ -72,6 +75,8 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
     record: "loop",
     adapter: async (launch, extra = {}) => {
       const codex = (await import(CODEX_PACKAGE)) as CodexPackage;
+      // Its binary checked first off the event loop, as claude-agent's CLI is (warm): a failure is the adapter's to report.
+      if (!extra.standIn) await codex.verifyCodexAsync(extra.binary as { path: string; packageVersion?: string } | undefined).catch(() => undefined);
       // Codex's provider is its origin and credential, as serve gives it today (adapters.ts, codexOf): no headers.
       return codex.codexAdapter({
         model: launch.model,
@@ -87,7 +92,9 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
     record: "loop",
     adapter: async (launch, extra = {}) => {
       // OpenCode's adapter is serve's own (its pinned binary is checked when the adapter is made); loaded when first asked.
-      const { openCodeAdapter } = await import("../../harness-opencode/index.js");
+      const { openCodeAdapter, verifyOpenCodeAsync } = await import("../../harness-opencode/index.js");
+      // Its binary checked first off the event loop, as codex's is (warm): a failure is the adapter's to report.
+      if (!extra.standIn) await verifyOpenCodeAsync().catch(() => undefined);
       return openCodeAdapter({
         model: launch.model,
         provider: { origin: launch.provider.origin, credential: launch.provider.credential },

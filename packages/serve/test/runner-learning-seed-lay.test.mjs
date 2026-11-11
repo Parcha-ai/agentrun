@@ -36,7 +36,7 @@ const { seedOf } = await import("../dist/learning.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
-const { seal } = await import("@parcha/pi-durable-agent");
+const { seal } = await import("../dist/sealing.js");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
 const AGENT = "agent-1";
