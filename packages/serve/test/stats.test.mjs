@@ -10,7 +10,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, runDir, scratch, serve, startRun } from "./support.mjs";
 import { seedRuns } from "./store-helpers.mjs";
-import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { listRuns } from "../dist/store-reads/runs.js";
 import { statsView } from "../dist/stats.js";
 

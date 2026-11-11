@@ -92,9 +92,6 @@ export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the con
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
-/** A note's file name, as the server takes one: at the folder's top, a letter or digit first, then letters, digits, dots,
- *  dashes and underscores, ending .md; never MEMORY.md, which the server builds. */
-export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 export const NOTE_TYPES: readonly NoteType[] = ["feedback", "project", "reference", "user"];
 /** Each type in plain words, as a card and the editor's picker show it (the API's value is in its tooltip). */
 export const TYPE_LABEL: Record<NoteType, string> = { user: "About you", feedback: "How to work", project: "About the work", reference: "Where to look" };

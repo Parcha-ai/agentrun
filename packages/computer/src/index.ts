@@ -42,7 +42,7 @@ export {
 	recipeTag,
 } from "./docker/image.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
-export { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
+export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
 export {
 	ModalProvider,
 	type ModalApp,
@@ -109,7 +109,7 @@ export { LOCAL_MAX_LIFETIME_MS, LocalBrowserProvider, type LocalBrowserOptions }
 export { CHROME_ENV, CHROME_FLAGS, checkChrome, chromeFence, findChrome, killTree, NO_CHROME } from "./chrome.js";
 export { DAEMON_IN_COMPUTER, drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
-export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
+export { EPOCH_LABEL, epochOf, epochProblem, RUN_HASH_LABEL, RUN_LABEL, runHash, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export {
 	type ConformanceModule,
