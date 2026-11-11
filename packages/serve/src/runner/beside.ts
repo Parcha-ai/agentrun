@@ -80,5 +80,8 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
     await serve.close();
     throw error;
   });
-  return { serve, close: () => Promise.all([beside.close(), serve.close()]).then(() => undefined) };
+  // Once: a second call (a SIGTERM and a SIGINT both) is the first one's promise, so the runner's store is never closed
+  // under a run still finishing.
+  let closing: Promise<void> | undefined;
+  return { serve, close: () => (closing ??= Promise.all([beside.close(), serve.close()]).then(() => undefined)) };
 }
