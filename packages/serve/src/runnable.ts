@@ -182,6 +182,15 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true });
     return out;
   }
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  // A workflow the DSL cannot read is the definition's fault (422 on the field), never the server's (500).
+  let inspection: ReturnType<typeof inspectWorkflow>;
+  try {
+    inspection = inspectWorkflow(revision.workflow);
+  } catch (error) {
+    out.push({ field: "definition.workflow", reason: "not_an_option", message: `The workflow is not one this server can read: ${String((error as Error)?.message ?? error).slice(0, 500)}`, host: false });
+    return out;
+  }
   // Every MCP tool a workflow grants, at its top level or on a node, is held to the one check (mcpGrant): refused at the
   // save, never a workflow whose run goes without it or cannot launch.
   const granted = await grantedTools(revision);
@@ -192,8 +201,6 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (onAdapter(env, harness)) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
-  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
-  const inspection = inspectWorkflow(revision.workflow);
   const { requires } = inspection;
   const nodes = workflowNodes(revision.workflow, inspection);
   const runs = "agentrun-serve runs a workflow's model nodes (agent, decide, extract, report)";
