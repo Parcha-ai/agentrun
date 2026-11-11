@@ -32,8 +32,11 @@ const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathnam
 const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const PAGE = "http://public.example/";
 /** The harnesses whose web_fetch parks for approval on the runner: pi's host tools. A CLI harness (codex, claude-agent) is
- *  offered them on the runner once follow-up #2136 lands, and its halves of these cases come back then. */
+ *  offered them on the runner now, but the tests' stand-in for it (run-adapters' fauxAdapter) runs its host tools without
+ *  asking the run's gate, where the real adapters' tool bridges ask it first (SessionIO.gate). */
 const PARKS_ON_RUNNER = ["pi"];
+/** Why the CLI halves wait: the faux CLI harness never asks the gate, so its call runs where a real one parks or is refused. */
+const FAUX_CLI_UNGATED = "#2136: the faux CLI harness (run-adapters' fauxAdapter) runs host tools without asking SessionIO.gate, so a CLI's call is never parked or refused here";
 const HARNESSES = ["pi", "claude-agent", "codex"];
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
@@ -363,10 +366,9 @@ test("two conflicting answers to one parked call at once, by the owner's session
   assert.ok(ran.length <= (won === "allow" ? 1 : 0) && ran.every((url) => url === PAGE), `the call ran at most once, and only if allowed: ${JSON.stringify(ran)}`);
 });
 
-test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
+test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: FAUX_CLI_UNGATED }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
-// SKIP (follow-up #2078): the run completes on the runner before the state the test waits for
-test.skip("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
+test("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000, skip: FAUX_CLI_UNGATED }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
   const answerFirst = await owner(first);
@@ -395,8 +397,7 @@ test.skip("an ask answered after the server restarted while the run was parked s
   assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("a codex run whose process dies between the approval's commit and the parked turn's settle reopens with that turn settled: it is never run again, and the approval's result reaches the model once", { timeout: 180_000 }, async (t) => {
+test("a codex run whose process dies between the approval's commit and the parked turn's settle reopens with that turn settled: it is never run again, and the approval's result reaches the model once", { timeout: 180_000, skip: FAUX_CLI_UNGATED }, async (t) => {
   const dialled = await network(t);
   const exited = join(await scratch(t), "exited");
   withEnv(t, { AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER: exited });
@@ -647,7 +648,7 @@ async function refusedOn(api, harnesses) {
   }
 }
 
-test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, async (t) => {
+test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: FAUX_CLI_UNGATED }, async (t) => {
   const dialled = await network(t);
   const off = await serve(t, { ...GATE, accounts: false, openSetup: false });
   assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
@@ -780,9 +781,8 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  // Idle with nothing pending. The status word a person's stop leaves is the reopen-stopped work's (mcp-gate.test.mjs's
-  // stopped-literal case waits on it the same way), not this case's.
-  assert.deepEqual([stopped.state, stopped.pending], ["idle", null], "stopped: idle, nothing pending");
+  // A person's stop ends the turn, not the run: input_required and idle with nothing pending, as main's stop leaves one.
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
   // On the runner a parked call has its call's row and no result row of its own (the park writes none).
@@ -810,8 +810,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-// SKIP (follow-up #2078): a follow-up after a stop never runs: the run stays cancelled on the runner
-test.skip("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
