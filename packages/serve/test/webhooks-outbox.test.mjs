@@ -628,16 +628,24 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     leftAs(dir, { told: { waiting: { waits: ["row_9"] } }, cleared: true });
     const webhooks = await on.open();
     const waiting = { run_id: "waiting", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } };
+    // Each notice told as the server's follower tells it: again while the store has not taken it (a loaded machine's
+    // store, busy past its wait, answers unsaved), until it answers queued.
+    const told = async (...args) => {
+      for (;;) {
+        const answer = await webhooks.emit(...args);
+        if (answer !== "unsaved") return assert.equal(answer, "queued");
+      }
+    };
     // Another run's notice prunes the ledger; then the waiting run is seen again (an adoption, a refresh).
-    await webhooks.emit("run.ended", { run_id: "other", agent_id: "a", status: "completed", title: "o" }, new Date().toISOString());
-    await webhooks.emit("run.needs_input", waiting, "row_9");
+    await told("run.ended", { run_id: "other", agent_id: "a", status: "completed", title: "o" }, new Date().toISOString());
+    await told("run.needs_input", waiting, "row_9");
     await hook.when(1);
     await settled(dir);
     assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended"], "the same wait is not sent again");
     // A new question of the run is a wait of its own, the one it stands at now; then the run ends.
-    await webhooks.emit("run.needs_input", waiting, "row_12");
+    await told("run.needs_input", waiting, "row_12");
     const end = new Date().toISOString();
-    await webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, end);
+    await told("run.ended", { ...waiting, status: "completed", pending: undefined }, end);
     await hook.when(3);
     await settled(dir);
     // The new wait and the end were queued together, and each message goes on its own tries: they land in either order.
