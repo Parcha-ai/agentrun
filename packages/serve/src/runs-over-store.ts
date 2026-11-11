@@ -349,6 +349,9 @@ export interface StartDeps {
   /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
    *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
+  /** Holds the run's files for it (uploads.ts Uploads.hold) before its row is written, so a file deleted after the start
+   *  is still the run's at its claim; `release` lets go of a hold whose run was never written (or was another's). */
+  readonly files?: { hold(runId: string, ids: readonly string[]): Promise<void>; release(runId: string): Promise<void> };
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
   /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
@@ -440,7 +443,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) }));
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -448,6 +451,22 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
       const row = existing && (await store.runs.get(existing.runId));
       if (row) return row;
     }
+    throw error;
+  }
+}
+
+/** Writes run `runId` with `write`, its files (launch.files) held for it first (StartDeps.files): a hold that fails part
+ *  way, a write that fails, or one that answers another run (an origin key's run started before), lets go of the hold. */
+async function withHeldFiles(deps: StartDeps, runId: string, launch: RunLaunch, write: () => Promise<RunRow>): Promise<RunRow> {
+  const ids = launch.files ?? [];
+  if (!ids.length || !deps.files) return await write();
+  try {
+    await deps.files.hold(runId, ids);
+    const row = await write();
+    if (row.id !== runId) await deps.files.release(runId);
+    return row;
+  } catch (error) {
+    await deps.files.release(runId).catch(() => undefined);
     throw error;
   }
 }
@@ -480,12 +499,12 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.createInline({
+    return await withHeldFiles(deps, runId, launch, () => store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
       launch: { body: launchBody(launch) },
-    });
+    }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) {
       const { source, kind, id, version } = external;

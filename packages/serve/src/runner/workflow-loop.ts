@@ -24,7 +24,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
-import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 
@@ -368,6 +368,12 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
       const { output } = await readWorkflowRun({ runId: claim.runId, storage: endJournal, revision }, { context });
       return await writeEnd(endJournal, context, { ...carry, output: output ?? null });
     }
+    // An escalated run's review, as main's server kept it (runs.ts): the escalation's kind, the escalate node's label (else
+    // the node it escalated at), and its summary (else the run's), kept on its end for the run's `review`.
+    if (carry.state === "escalated") {
+      const { escalation, escalatedAt } = await readWorkflowRun({ runId: claim.runId, storage: endJournal, revision }, { context });
+      return await writeEnd(endJournal, context, { ...carry, review: { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? carry.summary } });
+    }
     return await writeEnd(endJournal, context, carry);
     } finally {
       // The claim is done however it ended (ended, stopped, failed, parked, interrupted): let the spec's per-claim
@@ -388,10 +394,10 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     return { state: "parked" };
   }
 
-  async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown; outcome?: "stopped" | "cancelled" }): Promise<LoopEnd> {
+  async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown; review?: EndReview; outcome?: "stopped" | "cancelled" }): Promise<LoopEnd> {
     const state: EndData["state"] = carry.state === "failed" ? "failed" : carry.state === "stopped" ? "stopped" : "ended";
     const outcome: RunOutcome | undefined = carry.state === "escalated" ? "escalated" : carry.state === "stopped" ? carry.outcome : undefined;
-    const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}) };
+    const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}), ...(carry.review ? { review: carry.review } : {}) };
     const patch = await endPatchOf(spec!, base);
     const data: EndData = { ...base, ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const runPatch: RunPatch = {

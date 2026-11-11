@@ -395,18 +395,21 @@ export class RunGate {
    *  the deny (with where it was set, and that nothing was sent or charged), a pin, bash's policy (policyRefusal), then
    *  the allow, then the ask, so an allow that approvals "never" made is decided
    *  only after every refusal. Where no one can approve (accounts off: the store's approvers row a runner reads at each
-   *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. */
-  async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
+   *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. `replayed`:
+   *  the call is run again after an earlier attempt that may have been sent (a replay-safe call rerun after a crash), so a
+   *  refusal says whether it took effect is not known, never that nothing was sent. */
+  async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = this.askedAs(name);
+    const ran = options.replayed ? "unknown" : "no";
     const verdict = this.policy(name);
-    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
-    const pinned = this.pinned(key, args, "no");
+    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), ran) };
+    const pinned = this.pinned(key, args, ran);
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
     if (policed) return { deny: policed };
     if (verdict === "allow") return "allow";
-    return this.approvers ? "ask" : { deny: noApproverText(tool, "no") };
+    return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }
 
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
