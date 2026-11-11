@@ -118,6 +118,9 @@ export type GradeInput = {
    *  with its source: never what the user said. Shown apart, each as the user's are (cut, shortened, in the same
    *  budget, after them). */
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
+  /** Why each draft (by its workflow.json's path) waits for its owner's OK whatever the grade (skills.ts unpricedLine:
+   *  a step calling an MCP tool with no declared price). Said under the draft; parseVerdict holds it. */
+  readonly held?: Readonly<Record<string, readonly string[]>>;
 };
 
 /** What bounds the grader's prompt, in UTF-16 units, as a completion counts them. `prompt` is the most it ever is:
@@ -331,6 +334,14 @@ function mcpLines(file: string, text: string): string[] {
   return named.length ? [`Its call nodes run MCP tools, each a side effect on an outside server, unattended at every call: ${named.join(", ")}.`, ""] : [];
 }
 
+/** What the grader is told of draft `file`'s hold (GradeInput.held): that it waits for its owner's OK whatever the
+ *  grade, in the host's words, and why, fenced as data (each line names one of the draft's own steps, its text). */
+function heldLines(file: string, held: GradeInput["held"], fence: (label: string, text: string) => string): string[] {
+  const lines = held?.[file] ?? [];
+  if (!lines.length) return [];
+  return ["It waits for its owner's OK whatever you decide, for the reason below, as data: it names the draft's own steps.", fence(`${file}, why it waits`, lines.map((line) => line.replace(/[\p{Cc}\p{Cf}]/gu, " ")).join("\n")), ""];
+}
+
 /** gradePrompt with the user's messages given `budget` characters. Every other part is capped; the messages take the
  *  room the rest leaves: over the cap, it is built again with fewer (the first and the newest that fit, the rest named),
  *  so a proposal the checker passed never makes it throw. */
@@ -434,7 +445,7 @@ function promptWithin(input: GradeInput, budget: number): string {
     // Each new note as the grader judges it: without its run's risky mark, which the verdict's hold reads after.
     ...(proposed.length ? proposed.map(({ file, text }) => fence(`${file}, new`, withoutRiskyMark(text))) : ["There are none."]),
     ...(learned.length
-      ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.flatMap(({ file, text }) => [fence(`${file}, new`, text), ...mcpLines(file, text), ...dryRunLines(file, input.dryRuns, fence)])]
+      ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.flatMap(({ file, text }) => [fence(`${file}, new`, text), ...mcpLines(file, text), ...heldLines(file, input.held, fence), ...dryRunLines(file, input.dryRuns, fence)])]
       : []),
     "",
     "## Your verdict",
@@ -528,7 +539,7 @@ const PLANTED = /\bplanted\b/i;
  *  file it was not asked to judge, or a merge with an item not kept, is no merge. `proposed` are the new notes the
  *  prompt was built from, or the files it asked an item for (gradedFiles: a note's file, a skill's SKILL.md, a draft's
  *  workflow.json). Throws only when `proposed` is not a list a checked proposal could hold, never on the answer. */
-export function parseVerdict(text: unknown, proposed: readonly NoteText[] | readonly string[]): Verdict {
+export function parseVerdict(text: unknown, proposed: readonly NoteText[] | readonly string[], held: Readonly<Record<string, readonly string[]>> = {}): Verdict {
   const names = Array.isArray(proposed) ? proposed.map((item: NoteText | string) => (typeof item === "string" ? item : item?.file)) : [];
   if (!Array.isArray(proposed) || names.length === 0 || !names.every(isGraded) || new Set(names).size < names.length) throw new Error("the proposal must hold one new item or more, each a note's file, a skill's SKILL.md or a draft's workflow.json, each once");
   const graded = new Set(names);
@@ -553,6 +564,12 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
     // So does one the run's own turn marked `risky: true` (reflectPrompt): the hold is the run's or the grader's,
     // whichever says so, and never rests on one grading model's reading of Risky.
     const marked = decided === "keep" && runMarkedRisky(texts.get(item.file));
+    // A draft held in code (an MCP tool with no declared price, LS-07) waits whatever the grade: its why is the hold's.
+    const holds = decided !== "drop" ? (held[item.file] ?? []) : [];
+    if (holds.length) {
+      items.push({ file: item.file, keep: true, pending: true, origin: origin as "you" | "run", question: "Unpriced", why: oneLine(holds.join("; "), REASON_MAX) });
+      continue;
+    }
     const decision = decided === "keep" && (marked || asked.trim().toLowerCase() === "risky") ? "pending" : decided;
     const askedAs = asked || (marked ? "Risky" : "");
     items.push({ file: item.file, keep: decision !== "drop", ...(decision === "pending" ? { pending: true as const } : {}), ...(decision === "drop" ? {} : { origin }), ...(askedAs ? { question: askedAs } : {}), why: oneLine(item.why, REASON_MAX) });

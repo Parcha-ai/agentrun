@@ -154,6 +154,35 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
   return calls.every((row) => answered.has(row.tool_use_id));
 }
 
+/** Why each draft of `proposal` waits for its owner's OK whatever the grade: its steps calling an MCP tool with no
+ *  declared price (skills.ts unpricedCalls), by its workflow.json's path, from the prices each server's row keeps
+ *  (mcp-probe.ts McpPrices). A server the store can't read gives no price: held. */
+async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
+  const files = ((proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).filter((one): one is { file: string; text: string } => typeof one?.file === "string" && one.file.endsWith("/workflow.json") && typeof one.text === "string");
+  const { unpricedCalls, unpricedLine } = await import("../learn/skills.js");
+  const rows = new Map<string, Promise<McpServerRow | undefined>>();
+  const priced = new Map<string, number | undefined>();
+  const held: Record<string, string[]> = {};
+  for (const { file, text } of files) {
+    let doc: unknown;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    // Every MCP tool the draft names, its price read first (unpricedCalls asks synchronously).
+    for (const name of new Set((text.match(/mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}/g) ?? []))) {
+      const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
+      if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
+      const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
+      priced.set(name, typeof price === "number" && Number.isFinite(price) ? price : undefined);
+    }
+    const lines = unpricedCalls(doc, (tool) => priced.get(tool)).map(unpricedLine);
+    if (lines.length) held[file] = lines;
+  }
+  return held;
+}
+
 /** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
  *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
 async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
@@ -273,7 +302,10 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
     }
     if (proposed.state !== "proposed") return proposed as Checked;
     const proposal: unknown = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8"));
-    return { ...proposed, proposal };
+    // A draft calling an MCP tool with no declared price waits for its owner's OK whatever the grade (LS-07): held here,
+    // from the prices the store keeps now, and said to the grader.
+    const held = await heldOf(deps.store, proposal);
+    return { ...proposed, proposal: Object.keys(held).length ? { ...(proposal as object), held } : proposal };
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }

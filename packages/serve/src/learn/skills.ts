@@ -682,6 +682,33 @@ export function draftMcpTools(doc: unknown): string[] {
   return [...found];
 }
 
+/** One step of a learned workflow that runs an MCP tool with no declared per-call price: its label, the tool and its
+ *  server. */
+export type UnpricedCall = { readonly label: string; readonly tool: string; readonly server: string };
+
+/** The call nodes of a learned workflow (`doc`, its parsed workflow.json, nested ones too) whose tool is an MCP tool
+ *  (LEARNED_MCP_TOOL) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
+ *  metered", outside the run's cost and cap (mcp-gateway.ts), so a learned workflow that calls one unattended waits for
+ *  its owner's OK whatever the grade (LS-07): a structural fact, held in code. Each step once, in order. */
+export function unpricedCalls(doc: unknown, priceOf: (tool: string) => number | undefined): UnpricedCall[] {
+  const out: UnpricedCall[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(walk);
+    if (!value || typeof value !== "object") return;
+    const node = value as Record<string, unknown>;
+    if (node.node === "call" && node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool) && priceOf(node.tool) === undefined) {
+      const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
+      out.push({ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server });
+    }
+    for (const child of Object.values(node)) walk(child);
+  };
+  walk(doc);
+  return out;
+}
+
+/** Why a learned workflow that calls `call` waits for its owner's OK, in a person's words. */
+export const unpricedLine = (call: UnpricedCall): string => `its step ${call.label} calls ${call.tool} on ${call.server}, which has no price here, so it runs outside the run's cost and cap`;
+
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
 export const LEARNED_MAX_TURNS = 8;

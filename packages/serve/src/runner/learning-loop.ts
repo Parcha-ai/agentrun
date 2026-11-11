@@ -39,6 +39,8 @@ export interface KeptProposal {
   /** Each kept draft's dry run, by its workflow.json's path (learn/skills.ts draftDryRun), which the grader is told. */
   readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
   readonly asked?: readonly string[];
+  /** Why each draft waits for its owner's OK whatever the grade (the learning end's: skills.ts unpricedCalls). */
+  readonly held?: Readonly<Record<string, readonly string[]>>;
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
   readonly seed?: string;
@@ -253,7 +255,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(proposal.notes as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
@@ -276,9 +278,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             };
             let verdict: Verdict;
             try {
-              verdict = parseVerdict(await ask(), items);
+              verdict = parseVerdict(await ask(), items, proposal.held);
               // An answer the host cannot read is asked once more, as the server's grade did.
-              if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
+              if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items, proposal.held);
             } catch (error) {
               // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
               spend = usd;
