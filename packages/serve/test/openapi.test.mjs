@@ -323,7 +323,7 @@ test("the served definition takes exactly the fields this server takes: a contra
   const refused = Object.keys(fields).filter((field) => fields[field]["x-agentrun-serve-unsupported"]);
   assert.deepEqual(Object.keys(fields).filter((field) => !refused.includes(field)).sort(), [...DEFINITION_FIELDS].sort(), "every field validate.ts takes, and no other, unmarked");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported_fields, refused.map((field) => `DefinitionInput.${field}`));
-  const values = { input_schema: { type: "object" }, output_schema: { type: "object" } };
+  const values = { input_schema: { type: "object" } };
   for (const field of refused) {
     const answer = await api("POST", "/agents", agent(`with-${field.replaceAll("_", "-")}`, { [field]: values[field] ?? "x" }));
     assert.equal(answer.status, 422, field);

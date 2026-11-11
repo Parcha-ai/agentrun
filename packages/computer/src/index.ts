@@ -42,7 +42,7 @@ export {
 	recipeTag,
 } from "./docker/image.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
-export { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
+export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
 export {
 	ModalProvider,
 	type ModalApp,
