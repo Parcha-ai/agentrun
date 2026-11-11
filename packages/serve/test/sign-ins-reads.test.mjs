@@ -30,7 +30,7 @@ test("a running run handed the sign-in is served cut while it runs and when it e
   const pointer = pointerOf();
   await saved(s, pointer);
   const { runId, release } = await runSaying(s, pointer, { hold: true });
-  marked(s, runId, [sha(pointer)]);
+  await marked(s, runId, [sha(pointer)]);
   await follow(s.api, runId, ["working"]);
   const running = await reads(s, runId);
   assert.match(running.view.title, /^\[redacted\] Hold/);
@@ -68,9 +68,9 @@ test("a failed run's error that holds the pointer it was handed is served cut, i
   const pointer = pointerOf();
   await saved(s, pointer);
   const { runId } = await runSaying(s, "Browse.");
-  marked(s, runId, [sha(pointer)]);
+  await marked(s, runId, [sha(pointer)]);
   // Its end as the runner wrote it: failed, its error the browser's last words.
-  written(s, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", `The browser died holding ${pointer}.`, runId);
+  await written(s, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", `The browser died holding ${pointer}.`, runId);
   const { view, lists, timeline } = await reads(s, runId);
   assert.equal(view.error.message, "The browser died holding [redacted].");
   for (const row of lists) assert.equal(row.error.message, "The browser died holding [redacted].");
@@ -90,12 +90,12 @@ test("a forgotten sign-in still cuts what its runs said; under another seal key 
   const pointer = pointerOf();
   await saved(first, pointer);
   const said = (await runSaying(first, pointer)).runId;
-  marked(first, said, [sha(pointer)]);
+  await marked(first, said, [sha(pointer)]);
   const failed = (await runSaying(first, "Browse.")).runId;
-  marked(first, failed, [sha(pointer)]);
-  written(first, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", `The browser died holding ${pointer}.`, failed);
+  await marked(first, failed, [sha(pointer)]);
+  await written(first, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", `The browser died holding ${pointer}.`, failed);
   const plain = (await runSaying(first, "Browse.")).runId;
-  written(first, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", "The browser died.", plain);
+  await written(first, "UPDATE runs SET state = 'failed', summary = ? WHERE id = ?", "The browser died.", plain);
   // Forgotten once its runs ended: kept sealed, for cutting alone.
   await forgotten(first);
   const cut = async (s) => {
@@ -138,9 +138,9 @@ test("a run handed several pointers is cut of each, live or forgotten, past the 
   await forgotten(s);
   await saved(s, live);
   const both = (await runSaying(s, `${old} ${live}`)).runId;
-  marked(s, both, [sha(old), sha(live)]);
+  await marked(s, both, [sha(old), sha(live)]);
   const liveOnly = (await runSaying(s, live)).runId;
-  marked(s, liveOnly, [sha(live)]);
+  await marked(s, liveOnly, [sha(live)]);
   const shown = await reads(s, both);
   assert.match(shown.view.result.final_answer, /^On \[redacted\] \[redacted\] Hold/);
   holdsNone(shown, old, live);
@@ -151,8 +151,8 @@ test("a run handed several pointers is cut of each, live or forgotten, past the 
   holdsNone(still, old, live);
   assert.match((await reads(s, liveOnly)).view.result.final_answer, /^On \[redacted\] Hold/);
   // The agent's sign-ins gone (live and forgotten): nothing it was handed can be read back: withheld.
-  written(s, "DELETE FROM sign_ins WHERE agent_id = ?", "alpha");
-  written(s, "DELETE FROM sign_in_tombstones WHERE agent_id = ?", "alpha");
+  await written(s, "DELETE FROM sign_ins WHERE agent_id = ?", "alpha");
+  await written(s, "DELETE FROM sign_in_tombstones WHERE agent_id = ?", "alpha");
   withheld(await reads(s, liveOnly), live);
 });
 
@@ -172,7 +172,7 @@ test("a workflow run whose hand can't be read back serves no graph (403, in the 
   assert.ok(served.every((text) => typeof text === "string" && text !== WITHHELD_SIGN_IN), JSON.stringify(served));
   assert.equal((await s.api("GET", `/runs/${runId}/graph`)).status, 200);
   // Marked as handed a sign-in this server keeps nothing of: it can't be read back.
-  marked(s, runId, [sha("a pointer this server never kept")]);
+  await marked(s, runId, [sha("a pointer this server never kept")]);
   assert.deepEqual(await reason(), [WITHHELD_SIGN_IN, WITHHELD_SIGN_IN, WITHHELD_SIGN_IN]);
   const graph = await s.api("GET", `/runs/${runId}/graph`);
   assert.deepEqual([graph.status, graph.body.error?.code, graph.body.error?.message], [403, "forbidden", WITHHELD_SIGN_IN]);
