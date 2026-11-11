@@ -17,7 +17,7 @@ import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type 
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
-import { BOUND_TOOLS } from "./tools.js";
+import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
 import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
@@ -38,6 +38,10 @@ export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as con
  *  (market-monitor's schedule). A form shows a schedule picker and a time-zone choice; the value is the same text. */
 export const PARAMETER_FORMATS = ["cron", "timezone"] as const;
 export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
+/** The entries of a package's `computer` preference list: `shell`, a computer that gives the agent a shell here (bash);
+ *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
+export const COMPUTER_ENTRIES = ["shell", "none"] as const;
+export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
 const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
@@ -97,6 +101,9 @@ export type Package = {
   /** MCP servers by the name a server saves them under, and the tools of each the agent is granted. One `required`
    *  refuses an apply on a server that has not saved it; any other is skipped there, with a warning. */
   mcp: McpNeed[];
+  /** The computers it prefers, in order (`[shell, none]`): apply takes the first this server meets now (pickComputer)
+   *  and writes it as the agent's computer. Absent (or `default` in the manifest): where this server puts a new agent. */
+  computer?: ComputerEntry[];
   /** A policy by tool (bash only: `read-only`, bash-read-only.ts), which apply writes as the tool's `policy` in the
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
@@ -314,8 +321,20 @@ export function readPackage(dir: string): Package {
     else if (tools && !tools.includes("bash")) bad(MANIFEST, "tool_policy.bash: the package's tools grant no bash, so its policy would hold nothing: add bash to tools, or leave tool_policy out");
     else toolPolicy = { bash: given.bash as BashPolicy };
   }
-  // Computers by name come with the computer protocol; until then a package runs where this server puts a new agent.
-  if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
+  // The computer: default (where this server puts a new agent), or a preference list apply takes the first it meets of
+  // (pickComputer). none is always met, so an entry after it is never picked; a list without shell never gives a shell,
+  // so a shell tool in tools would never be granted.
+  let computer: ComputerEntry[] | undefined;
+  if (f.computer !== undefined && f.computer !== "default") {
+    const given = f.computer;
+    if (!Array.isArray(given) || !given.length || !given.every((entry) => (COMPUTER_ENTRIES as readonly unknown[]).includes(entry)) || new Set(given).size !== given.length) bad(MANIFEST, `computer is default (where this server puts a new agent), or a preference list of ${COMPUTER_ENTRIES.join(", ")}, each once ([shell, none]): apply takes the first this server meets now. shell: a computer that gives the agent a shell here; none: no shell, the file tools alone`);
+    else if (given.indexOf("none") !== -1 && given.indexOf("none") < given.length - 1) bad(MANIFEST, "computer: none is always met, so nothing after it is ever picked: end the list with it");
+    else {
+      computer = given as ComputerEntry[];
+      const shellOnly = tools?.filter((tool) => toolOf(tool)?.sandboxOnly) ?? [];
+      if (!computer.includes("shell") && shellOnly.length) bad(MANIFEST, `computer: [none] gives no shell, so ${shellOnly.join(", ")} would never be granted: add shell to computer, or take ${shellOnly.length === 1 ? "it" : "them"} out of tools`);
+    }
+  }
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
     const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "format", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
@@ -478,7 +497,7 @@ export function readPackage(dir: string): Package {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -516,7 +535,7 @@ export function packageView(p: Package) {
   return {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null,
+    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -588,6 +607,40 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 
+/** A computer setting as a definition names it (`definition.computer`). */
+export type PickedSetting = { kind: string; provider?: string };
+/** The shell this server can give an agent now (server.ts shellHere): the computer setting that gives it, the shell
+ *  tools a run there has (tools.ts shellTools), and the shell in words; else, `none`, why it has none. */
+export type ShellHere = { computer: PickedSetting; tools: readonly string[]; words: string } | { none: string };
+/** What a package's computer list picks here: the entry, the setting the agent is saved with, the shell in words (null
+ *  for none), the package's shell tools that shell does not run (`dropped`, never granted), the shell tools a package
+ *  that names no tools is given (`defaults`), and the words an apply says of it (`note`: a fallback, or a tool dropped). */
+export type ComputerPick = { entry: ComputerEntry; computer: PickedSetting; shell: string | null; dropped: string[]; defaults: string[]; note: string | null };
+
+/** What to do where a package's computer list has no shell to take: in the apply's refusal and its fallback warning. */
+export const COMPUTER_FIX = "Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell.";
+
+/** The first entry of a package's computer list (`[shell, none]`) this server meets now, given the shell it has
+ *  (`here`): shell, where it has one; none, always (kind none, and no shell tool: a run on the runner in Mode 2 has bash,
+ *  so a shell tool is dropped rather than left to it). Undefined for a package with no list (it runs where a new agent
+ *  does); `refused`, in words, when no entry is met. The rule is the package's preference alone: nothing here knows a
+ *  template. */
+export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, here: ShellHere): ComputerPick | { refused: string } | undefined {
+  if (!p.computer) return undefined;
+  const shell = "none" in here ? undefined : here;
+  const entry = p.computer.find((one) => one === "none" || shell);
+  if (!entry) return { refused: `The ${p.name} template needs a shell, and ${"none" in here ? here.none : "this server has none"}. Nothing was created.` };
+  const runs = entry === "shell" && shell ? shell.tools : [];
+  const dropped = (p.tools ?? []).filter((tool) => toolOf(tool)?.sandboxOnly && !runs.includes(tool));
+  const without = new Intl.ListFormat("en", { type: "conjunction" }).format(dropped);
+  const note = entry === "none" && p.computer[0] === "shell" && "none" in here
+    ? `${here.none.charAt(0).toUpperCase()}${here.none.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${COMPUTER_FIX}`
+    : dropped.length && shell ? `The shell here is ${shell.words}, which runs ${runs.join(", ")} alone, so the agent was made without ${without}.` : null;
+  return entry === "shell" && shell
+    ? { entry, computer: { ...shell.computer }, shell: shell.words, dropped, defaults: [...shell.tools], note }
+    : { entry, computer: { kind: "none" }, shell: null, dropped, defaults: [], note };
+}
+
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
  *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted beside
  *  the package's tools (or, when it names none, `defaultTools`, those this server gives a new agent), each at the
@@ -595,14 +648,20 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
  *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
  *  a send with no destination set never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
-  const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
+  // The computer its list picked (pickComputer): its tools less the shell tools that computer does not run; a package
+  // that names none is given that computer's shell tools, as a new agent in a box is given the box's.
+  const pick = chosen.computer;
+  const own = pick ? (p.tools ?? pick.defaults).filter((tool) => !pick.dropped.includes(tool)) : p.tools;
+  const named = own && (p.tools || own.length) ? own : undefined;
+  const tools = granted.length ? [...(named ?? (pick ? [] : chosen.defaultTools)), ...granted] : named;
   const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
-  // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants.
-  if (p.toolPolicy) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
+  // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants, and
+  // none for a bash the picked computer dropped.
+  if (p.toolPolicy && !pick?.dropped.includes("bash")) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
   const unpinned: { tool: string; parameters: string[] }[] = [];
   for (const { tool: name, pin, empty } of filledPins(chosen.mcp, parameters)) {
     if (empty.length) {
@@ -613,7 +672,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
-    ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
+    ...(pick ? { computer: pick.computer } : {}), ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),

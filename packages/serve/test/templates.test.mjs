@@ -5,17 +5,17 @@
 // a trigger the server refuses deletes the triggers made before it and archives the agent.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { applyBodyOf, compiled, filledPins, PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
+import { applyBodyOf, compiled, filledPins, PackageError, packageModel, pickComputer, readPackage, readPackages } from "../dist/templates.js";
 import { FINDINGS } from "./fixtures/faux-review.mjs";
 
 /** An apply's warnings that a granted tool needs a key this server lacks (runnable.ts: "The tool <t> needs <key>"). */
 const keyedWarnings = (body) => body.warnings.filter((w) => w.reason === "not_set_up_here" && /^The tool \S+ needs /.test(w.message ?? ""));
 import { schemaProblems } from "./schema-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { asOwner, follow, scratch, serve, withEnv } from "./support.mjs";
+import { asOwner, follow, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
@@ -695,4 +695,144 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
   assert.match(warned[0].message, /fixed by the channel parameter, which was not given, so the agent was made with mcp:slack\/slack_send_message set to deny/);
   // Gmail is not saved here: skipped, so no pin of it is written.
   assert.ok(none.body.warnings.some((w) => w.field === "mcp.gmail"));
+});
+
+// A package's computer is a preference list it reads like harness: `[shell, none]` takes a shell where this server has
+// one now and falls back to none where it has none, saying so. The rule is generic (templates.ts pickComputer): the
+// first entry this server meets, and a shell tool that computer does not run is not granted. No Docker command runs
+// here: a fake `docker` first on PATH answers the server's probe, or fails as a CLI with no daemon does.
+// The Archil settings' PUT is a secret write: the client sends it from the owner's session.
+SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/workspace\/archil$/ });
+const ARCHIL = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
+/** A package that reads its folder with a read-only shell where there is one, and with `read` alone where not. */
+const SHELL_READER = "---\nname: shell-reader\nversion: 1.0.0\ndescription: Reads its folder with a shell where there is one.\ntools: [read, bash]\ntool_policy: { bash: read-only }\ncomputer: [shell, none]\n---\nRead.\n";
+const NO_SHELL = /^This server has no shell to give an agent now: Archil is off \(Settings → Workspace\), and the docker box is unavailable here \(.+\), so the agent was made with the template's next choice, no computer, and without bash\. Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell\.$/;
+
+/** A server alone on the templates in `templates`, with a fake `docker` that answers when `docker`, in Mode 2 when `archil`. */
+async function computerServer(t, templates, { docker = false, archil = false } = {}) {
+  const bin = join(await scratch(t), "bin");
+  mkdirSync(bin);
+  const version = docker ? "echo 27.0.0-fake; exit 0" : "echo 'Cannot connect to the Docker daemon' >&2; exit 1";
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then ${version}; fi\nexit 0\n`);
+  chmodSync(join(bin, "docker"), 0o755);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: `${bin}:${process.env.PATH}` }, ["AGENTRUN_BOXES", "ARCHIL_API_KEY"]);
+  const { api } = await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true, templates });
+  if (archil) {
+    const saved = await api("PUT", "/workspace/archil", ARCHIL);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  }
+  return api;
+}
+
+/** A templates folder holding each of `packages` (name → agent.md). */
+async function templatesOf(t, packages) {
+  const dir = join(await scratch(t), "templates");
+  for (const [name, text] of Object.entries(packages)) {
+    mkdirSync(join(dir, name), { recursive: true });
+    writeFileSync(join(dir, name, "agent.md"), text);
+  }
+  return dir;
+}
+
+/** `name` applied on `api`: the answer, the agent's computer, tools and bash setting, and the computer warnings. */
+async function appliedComputer(api, name) {
+  const applied = await api("POST", `/templates/${name}/apply`, {});
+  if (applied.status !== 201) return { applied };
+  const made = (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition;
+  return { applied, computer: made.computer, tools: made.tools, bash: made.tool_settings?.bash, warned: applied.body.warnings.filter((w) => w.field === "computer").map((w) => [w.reason, w.message]) };
+}
+
+test("a package's computer is default or a preference list of shell and none: the validator reads [shell, none] and refuses a list it can't pick from", async (t) => {
+  const refused = async (change, pattern) => {
+    const problems = await problemsOf(t, change);
+    assert.ok(problems.some((p) => pattern.test(p)), `${pattern}: ${JSON.stringify(problems)}`);
+  };
+  const computer = (value, tools = "[read]") => ({ edit }) => { edit("learning: false", `learning: false\ncomputer: ${value}`); edit("tools: [read]", `tools: ${tools}`); };
+  for (const value of ["default", "[shell, none]", "[shell]", "[none]"]) assert.deepEqual(await problemsOf(t, computer(value)), [], `computer: ${value} reads`);
+  assert.deepEqual(await problemsOf(t, computer("[shell, none]", "[read, bash]")), [], "a shell tool beside a list with shell reads");
+  const words = /computer is default \(where this server puts a new agent\), or a preference list of shell, none, each once/;
+  for (const value of ["shell", "[]", "[gpu, none]", "[shell, shell]", "{ kind: sandbox }"]) await refused(computer(value), words);
+  await refused(computer("[none, shell]"), /computer: none is always met, so nothing after it is ever picked: end the list with it/);
+  await refused(computer("[none]", "[read, bash]"), /computer: \[none\] gives no shell, so bash would never be granted: add shell to computer, or take it out of tools/);
+  const pkg = readPackage(join(await templatesOf(t, { "shell-reader": SHELL_READER }), "shell-reader"));
+  assert.deepEqual([pkg.computer, pkg.toolPolicy], [["shell", "none"], { bash: "read-only" }]);
+});
+
+test("pickComputer takes the first entry this server meets: shell where it has one, else none, dropping a shell tool that computer does not run, in words", () => {
+  const pkg = { name: "shell-reader", computer: ["shell", "none"], tools: ["read", "bash", "bash_background"] };
+  const docker = { computer: { kind: "sandbox", provider: "docker" }, tools: ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], words: "the docker sandbox" };
+  const exec = { computer: { kind: "none" }, tools: ["bash"], words: "Archil's serverless exec" };
+  const none = { none: "this server has no shell to give an agent now: no box" };
+  assert.deepEqual(pickComputer(pkg, docker), { entry: "shell", computer: { kind: "sandbox", provider: "docker" }, shell: "the docker sandbox", dropped: [], defaults: docker.tools, note: null });
+  assert.deepEqual(pickComputer(pkg, exec), { entry: "shell", computer: { kind: "none" }, shell: "Archil's serverless exec", dropped: ["bash_background"], defaults: ["bash"], note: "The shell here is Archil's serverless exec, which runs bash alone, so the agent was made without bash_background." });
+  assert.deepEqual(pickComputer(pkg, none), { entry: "none", computer: { kind: "none" }, shell: null, dropped: ["bash", "bash_background"], defaults: [], note: "This server has no shell to give an agent now: no box, so the agent was made with the template's next choice, no computer, and without bash and bash_background. Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell." });
+  assert.deepEqual(pickComputer({ ...pkg, computer: ["shell"] }, none), { refused: "The shell-reader template needs a shell, and this server has no shell to give an agent now: no box. Nothing was created." });
+  // [none] alone is the package's own choice, never a fallback: nothing to say.
+  assert.deepEqual(pickComputer({ name: "reader", computer: ["none"], tools: ["read"] }, docker), { entry: "none", computer: { kind: "none" }, shell: null, dropped: [], defaults: [], note: null });
+  assert.equal(pickComputer({ name: "reader", tools: ["read"] }, docker), undefined, "no list: where a new agent runs");
+  // compiled writes the pick: its computer, the tools less those dropped, and no bash policy without bash.
+  const reader = readPackage(join(REVIEW));
+  const shellPkg = { ...reader, tools: ["read", "bash"], toolPolicy: { bash: "read-only" }, computer: ["shell", "none"] };
+  const parameters = { repo: "acme/widgets" };
+  const fallback = compiled(shellPkg, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(shellPkg, none) }).agent.definition;
+  assert.deepEqual([fallback.computer, fallback.tools, fallback.tool_settings], [{ kind: "none" }, ["read"], undefined]);
+  const shelled = compiled(shellPkg, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(shellPkg, exec) }).agent.definition;
+  assert.deepEqual([shelled.computer, shelled.tools, shelled.tool_settings], [{ kind: "none" }, ["read", "bash"], { bash: { policy: "read-only" } }]);
+  // A package that names no tools is given the shell's tools, as a new agent in a box is given the box's.
+  const bare = { ...reader, tools: undefined, toolPolicy: undefined, computer: ["shell", "none"] };
+  assert.deepEqual(compiled(bare, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(bare, docker) }).agent.definition.tools, docker.tools);
+  assert.equal(compiled(bare, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(bare, none) }).agent.definition.tools, undefined);
+});
+
+test("Mode 1 without Docker: a [shell, none] package's agent gets no computer and no bash, said in a computer warning; GET /v2/templates shows the list and that pick", async (t) => {
+  const api = await computerServer(t, await templatesOf(t, { "shell-reader": SHELL_READER, "shell-only": SHELL_READER.replace("shell-reader", "shell-only").replace("[shell, none]", "[shell]") }));
+  const listed = Object.fromEntries((await api("GET", "/templates")).body.templates.map((one) => [one.name, one]));
+  assert.deepEqual(listed["shell-reader"].computer, ["shell", "none"]);
+  assert.deepEqual({ ...listed["shell-reader"].computer_here, note: undefined }, { entry: "none", computer: { kind: "none" }, shell: null, dropped: ["bash"], note: undefined });
+  assert.match(listed["shell-reader"].computer_here.note, NO_SHELL);
+  const said = await appliedComputer(api, "shell-reader");
+  assert.equal(said.applied.status, 201, JSON.stringify(said.applied.body));
+  assert.deepEqual([said.computer, said.tools, said.bash], [{ kind: "none" }, ["read"], undefined]);
+  assert.equal(said.warned.length, 1, JSON.stringify(said.applied.body.warnings));
+  assert.equal(said.warned[0][0], "not_set_up_here");
+  assert.match(said.warned[0][1], NO_SHELL);
+  // A shell alone, where there is none: the apply is refused, and nothing is made.
+  assert.equal(listed["shell-only"].computer_here.entry, null);
+  const before = (await api("GET", "/agents")).body.agents.length;
+  const refused = await api("POST", "/templates/shell-only/apply", {});
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["computer", "not_set_up_here"]]);
+  assert.match(refused.body.error.message, /^The shell-only template needs a shell, and this server has no shell to give an agent now: Archil is off \(Settings → Workspace\), and the docker box is unavailable here \(.+\)\. Nothing was created\.$/);
+  assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing made");
+});
+
+test("Mode 2: a [shell, none] package's agent gets bash on the runner, on Archil's serverless exec, with its read-only policy; a background tool it can't run there is not granted, said", async (t) => {
+  const api = await computerServer(t, await templatesOf(t, { "shell-reader": SHELL_READER, "background-reader": SHELL_READER.replace("shell-reader", "background-reader").replace("tools: [read, bash]", "tools: [read, bash, bash_background]") }), { archil: true });
+  const listed = Object.fromEntries((await api("GET", "/templates")).body.templates.map((one) => [one.name, one]));
+  assert.deepEqual(listed["shell-reader"].computer_here, { entry: "shell", computer: { kind: "none" }, shell: "Archil's serverless exec", dropped: [], note: null });
+  const said = await appliedComputer(api, "shell-reader");
+  assert.equal(said.applied.status, 201, JSON.stringify(said.applied.body));
+  assert.deepEqual([said.computer, said.tools, said.bash, said.warned], [{ kind: "none" }, ["read", "bash"], { policy: "read-only" }, []]);
+  // Saved with bash on the runner, it is not refused for bash: Mode 2's runner has a shell (runnable.ts shellOf).
+  assert.deepEqual(said.applied.body.warnings.filter((w) => /bash/.test(w.message ?? "")), [], JSON.stringify(said.applied.body.warnings));
+  const background = await appliedComputer(api, "background-reader");
+  assert.equal(background.applied.status, 201, JSON.stringify(background.applied.body));
+  assert.deepEqual([background.computer, background.tools, background.warned], [{ kind: "none" }, ["read", "bash"], [["not_an_option", "The shell here is Archil's serverless exec, which runs bash alone, so the agent was made without bash_background."]]]);
+});
+
+test("Docker: a [shell, none] package's agent gets the Docker sandbox with bash and its read-only policy, no warning", async (t) => {
+  const api = await computerServer(t, await templatesOf(t, { "shell-reader": SHELL_READER }), { docker: true });
+  const listed = (await api("GET", "/templates")).body.templates.find((one) => one.name === "shell-reader");
+  assert.deepEqual(listed.computer_here, { entry: "shell", computer: { kind: "sandbox", provider: "docker" }, shell: "the docker sandbox", dropped: [], note: null });
+  const said = await appliedComputer(api, "shell-reader");
+  assert.equal(said.applied.status, 201, JSON.stringify(said.applied.body));
+  assert.deepEqual([said.computer, said.tools, said.bash, said.warned], [{ kind: "sandbox", provider: "docker" }, ["read", "bash"], { policy: "read-only" }, []]);
+});
+
+test("a package with no computer list keeps today's place: GET /v2/templates shows computer and computer_here null, and apply writes no computer", async (t) => {
+  const api = await computerServer(t, await templatesOf(t, { plain: "---\nname: plain\nversion: 1.0.0\ndescription: Reads.\ntools: [read]\n---\nRead.\n" }));
+  const listed = (await api("GET", "/templates")).body.templates.find((one) => one.name === "plain");
+  assert.deepEqual([listed.computer, listed.computer_here], [null, null]);
+  const said = await appliedComputer(api, "plain");
+  assert.deepEqual([said.applied.status, said.computer, said.tools, said.warned], [201, undefined, ["read"], []]);
 });
