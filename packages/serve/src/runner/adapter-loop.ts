@@ -45,7 +45,7 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
-import { TOOL_BUDGET_TEXT } from "../tool-budget.js";
+import { TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
@@ -1205,7 +1205,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // of this claim, and a replay the gate refuses makes none, so it is opened here for the cut alone, never read as free.
         const toolsAtOpen = sessionSpendOf(await sessions.read(TOOL_SESSION));
         if (spec.runCap && toolsAtOpen.turns.some((turn) => !toolsAtOpen.answered.has(turn))) await paidOf();
-        const gateOf = preIntentGate(spec, hooks);
+        // The cap's wrap-up (tool-budget.ts wrappingUp): what every session of the run has taken as the cap counts it, its
+        // spend and each request or paid step still out at its hold and bound, read from the run's records at each call.
+        const wrapUp = async (): Promise<boolean> => {
+          const capUsd = capNow();
+          if (capUsd === undefined) return false;
+          let taken: number | null = 0;
+          for (const key of await sessions.keys()) {
+            const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
+            taken = taken === null || spent === null ? null : taken + spent;
+          }
+          return wrappingUp(capUsd, taken);
+        };
+        const gateOf = preIntentGate(spec, hooks, wrapUp);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context, now, spec.cwd) : undefined;
         cliRecord = record;
@@ -1686,7 +1698,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park). */
-  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks) {
+  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: () => Promise<boolean>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
@@ -1698,6 +1710,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // asked about.
       const budget = spec.gate?.toolCalls;
       if (budget !== undefined && call.callsBefore && (await call.callsBefore(budget)) >= budget) return { deny: TOOL_BUDGET_TEXT };
+      // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
+      // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
+      if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
