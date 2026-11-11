@@ -31,7 +31,7 @@ export const openCodePins = (): OpenCodePins => ({ version: OPENCODE_VERSION, sh
  */
 export function verifyOpenCodeBinary(found: { path: string; pkg?: string; packageVersion?: string } | undefined, pins: OpenCodePins = openCodePins()): { path: string } | OpenCodePinMismatch | OpenCodeNotInstalled {
   const at = located(found, pins);
-  if (!("expected" in at)) return at;
+  if (at instanceof Error) return at;
   // Hashed a chunk at a time, and checked once per binary in this process while it stays the same file, unchanged (the
   // kernel's checkedOnce): a host that checks it for each model it resolves, and a run's process that makes its adapter,
   // check it once.
@@ -42,7 +42,7 @@ export function verifyOpenCodeBinary(found: { path: string; pkg?: string; packag
  *  on the same record: a check that passed here makes verifyOpenCodeBinary (the adapter's own) answer at once. */
 export async function verifyOpenCodeBinaryAsync(found: { path: string; pkg?: string; packageVersion?: string } | undefined, pins: OpenCodePins = openCodePins()): Promise<{ path: string } | OpenCodePinMismatch | OpenCodeNotInstalled> {
   const at = located(found, pins);
-  if (!("expected" in at)) return at;
+  if (at instanceof Error) return at;
   return checkedOnceAsync(at.path, JSON.stringify({ version: pins.version, expected: at.expected }), () => checkBinaryAsync(at.path, pins.version, at.expected), (result) => !(result instanceof Error));
 }
 
