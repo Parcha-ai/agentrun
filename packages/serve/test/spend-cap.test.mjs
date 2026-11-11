@@ -70,8 +70,7 @@ test.skip("a request the cap refuses never reaches the model: the run's second r
   assert.deepEqual(made, [{ users: 1 }], "the model was called for the ask and never for the answer");
 });
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a response that costs more than its worst case is stopped by the server after it, and the answer it paid for is kept", async (t) => {
+test("a response that costs more than its worst case is stopped by the server after it, and the answer it paid for is kept", async (t) => {
   // A gateway that reports a million tokens each way, far past the 32k it was asked for: $2, over the $0.05 cap.
   const { api, posts } = await gateway(t, { price: "1,1", text: "The answer is 42.", tokens: 1_000_000 });
   const run = await ended(api, (await start(api, "over", "What is six times seven?", { max_cost_usd: 0.05 })).run_id);
@@ -80,8 +79,7 @@ test.skip("a response that costs more than its worst case is stopped by the serv
   assert.deepEqual(run.result, { output: null, final_answer: "The answer is 42." }, "the answer the cap stopped is kept");
 });
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a response that stops at its length and costs past the cap is stopped after it, and its text is the answer kept", async (t) => {
+test("a response that stops at its length and costs past the cap is stopped after it, and its text is the answer kept", async (t) => {
   // The same $2 response as above, cut at its max output tokens (pi's stopReason "length": text, no tool call). The
   // timeline shows it as the run's newest answer row (a text_block); the answer the cap keeps is that text.
   const { api, posts } = await gateway(t, { price: "1,1", text: "The answer, cut at its length.", tokens: 1_000_000, incomplete: true });
@@ -95,7 +93,8 @@ const GROUPS = ["meter", "agent", "key", "day", "region"];
 /** /usage for every grouping: its total and each line's usd. */
 const usages = async (api) => Promise.all(GROUPS.map(async (group) => (await api("GET", `/usage?group_by=${group}`)).body));
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
+// SKIP (follow-up #2080): a pi run's end reads its cost from its root's answers, so a request a cancel cut mid-answer (booked
+// unknown in its model session) ends at $0; waits on #2487's nullable end cost and #2486's pi end cost
 test.skip("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const paid = await ended(api, (await start(api, "paid", "What is six times seven?")).run_id);
@@ -116,8 +115,7 @@ test.skip("a run cancelled while its request answers costs unknown (the request 
   }
 });
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a run with no request costs $0", async (t) => {
+test("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a run with no request costs $0", async (t) => {
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-unpriced.mjs", import.meta.url).pathname });
   const run = await ended(api, (await start(api, "unpriced", "What is six times seven?")).run_id);
   assert.deepEqual([run.status, run.cost.usd], ["completed", null], JSON.stringify(run.cost));
