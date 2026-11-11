@@ -555,4 +555,56 @@ describe("the live view fills the window", () => {
     expect(p.frame()).toBeNull();
     expect(fillButton(p.host)).toBeNull();
   });
+
+  it("Esc inside the viewer still puts it back after a new session replaces the viewer while it fills the window", async () => {
+    let newer = false;
+    const p = await page(async () => ({ state: "live", kind: "browser", viewer: newer ? VIEWER2 : VIEWER, hold: "agent" }), working, "screen");
+    await act(async () => { fillButton(p.host)!.click(); });
+    const first = p.frame();
+    newer = true;
+    await settle(100);
+    expect(p.frame(), "a new session is a new iframe").not.toBe(first);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER2));
+    expect(filling(p.host), "still filling the window").toBe(true);
+    const inner = p.frame()!.contentWindow! as Window & typeof globalThis;
+    await act(async () => { inner.dispatchEvent(new inner.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host), "Esc inside the new viewer").toBe(false);
+  });
+
+  it("a refused Take over is said inside the full-window frame, where the person is looking", async () => {
+    const desktop = { ...working, computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, { run: desktop, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }), computerEvery: 20, tab: "screen", onTakeOver: async () => { throw new ClientError(409, "computer_not_live", "this run's desktop is not up now, so there is nothing to take over", false); } } as never)); });
+    await settle();
+    await act(async () => { fillButton(host)!.click(); });
+    const take = [...frameBox(host)!.querySelectorAll("button")].find((b) => b.textContent === "Take over")!;
+    await act(async () => { take.click(); });
+    await settle();
+    expect(frameBox(host)!.querySelector('[role="alert"]')?.textContent).toBe("this run's desktop is not up now, so there is nothing to take over");
+    expect(host.querySelectorAll('[role="alert"]'), "said once").toHaveLength(1);
+  });
+
+  it("as a dialog it holds the focus: it moves into its bar, Tab stays inside, and closing gives it back to the button", async () => {
+    const p = await page(async () => LIVE, working, "screen");
+    const opened = fillButton(p.host)!;
+    opened.focus();
+    await act(async () => { opened.click(); });
+    const box = frameBox(p.host)!;
+    expect(box.contains(document.activeElement), "focus moved into the frame").toBe(true);
+    expect(document.activeElement).toBe(exitButton(p.host));
+    // Tab from the last stop (the viewer) wraps to the first; Shift+Tab from the first wraps to the last.
+    p.frame()!.focus();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
+    expect(document.activeElement, "Tab from the viewer wraps to the bar").toBe(exitButton(p.host));
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })); });
+    expect(document.activeElement, "Shift+Tab from the bar wraps to the viewer").toBe(p.frame());
+    // Focus outside the frame is pulled back in on Tab.
+    document.body.appendChild(document.createElement("button")).focus();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
+    expect(box.contains(document.activeElement), "Tab from outside lands inside").toBe(true);
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host)).toBe(false);
+    expect(document.activeElement, "focus back on Fill the window").toBe(fillButton(p.host));
+  });
 });
