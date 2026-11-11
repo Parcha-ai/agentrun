@@ -6,6 +6,8 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { checkGpu, type GpuCapability } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
@@ -47,6 +49,30 @@ export interface ProviderEntry {
   readonly network?: readonly string[];
   readonly metered: boolean;
   readonly capabilities: readonly KindCapabilities[];
+  /** A program its computers need on this machine's PATH, and what installs it (the phone's adb). Absent: none. */
+  readonly hostCommand?: { readonly command: string; readonly from: string };
+}
+
+/** Why a provider whose host command is not on this machine's PATH cannot run here, in words that say how to fix it,
+ *  as the boxes say Docker's (boxes.ts). */
+export const hostCommandWhy = ({ command, from }: { readonly command: string; readonly from: string }): string =>
+  `${command} isn't installed on this server (no ${command} command on PATH): install ${from}, then restart AgentRun`;
+
+/** Each provider whose host command is not on `path` (the server's PATH at its start), by its id, with hostCommandWhy's
+ *  words: what Settings → Computers, a run's start and the claim say for it. A command is there when a folder of `path`
+ *  holds an executable file of its name. */
+export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "hostCommand">[], path: string | undefined): Readonly<Record<string, string>> {
+  const found = (command: string): boolean =>
+    (path ?? "").split(delimiter).some((folder) => {
+      if (!folder) return false;
+      try {
+        accessSync(join(folder, command), constants.X_OK);
+        return statSync(join(folder, command)).isFile();
+      } catch {
+        return false;
+      }
+    });
+  return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !found(provider.hostCommand.command) ? [[provider.id, hostCommandWhy(provider.hostCommand)]] : [])));
 }
 
 /** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
@@ -76,6 +102,9 @@ export interface ComputerRoutesOptions {
   /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings row), so turning
    *  Archil on or off takes effect without building the routes again. */
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
+  /** Why this machine cannot run a provider's computers, by its id (hostCommandRefusals at the server's start): the
+   *  provider is not ready, and a claim of it is refused, in these words. Absent: every provider can run here. */
+  readonly hostWhy?: Readonly<Record<string, string>>;
   /** The server's environment: a variable named as a provider's key overrides the saved one (source "env"). */
   readonly env?: KeyEnv;
 }
@@ -167,8 +196,9 @@ const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {} } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {}, hostWhy = {} } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
+  const hostOf = (provider: ProviderEntry): string | undefined => (Object.hasOwn(hostWhy, provider.id) ? hostWhy[provider.id] : undefined);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
@@ -186,7 +216,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const serving = kinds.PROVIDERS.filter((provider) => provider.kinds.includes(kind));
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
-          const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const why = modeRefusal(kind, provider, mode) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           const network = networkWords(provider.network);
           // A sandbox's GPUs: only a sandbox takes them (computer-setting.ts computerIssues).
           const gpu = kind === "sandbox" ? sandboxGpu(kinds, provider) : undefined;
@@ -245,7 +275,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
 
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
    *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
-   *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), and have every required key saved. */
+   *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), find what it runs on this machine
+   *  (hostWhy's words), and have every required key saved. */
   async function claimRefusal(computer: ComputerSetting): Promise<string | undefined> {
     if (computer.kind === "none") return undefined;
     const provider = providerOf(computer.provider);
@@ -255,7 +286,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
     const mode = await modeNow();
-    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode);
+    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode) ?? hostOf(provider);
     if (refused) return refused;
     const missing = missingKeys(provider, new Set([...(await sealedKeyNames(store)), ...provider.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]));
     return missing.length ? keysWhy(provider, missing) : undefined;

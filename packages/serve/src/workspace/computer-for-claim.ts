@@ -10,7 +10,7 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
+import type { ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
 import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
@@ -107,6 +107,10 @@ export interface ComputerForClaimDeps {
    *  a host that lacks it, or a named image pulled); never when the host has it. The run's caller says it on the run's
    *  timeline. Absent: nothing is said. */
   readonly onImageWait?: ImageWait;
+  /** Told once a computer the claim made through its provider is connected, with what it says it is (its hello's OS,
+   *  the OS's version and its architecture): the run's caller says it on the run's timeline. A browser session, made
+   *  by the run's tool, is never told. Absent: nothing is said. */
+  readonly onConnected?: (said: ComputerSaid) => void;
   /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
    *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
   readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
@@ -150,6 +154,13 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
 type ImageMaker = { image(context: { readonly signal?: AbortSignal; readonly onWait?: ImageWait }): Promise<Result<string>> };
 /** Told once, before the claim waits on its computer's image being built or pulled; never when the host has it. */
 export type ImageWait = (making: "build" | "pull", tag: string) => void;
+/** What a computer the claim made says it is, once it is connected: the provider's name in words, the agent's setting
+ *  kind, and its hello's own facts (its OS, the OS's version where it says one, its architecture). */
+export type ComputerSaid = {
+  readonly provider: string;
+  readonly kind: Exclude<ComputerSettingKind, "none">;
+  readonly hello: Pick<HelloResult, "os" | "osVersion" | "arch">;
+};
 /** The image `provider` made ready, when it makes its own; undefined for one that does not. A failure is the provider's
  *  words. `onWait`: told once if the claim waits on a build or a pull. */
 async function readyImage(provider: ComputerProvider, signal: AbortSignal | undefined, onWait: ImageWait | undefined): Promise<string | undefined> {
@@ -225,7 +236,7 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   const created = await provider.create(spec, signal ? { signal } : {});
@@ -246,6 +257,7 @@ async function providerLaunch(
     groups: hello.groups,
     // What the machine says it is (a phone's android or ios): its live view's input platform.
     machine: hello.kind,
+    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
     client,
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
@@ -324,6 +336,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
+      deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: launched.hello });
       return launched;
     },
   };

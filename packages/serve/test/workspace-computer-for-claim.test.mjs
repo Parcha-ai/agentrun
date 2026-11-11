@@ -14,6 +14,7 @@ import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
+import { computerReadyWords } from "../dist/workspace/computer-deps.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -57,7 +58,9 @@ function fakeProvider(root, record, groups, machine = "linux") {
       return { ok: true, value: { id: "c1", name: "c1" } };
     },
     async connect() {
-      return { ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: machine, arch: "amd64", groups }, close: async () => {} } };
+      // A phone says its OS and the OS's release (an Android's getprop); a Linux computer names no version.
+      const os = machine === "android" || machine === "ios" ? { os: machine, osVersion: machine === "android" ? "15" : "18.2" } : { os: "linux" };
+      return { ok: true, value: { client: computer.client, hello: { version: "0", ...os, kind: machine, arch: "amd64", groups }, close: async () => {} } };
     },
     async attach() {
       const read = await computer.readBack();
@@ -92,7 +95,7 @@ function views(refusal) {
   return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, onConnected } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -101,7 +104,7 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), fakeProvider(root, record, groups, machine))]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}) });
   return { root, record, run };
 }
 
@@ -162,6 +165,22 @@ test("a phone's view is opened with its platform, as the phone says it: android,
     assert.deepEqual(view.opened.map((one) => [one.kind, one.input]), [["phone", machine]]);
     await answer.release();
   }
+});
+
+test("once its computer is connected, the claim says what it is, from its hello: the OS, the OS's version where it says one, the architecture", async () => {
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+  const said = [];
+  const phone = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android", onConnected: (one) => void said.push(one) });
+  const answer = await phone.run();
+  assert.deepEqual(said, [{ provider: "Phone harness", kind: "phone", hello: { os: "android", osVersion: "15", arch: "amd64" } }]);
+  assert.equal(computerReadyWords(said[0]), "The phone is ready: Android 15 (amd64), from Phone harness.");
+  await answer.release();
+  assert.equal(said.length, 1, "said once, never at the release");
+
+  const sandbox = await claim({ kind: "sandbox", provider: "docker" }, { onConnected: (one) => void said.push(one) });
+  await (await sandbox.run()).release();
+  assert.deepEqual(said[1], { provider: "Docker", kind: "sandbox", hello: { os: "linux", arch: "amd64" } }, "no version where the hello names none");
+  assert.equal(computerReadyWords(said[1]), "The sandbox is ready: Linux (amd64), from Docker.");
 });
 
 test("at the run's end the view closes 'ended'", async () => {

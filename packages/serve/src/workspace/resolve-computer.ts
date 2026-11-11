@@ -120,8 +120,11 @@ export const noNetworkRefusal = (label: string, kind: string): string =>
  *  has no such answer and launches it. Absent: not asked.
  *
  *  `boxAllow`: this server's allow setting (run-box.ts boxAllowOf). Under "none", a computer whose provider makes no
- *  "none" is refused (noNetworkRefusal), as the claim refuses it. Absent: not asked. */
-export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string, boxAllow?: readonly string[] | "none"): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
+ *  "none" is refused (noNetworkRefusal), as the claim refuses it. Absent: not asked.
+ *
+ *  `hostWhy`: why this machine cannot run a provider's computers, in words that say how to fix it (computers.ts
+ *  hostCommandRefusals, read at the server's start: the phone's adb not on PATH), or undefined. Absent: not asked. */
+export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string, boxAllow?: readonly string[] | "none", hostWhy?: (provider: string) => string | undefined): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
   const resolved = await resolveComputer(setting, mode, registry, {
     keysOf: providerKeys(registry, keyOf),
     // A setting is given, so the Mode 1 default (the only asker) is never read; and nothing is launched.
@@ -133,6 +136,8 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   const why = mode === 1 && resolved.mounts && entry?.mounts.includes("bind") && answers ? answers(entry.id) : true;
   // It names the box whose probe said no (a refusal's details.box), as the box check did.
   if (why !== true) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${why.replace(/[.!?]+$/, "")}.`, box: entry!.id };
+  const host = entry ? hostWhy?.(entry.id) : undefined;
+  if (host) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${host.replace(/[.!?]+$/, "")}.` };
   if (boxAllow === "none" && entry && needsNetwork(entry.network)) return { refused: noNetworkRefusal(entry.label, resolved.kind) };
   return { ok: true };
 }

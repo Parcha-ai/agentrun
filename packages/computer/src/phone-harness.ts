@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
-import type { KindCapabilities } from "./kinds.js";
+import type { HostCommand, KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
 	type ComputerClient,
@@ -65,6 +65,8 @@ export const NETWORK: readonly NetworkForm[] = ["open"];
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
 /** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
 export const PHONE_IMAGE = "android";
+/** The program on the server's own machine that drives a phone: adb, found on PATH unless the adb option names one. */
+export const HOST_COMMAND: HostCommand = { command: "adb", from: "Android platform-tools" };
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
@@ -964,10 +966,12 @@ class AdbClient implements ComputerClient {
 		readonly now: () => number,
 	) {}
 
-	/** What the phone is: its ABI, its screen's size and density; then the hello it answers. */
+	/** What the phone is: its ABI, its Android release, its screen's size and density; then the hello it answers. */
 	async open(version: string): Promise<Result<HelloResult>> {
 		const abi = await this.#shell("getprop ro.product.cpu.abi");
 		if (!abi.ok) return abi;
+		const release = await this.#shell("getprop ro.build.version.release");
+		if (!release.ok) return release;
 		const size = await this.#shell("wm size");
 		if (!size.ok) return size;
 		const density = await this.#shell("wm density");
@@ -979,7 +983,9 @@ class AdbClient implements ComputerClient {
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
 		const reported = abi.value.trim();
-		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
+		// An empty answer says no release: the hello then carries none.
+		const osVersion = release.value.trim();
+		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", ...(osVersion ? { osVersion } : {}), kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
 		return ok(this.#hello);
 	}
 

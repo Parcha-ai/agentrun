@@ -440,7 +440,8 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.deepEqual(fake.serverCalls().slice(0, 4), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:echo ph-ok", "host:transport-id:1 shell:unlock [code]"]);
 	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
 	assert.deepEqual(fake.shells().slice(0, 3), ["echo ph-ok", `unlock ${ADB_CODE}`, "echo ph-ok"]);
-	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
+	// Its Android release, as the phone's getprop says it.
+	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 	await connected.value.close();
@@ -464,6 +465,11 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	const arm = await setup({ abi: "arm64-v8a" });
 	const armHello = (await arm.provider.connect((await arm.provider.create(SPEC)).value)).value.hello;
 	assert.equal(armHello.arch, "arm64");
+
+	// A phone that says no Android release: the hello carries none rather than an empty one.
+	const unsaid = await setup({ release: "" });
+	const unsaidHello = (await unsaid.provider.connect((await unsaid.provider.create(SPEC)).value)).value.hello;
+	assert.equal(Object.hasOwn(unsaidHello, "osVersion"), false);
 });
 
 test("two connections to one phone share its adb transport: the second does not unlock again, and closing one leaves the other working", async () => {

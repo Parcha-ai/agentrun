@@ -12,7 +12,7 @@ import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
 import { MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./modal.js";
 import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
-import { PHONE_IMAGE } from "./phone-harness.js";
+import { HOST_COMMAND as PHONE_HOST_COMMAND, PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
@@ -107,6 +107,15 @@ export interface ProviderEntry {
 	 * none: serve builds its image itself (DOCKER_RECIPE).
 	 */
 	defaultImage?: Partial<Record<ComputerSettingKind, string>>;
+	/** A program the server's machine must have on its PATH to run the provider's computers: its module's HOST_COMMAND. */
+	hostCommand?: HostCommand;
+}
+
+/** A program a provider runs on the server's own machine: the command it looks for on PATH, and what installs it. */
+export interface HostCommand {
+	readonly command: string;
+	/** What gives the command, in words a person installs it by: "Android platform-tools". */
+	readonly from: string;
 }
 
 const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
@@ -181,6 +190,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		metered: true,
 		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
 		defaultImage: { phone: PHONE_IMAGE },
+		hostCommand: PHONE_HOST_COMMAND,
 	}),
 	entry({
 		id: "browserbase",

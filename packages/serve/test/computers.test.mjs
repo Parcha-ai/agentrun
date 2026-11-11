@@ -6,10 +6,13 @@
 // in words that name the setting to fill, else the options its provider is made with. No provider is ever called.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { createComputerRoutes, folderModeOf, KeysRefused, networkWords } from "../dist/computers.js";
+import { createComputerRoutes, folderModeOf, hostCommandRefusals, KeysRefused, networkWords } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
@@ -190,6 +193,35 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
+});
+
+test("a provider whose host command is not on this machine's PATH is not ready, its key saved or not, and its claim is refused in words of what to install", async (t) => {
+  const NO_ADB = "adb isn't installed on this server (no adb command on PATH): install Android platform-tools, then restart AgentRun";
+  // hostCommandRefusals reads PATH's folders: a folder with an executable adb has it, one without (or a plain file) not.
+  const dir = await mkdtemp(join(tmpdir(), "host-command-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(join(dir, "with"));
+  await mkdir(join(dir, "plain"));
+  await writeFile(join(dir, "with", "adb"), "#!/bin/sh\n", { mode: 0o755 });
+  await writeFile(join(dir, "plain", "adb"), "not a program", { mode: 0o644 });
+  const phone = { id: "phone-harness", hostCommand: { command: "adb", from: "Android platform-tools" } };
+  const docker = { id: "docker" };
+  assert.deepEqual(hostCommandRefusals([phone, docker], [join(dir, "plain"), join(dir, "with")].join(delimiter)), {});
+  assert.deepEqual(hostCommandRefusals([phone, docker], [join(dir, "plain"), join(dir, "nowhere")].join(delimiter)), { "phone-harness": NO_ADB });
+  assert.deepEqual(hostCommandRefusals([phone, docker], undefined), { "phone-harness": NO_ADB }, "no PATH at all has none");
+  // The computer package's own registry names adb for the phone, and nothing else.
+  assert.deepEqual(Object.keys(hostCommandRefusals(PROVIDERS, join(dir, "nowhere"))), ["phone-harness"]);
+
+  const sealKey = randomBytes(32);
+  const { store } = await storeOn(t);
+  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", hostWhy: { "phone-harness": NO_ADB } });
+  const phoneView = async () => providerOf(await routes.view(), "phone", "phone-harness");
+  assert.deepEqual([(await phoneView()).ready, (await phoneView()).why], [false, NO_ADB]);
+  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), NO_ADB);
+  await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
+  assert.deepEqual([(await phoneView()).ready, (await phoneView()).why], [false, NO_ADB], "its key saved, still not ready");
+  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), NO_ADB);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined, "another provider is not touched");
 });
 
 test("the folder mode is read at each call (folderModeOf): turning Archil on or off takes effect without building the routes again", async (t) => {

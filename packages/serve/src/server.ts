@@ -132,7 +132,7 @@ import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from 
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
-import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
+import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
@@ -1096,11 +1096,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
   let computerRoutes: ComputerRoutes | undefined;
+  // The programs a provider runs on this machine (the phone's adb), looked for on PATH once, at the start, as the boxes
+  // probe Docker: a provider whose program is missing is not ready, and its words say what to install.
+  const hostWhy = hostCommandRefusals(COMPUTER_PROVIDERS, process.env.PATH);
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
+        hostWhy,
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
@@ -1112,13 +1116,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
    *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
-   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
+   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it; whether a provider's program is
+   *  on this machine is hostWhy's, read at the start too. */
   const dockerAnswers = (provider: string): true | string => {
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
   const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
