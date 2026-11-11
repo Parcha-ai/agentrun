@@ -100,7 +100,7 @@ function cliOf(env, seen) {
   };
 }
 
-// SKIP (follow-up #2080): the CLI demo's follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
+// SKIP (follow-up #2080): the CLI demo's follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2430; this case passes on its head).
 test.skip("demo: the CLI creates an agent, starts a capped run, reads it, lists runs and sends it a message, the token never in its output", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch(t);
   const server = await serve(t, dir, env);
@@ -161,8 +161,10 @@ test.skip("demo: the CLI creates an agent, starts a capped run, reads it, lists 
 
   const raw = cli(["api", "GET", "/health", ...data]);
   assert.deepEqual([raw.code, raw.json().status], [0, "ok"]);
+  // The webhook holds its signing secret, which only the owner's signed-in session writes or removes: the API token is
+  // refused, exit 4, in the server's words.
   const deleted = cli(["webhook", "delete", ...data]);
-  assert.deepEqual([deleted.code, deleted.out], [0, ""], deleted.err);
+  assert.deepEqual([deleted.code, deleted.out, JSON.parse(deleted.err).error.code], [4, "", "forbidden"], deleted.err);
 
   // 1: the server refused, its error JSON on stderr.
   const missing = cli(["runs", "get", "no-such-run", ...data]);
@@ -171,10 +173,11 @@ test.skip("demo: the CLI creates an agent, starts a capped run, reads it, lists 
   for (const args of [["runs", "get"], ["runs", "start", "demo", "--max-cost-usd", "two"], ["runs", "bogus"], ["agents", "list", "--no-such-flag"], ["runs", "start", "demo", "--body", "{not json"]]) {
     assert.equal(cli([...args, ...data]).code, 2, args.join(" "));
   }
-  // A body that carries a secret is never taken from the command line.
+  // A body that carries a secret is never taken from the command line. Saving a key is the owner's, in the console: the
+  // CLI has no verb for it, and a raw call refuses an inline body.
   const inline = cli(["tool-keys", "save", "exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(inline.code, 2);
-  assert.match(inline.err, /--body -/);
+  assert.match(inline.err, /has no verb save/);
   const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
