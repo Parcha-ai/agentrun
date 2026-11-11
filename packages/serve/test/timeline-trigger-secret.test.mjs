@@ -31,10 +31,15 @@ async function pasted(t, api, id, forms) {
   // until one holds it. The run holds (the faux model waits for `go`), so it still works while they are read.
   let live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
   const livePages = [...live.pages];
-  for (let tries = 1; !live.rows.some((row) => row.kind === "user_message"); tries += 1) {
-    assert.ok(tries < 30, `a live page holds the message row: ${JSON.stringify(live.rows.map((row) => row.kind))}`);
-    live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
+  const liveRows = [...live.rows];
+  // Each read after the first goes on from the last page's cursor, so the server holds it (its long poll) until a row
+  // comes; one deadline bounds the whole wait.
+  const until = Date.now() + 60_000;
+  while (!liveRows.some((row) => row.kind === "user_message")) {
+    assert.ok(Date.now() < until, `a live page holds the message row: ${JSON.stringify(liveRows.map((row) => row.kind))}`);
+    live = await follow(api, run.body.run_id, ["working"], { after: live.after, deadlineMs: 60_000 });
     livePages.push(...live.pages);
+    liveRows.push(...live.rows);
   }
   assert.equal(live.last.status, "working", "the page was read while the run still worked");
   await writeFile(go, "");
