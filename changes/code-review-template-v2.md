@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-serve
+kind: breaking
+---
+The `code-review` template is 0.2.0: its answer ranks each finding `P0`, `P1` or `P2` and scores the change's risk from 1 (safe to merge) to 5 (do not merge), and it reads the repository's own `CODEREVIEW.md` before it reviews. A reader of its findings JSON changes: `severity` (`important`, `nit`, `pre-existing`) is gone, replaced by `priority` and a `pre_existing` flag; `claim` is `failure`; each finding has a `title`; the answer adds `risk_score`, `risk_reasons`, a `coverage` line per reviewed file and the `dropped` candidates with their reason. What was a nit is reported only when something breaks (`P2`); style is no longer reported.
+- The reviewer reads its own `rules/CODEREVIEW.md` (a yes/no checklist per changed function, priority examples, what never to flag without evidence), then the repository's `CODEREVIEW.md` (or `docs/CODEREVIEW.md`) from the base branch, which adds to it; without one, `REVIEW.md` and `AGENTS.md`. It sweeps every changed hunk, then proves or refutes each candidate before posting. A repository may add `.agents/skills/code-review-knowledge/SKILL.md`, its invariants by path glob; the reviewer reads the sections that match the changed paths.
+- The posted review leads with the risk score and its reasons (Greptile's confidence is 6 minus the risk), lists the findings, the pre-existing ones, what was skipped and what was fixed since the last review. Each inline comment starts with its priority as text and ends with its fingerprint in an HTML comment, which a re-review reads to never post a finding twice.
+- A review costs at most 30 reading tool calls; a long diff or file is paged with `read` at an offset rather than fetched again.

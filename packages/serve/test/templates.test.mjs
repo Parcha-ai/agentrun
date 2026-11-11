@@ -62,12 +62,12 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.1.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 2 }, false]);
-  assert.deepEqual(Object.keys(review.skills).sort(), ["review/REVIEW.md", "review/SKILL.md", "review/findings.schema.json"]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.2.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 0.5 }, false]);
+  assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
-  assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
+  assert.equal(review.skills["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the default rules, and the starter a repo copies, ship beside the SKILL.md that reads them");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], [PULL_REQUESTS], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "never-flag", "null-name", "off-by-one", "re-review", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS, pin: { pull_request_review_write: { method: ["create", "submit_pending", "delete_pending"], event: [null, "COMMENT"] } } }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -86,11 +86,11 @@ test("the validator refuses a malformed package, naming each problem", async (t)
     assert.ok(problems.some((p) => pattern.test(p)), `${pattern}: ${JSON.stringify(problems)}`);
   };
   await refused(({ dir }) => rmSync(join(dir, "agent.md")), /^agent\.md: missing/);
-  await refused(({ edit }) => edit("version: 0.1.0", "version: v1"), /version is SemVer 2/);
-  await refused(({ edit }) => edit("version: 0.1.0", "version: 2"), /version is 2, a number: .*never as definition\.version, which is the agent's revision number/);
+  await refused(({ edit }) => edit("version: 0.2.0", "version: v1"), /version is SemVer 2/);
+  await refused(({ edit }) => edit("version: 0.2.0", "version: 2"), /version is 2, a number: .*never as definition\.version, which is the agent's revision number/);
   await refused(({ edit }) => edit("learning: false", "learning: false\ndefinition: { version: 2 }"), /no field definition/);
   await refused(({ edit }) => edit("name: code-review", "name: review-code"), /name is the folder's name/);
-  await refused(({ edit }) => edit("budget: { per_run_usd: 2.00 }\n", ""), /budget is required when the package has triggers/);
+  await refused(({ edit }) => edit("budget: { per_run_usd: 0.50 }\n", ""), /budget is required when the package has triggers/);
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run }"), /triggers\[0\] has no name/);
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - name: mine\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, agent_id: other }"), /target is a start_run with no agent_id/);
   await refused(({ edit }) => edit("${parameters.repo} with", "${parameters.repository} with"), /\$\{parameters\.repository\} names no parameter/);
@@ -103,7 +103,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ dir }) => writeFileSync(join(dir, "evals", "null-name", "notes.txt"), "x"), /evals\/null-name\/notes\.txt: a case holds prompt\.md/);
   await refused(({ dir }) => rmSync(join(dir, "evals", "null-name", "prompt.md")), /evals\/null-name: has no prompt\.md/);
   await refused(({ dir }) => symlinkSync("/etc/hostname", join(dir, "skills", "review", "host.md")), /skills\/review\/host\.md: is not a regular file or a folder \(links are refused\)/);
-  await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "REVIEW.md"), "mine"), /rules\/REVIEW\.md: skills\/review\/REVIEW\.md has the same name/);
+  await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "CODEREVIEW.md"), "mine"), /rules\/CODEREVIEW\.md: skills\/review\/CODEREVIEW\.md has the same name/);
   await refused(({ dir }) => mkdirSync(join(dir, "scripts")), /scripts\/: a package's folders are skills\/, rules\/ and evals\//);
   await refused(({ edit }) => edit("learning: false", "learning: false\nlearning: true"), /front matter is not YAML/);
   await refused(({ edit }) => edit("server: github", "server: GitHub_Server"), /mcp\[0\] is \{server: an MCP server's name/);
@@ -148,7 +148,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   // A broken package the server ships stops its start.
   const broken = join(await scratch(t), "templates");
   cpSync(REVIEW, join(broken, "code-review"), { recursive: true });
-  writeFileSync(join(broken, "code-review", "agent.md"), file("agent.md").replace("version: 0.1.0\n", ""));
+  writeFileSync(join(broken, "code-review", "agent.md"), file("agent.md").replace("version: 0.2.0\n", ""));
   await assert.rejects(serve(t, { templates: broken }), (error) => error instanceof PackageError && /version is SemVer 2/.test(error.message));
 });
 
@@ -199,12 +199,12 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   }
   assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.2.0", [], ["review"], ["clean-refactor", "injection", "never-flag", "null-name", "off-by-one", "re-review", "repo-rule", "two-defects"], true]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   meets("/templates/{template}/apply", "post", "201", applied.body);
-  assert.deepEqual([applied.body.template, applied.body.version, applied.body.trigger_ids], ["code-review", "0.1.0", []]);
+  assert.deepEqual([applied.body.template, applied.body.version, applied.body.trigger_ids], ["code-review", "0.2.0", []]);
   const skipped = applied.body.warnings.find((w) => w.field === "mcp.github");
   assert.match(skipped?.message ?? "", /No MCP server github is saved on this server, so the agent was made without its tools/, JSON.stringify(applied.body.warnings));
   assert.equal(applied.headers.get("location"), `/v2/agents/${applied.body.agent_id}`);
@@ -212,13 +212,13 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   meets("/agents/{agent_id}", "get", "200", agent);
   const { definition } = agent;
-  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 2, false, ["review"]], "definition.version is the revision number, never the package's");
+  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
   assert.deepEqual([definition.tools, definition.tool_settings], [["read"], undefined], "no box and no GitHub MCP server here: its read alone, for the skill's rules");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
   assert.match(definition.instructions, /clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
   assert.match(definition.instructions, /With the GitHub tools \(`mcp:github\/\.\.\.`\) and no shell, read everything through them/);
   const files = Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]));
-  assert.deepEqual(files, { "review/REVIEW.md": sha256(file("rules/REVIEW.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")), "review/findings.schema.json": sha256(file("findings.schema.json")) }, "the skill, its rule and its answer schema reach the agent");
+  assert.deepEqual(files, { "review/CODEREVIEW.md": sha256(file("rules/CODEREVIEW.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")), "review/findings.schema.json": sha256(file("findings.schema.json")) }, "the skill, its rule and its answer schema reach the agent");
 
   const other = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { model: "openrouter/other-lab/other-model" } });
   assert.equal(other.status, 201, JSON.stringify(other.body));
@@ -229,13 +229,15 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
   const done = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.equal(done.cost.cap_usd, 2, "capped at the package's budget");
+  assert.equal(done.cost.cap_usd, 0.5, "capped at the package's budget");
   const block = [...done.result.final_answer.matchAll(/```json\n([\s\S]*?)\n```/g)].at(-1)?.[1];
   assert.ok(block, `a fenced json block: ${done.result.final_answer}`);
   const schema = JSON.parse(file("findings.schema.json"));
   assert.deepEqual(schemaProblems(schema, schema, JSON.parse(block)), []);
   assert.deepEqual(JSON.parse(block), FINDINGS);
-  assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], severity: "blocker" }] }).length, "the schema is a real check");
+  assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], priority: "P3" }] }).length, "the schema is a real check");
+  assert.ok(schemaProblems(schema, schema, { ...FINDINGS, risk_score: 6 }).length, "the risk score is 1 to 5");
+  assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], severity: "important" }] }).length, "v1's severity is gone: priority replaces it");
 });
 
 test("apply makes nothing when a secret is missing, its parameters do not check, or the package is unknown; it takes the token as creating an agent does", async (t) => {

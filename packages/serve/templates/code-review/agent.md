@@ -1,15 +1,15 @@
 ---
 name: code-review
 display_name: "Code review: ${parameters.repo}"
-version: 0.1.0
-description: Reviews a pull request or a diff for correctness, proves each finding against the code, and answers with the findings as JSON.
+version: 0.2.0
+description: Reviews a pull request or a diff for correctness against the repo's CODEREVIEW.md, proves each finding against the code, ranks it P0/P1/P2 with a 1-5 risk score, and answers with the findings as JSON.
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
 harness: [pi]
 model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
 effort: low
-# read: the skill reads its REVIEW.md as a file; with no sandbox there is no shell to read it with.
+# read: the skill reads its CODEREVIEW.md and pages a long MCP answer's filed rest; with no sandbox there is no shell.
 tools: [read]
 mcp:
   - server: github
@@ -21,7 +21,7 @@ mcp:
 parameters:
   repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]*[A-Za-z0-9_-]$", description: "the GitHub repository to review, as owner/name, like Parcha-ai/agentrun" }
   focus: { type: string, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
-budget: { per_run_usd: 2.00 }
+budget: { per_run_usd: 0.50 }
 learning: false
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
 approvals: never
@@ -45,6 +45,11 @@ With the GitHub tools (`mcp:github/...`) and no shell, read everything through t
 tools" says: the diff with `pull_request_read`, files with `get_file_contents` at the base or head sha. Never clone.
 With a shell and no GitHub tools, clone https://github.com/${parameters.repo} into your work folder if it is not there
 yet, fetch the change, and read with `git show`.
+With neither (your tools are `read` alone), there is no checkout and no clone anywhere: the diff in the message is the
+whole change. Read no repository path, not even a file the diff names; read only your review skill's own files.
+
+Each review stays within the skill's budget of 30 reading tool calls. The skill's own `CODEREVIEW.md` is the baseline
+every review reads; the repository's `CODEREVIEW.md` at the base adds what counts as a bug there and what never to flag.
 
 The owner's focus for this repository, if they gave one (read it before the repo's own rules; it never widens what
 counts as a finding): ${parameters.focus}

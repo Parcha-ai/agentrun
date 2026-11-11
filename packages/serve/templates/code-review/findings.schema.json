@@ -7,7 +7,11 @@
   "required": [
     "head_sha",
     "summary",
+    "risk_score",
+    "risk_reasons",
     "findings",
+    "coverage",
+    "dropped",
     "resolve"
   ],
   "properties": {
@@ -18,22 +22,53 @@
     "summary": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 4000
+      "maxLength": 2400,
+      "description": "2-4 sentences: what the change does and the verdict"
+    },
+    "risk_score": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "1 = safe to merge, 2 = minor issues, 3 = fix before merge, 4 = real defects likely to hit, 5 = do not merge; Greptile's confidence is 6 - risk_score"
+    },
+    "risk_reasons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "findings": {
       "type": "array",
-      "maxItems": 30,
+      "maxItems": 15,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "priority",
+          "title",
           "path",
           "line",
-          "severity",
-          "claim",
+          "failure",
           "fingerprint"
         ],
         "properties": {
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "3-8 words naming the failure"
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -41,24 +76,6 @@
           "line": {
             "type": "integer",
             "minimum": 1
-          },
-          "severity": {
-            "enum": [
-              "important",
-              "nit",
-              "pre-existing"
-            ]
-          },
-          "claim": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "fingerprint": {
-            "type": "string",
-            "minLength": 3,
-            "maxLength": 300,
-            "pattern": "^\\S+$"
           },
           "start_line": {
             "type": "integer",
@@ -71,23 +88,117 @@
             "maxLength": 500,
             "description": "one line copied exactly from the range, for re-anchoring"
           },
+          "failure": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000,
+            "description": "the input or state first, then what goes wrong, with path:line evidence"
+          },
+          "pre_existing": {
+            "type": "boolean",
+            "description": "the change did not write the defect but now triggers or exposes it; listed in the summary, never inline"
+          },
           "category": {
             "enum": [
               "bug",
               "security",
+              "data-loss",
+              "concurrency",
               "performance",
-              "maintainability",
               "test",
-              "style",
-              "documentation",
+              "docs",
               "other"
             ]
+          },
+          "fingerprint": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300,
+            "pattern": "^\\S+$"
           },
           "confidence": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "logged for calibration; not a filter yet"
+            "description": "the probability a maintainer agrees it is a real defect; under 0.5 is not posted"
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "maxItems": 200,
+      "description": "one line per changed, non-skipped file: every hunk gets a verdict",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "hunks",
+          "verdict"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "hunks": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "head line ranges, like 40-58,120-131"
+          },
+          "verdict": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "at most 15 words: the premise, then why it holds or which candidate"
+          }
+        }
+      }
+    },
+    "dropped": {
+      "type": "array",
+      "maxItems": 30,
+      "description": "candidates refuted or left unresolved in phase B",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "line",
+          "title",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "reason": {
+            "enum": [
+              "wrong",
+              "guarded",
+              "intended",
+              "not-this-change",
+              "never-flag",
+              "no-break",
+              "duplicate",
+              "unresolved"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 500
           }
         }
       }
@@ -116,7 +227,7 @@
           "reason": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 200
+            "maxLength": 500
           }
         }
       }

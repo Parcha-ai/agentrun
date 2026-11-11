@@ -1,11 +1,15 @@
 // A faux model for the code-review package's agent: when the review skill is in its system prompt, it answers as the
-// skill's step 7 says, a short line and then one fenced json block of findings; otherwise it says the skill is missing.
+// skill's step 8 says, a short line and then one fenced json block of findings; otherwise it says the skill is missing.
 const textOf = (value) => (typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => (typeof part?.text === "string" ? part.text : "")).join("") : "");
 
 export const FINDINGS = {
   head_sha: "1f0c6a3d2b9e8f7a6c5d4e3b2a1908f7e6d5c4b3",
   summary: "The change drops the guard for an unknown id. One defect: displayName throws for an id no user has.",
-  findings: [{ path: "src/users.js", line: 3, severity: "important", category: "bug", claim: "For an id no user has, users.find returns undefined and user.name throws (src/users.js:3); before, it answered \"unknown\".", fingerprint: "src/users.js:displayname:null-deref", confidence: 0.9 }],
+  risk_score: 3,
+  risk_reasons: ["displayName throws a TypeError for any id that no user has"],
+  findings: [{ priority: "P1", title: "Unknown id crashes displayName", path: "src/users.js", line: 3, category: "bug", failure: "For an id no user has, users.find returns undefined and user.name throws (src/users.js:3); before, it answered \"unknown\".", fingerprint: "src/users.js:displayname:null-deref", confidence: 0.9 }],
+  coverage: [{ path: "src/users.js", hunks: "1-4", verdict: "guard for an unknown id removed → candidate proven" }],
+  dropped: [],
   resolve: [],
 };
 
