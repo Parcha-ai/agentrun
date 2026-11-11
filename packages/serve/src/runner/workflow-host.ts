@@ -105,8 +105,11 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
 
   /** The node log's starts and ends, from the workflow's events (app.ts onEvent). */
   const onEvent = (event: { type: string; label?: string; detail?: unknown; executionPath?: string }) => {
-    if (typeof event.label === "string" && event.type === "node.start") deps.steps?.start(event.label);
-    if (typeof event.label === "string" && event.type === "node.end") deps.steps?.end(event.label);
+    // A nested `workflow` step stays open while its own steps run and sends no request itself: the steps open are the ones
+    // that can, so a pause inside it names its step, never nothing.
+    const enclosing = (event.detail as { kind?: unknown } | undefined)?.kind === "workflow";
+    if (typeof event.label === "string" && event.type === "node.start" && !enclosing) deps.steps?.start(event.label);
+    if (typeof event.label === "string" && event.type === "node.end" && !enclosing) deps.steps?.end(event.label);
     if (!deps.log || (event.type !== "node.start" && event.type !== "node.end") || typeof event.executionPath !== "string") return;
     const detail = (event.detail ?? {}) as { kind?: string; status?: string; duration_ms?: number; error?: unknown };
     deps.log({
