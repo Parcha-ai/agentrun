@@ -71,6 +71,8 @@ function fakeDesktop(root, record) {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
     check: () => [],
+    // Docker's descriptor says it prepares its image: the stand-in's is ready at once, under its own tag.
+    prepareImage: async () => ({ ok: true, value: PREPARED }),
     list: async () => ({ ok: true, value: [] }),
     async create(spec) {
       record.created.push(structuredClone(spec));
@@ -173,6 +175,9 @@ test("the composer builds a working claim on the faux box: a faux desktop is a k
   assert.equal(faux.viewPage(page), undefined, "its release ended it");
 });
 
+/** The tag a stand-in's prepareImage() answers. */
+const PREPARED = "agentrun-computer:prepared";
+
 /** A sandbox provider stand-in: create records its spec; its computer binds the run's folder (the read-back it gives).
  *  `declared`: more of its capabilities (the networks it makes, its longest lifetime). */
 function fakeSandbox(root, record, declared = {}) {
@@ -182,6 +187,8 @@ function fakeSandbox(root, record, declared = {}) {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000, ...declared }),
     check: () => [],
+    // Docker's descriptor says it prepares its image: the stand-in's is ready at once, under its own tag.
+    prepareImage: async () => ({ ok: true, value: PREPARED }),
     list: async () => ({ ok: true, value: [] }),
     async create(spec) {
       record.created.push(structuredClone(spec));
@@ -465,8 +472,9 @@ test("on compose, the default allow-list's Docker computer is made with every mo
       const made = fakeDocker({ daemonCache: options.daemonCache, volume: options.volume, volumeRoots: { [VOLUME]: root }, egressOptions: { ...(options.egress ?? {}), hostRoot } });
       calls = made.calls;
       // The computer's image is the one the owner named (AGENTRUN_DOCKER_IMAGE), on the fake's host: its readiness (the
-      // provider's prepareImage(), which builds a recipe) is not this test's, so the claim is shown none and takes the name.
-      return new Proxy(made.provider, { get: (target, key) => (key === "image" || key === "prepareImage" ? undefined : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+      // provider's prepareImage(), a pull) is not this test's, so it answers the name, as a pull that found it does.
+      const prepareImage = async () => ({ ok: true, value: "debian:bookworm-slim" });
+      return new Proxy(made.provider, { get: (target, key) => (key === "prepareImage" ? prepareImage : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
     };
     const sealKey = randomBytes(32);
     const store = await savedKeysStore(sealKey);

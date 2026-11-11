@@ -68,14 +68,16 @@ const refused = (code: string, message: string): { ok: false; error: { code: str
 
 /**
  * Provider `providerId`'s create() options from its saved keys (by its descriptor's names) and the server's settings
- * (each of its descriptor's settings, by name, else its default). A provider the table does not list takes no keys and
- * no settings: it is not refused here, and whether it can be made is its maker's to say.
+ * (each of its descriptor's settings, by name, else its default). An id the table does not list is refused, naming the
+ * providers it does.
  */
 export function providerOptions(providerId: string, keys: Readonly<Record<string, string>>, settings: ProviderSettings = {}, table: KeyTable = KEY_TABLE): OptionsAnswer {
+  // The table is every descriptor's (keyTableOf(PROVIDERS)), so an id it does not list is no provider at all.
+  if (!has(table.keys, providerId)) return refused("unsupported", `${providerId} is not a computer provider: ${Object.keys(table.keys).join(", ")}`);
   const label = labelOf(providerId, table);
   const options: Record<string, string> = {};
   const missing: string[] = [];
-  for (const key of has(table.keys, providerId) ? table.keys[providerId]! : []) {
+  for (const key of table.keys[providerId]!) {
     const value = has(keys, key.name) ? keys[key.name] : undefined;
     if (typeof value === "string" && value.trim() !== "") options[key.option] = value;
     else if (key.required) missing.push(key.name);

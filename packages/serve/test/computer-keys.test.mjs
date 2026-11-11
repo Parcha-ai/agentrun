@@ -47,7 +47,7 @@ test("computer keys: the saved keys become each provider's create() options; a n
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
 });
 
-test("computer keys: a required key not saved is refused in words that name what to save; a provider the table does not list takes no keys, and is not refused here", () => {
+test("computer keys: a required key not saved is refused in words that name what to save; an id the table does not list is no provider", () => {
   const modal = providerOptions("modal", { MODAL_TOKEN_ID: KEY });
   assert.equal(modal.ok, false);
   assert.equal(modal.error.code, "missing_key");
@@ -55,8 +55,10 @@ test("computer keys: a required key not saved is refused in words that name what
   const bb = providerOptions("browserbase", {});
   assert.match(bb.error.message, /^Browserbase needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID saved: save them in Settings → Computers/);
   assert.equal(providerOptions("daytona", { DAYTONA_API_KEY: "  " }).ok, false, "a blank key is no key");
-  // No serve edit per vendor: whether a provider the table does not list can be made is its maker's to say.
-  assert.deepEqual(providerOptions("vmware", { KEY }), { ok: true, options: {} });
+  // The table is every descriptor's: an id it does not list is refused, naming the ones it does.
+  const unknown = providerOptions("vmware", { KEY });
+  assert.deepEqual([unknown.ok, unknown.error.code], [false, "unsupported"]);
+  assert.match(unknown.error.message, /^vmware is not a computer provider: .*\bdocker\b/);
 });
 
 /** A fake provider module: create(options) records what it was given and answers testConnection with `answer`. */
@@ -95,9 +97,9 @@ test("computer keys: each coded error comes back in plain words naming the provi
     invalid: /^E2B's settings are not valid\. \(/,
     unsupported: /^E2B can't be tested here\. \(/,
     vendor: /^E2B answered with an error\. \(/,
-    // A code no longer made (the per-vendor codes before the one vendor code) is a failed test, in general words.
-    e2b: /^The test of E2B failed\. \(/,
+    // A code with no words of its own (gone, not_found, exists, ...) is a failed test, in general words.
     gone: /^The test of E2B failed\. \(/,
+    not_found: /^The test of E2B failed\. \(/,
   };
   for (const [code, pattern] of Object.entries(words)) {
     const module = fakeModule({ ok: false, error: { code, message: `bad key ${KEY}` } });

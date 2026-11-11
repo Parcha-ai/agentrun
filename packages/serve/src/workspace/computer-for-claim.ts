@@ -142,12 +142,14 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
 /** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
 /** Told once, before the claim waits on its computer's image being built or pulled; never when the host has it. */
 export type ImageWait = (making: "build" | "pull", tag: string) => void;
-/** The image `provider` made ready, when its descriptor declares it prepares its image (`entry.prepareImage`) and it has
- *  the contract's prepareImage(): its recipe built when the engine lacks it, or its image by name pulled, answering the
- *  tag to start from; undefined for any other provider, which starts from its spec's image. A failure is the provider's
- *  words. `onWait`: told once if the claim waits on a build or a pull. */
+/** The image `provider` made ready, when its descriptor declares it prepares its image (`entry.prepareImage`): its
+ *  prepareImage(), its recipe built when the engine lacks it or its image by name pulled, answering the tag to start
+ *  from; undefined for any other provider, which starts from its spec's image. A provider whose descriptor declares it
+ *  and that has none breaks the contract, in words. A failure is the provider's words. `onWait`: told once if the claim
+ *  waits on a build or a pull. */
 async function readyImage(entry: ProviderEntry, provider: ComputerProvider, signal: AbortSignal | undefined, onWait: ImageWait | undefined): Promise<string | undefined> {
-  if (!entry.prepareImage || provider.prepareImage === undefined) return undefined;
+  if (!entry.prepareImage) return undefined;
+  if (provider.prepareImage === undefined) throw new Error(`${entry.label}'s descriptor says it prepares its image, but its provider has no prepareImage()`);
   const ready = await provider.prepareImage({ ...(signal ? { signal } : {}), ...(onWait ? { onWait } : {}) });
   if (!ready.ok) throw new Error(ready.error.message);
   return ready.value;
@@ -226,7 +228,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
     answers: deps.answers ?? (async () => false),
     async launch(entry, { kind, keys, configuration, mount, signal }) {
       if (deps.launch) {
-        const own = await deps.launch(entry, { kind, keys, ...(configuration ? { configuration } : {}), ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        const own = await deps.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
@@ -238,7 +240,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       if (!options.ok) throw new Error(options.error.message);
       // The configuration the setting selected is built by its own create() options (Orgo's Windows: { os: "windows" }),
       // beside the keys'.
-      const provider = await make({ ...options.options, ...(configuration?.options ?? {}) }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
+      const provider = await make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
       // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
       // (computer-deps.ts computerSpecOf).
       const { network: networks, maxLifetimeMs } = provider.capabilities();
@@ -251,7 +253,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
       // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing. A
       // configuration that names its image starts from it, else the kind's default.
-      const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration?.image);
+      const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
       const ready = await readyImage(entry, provider, signal, deps.onImageWait);
       const spec: ComputerSpec = { ...asked, ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);

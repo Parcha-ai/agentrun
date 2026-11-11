@@ -57,7 +57,7 @@ export type ClaimSide = {
   answers(provider: string): Promise<boolean>;
   /** `configuration`: the provider's configuration the setting selected; its options go to the provider with the keys,
    *  and its image, when it names one, is the computer's. */
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration?: KindCapabilities; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -145,10 +145,8 @@ function mountsFolder(kind: ComputerSettingKind, entry: ProviderEntry, serving: 
 /** The configurations of `entry` that serve `kind`. */
 const servingOf = (registry: Pick<KindRegistry, "servingRefusals">, entry: ProviderEntry, kind: ComputerSettingKind): KindCapabilities[] => entry.capabilities.filter((one) => registry.servingRefusals(one, kind).length === 0);
 
-/** The configurations of `serving` the setting selects: all of them where it names no image and none has one (as
- *  before images); else the one its image selects (configurationOf), or [] when its image names none. */
+/** The one configuration of `serving` the setting selects (configurationOf), as a list: [] when its image names none. */
 const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetting, entry: ProviderEntry, kind: ComputerSettingKind): readonly KindCapabilities[] => {
-  if (setting.image === undefined && serving.every((one) => one.image === undefined)) return serving;
   const one = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
   return one ? [one] : [];
 };
@@ -211,17 +209,16 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
   // it does.
-  const selected = selectedOf(serving, setting, entry, kind);
-  if (selected.length === 0) {
+  const [configuration] = selectedOf(serving, setting, entry, kind);
+  if (!configuration) {
     const images = imagesOf(serving, entry.defaultImage?.[kind]);
     const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;
     return { refused: `${entry.label} has no ${kind} image ${JSON.stringify(setting.image)}. It ${offers} for this agent's computer in ${SETTINGS}.` };
   }
-  // A provider that offers images by name launches the one selected; one that offers none, as before.
-  const configuration = serving.some((one) => one.image !== undefined) ? selected[0] : undefined;
 
-  // The run's folder: mounted where the kind has files and exec and the provider mounts the mode's folder.
-  const mounts = mountsFolder(kind, entry, selected, mode);
+  // The run's folder: mounted where the selected configuration has files and exec and the provider mounts the mode's
+  // folder.
+  const mounts = mountsFolder(kind, entry, [configuration], mode);
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
@@ -250,7 +247,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       const mount = mounts ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
-        launched = await side.launch(entry, { kind, keys, ...(configuration ? { configuration } : {}), ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        launched = await side.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }

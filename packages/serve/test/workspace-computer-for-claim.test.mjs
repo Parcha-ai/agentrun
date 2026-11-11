@@ -47,6 +47,8 @@ function fakeProvider(root, record, groups, machine = "linux") {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
     check: () => [],
+    // Docker's descriptor says it prepares its image: the stand-in's is ready at once, under its own tag.
+    prepareImage: async () => ({ ok: true, value: "agentrun/computer:prepared" }),
     // The run's computers it holds already: an earlier claim's, by its labels.
     async list(labels) {
       const held = (record.existing ?? []).filter((one) => Object.entries(labels).every(([name, value]) => one.labels[name] === value));
@@ -92,13 +94,13 @@ function views(refusal) {
   return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), fakeProvider(root, record, groups, machine))]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}) });
@@ -120,7 +122,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(record.created.length, 1);
   assert.deepEqual(record.created[0].labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
   assert.equal(record.created[0].mount?.kind, "bind", "the run's folder, as the provider binds it");
-  assert.equal(record.created[0].image, "agentrun/computer:test");
+  assert.equal(record.created[0].image, "agentrun/computer:prepared", "the tag Docker's prepareImage() answered, over the spec's");
   assert.equal(record.options[0][2], "function", "the provider is handed the store's ledger");
   await answer.release();
   await answer.release();
@@ -216,6 +218,10 @@ async function refusal(setting, options) {
   assert.deepEqual(record.created, [], "nothing made");
   return error.message;
 }
+
+test("a provider whose descriptor says it prepares its image and that has no prepareImage() breaks the contract: refused in words, nothing made", async () => {
+  assert.match(await refusal({ kind: "sandbox", provider: "docker" }, { unprepared: true }), /Docker's descriptor says it prepares its image, but its provider has no prepareImage\(\)/);
+});
 
 test("a provider whose key is not saved is refused in words that name the key and the setting", async () => {
   assert.match(await refusal({ kind: "desktop", provider: "e2b" }), /E2B needs its key E2B_API_KEY saved: add it in Settings → Computers/);

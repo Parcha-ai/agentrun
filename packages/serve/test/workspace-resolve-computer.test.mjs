@@ -116,7 +116,8 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   const side = claim(root);
   const resolved = await resolveComputer({ kind: "desktop", provider: "docker" }, 1, KIND_REGISTRY, side);
   const started = await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
-  assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, mount: { kind: "bind", path: root } }]]);
+  const desktopOf = (id) => KIND_REGISTRY.PROVIDERS.find((one) => one.id === id).capabilities.find((one) => one.kind === "desktop");
+  assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, configuration: desktopOf("docker"), mount: { kind: "bind", path: root } }]]);
   const run = await runTools(localWorkspace(root), started.computer, { mode: 1, context: ctx });
   assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", ...kindTools("desktop")]);
   await started.release();
@@ -143,7 +144,8 @@ test("start: an unmounted desktop, a phone and a browser launch with no mount; t
   const browser = await (await resolveComputer({ kind: "browser", provider: "browserbase" }, 1, KIND_REGISTRY, side)).start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.equal(browser.computer.kind, "browser");
   assert.equal(typeof (await browser.computer.connect()).send, "function");
-  assert.deepEqual(side.launched[0], ["browserbase", { kind: "browser", keys: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } }]);
+  const browserbase = KIND_REGISTRY.PROVIDERS.find((one) => one.id === "browserbase").capabilities[0];
+  assert.deepEqual(side.launched[0], ["browserbase", { kind: "browser", keys: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" }, configuration: browserbase }]);
 });
 
 test("start: a computer that cannot be had fails as computer_unavailable, in the provider's words", async () => {
@@ -204,10 +206,10 @@ test("a setting's image selects the provider's configuration of that image, whos
     await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
     assert.deepEqual(side.launched[0], ["acme-desk", { kind: "desktop", keys: {}, configuration: expected }], String(image));
   }
-  // A provider whose configurations name no image is launched as before: no configuration is chosen for it.
+  // A provider whose configurations name no image launches the one that serves the kind.
   const e2b = claim(root);
   await (await resolveComputer({ kind: "desktop", provider: "e2b" }, 1, IMAGED, e2b)).start({ workspace: localWorkspace(root), check: { readBackOf } });
-  assert.equal("configuration" in e2b.launched[0][1], false);
+  assert.deepEqual(e2b.launched[0][1].configuration, PROVIDERS.find((one) => one.id === "e2b").capabilities.find((one) => one.kind === "desktop"));
 });
 
 test("Orgo's own descriptor: windows and macos launch their configuration with its os, no image launches the Linux desktop; another image is refused naming the three", async () => {
