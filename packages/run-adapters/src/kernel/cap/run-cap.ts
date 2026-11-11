@@ -6,8 +6,9 @@
 // spend of both from the journal: a decision held and never answered counts at its hold and its bound, as any request.
 // Decisions book under their own session (DECISION_SESSION), priced as main holds them (decisionAsk).
 import { runBooking, type RunSessions } from "../../run-booking.js";
-import { type BeforeRequest, modelPortFor, RUNNER_RECORDS } from "../../runner.js";
-import type { ModelRequest, ModelTicket, SessionWriter } from "../../types.js";
+import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "../../runner.js";
+import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
+import { overCapEnd } from "./words.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf } from "./port.js";
@@ -26,8 +27,8 @@ export interface RunCapOptions {
   capUsd(): number | undefined;
   readonly mode?: CapMode;
   readonly now?: () => number;
-  /** The run's model requests' models (its decisions' are the cap's own). */
-  modelOf(id: string): CapModel | undefined;
+  /** The run's model requests' models, by id and route (BeforeRequestOptions.modelOf; its decisions' are the cap's own). */
+  modelOf(id: string, route?: string): CapModel | undefined;
   previousOf?(model: string): Previous | undefined;
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
@@ -81,6 +82,23 @@ export interface RunTools {
 /** The session a run's paid tool calls book under. */
 export const TOOL_SESSION = "paid-tools";
 
+/** How a run ends once its booked spend passed its cap (overCapEnd), read from its model session's `records` and what
+ *  its other sessions spent (`othersUsd`): each request at the figure the cap counts it at (sessionSpendOf's figures: one
+ *  cut by a crash at its hold plus its bound), and the bound of the requests since the spend last fit, so a cache miss
+ *  within that bound (a cut request's possible one included) pauses the run instead. Undefined while it fits, by such a
+ *  miss, or with a spend unknown. */
+export function overCapOf(records: readonly SessionRecord[], othersUsd: number, capUsd: number): string | undefined {
+  const read = sessionSpendOf(records);
+  if (read.spentUsd === null) return undefined;
+  let running = othersUsd;
+  let bound = 0;
+  for (const { turn, usd } of read.figures) {
+    running += usd ?? 0;
+    bound = running <= capUsd ? 0 : bound + (read.bounds.get(turn) ?? 0);
+  }
+  return overCapEnd(othersUsd + read.spentUsd, capUsd, bound);
+}
+
 export function runCap(options: RunCapOptions): RunCap {
   const mode: CapMode = options.mode ?? "expected";
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
@@ -89,7 +107,7 @@ export function runCap(options: RunCapOptions): RunCap {
     capUsd: options.capUsd,
     mode,
     ...(options.now ? { now: options.now } : {}),
-    modelOf: (id) => deciding.get(id) ?? options.modelOf(id),
+    modelOf: (id, route) => deciding.get(id) ?? options.modelOf(id, route),
     ...(options.previousOf ? { previousOf: (model: string) => (deciding.has(model) ? undefined : options.previousOf!(model)) } : {}),
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),

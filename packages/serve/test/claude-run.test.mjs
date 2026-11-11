@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
+import { agent, follow, runDir, serve, serverLog } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -45,8 +45,6 @@ async function claudeProcess() {
   return undefined;
 }
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
 async function claudeServe(t, fake, env = {}, model = MODEL) {
@@ -271,8 +269,7 @@ const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-7b21e4`;
 
-// SKIP (follow-up #2078): a dotted OpenRouter model name is not priced at Anthropic's id on the runner
-test.skip("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   // OpenRouter's name for claude-haiku-4-5: dotted, as the gateway names it, never the catalog's dashed id.
@@ -306,8 +303,8 @@ test("a capped run on a model named as OpenRouter names it (dotted) is held to i
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
@@ -324,12 +321,12 @@ test.skip("a claude-agent run's model proxy reports a refusal in the run's log: 
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-  const log = await readFile(join(runDir(data, runId), "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
 });
 
 test("a refused key ends a claude-agent run at the provider's first 401: one request, no retries, and the run's error in plain words", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {

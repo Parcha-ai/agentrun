@@ -5,6 +5,7 @@
 import type { TimelineEvent } from "./timeline/index.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { said } from "./learning-words.js";
+import { askedForDryRun } from "./learn/reflect.js";
 import type { Status } from "./run-view.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
@@ -30,6 +31,7 @@ export function labelled(reflect: Reflect | undefined, rows: TimelineEvent[]): T
   return rows.map((row) => (!reflects(reflect, row.id) ? row : {
     ...row, agent_label: LEARNING_LABEL,
     ...(row.kind === "final_answer" ? { kind: "text_block" as const } : {}),
-    ...(row.kind === "user_message" ? { summary: said.asked, text: said.asked } : {}),
+    // The turn asked again for a draft whose dry run failed says so; every other message of the turn is its ask.
+    ...(row.kind === "user_message" ? (askedForDryRun(row.text) ? { summary: said.askedDryRun, text: said.askedDryRun } : { summary: said.asked, text: said.asked }) : {}),
   }));
 }

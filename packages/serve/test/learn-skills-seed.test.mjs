@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { builtinHarness } from "../dist/harness-table.js";
 import { agentFolderOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
@@ -17,7 +16,7 @@ import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { ended, git, pinOf, resnap } from "./learn-support.mjs";
-import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, runDir, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
@@ -74,8 +73,6 @@ async function runWith(t, files) {
 const skillsDir = (work) => join(work, ".agents", "skills");
 const workOf = (data, runId) => join(runDir(data, runId), "work");
 const inlined = (prompt) => [...prompt.matchAll(/<skill name="([^"]+)">/g)].map((match) => match[1]);
-/** A model request's system prompt, as text. */
-const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
 
 /** Agent `id`, learning, on `harness`, with the revision's skill `cite`; its run made and ended: its id, its prompt as
  *  the faux model or harness says it, and its view. */
@@ -117,27 +114,6 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   writeFileSync(join(skillsDir(work), "big-notes", "SKILL.md"), big);
   const unbudgeted = await systemOf("Answer.", [...learned.skills, "big-notes/SKILL.md"], ws, check);
   assert.deepEqual([unbudgeted.native, inlined(unbudgeted.system)], [[], ["big-notes", "check-units", "cite"]]);
-});
-
-test("on claude-agent's real adapter: with 900 KiB of the revision's skills, the learned one that fits is loaded through the Skill tool beside them, the 200 KiB one is left out, and no skill is inlined", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
-  t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
-  const { api, data } = await serve(t, { faux: undefined });
-  const sha = await folderWith(data, "native", asLearned({ "big-notes": { "SKILL.md": skillMd("big-notes", filler(200 * KIB)) }, "check-units": { "SKILL.md": UNITS } }));
-  const skills = { "cite/SKILL.md": CITE, "cite/reference/data.md": filler(900 * KIB) };
-  const created = await api("POST", "/agents", { ...agent("native", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-4-5", instructions: "Answer the question.", skills: ["cite"] }), skills });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const run = await api("POST", "/agents/native/runs", { input: { content: "Answer." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
-  const first = fake.messages().find((m) => m.tools.includes("Skill"));
-  assert.deepEqual(inlined(systemText(first?.body ?? fake.messages()[0]?.body)), [], "no skill is inlined");
-  assert.ok(first, `the Skill tool is offered: ${JSON.stringify(fake.messages().map((m) => m.tools))}`);
-  const body = JSON.stringify(first.body);
-  assert.ok(body.includes("agentrun:cite") && body.includes("agentrun:check-units"), "the revision's skill and the learned one that fits are the CLI's own");
-  assert.ok(!body.includes("big-notes"), "the one left out is nowhere");
-  assert.equal((await pinOf({ data }, run.body.run_id)).seed, sha, "started from the seed its launch names");
 });
 
 test("at the 1 MiB cap the revision's skills are sized in each form a harness is handed: a learned skill that fits them only as stored is left out for OpenCode (served, quoted), and one that fits them only as served is left out for claude-agent (stored)", { timeout: 60_000 }, async (t) => {

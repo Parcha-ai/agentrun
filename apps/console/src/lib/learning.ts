@@ -83,15 +83,17 @@ export const NO_VERSION = "Can't tell which version this is: reload.";
 export const CHANGED = "It changed since you opened it.";
 /** What a restore says before it is made: what it changes. */
 export const RESTORES = "It becomes active again for the next run.";
+/** What "Make this an agent" makes, said in its confirm: a workflow agent of its own, under this agent's policy, with the
+ *  learned workflow left where it is. */
+export const PROMOTES = (name: string) => `It makes a new agent that runs the steps of ${name} on their own, with no agent loop, under this agent's tool settings, approvals and cap. ${name} stays here, unchanged.`;
+/** A promotion made by a token, not the owner's password sign-in: the server refuses it (403). */
+export const PROMOTE_SIGN_IN = "Making an agent from it takes your password sign-in in the console.";
 /** A restore made by a token, not the owner's password sign-in: the server refuses it (403). */
 export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the console.";
 
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
-/** A note's file name, as the server takes one: at the folder's top, a letter or digit first, then letters, digits, dots,
- *  dashes and underscores, ending .md; never MEMORY.md, which the server builds. */
-export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 export const NOTE_TYPES: readonly NoteType[] = ["feedback", "project", "reference", "user"];
 /** Each type in plain words, as a card and the editor's picker show it (the API's value is in its tooltip). */
 export const TYPE_LABEL: Record<NoteType, string> = { user: "About you", feedback: "How to work", project: "About the work", reference: "Where to look" };

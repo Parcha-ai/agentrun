@@ -20,8 +20,10 @@ export const REPEAT_MS = 1_000;
 /** How long past its runs' drain bound a stop may take before it stops at once. */
 export const DEADLINE_MARGIN_MS = 15_000;
 
-/** The handler for SIGINT and SIGTERM. It exits once: 0 when the close ends, 130 when it stops at once. */
-export function stopOnSignals(deps: StopDeps, { repeatMs = REPEAT_MS, marginMs = DEADLINE_MARGIN_MS } = {}): () => void {
+/** The handler for SIGINT and SIGTERM. It exits once: 0 when the close ends, 130 when it stops at once. `askedAt`: when
+ *  the stop was asked, when earlier than this call (a signal during the start, cli.ts), so a second signal is timed from
+ *  the first. */
+export function stopOnSignals(deps: StopDeps, { repeatMs = REPEAT_MS, marginMs = DEADLINE_MARGIN_MS } = {}): (askedAt?: number) => void {
   const now = deps.now ?? Date.now;
   const setTimer = deps.setTimer ?? ((run: () => void, ms: number) => void setTimeout(run, ms).unref());
   let stopAt: number | undefined;
@@ -36,12 +38,12 @@ export function stopOnSignals(deps: StopDeps, { repeatMs = REPEAT_MS, marginMs =
     const { runs } = deps.stopping();
     end(130, `${why}; runs resume on the next start${runs > 0 ? ` (${runs} ${runs === 1 ? "was" : "were"} running)` : ""}`);
   };
-  return () => {
+  return (askedAt?: number) => {
     if (stopAt !== undefined) {
       if (now() - stopAt >= repeatMs) stopNow("stopping now");
       return;
     }
-    stopAt = now();
+    stopAt = askedAt ?? now();
     setTimer(() => stopNow("the stop passed its deadline, stopping now"), deps.stopping().boundMs + marginMs);
     void deps.close().then(() => end(0));
   };

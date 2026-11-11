@@ -96,6 +96,26 @@
               "cost_first_usd": { "type": ["number", "null"] }, "cost_last_usd": { "type": ["number", "null"] },
               "workflow_proposal_rate": { "type": ["number", "null"], "description": "on: teach steps whose learning proposed a workflow, over the teach steps." },
               "reuse_rate": { "type": ["number", "null"], "description": "on: steps after a workflow was first kept that called learned_workflow; null before one is kept." },
+              "reuse": {
+                "description": "on, with a workflow kept: how the series' later steps used it (C3). Null with learning off, or when no workflow was kept.",
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": ["kept_step", "steps_after", "call_steps", "call_passes", "tokens_per_pass_workflow", "tokens_per_pass_skill_only", "workflow_steps_known", "skill_only_steps_known"],
+                    "properties": {
+                      "kept_step": { "type": "string", "description": "The step whose learning first kept a workflow." },
+                      "steps_after": { "type": "integer", "description": "Steps after it." },
+                      "call_steps": { "type": "integer", "description": "Of those, the steps that called learned_workflow." },
+                      "call_passes": { "type": "integer", "description": "Of the calling steps, those that passed." },
+                      "tokens_per_pass_workflow": { "type": ["integer", "null"], "description": "Input + output tokens per passing step over the calling steps whose tokens are known; null when none is, or none passed." },
+                      "tokens_per_pass_skill_only": { "type": ["integer", "null"], "description": "The same over the skill-only steps: every step after the one that first learned a skill that called no workflow." },
+                      "workflow_steps_known": { "type": "integer", "description": "Calling steps whose tokens are fully known." },
+                      "skill_only_steps_known": { "type": "integer", "description": "Skill-only steps whose tokens are fully known." }
+                    }
+                  },
+                  { "type": "null" }
+                ]
+              },
               "staleness": {
                 "type": "array", "description": "One per change step (on).",
                 "items": {

@@ -254,7 +254,7 @@ test("signing out signs out this browser only: its session is revoked on the ser
   assert.match(out.headers["set-cookie"][0], /Max-Age=0/, "this browser's cookie is cleared");
   assert.equal((await agents(server, copied)).status, 401, "the copied cookie's session is revoked on the server");
   assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: copied } })).json, { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" });
-  assert.equal((await call(server.port, { path: "/api/stats", headers: { cookie: copied } })).status, 401, "and the page's data refuses it");
+  assert.equal((await call(server.port, { path: "/v2/stats", headers: { cookie: copied } })).status, 401, "and the page's data refuses it");
   assert.equal((await agents(server, other)).status, 200, "another browser's session stays");
   assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } })).json, { accounts: true, password_set: true, signed_in: true, secrets_writable: true });
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server) }, body: {} })).status, 401, "a browser with no session has none to end");
@@ -352,11 +352,11 @@ test("every route, called with no credential, is a 401 but capabilities, the con
       // A webhook trigger's request is let in by its signature alone (standard-webhooks.ts): neither the session nor the
       // token stands for it.
       else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
-      // Approving or restoring a note and answering a tool call's approval take the owner's session alone: a token,
-      // whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs, tool-gate.test.mjs). So does a run's live
-      // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
-      // browser-take-over.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // Approving or restoring a note, making a learned workflow an agent, and answering a tool call's approval take the
+      // owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs,
+      // learn-promote.test.mjs, tool-gate.test.mjs). So does a run's live computer view, a full-control credential for its
+      // session, and its hand-back (browser-live.test.mjs, browser-take-over.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
       // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
       else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);

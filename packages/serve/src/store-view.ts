@@ -7,10 +7,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { structuredAnswer } from "./answer-json.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
-import { MIN_SECRET } from "./learn/secrets.js";
-import { handedValuesOf, launchOf } from "./handed-values.js";
+import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
+import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
   momentOf,
@@ -21,11 +22,11 @@ import {
   type RunView,
   type RunViewMeta,
   type SignInReader,
-  type State,
   type Status,
   approvalOf,
   asksOf,
   answersOf,
+  activePauseOf,
   budgetOf,
   browserPending,
   type ComputerAsk,
@@ -42,9 +43,10 @@ import {
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
+import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
-import { type EndData, KINDS } from "./runner/journal-kinds.js";
+import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
@@ -110,12 +112,21 @@ function servedOnce(store: Store, runId: string, input: string, values: readonly
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's. */
 const answerOf = (rows: readonly TimelineEvent[]): string | null => rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 
-/** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). */
-const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => ({ code: "run_failed", message: summary ?? "The run failed.", retryable: false });
+/** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). A run
+ *  its cap ended once its cost passed it (the kernel's overCapEnd) is code spend_cap_reached, its message the words after
+ *  the code, as main served it; a provider's content-filter stop is `moderated`, in words a person can act on
+ *  (content-filter.ts); every other failure is run_failed. */
+const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
+  const over = overCapMessage(summary);
+  if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
+  if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
+  return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
+};
 
-/** An escalated run's review from its row: its summary is the reason (the store keeps no kind or node apart). */
+/** An escalated run's review: as its end kept it (`kept`, the escalate node's kind, label and summary), else its row's
+ *  summary as the reason. */
 type SavedReview = { kind: string | null; node: string | null; reason: string };
-const reviewOfRow = (state: RunReadState, summary: string | null): SavedReview | null => (state !== "escalated" ? null : { kind: null, node: null, reason: summary ?? "The workflow escalated." });
+const reviewOfRow = (state: RunReadState, summary: string | null, kept?: SavedReview): SavedReview | null => (state !== "escalated" ? null : (kept ?? { kind: null, node: null, reason: summary ?? "The workflow escalated." }));
 const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & { at: string }) | null => (review ? { kind: review.kind, node: review.node, reason: review.reason, at: endedAt } : null);
 
 /** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
@@ -174,6 +185,12 @@ interface StoreRun {
   readonly approvalsMode: Approvals;
   /** A completed workflow run's output, as its end kept it (EndData.output); null when it kept none. */
   readonly output: unknown;
+  /** An escalated workflow run's review, as its end kept it (EndData.review); undefined when it kept none. */
+  readonly review?: EndData["review"];
+  /** An ended agentic run's structured answer against its revision's output schema (definition.output_schema), read off
+   *  its final answer as the journal keeps it, whole and uncut (answer-json.ts structuredAnswer): undefined when the
+   *  agent has no schema or the run has not ended. Cut of held values only when served (redactedOutput). */
+  readonly structured: { value: unknown } | { why: string } | undefined;
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
@@ -204,7 +221,12 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const harness = launch?.harness ?? harnessOfBody((revision?.body ?? {}) as { harness?: string });
   // Whether the run ran unattended, from the revision it is pinned to (approvals "never"), else the default (ask).
   const approvalsMode = approvalsOf((revision?.body as { approvals?: unknown } | undefined)?.approvals);
+  const outputSchema = row.kind === "agentic" ? (revision?.body as { outputSchema?: unknown } | undefined)?.outputSchema : undefined;
   const terminal = row.state !== "running";
+  // Its structured answer, from the final answer as the journal keeps it: never the served text, which a held value
+  // (a number among them) or a long answer's cut would have changed, so a block that meets the schema reads as written.
+  const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })) : null;
+  const structured = rawAnswer ? structuredAnswer(rawAnswer, outputSchema) : undefined;
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
@@ -255,14 +277,14 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
 
-  // The run's cap as it stands: its newest raise's (the agentrun.raise entries the runner's loop holds it to, adapter-loop
-  // capNow), else its launch's; a raise taken shows in the run's cost.cap_usd and its budget card, never the old cap.
-  const raisedCapUsd = records.entries.findLast((entry) => entry.kind === KINDS.raise && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && (entry.data as { capUsd: number }).capUsd > 0)?.data as { capUsd: number } | undefined;
-  const capUsd = launch?.maxCostUsd === undefined ? undefined : Math.max(launch.maxCostUsd, raisedCapUsd?.capUsd ?? 0);
+  // The run's cap as it stands, through the one reader the runner's gate reads too (capNowOf): a raise taken shows in the
+  // run's cost.cap_usd and its budget card, never the old cap.
+  const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
   const meta: RunViewMeta = { ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  const pause = activePauseOf(records.entries);
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
   const paused = pausedOf(runRow, records.entries);
@@ -309,15 +331,19 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     // The cap pause's words, so the moment reads paused for a store budget park (the write half's raiseCap/sendMessage read
     // moment.paused/pausedWords); the file path's turns-based pausedAt gives nothing over the store.
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
+    // The park's own id: a raise's answer names the follow-up the runner sends for this pause (raiseFollowUpId).
+    ...(budget?.kind === "budget" && pause !== undefined ? { pause } : {}),
     meta,
   };
   // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
   const end = row.kind === "workflow" ? records.entries.findLast((entry) => entry.kind === KINDS.end) : undefined;
   const output = (end?.data as EndData | undefined)?.output ?? null;
+  // An escalated workflow run's review, as its end kept it (the escalate node's kind, label and summary).
+  const review = (end?.data as EndData | undefined)?.review;
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, decisions };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -356,7 +382,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const { row, runRow, launch, view, unshown, values, output } = run;
+  const { row, runRow, launch, view, unshown, values, output, review: kept, structured } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
@@ -366,9 +392,12 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const servedAnswer = (text: string | null): string | null => (text ? servedOnce(store, runId, text, values) : text);
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
-  // A workflow run's output, as its end kept it, served as runs.ts serves it (servedOutput): each string in it cut of the
-  // values the run holds, its shape kept; none while the run's sign-in can't be read back. An agentic run has none.
-  const servedOutput = row.kind === "workflow" && !unshown && output !== null ? redactedOutput(output, values) : null;
+  // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
+  // an output schema and the answer's last fenced json block meets it (storeRunOf's `structured`), else none. Served as
+  // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
+  // run's sign-in can't be read back.
+  const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;
+  const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
   const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
@@ -379,7 +408,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const errorWords = status === "failed" && !unshown ? await runErrorWordsOf({ ...deps, keyEnv: deps.keyEnv ?? (() => process.env) }, store, runId, { workflow: row.kind === "workflow" }) : undefined;
   const withheld = unshown || errorWords === "unreadable";
   const error = status === "failed" ? (withheld ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(errorWords ?? shownWords, errorOfRow(failedReason))) : null;
-  const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
+  const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null, kept), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).

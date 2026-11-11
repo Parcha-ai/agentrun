@@ -10,7 +10,8 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, metricsOf, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, markdownReport, metricsOf, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { lastJsonBlock } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -206,8 +207,7 @@ test("a learned note seeded through the learning API reaches the run", { timeout
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
 });
 
-// SKIP (follow-up #2078): a run that waits on its person is graded in different words on the runner
-test.skip("a run that asks its person ends there, and is graded as it stood", { timeout: 600_000 }, async () => {
+test("a run that asks its person ends there, and is graded as it stood", { timeout: 600_000 }, async () => {
   const one = await caseOf("asks");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
   const [run] = one.runs;
