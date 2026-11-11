@@ -5,11 +5,18 @@
 // loudly.
 //   node scripts/build-workspaces.mjs            build every workspace that has a build script, in order
 //   node scripts/build-workspaces.mjs --order    print the order, one package name a line, and build nothing
-//   node scripts/build-workspaces.mjs --only a,b  build only those, in the same order; a package
-//                                                 in it that depends on a workspace outside it with no dist stops it
+//   node scripts/build-workspaces.mjs --changed  build only the stale packages (see below), in the same order
+//   node scripts/build-workspaces.mjs --stale    print the stale packages, one a line, and build nothing
+//   node scripts/build-workspaces.mjs --only a,b  build only those, in the same order, and with them every workspace they
+//                                                 depend on that is stale: none compiles against an out-of-date dist
+//
+// Stale: a package whose dist is missing, or older than a file of the package (any file but dist and node_modules: its
+// sources, its tsconfig, its manifest), or that depends on a stale package, since that one is rebuilt first. The dist the
+// build leaves is the only thing it is compared with, as make does, so an edit rebuilds the package and its dependents,
+// and nothing else does. A package with no build script is never stale.
 //   --root <dir>                                  the repository to build (default: this script's)
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
@@ -70,6 +77,52 @@ export function subsetOrder(packages, names, built = (p) => existsSync(join(p.di
   return buildOrder(packages).filter((name) => wanted.has(name));
 }
 
+/** The newest modification time (ms) of any file under `dir`, skipping the directories named in `skip`; 0 when there is none. */
+export function newestMtime(dir, skip = new Set(['dist', 'node_modules', '.git'])) {
+  let newest = 0;
+  const walk = (path) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!skip.has(entry.name)) walk(join(path, entry.name));
+      } else {
+        newest = Math.max(newest, statSync(join(path, entry.name)).mtimeMs);
+      }
+    }
+  };
+  if (existsSync(dir)) walk(dir);
+  return newest;
+}
+
+/** The names of the packages whose dist is stale, in `order`: one that has a build script and no dist, or a dist whose newest
+ *  file is older than the newest of the package's own (`sources(p)`, `dist(p)`: modification times, ms), or that depends on
+ *  a stale package. A package with no build script is never stale. */
+export function stalePackages(packages, order, { sources = (p) => newestMtime(p.dir), dist = (p) => newestMtime(join(p.dir, 'dist'), new Set()) } = {}) {
+  const byName = new Map(packages.map((p) => [p.name, p]));
+  const stale = new Set();
+  for (const name of order) {
+    const p = byName.get(name);
+    if (!p.build) continue;
+    const built = dist(p);
+    if (built === 0 || sources(p) > built || p.deps.some((dep) => stale.has(dep))) stale.add(name);
+  }
+  return stale;
+}
+
+/** `names` and every stale package they depend on, through any depth: what a build of `names` must build for none of them to
+ *  compile against an out-of-date dist. */
+export function withStaleDeps(packages, names, stale) {
+  const byName = new Map(packages.map((p) => [p.name, p]));
+  const wanted = new Set(names);
+  const visit = (name) => {
+    for (const dep of byName.get(name)?.deps ?? []) {
+      if (stale.has(dep) && !wanted.has(dep)) wanted.add(dep);
+      visit(dep);
+    }
+  };
+  for (const name of names) visit(name);
+  return [...wanted];
+}
+
 /** Builds each of `order` that has a build script, once, in that order (`build(name)` gives its exit status), and stops
  *  at the first that fails: `{ built }`, the names built, and with a failure `failed` and its `status`. */
 export function buildAll(packages, order, build) {
@@ -88,10 +141,19 @@ if (isMain(import.meta)) {
   const root = flag('--root') ? resolve(flag('--root')) : ROOT;
   const packages = workspaces(root);
   const only = flag('--only');
-  const order = only ? subsetOrder(packages, only.split(',').filter(Boolean)) : buildOrder(packages);
+  const full = buildOrder(packages);
+  const changed = process.argv.includes('--changed');
+  // The files are only walked when a mode asks which packages are stale: the plain build rebuilds every package.
+  const stale = only || changed || process.argv.includes('--stale') ? stalePackages(packages, full) : new Set();
+  const named = only ? withStaleDeps(packages, only.split(',').filter(Boolean), stale) : undefined;
+  let order = named ? subsetOrder(packages, named) : full;
+  if (changed) order = order.filter((name) => stale.has(name));
   if (process.argv.includes('--order')) {
     process.stdout.write(`${order.join('\n')}\n`);
+  } else if (process.argv.includes('--stale')) {
+    process.stdout.write(order.filter((name) => stale.has(name)).map((name) => `${name}\n`).join(''));
   } else {
+    if (order.length === 0) process.stdout.write('build-workspaces: every workspace is up to date\n');
     const result = buildAll(packages, order, (name) => spawnSync('npm', ['run', 'build', '-w', name], { cwd: root, stdio: 'inherit' }).status ?? 1);
     if (result.failed) {
       process.stderr.write(`build-workspaces: ${result.failed}'s build failed (${result.status}); nothing after it was built\n`);
