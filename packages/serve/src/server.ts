@@ -41,7 +41,8 @@ import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, read
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./box-settings.js";
+import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
@@ -290,8 +291,6 @@ export type ServeOptions = {
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
-  /** How often a carry back the store refused is tried again while the server lives (default 30 s). */
-  settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
   /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
@@ -301,39 +300,18 @@ export type ServeOptions = {
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
-  /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
-   *  hook called at each such refusal. */
-  /** A test hook the per-run process used for carry-back; the runner owns carry-back now (unused by the server cut). */
-  carryBackRetry?: unknown;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
    *  process is launched, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
-  /** A test's seam: awaited where a raise that opens a let-go workflow pins what its launch needs, after its place is
-   *  taken (runs.ts finishRaise); one that throws stands for a pin that fails there. */
-  beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
   hostMemory?: number;
-  /** A test's seam: told each stat and each read of a workflow run's pause by its watch (runs.ts watchPause). */
-  onPauseCheck?: (runId: string, what: "stat" | "read") => void;
-  /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
-  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
   onRunLoad?: (runId: string) => void;
-  /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
-  beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
    *  carries it), so a test sends a server-written message down the path a person's message takes. */
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
-  /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
-  readyTimeoutMs?: number;
-  /** How long a launched run's process has to open its run before it is stopped and the run opened again (default 45 s,
-   *  READY_TIMEOUT_MS: the wait of a run's first message). */
-  openTimeoutMs?: number;
-  /** With `faux` only: the door nonce each run's process is handed in place of its launch's own, so its door answers the
-   *  launch's proof wrongly (a test of a door that fails its proof). */
-  fauxHandedNonce?: string;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -788,7 +766,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
-  boxLimitsOf(process.env);
+  // A Docker computer's size an operator sets (workspace/computer-deps.ts): a value the Docker provider refuses stops the
+  // start, in its words.
+  dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
   const boxAllow = boxAllowOf(process.env);
@@ -1050,10 +1030,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process sees it.
   const vmSecrets = () => [...serverSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
   const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
-  const vmLimits = (() => {
-    const limits = boxLimitsOf(env);
-    return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };
-  })();
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
   // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
   const onNoBoxList = (code: string, message: string) => {
@@ -1323,6 +1299,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+    completedOutput: async (runId: string) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (view?.status !== "completed") return undefined;
+      return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null };
+    },
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);

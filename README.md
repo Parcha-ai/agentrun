@@ -239,12 +239,20 @@ flowchart LR
 
 Each agent has a learning folder: plain git with one branch, `main`. A run reads the index of active notes in its
 instructions and gets the learned skills beside its own. When the run ends, it gets one more turn to say what it would
-keep. Code checks the proposal first (no secrets, no files outside the folder, size limits). Then one grader judges
-what it says, and AgentRun commits what passes. A risky rule waits for your OK.
+keep. Code checks the proposal first. An item that breaks a rule of its own (a size or count limit, its name, its
+shape) is left out and the rest goes on. A secret or a hidden character anywhere in the answer, a file outside the
+folder, a deletion or a full index drops the whole answer, since no item of it can be trusted. Then one grader judges
+what it says, and AgentRun commits what passes. A risky rule waits for
+your OK. A rule the run found in a page or a pasted email, or a note that holds an account number, is dropped.
+
+Once an agent's notes outgrow the learning budget, each run gets the ones that bear on its first message, whole, and a
+line for each of the rest. A run that only ran a learned workflow isn't asked what to keep.
 
 - **Notes** are short markdown files, one fact each, in Claude Code's memory format.
 - **Skills** are how to do a job again, and only a run that finished the job can write one.
-- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions.
+- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once a
+  learned skill has served 3 runs, the next run is asked for that job as a workflow draft, and a draft is dry-run
+  before it's kept: no model is asked and no tool runs.
 
 The agent's **Learning** tab shows every note, skill and workflow and the log of changes, and each run shows which
 notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire` and the note's ETag. Git keeps the

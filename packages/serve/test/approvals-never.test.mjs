@@ -19,7 +19,6 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const PAGE = "http://public.example/";
-const HARNESSES = ["pi", "claude-agent", "codex"];
 const FAUX_MCP = fixture("faux-mcp.mjs");
 const MCP_TOKEN = `not-a-secret-${"approvals-never-bearer"}`;
 

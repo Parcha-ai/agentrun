@@ -2,7 +2,6 @@
 // async backoff, so the event loop goes on answering. A run's end waits as long as it takes; a request waits about
 // 2 s, then answers home_busy.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -13,9 +12,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
-/** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
-const fakeKey = (name) => ["not-a-secret", name].join("-");
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
@@ -85,57 +82,6 @@ test.skip("an edit whose commit meets a reader of the agent store waits for it, 
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.equal(answer.body.definition.instructions, "Answer briefly.");
   assert.ok(answer.took >= HOLD_MS - 100, `it waited for the reader: ${answer.took} ms`);
-});
-
-/** A workflow agent whose run is working, its model node answering 1.5 s after it starts, or once a file exists when
- *  `instructions` say "Answer once <file> exists.". */
-async function workingFlow(api, id, instructions = "Answer soon.") {
-  assert.equal((await api("POST", "/agents", flowAgent(id, answerFlow(instructions)))).status, 201);
-  const started = await api("POST", `/agents/${id}/runs`, { input: { question: instructions } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["working"]);
-  return started.body.run_id;
-}
-
-/** Refusals of the run's end, 100 ms apart, that add up to more than a request's 2 s wait. */
-const PAST_A_REQUEST = 21;
-
-// SKIP (follow-up #2078): it hangs on the runner until its own timeout
-test.skip("a workflow that ends while the agent store is held past a request's 2 s waits with the run end's retries, then completes", { timeout: 60_000 }, async (t) => {
-  // The run ends when the test says (its node answers once `go` exists), after the store is held, and the store is let
-  // go once the end has been refused for longer than a request waits: no clock decides whether the two meet.
-  const go = join(await scratch(t), "go");
-  const busy = [];
-  let waitedPastRequest;
-  const pastRequest = new Promise((resolve) => (waitedPastRequest = resolve));
-  const onBusy = (_id, attempt) => busy.push(attempt) >= PAST_A_REQUEST && waitedPastRequest();
-  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy }, settleRetryMs: 120_000 });
-  const runId = await workingFlow(api, "held-end", `Answer once ${go} exists.`);
-  const release = hold(t, data, "EXCLUSIVE");
-  await writeFile(go, "");
-  await pastRequest;
-  release();
-  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
-  assert.equal(last.status, "completed", JSON.stringify(last));
-  assert.ok(busy.length >= PAST_A_REQUEST, `the run's end was refused ${busy.length} times while the store was held`);
-});
-
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("a workflow whose end outlasts the run end's retries is settled again, not left until the next start", async (t) => {
-  // The store is let go only once the run end's retries ran out and a later settle was refused too.
-  const delaysMs = [50, 50];
-  let exhausted = 0;
-  const onBusy = (_id, attempt) => void (attempt === delaysMs.length && exhausted++);
-  const { api, data } = await serve(t, { carryBackRetry: { delaysMs, onBusy }, settleRetryMs: 300 });
-  const runId = await workingFlow(api, "settled-again");
-  const release = hold(t, data, "EXCLUSIVE");
-  for (let i = 0; exhausted < 2; i++) {
-    assert.ok(i < 600, `the run's end ran out of retries, then was tried again: ${exhausted} times out of retries`);
-    await sleep(50);
-  }
-  release();
-  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
-  assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
 // SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner

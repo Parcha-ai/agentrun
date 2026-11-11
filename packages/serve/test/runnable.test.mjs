@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
 import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, serve, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */
