@@ -273,14 +273,34 @@ describe("a new schedule", () => {
     await t.set("content", "Look.");
     await t.set("maxCost", "1");
     await t.click(/^Create schedule$/);
-    expect(t.issue("source.at")).toBe(message);
+    // In the person's own time (UTC here), as the schedule line reads: never the API's ISO time.
+    expect(t.issue("source.at")).toBe("Pick a time in the future: Nov 9, 9:30 AM UTC has already passed.");
+    expect(t.text()).not.toContain("2026-11-09T09:30:00Z");
     expect(t.text()).not.toContain("at is in the past");
-    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays.
+    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays, naming the time now picked.
     await t.set("at", "2026-11-09T23:59");
-    expect(t.issue("source.at")).toBe(message);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: Nov 9, 11:59 PM UTC has already passed.");
     await t.set("at", "2026-11-12T09:30");
     expect(t.issue("source.at")).toBeNull();
     expect(t.went).toEqual([]);
+  });
+
+  // QA: a 9:00 AM picked in New York on a day whose 9:00 AM has passed read "Pick a time in the future:
+  // 2026-11-11T14:00:00Z has already passed." It reads the time picked, in the person's zone: "9:00 AM today".
+  it("a one time already passed today reads the time picked, in the person's own time, as today: no ISO", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    // The page's clock, 2026-11-10T00:00Z, is 7:00 PM on Nov 9 in New York; 9:00 AM that day is 14:00Z.
+    const message = "Pick a time in the future: 2026-11-09T14:00:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-09T09:00");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: 9:00 AM today has already passed.");
+    expect(t.text()).not.toContain("2026-11-09T14:00:00Z");
   });
 
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {

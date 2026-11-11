@@ -67,6 +67,18 @@ export const zonedWhen = (iso: string, zone: string): string => {
   return `${t.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: zone }).replace(",", "")}, ${clockIn(t, zone)} ${zoneAbbr(t, zone)}`;
 };
 
+/** A one-time schedule's picked time that has already passed, in the person's own time and in the words the schedule
+ *  line uses: "9:00 AM today" on the day it is now in `zone`, else "Nov 11, 9:00 AM EST". Never the API's ISO time,
+ *  which stays in the error's details. */
+export function pastWords(iso: string, { zone = browserZone(), now = Date.now() }: { zone?: string; now?: number } = {}): string {
+  const t = new Date(iso);
+  const day = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "numeric", day: "numeric", timeZone: zone });
+  const when = day(t) === day(new Date(now))
+    ? `${clockIn(t, zone)} today`
+    : `${t.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: zone })}, ${clockIn(t, zone)} ${zoneAbbr(t, zone)}`;
+  return `Pick a time in the future: ${when} has already passed.`;
+}
+
 /** An instant's wall time in `zone`, as the milliseconds of that wall time read as UTC. */
 function wallIn(t: Date, zone: string): number {
   const p: Record<string, string> = {};

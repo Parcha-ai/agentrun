@@ -15,7 +15,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -370,6 +370,8 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
     set("at")(wall);
     const picked = instantKept(wall, draft.read?.at);
     if (picked !== null && Date.parse(picked) > now()) setIssues(({ "source.at": _gone, ...rest }) => rest);
+    // Still past: the refusal stays, naming the time now picked.
+    else if (picked !== null) setIssues((was) => (was["source.at"] ? { ...was, "source.at": pastWords(picked, { now: now() }) } : was));
   };
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
   // The picked agent's default cap per run (definition.max_cost_usd): with one, the schedule's own cap may be left empty
@@ -394,6 +396,10 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
       }
     } catch (err) {
       const found = issuesOf(err);
+      // A one-time schedule refused at a time already passed: said in the person's own time, as the schedule line reads,
+      // never in the API's ISO time (its error's details keep that). Any other refusal of the time keeps the server's words.
+      const pickedAt = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
+      if (found.fields["source.at"] && pickedAt !== null && Date.parse(pickedAt) <= now()) found.fields["source.at"] = pastWords(pickedAt, { now: now() });
       setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
       setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
       setSaving(false);
