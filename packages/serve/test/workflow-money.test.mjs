@@ -314,15 +314,19 @@ test("a person's stop whose request is still being booked when the node ends: th
   let release;
   const released = new Promise((resolve) => (release = resolve));
   const origin = stallingOrigin("Half of one.md", released); // 14 bytes streamed
+  // What the run had done each time it closed a journal: whether its settle had returned by then.
+  let settled = false;
+  const closes = [];
   const journalOf = (journal) => {
     const close = journal.close.bind(journal);
     journal.close = async (...args) => {
+      closes.push(settled ? "after settle" : "before settle");
       release();
       return close(...args);
     };
     return journal;
   };
-  const specOf = (spec) => ({ ...spec, ...(spec.settle ? { settle: async () => { release(); await spec.settle(); } } : {}) });
+  const specOf = (spec) => ({ ...spec, ...(spec.settle ? { settle: async () => { release(); await spec.settle(); settled = true; } } : {}) });
   const { server, store } = await worldWith(t, { capUsd: 1, question: "Take your time.", providerOf: pricedProvider(origin.fetch), journalOf, specOf });
   const acting = (async () => {
     await origin.streamed;
@@ -334,6 +338,7 @@ test("a person's stop whose request is still being booked when the node ends: th
   assert.equal(row.state, "stopped", `the person's stop ends the run: ${JSON.stringify(row)}`);
   assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), "the stopped request is booked at what streamed and 1,024 tokens, not at its $1 hold");
   assert.equal(row.costUsd, eight((14 + 1024) * PER_TOKEN), "and the run's cost says so");
+  assert.equal(closes[0], "after settle", `the run closed nothing before its bookings settled: ${JSON.stringify(closes)}`);
 });
 
 test("a model node on a tier other than the default runs on that tier's model: asked, held and booked at its price", async (t) => {
