@@ -115,11 +115,23 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
   const front = new Map<string, string>();
   const add = (key: string, more: string) => front.set(key, `${front.get(key)} ${more.trim()}`.trim());
   // The key whose `>`/`|` block, or nested value (a `key:` with nothing after it), the next indented lines are; the key
-  // whose plain value they wrap.
+  // whose plain value they wrap; a quoted value still open, its lines so far (quotedValue folds them).
   let block: string | undefined;
   let plain: string | undefined;
+  let quoting: { key: string; lines: string[] } | undefined;
   for (const line of lf.slice(4, end).split("\n")) {
     const indented = /^\s+\S/.test(line);
+    if (quoting) {
+      // A quoted value's next line: indented, or blank (a line break of its own); one at the left edge reads no way.
+      if (line.trim() !== "" && !indented) return undefined;
+      quoting.lines.push(line);
+      if (!closedQuote(quoting.lines.map((one) => one.trim()).join(" "))) continue;
+      const read = unquote(foldQuoted(quoting.lines));
+      if (read === undefined) return undefined;
+      front.set(quoting.key, read);
+      quoting = undefined;
+      continue;
+    }
     if (block !== undefined && (indented || line.trim() === "")) {
       if (line.trim()) add(block, line);
       continue;
@@ -141,6 +153,9 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
     if (!value || /^[>|][-+]?$/.test(value)) {
       block = pair[1]!;
       front.set(block, "");
+    } else if (/^["']/.test(value) && !closedQuote(value)) {
+      // A quoted value that runs on past its line: read once it closes, its lines folded as YAML folds them.
+      quoting = { key: pair[1]!, lines: [value] };
     } else {
       // A quoted value whose escapes do not decode cleanly reads no way.
       const read = unquote(value);
@@ -149,7 +164,39 @@ export function frontMatter(text: string): ReadonlyMap<string, string> | undefin
       if (!/^["']/.test(value)) plain = pair[1]!;
     }
   }
-  return front;
+  // A quoted value never closed reads no way.
+  return quoting ? undefined : front;
+}
+
+/** Whether `value`, a quoted scalar's text from its opening quote, closes: it ends with its quote, a double quote not
+ *  escaped (an even run of backslashes before it), a single quote not one of a doubled pair (`''`, an odd run). */
+function closedQuote(value: string): boolean {
+  const quote = value[0];
+  if ((quote !== '"' && quote !== "'") || value.length < 2 || !value.endsWith(quote)) return false;
+  const inner = value.slice(1);
+  if (quote === '"') return (/(\\*)"$/.exec(inner)![1]!.length % 2) === 0;
+  return (/('+)$/.exec(inner)![1]!.length % 2) === 1;
+}
+
+/** A quoted scalar's `lines` (its first, from the opening quote, then the next ones as written) as one, folded as YAML
+ *  folds a flow scalar: each line's surrounding white space dropped, each line break one space, each blank line a line
+ *  break, and in a double-quoted one a break after a `\` none at all. unquote reads the result. */
+function foldQuoted(lines: readonly string[]): string {
+  let out = lines[0]!.trimEnd();
+  let blanks = 0;
+  for (const line of lines.slice(1)) {
+    const part = line.trim();
+    if (part === "") {
+      blanks += 1;
+      continue;
+    }
+    if (blanks) out += "\n".repeat(blanks);
+    else if (out.startsWith('"') && /(?<!\\)(\\\\)*\\$/.test(out)) out = out.slice(0, -1);
+    else out += " ";
+    out += part;
+    blanks = 0;
+  }
+  return out;
 }
 
 /** Every value a SKILL.md's or a draft README's front matter holds, as YAML reads it (frontMatter: escapes decoded):
@@ -174,13 +221,15 @@ export const LEARNED_KEYS: readonly string[] = ["name", "description"];
 /** `text`, a learned skill's SKILL.md, as a run is given it: front matter with its name and its description alone, as
  *  the one reader reads them (frontMatter), each quoted as JSON writes it, which every YAML reads back as that very
  *  string (never null, a boolean, a number or a date), written again whatever else its file holds (servedSkill is the
- *  one door a learned skill reaches a harness by), then its body as it is. A text with no front matter is as it is; one
- *  whose front matter reads no way, which is never active and so never given, is served with both fields empty. */
+ *  one door a learned skill reaches a harness by), then its body as it is. A text with no front matter, or one whose front
+ *  matter reads no way, is as it is: never served with its fields emptied. A learned one of those is never active, so
+ *  never given; a revision's own is the harness's to check, as its author wrote it. */
 export function servedSkill(text: string): string {
   const opened = frontOf(text);
   if (typeof opened === "string") return text;
   const front = frontMatter(text);
-  const lines = [`name: ${JSON.stringify(front?.get("name") ?? "")}`, `description: ${JSON.stringify(front?.get("description") ?? "")}`];
+  if (!front) return text;
+  const lines = [`name: ${JSON.stringify(front.get("name") ?? "")}`, `description: ${JSON.stringify(front.get("description") ?? "")}`];
   return `---\n${lines.join("\n")}\n---\n${opened.lf.slice(opened.end + 5)}`;
 }
 

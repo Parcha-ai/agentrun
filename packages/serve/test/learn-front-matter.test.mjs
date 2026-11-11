@@ -237,3 +237,29 @@ test("a hidden character a skill's description spells as an escape is refused wh
   assert.ok(result.problems.some((problem) => problem.rule === "invisible_unicode"), JSON.stringify(result.problems));
   assert.ok(unstorable([added("skills/weekly-summary/SKILL.md", text)]).some((problem) => problem.rule === "invisible_unicode"), "unstorable reads it decoded");
 });
+
+// A double-quoted scalar that runs onto the next lines reads as YAML reads it: its lines folded, each break one space.
+// A revision skill whose description is written so (the adapter's own skill check passes it) is served with that
+// description, never with empty fields, and an OpenCode run with it starts.
+const MULTI = "---\nname: find-policies\ndescription: \"Find\n  refund policies\"\n---\nSteps.\n";
+
+test("a multi-line double-quoted description reads as YAML folds it, and round-trips through servedSkill", async () => {
+  const { parse } = await import("yaml");
+  const { servedSkill } = await import("../dist/learn/skills.js");
+  assert.equal(parse(MULTI.split("---\n")[1]).description, "Find refund policies", "YAML's own reading");
+  assert.equal(frontMatter(MULTI)?.get("description"), "Find refund policies");
+  const served = servedSkill(MULTI);
+  assert.match(served, /^---\nname: "find-policies"\ndescription: "Find refund policies"\n---\nSteps\.\n$/, served);
+  assert.equal(frontMatter(served)?.get("description"), "Find refund policies");
+  assert.equal(frontMatter("---\nname: x\ndescription: 'Find\n  it''s policies'\n---\n")?.get("description"), "Find it's policies", "a single-quoted one too");
+});
+
+test("a revision skill with a multi-line quoted description reaches OpenCode with its fields, and the run's adapter starts", async (t) => {
+  const { withEnv } = await import("./support.mjs");
+  withEnv(t, { AGENTRUN_OPENCODE_STANDIN: "1" });
+  const adapters = await import("../dist/adapters.js");
+  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined }, skills: [{ name: "find-policies", files: { "SKILL.md": MULTI } }] };
+  const env = { OPENAI_API_KEY: "not-a-secret-opencode-key", [adapters.OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: ["-e", ""] }) };
+  const adapter = await adapters.opencodeOf(env, needs);
+  assert.ok(adapter, "the adapter starts: its own skill check passes the served SKILL.md");
+});
