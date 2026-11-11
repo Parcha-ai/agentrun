@@ -10,11 +10,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
-import { agent, follow, letGo, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const WRAPUP = new URL("./fixtures/faux-wrapup.mjs", import.meta.url).pathname;
@@ -25,16 +24,14 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
 /** The same with no priced request yet: its typical cost the next request's expected cost (step 0). */
 const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
-/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), once the run's process has let it go. */
-const notesOf = (data, runId) => entries(data, runId).filter((record) => record.kind === "faux.note").map((record) => record.data.text);
-/** Each note the faux harness took, with the index of the request that carried it (its first request is 0): the note is
- *  filed as it is admitted, before that request's own record. */
-const noteRequests = (data, runId) => {
+/** Each note the faux harness took, with the index of the request that carried it (its first request is 0), from the run's
+ *  journal in the store: the note is filed as it is admitted, before that request's own record. */
+const noteRequests = async (store, runId) => {
   let requests = 0;
   const out = [];
-  for (const record of entries(data, runId)) {
-    if (record.kind === "faux.request") requests += 1;
-    else if (record.kind === "faux.note") out.push([requests, record.data.text]);
+  for (const entry of await journalOf(store, runId)) {
+    if (entry.kind === "faux.request") requests += 1;
+    else if (entry.kind === "faux.note") out.push([requests, entry.data.text]);
   }
   return out;
 };
@@ -45,7 +42,7 @@ const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`
 /** The run's journal entries, from the one store (a runner writes them as it goes: nothing to let go first). */
 const journalOf = async (store, runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
 /** The faux harness's notes taken into its requests (FAUX_RECORDS.note), from the run's journal in the store. */
-const storeNotesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => entry.data.text);
+const notesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => entry.data.text);
 /** The words inside a request's reminder (the proxy places the note in the last user text, in a <system-reminder>). */
 const reminderIn = (text) => /<system-reminder>([\s\S]*?)(?:<\/system-reminder>|$)/.exec(text)?.[1] ?? text;
 /** Until the run's runner has let it go (its claim released). */
@@ -54,11 +51,6 @@ const released = async (store, runId) => {
     assert.ok(i < 300, "the runner lets the run go");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-};
-/** The run's root entries, read once its process has let it go. */
-const entries = (data, runId) => {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  try { return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))); } finally { db.close(); }
 };
 
 test("pi: near its cap the model is told once, in the request it is sent, to finish; it answers, the turn ends under the cap, one row says so, and the transcript never holds the note", { timeout: 180_000 }, async (t) => {
@@ -110,9 +102,8 @@ test("pi: the final-answer request that carries the note is the run's last: no f
   assert.equal(requests().length, answered.length, "none after the restart either");
 });
 
-// SKIP (follow-up #2080): a claude-agent request near its cap carries no wrap-up note and no row says so on the runner.
-test.skip("claude-agent on the faux harness: near its cap a main-model request carries the words, once, and one row says so", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: WRAPUP });
+test("claude-agent on the faux harness: near its cap a main-model request carries the words, once, and one row says so", { timeout: 180_000 }, async (t) => {
+  const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: WRAPUP });
   assert.equal((await api("POST", "/agents", agent("wrap-h", { harness: "claude-agent", instructions: "Grow a cached context." }))).status, 201);
   const started = await api("POST", "/agents/wrap-h/runs", { input: { content: "go" }, max_cost_usd: 0.5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -120,16 +111,13 @@ test.skip("claude-agent on the faux harness: near its cap a main-model request c
   await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
   const rows = await rowsOf(api, runId);
   assert.equal(rows.length, 1, `one row: ${JSON.stringify(rows.map((r) => r.summary))}`);
-  await letGo(data, runId);
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  const notes = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === "faux.note");
-  db.close();
-  assert.deepEqual(notes.map((record) => `AgentRun: ${record.data.text}`), [rows[0].summary], "the session's next main-model request took the words, once");
+  await released(store, runId);
+  assert.deepEqual((await notesOf(store, runId)).map((text) => `AgentRun: ${text}`), [rows[0].summary], "the session's next main-model request took the words, once");
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
+// SKIP (#2430): a message to a completed claude-agent run answers 409 until a completed run reopens on a message.
 test.skip("claude-agent on the faux harness: a turn that ends on the request after which the wrap-up comes due: the next turn's first request carries the note, with what is left then, and its row follows that turn's message", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
+  const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("next-h", { harness: "claude-agent", instructions: "Wrap up in the next turn." }))).status, 201);
   const started = await api("POST", "/agents/next-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -142,13 +130,12 @@ test.skip("claude-agent on the faux harness: a turn that ends on the request aft
   assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Second."], JSON.stringify(run.pending ?? run.error));
   // $0.40 spent: $0.60 left, under 3 x $0.40, read as the follow-up's first request takes the note.
   assert.deepEqual(said(rows), ["go", "go on", WRAP_UP("$0.60")], "the row after the turn's message, in the words it carried");
-  await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the follow-up's first request carried the note, once");
+  await released(store, runId);
+  assert.deepEqual(await notesOf(store, runId), [WRAP_UP("$0.60")], "the follow-up's first request carried the note, once");
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("claude-agent on the faux harness: a note taken after the first request was priced ($0.40, due by the measured typical) is worded as the run's spend says, \"finish now\", and a side call admitted between its take and the admission of the request carrying it leaves it told once, with one row", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
+test("claude-agent on the faux harness: a note taken after the first request was priced ($0.40, due by the measured typical) is worded as the run's spend says, \"finish now\", and a side call admitted between its take and the admission of the request carrying it leaves it told once, with one row", { timeout: 180_000 }, async (t) => {
+  const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("side-h", { harness: "claude-agent", instructions: "Wrap up with a side call in between." }))).status, 201);
   const started = await api("POST", "/agents/side-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -159,22 +146,22 @@ test.skip("claude-agent on the faux harness: a note taken after the first reques
   // $0.40 spent and priced when request 2 takes the note: $0.60 left, under 3 x $0.40. The side call's admission comes
   // before request 2's own.
   assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP("$0.60")], "one row");
-  await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the note went once: request 2 did not take it again");
+  await released(store, runId);
+  assert.deepEqual(await notesOf(store, runId), [WRAP_UP("$0.60")], "the note went once: request 2 did not take it again");
 });
 
 /** A run of `agentId` on Sonnet 4.5 pricing (faux-sonnet45.mjs) under `cap`, its harness `harness` ("pi" or a faux CLI),
- *  ended; with the rows the wrap-up wrote and, after its process lets it go, the notes the faux harness took. */
+ *  ended; with the rows the wrap-up wrote, and the store its journal (the notes the faux harness took) is read from. */
 async function sonnetRun(t, { harness, instructions, cap, id }) {
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { faux: sonnet, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
+  const { api, store } = await serve(t, { faux: sonnet, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
   assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness }), instructions }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Say hi." }, max_cost_usd: cap });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
   const run = (await api("GET", `/runs/${runId}`)).body;
-  return { api, data, runId, run, rows: await rowsOf(api, runId) };
+  return { api, store, runId, run, rows: await rowsOf(api, runId) };
 }
 
 test("pi on Sonnet 4.5 under $1: no wrap-up at step 0. Nothing priced yet, the typical request is its input and a 4,096-token answer ($0.06), never its whole 64,000-token allowance ($0.96)", { timeout: 120_000 }, async (t) => {
@@ -188,23 +175,21 @@ test("pi on Sonnet 4.5 under $0.10: due at step 0, told in the budget's words, n
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")]);
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("claude-agent on Sonnet 4.5 under $0.10: due at step 0, judged on its first request itself as pi judges it, and told in that request in the budget's words; then nothing more", { timeout: 120_000 }, async (t) => {
-  const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-cc-small" });
+test("claude-agent on Sonnet 4.5 under $0.10: due at step 0, judged on its first request itself as pi judges it, and told in that request in the budget's words; then nothing more", { timeout: 120_000 }, async (t) => {
+  const { store, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-cc-small" });
   assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
   // Its first request's step-0 figure, its input and a 4,096-token answer ($0.076), is over a third of $0.10.
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")], "told once, in step 0's words");
-  await letGo(data, runId);
-  assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.10")]], "in request 1, the request it was judged on");
+  await released(store, runId);
+  assert.deepEqual(await noteRequests(store, runId), [[0, WRAP_UP_FIRST("$0.10")]], "in request 1, the request it was judged on");
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("pi and claude-agent on the same model under the same $0.10, the first request due at step 0: the same note, in the same words, in request 1 (parity)", { timeout: 120_000 }, async (t) => {
+test("pi and claude-agent on the same model under the same $0.10, the first request due at step 0: the same note, in the same words, in request 1 (parity)", { timeout: 120_000 }, async (t) => {
   const pi = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 0.1, id: "s45-parity-pi" });
   const cli = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-parity-cc" });
   assert.deepEqual([pi.rows.map((row) => row.text), cli.rows.map((row) => row.text)], [[WRAP_UP_FIRST("$0.10")], [WRAP_UP_FIRST("$0.10")]], "the same words on both");
-  await letGo(cli.data, cli.runId);
-  assert.deepEqual(noteRequests(cli.data, cli.runId).map(([request]) => request), [0], "the CLI's in its first request, as pi's is");
+  await released(cli.store, cli.runId);
+  assert.deepEqual((await noteRequests(cli.store, cli.runId)).map(([request]) => request), [0], "the CLI's in its first request, as pi's is");
 });
 
 test("claude-agent on Sonnet 4.5 under $0.11, the next request taking its note before the first request's cost came in: judged at step 0 on itself, and told in the budget's words", { timeout: 120_000 }, async (t) => {
@@ -223,26 +208,24 @@ test("claude-agent on Sonnet 4.5 under $0.11, the next request taking its note b
   await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
   assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.08")]);
   await released(store, runId);
-  assert.deepEqual(await storeNotesOf(store, runId), [WRAP_UP_FIRST("$0.08")]);
+  assert.deepEqual(await notesOf(store, runId), [WRAP_UP_FIRST("$0.08")]);
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the measured typical makes it due, and request 2 is told to finish (a guard)", { timeout: 120_000 }, async (t) => {
-  const { data, runId, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code spends four cents first.", cap: 0.1, id: "s45-cc-four" });
+test("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the measured typical makes it due, and request 2 is told to finish (a guard)", { timeout: 120_000 }, async (t) => {
+  const { store, runId, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code spends four cents first.", cap: 0.1, id: "s45-cc-four" });
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP("$0.06")]);
-  await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.06")]);
+  await released(store, runId);
+  assert.deepEqual(await notesOf(store, runId), [WRAP_UP("$0.06")]);
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each need 10,240 output tokens and cost half a cent: the wrap-up comes before the cap refuses the next request, while what is left still buys about two of them", { timeout: 180_000 }, async (t) => {
-  const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Make sixty half-cent calls that each need 10,240 output tokens at least.", cap: 0.4, id: "s45-least" });
+test("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each need 10,240 output tokens and cost half a cent: the wrap-up comes before the cap refuses the next request, while what is left still buys about two of them", { timeout: 180_000 }, async (t) => {
+  const { store, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Make sixty half-cent calls that each need 10,240 output tokens at least.", cap: 0.4, id: "s45-least" });
   // Its measured typical ($0.005) never makes it due: 3 x $0.005 is under what the next request needs at least (about
   // $0.17), so without the least the cap refuses it untold.
   assert.equal(rows.length, 1, `one row before the refusal: ${JSON.stringify(rows.map((row) => row.text))}; the run: ${JSON.stringify(run.pending ?? run.error ?? run.status)}`);
   assert.match(rows[0].text, /^About \$0\.\d\d left of this run's budget: finish now with your answer\.$/);
-  await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [rows[0].text]);
+  await released(store, runId);
+  assert.deepEqual(await notesOf(store, runId), [rows[0].text]);
 });
 
 test("claude-agent on the faux harness: at step 0, with no previous request in hand, the next request's least is priced uncached, and it alone makes the wrap-up due, in the budget's words (a pin)", { timeout: 180_000 }, async (t) => {
@@ -261,7 +244,7 @@ test("claude-agent on the faux harness: at step 0, with no previous request in h
   const rows = (await rowsOf(api, runId)).map((row) => row.text);
   assert.deepEqual(rows, [WRAP_UP_FIRST("$1.48")], "step 0's words: nothing priced at the take");
   await released(store, runId);
-  assert.deepEqual(await storeNotesOf(store, runId), rows);
+  assert.deepEqual(await notesOf(store, runId), rows);
 });
 
 test("claude-agent on the faux harness: paused at its cap, let go and raised, the first request after the raise, in the process the raise opens, is told when it alone is due by its least: the least of the request being taken, never of one admitted in an earlier process", { timeout: 180_000 }, async (t) => {
@@ -278,12 +261,11 @@ test("claude-agent on the faux harness: paused at its cap, let go and raised, th
   await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$1.50")], "the first request after the raise is told, in the budget's words: nothing priced, $1.50 left, under 2 x its own least ($1.024)");
   // The faux harness's own record of the note it took into a request, in the run's journal: once, those words.
-  assert.deepEqual(await storeNotesOf(store, runId), [WRAP_UP_FIRST("$1.50")]);
+  assert.deepEqual(await notesOf(store, runId), [WRAP_UP_FIRST("$1.50")]);
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("claude-agent on the faux harness: a side call that comes first (the harness's own title request) neither takes the note nor is judged as the request taking it: the session's first request carries it, judged at step 0 on its own bound (a pin)", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+test("claude-agent on the faux harness: a side call that comes first (the harness's own title request) neither takes the note nor is judged as the request taking it: the session's first request carries it, judged at step 0 on its own bound (a pin)", { timeout: 180_000 }, async (t) => {
+  const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("side-first-h", { harness: "claude-agent", instructions: "Wrap up after a side call comes first." }))).status, 201);
   // Input at $100 a million, output free. Request 0's step-0 figure, its own 1,000-token input, is $0.10, over a third of
   // $0.29; the side call's 100 tokens ($0.01) are not, so a take judged on the side call would tell nothing. Request 1
@@ -294,7 +276,7 @@ test.skip("claude-agent on the faux harness: a side call that comes first (the h
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
   assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.29")], "one row, in step 0's words");
-  await letGo(data, runId);
-  assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.29")]], "in the session's first request, once");
+  await released(store, runId);
+  assert.deepEqual(await noteRequests(store, runId), [[0, WRAP_UP_FIRST("$0.29")]], "in the session's first request, once");
 });
 
