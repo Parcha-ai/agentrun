@@ -71,6 +71,6 @@ test("a paid call its runner lost mid-call, never rerun, is booked at the next c
   assert.equal(view.cost.usd, null, `the run's cost is unknown, never $0: ${JSON.stringify(view.cost)}`);
   assert.ok(view.cost.unpriced >= 1, `the cut call is a charge not priced: ${JSON.stringify(view.cost)}`);
   const charge = (await runTimeline(server, "run-1", BACKGROUND_CONTEXT, { settled: true })).filter((one) => one.kind === "phase" && /^Tool cost:/.test(one.summary ?? ""));
-  // The test's tool books under its fee's own name (paid:Parallel's search), as a paid request names it.
-  assert.deepEqual(charge.map((one) => one.summary), ["Tool cost: parallel charged an unknown amount for Parallel's search"], "its row: an unknown amount");
+  // The charge names the tool it ran (paid:web_search), as every paid call's row does.
+  assert.deepEqual(charge.map((one) => one.summary), ["Tool cost: parallel charged an unknown amount for web_search"], "its row: an unknown amount");
 });
