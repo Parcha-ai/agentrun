@@ -9,7 +9,7 @@ import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentF
 // that has learning.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const tools = [{ name: "read", available: true }, { name: "write", available: true }];
+const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }];
 const caps = (learning?: "on" | "off"): EditorCaps => ({ harnesses: [{ id: "pi", available: true }], tools, thinking: ["low"], ...(learning ? { learning } : {}) });
 const agentOf = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kind"] = "agentic"): Agent => ({
   agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,

@@ -45,7 +45,7 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
-import { TOOL_BUDGET_TEXT } from "../tool-budget.js";
+import { TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
@@ -273,6 +273,17 @@ export interface AdapterLoopOptions {
 
 /** The most of a harness's own turn error a failed run's summary keeps. */
 const TURN_ERROR_MAX = 500;
+
+/** A paid call's refusal an earlier claim kept (KINDS.pausePending) whose pause never landed: the newest one with no
+ *  pause (KINDS.budget) and no end after it. Undefined when there is none. */
+export function pendingPauseOf(entries: readonly { readonly kind?: string; readonly data?: unknown }[]): Refusal | undefined {
+  for (let at = entries.length - 1; at >= 0; at--) {
+    const entry = entries[at]!;
+    if (entry.kind === KINDS.budget || entry.kind === KINDS.end) return undefined;
+    if (entry.kind === KINDS.pausePending) return entry.data as Refusal;
+  }
+  return undefined;
+}
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
 
@@ -368,9 +379,10 @@ interface CliRecord {
   /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
    *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
-  /** A call through a CLI's own MCP client, as it reaches its gate: its start, marked parked (nothing sent until start()
-   *  writes its sent mark), so it shows on the record while it waits (once per call id). */
-  park(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** A call through a CLI's own MCP client, as it reaches its gate, or one its tool bridge's gate asks about (`bridge`):
+   *  its start, marked parked (nothing sent until start() writes its sent mark), so it shows on the record while it waits
+   *  (once per call id). */
+  park(callId: string, tool: string, input: unknown, replaySafe: boolean, bridge?: true): Promise<void>;
   /** A call its tool bridge's gate refused (a deny set, no one to approve, or a person's deny of its ask): its start and
    *  its end, refused in the gate's words, in one commit, as pi writes a refused call and its error result (once per call
    *  id). The same entries a parked MCP call refused at its door ends with (park, then end refused), with no wait between. */
@@ -500,11 +512,11 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         started.set(callId, false);
       });
     },
-    async park(callId, tool, input, replaySafe) {
+    async park(callId, tool, input, replaySafe, bridge) {
       await flushText();
       await inTurn(async () => {
         if (started.has(callId)) return;
-        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...(cwd ? { cwd } : {}) });
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...(bridge ? { bridge } : {}), ...(cwd ? { cwd } : {}) });
         started.set(callId, false);
         parked.add(callId);
       });
@@ -1160,9 +1172,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           return answer;
         };
+        // A paid call's refusal is the call's result first: its pause is journaled at the model's next request (beforeRequest,
+        // pendingPause), once the harness has stored that result, so the run never reads waiting on a raise before its
+        // Timeline says why. The refusal is kept on the root at once (KINDS.pausePending, no run patch, nothing a person
+        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run.
         pauseFor = async (refusal) => {
           pendingPause = refusal;
-          await pauseAt(refusal);
+          if (!harness || !gate || gate.sealed) return;
+          const on = harness;
+          try {
+            const conversation = root ?? (await on.root(context));
+            await on.commit(async (tx) => void (await tx.appendEntry(conversation.id, { kind: KINDS.pausePending, data: refusal as unknown as JsonValue })), context);
+          } catch {
+            // Not kept (the journal sealed: the claim lost or the run parking): this claim's own request still parks it.
+          }
         };
         async function pauseAt(answer: Refusal): Promise<void> {
           {
@@ -1205,7 +1228,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // of this claim, and a replay the gate refuses makes none, so it is opened here for the cut alone, never read as free.
         const toolsAtOpen = sessionSpendOf(await sessions.read(TOOL_SESSION));
         if (spec.runCap && toolsAtOpen.turns.some((turn) => !toolsAtOpen.answered.has(turn))) await paidOf();
-        const gateOf = preIntentGate(spec, hooks);
+        // The cap's wrap-up (tool-budget.ts wrappingUp): what every session of the run has taken as the cap counts it, its
+        // spend and each request or paid step still out at its hold and bound, read from the run's records at each call. A
+        // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
+        // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
+        const wrapUp = async (): Promise<boolean> => {
+          // A run whose spec gives no cap (no runCap) has none to wrap up at, as overCap reads it.
+          if (!spec.runCap) return false;
+          const capUsd = capNow();
+          if (capUsd === undefined) return false;
+          let taken: number | null = 0;
+          for (const key of await sessions.keys()) {
+            const read = sessionSpendOf(await sessions.read(key));
+            const reserved = [...read.openHolds].reduce((sum, turn) => sum + (read.held.get(turn) ?? 0), 0);
+            taken = taken === null || read.spentUsd === null ? null : taken + read.spentUsd + reserved;
+          }
+          return wrappingUp(capUsd, taken);
+        };
+        const gateOf = preIntentGate(spec, hooks, wrapUp);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context, now, spec.cwd) : undefined;
         cliRecord = record;
@@ -1326,14 +1366,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
         // start and its end, refused in the gate's words, go on the record here, as pi writes a refused call and its error
-        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it).
+        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it). A call it asks
+        // about goes on the record first, its start marked parked (once per call id), as an MCP call parked at its door does,
+        // and marked the bridge's: the bridge hands the CLI nothing while it waits, so no waiting result shows, as on pi. Its
+        // row shows while it waits, before its approval; the claim that runs it once allowed writes its sent mark on that
+        // one start (start()), and a stop withdraws it never sent (unsentParked). A start refused because another call of the
+        // round parked the run first (the journal sealed) leaves this call held as that one is.
+        const replaySafe = (name: string) => tools.find((one) => one.name === name)?.replay === "safe";
+        const askingGate = record
+          ? preIntentGate(spec, hooks, wrapUp, (call) =>
+              record.park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), true).catch((error: unknown) => {
+                if (!gate?.sealed) throw error;
+              }),
+            )
+          : gateOf;
         const bridgeGate: typeof gateOf = record
           ? async (call, hookContext) => {
-              const answer = await gateOf(call, hookContext);
-              if (answer !== "allow" && "deny" in answer) {
-                const tool = tools.find((one) => one.name === call.tool);
-                await record.refused(call.callId, call.tool, call.args ?? {}, tool?.replay === "safe", answer.deny);
-              }
+              const answer = await askingGate(call, hookContext);
+              if (answer !== "allow" && "deny" in answer) await record.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny);
               return answer;
             }
           : gateOf;
@@ -1376,6 +1426,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // budget card read too (capNowOf: the newest raise entry, else the launch's cap): a claim that takes over a raised
         // run (a resume, another runner's, a restarted server's) holds it to the raise, never the launch's cap.
         if (spec.cap) raisedCapUsd = capNowOf(spec.cap.capUsd, await entriesOf(gate.journal, root.id, context)) ?? raisedCapUsd;
+        // A paid call an earlier claim refused for room whose pause never landed (the claim lost between the call's stored
+        // result and the model's next request): its pending pause, restored, so that request is refused in its words and
+        // the run parks for the raise the call needs.
+        if (spec.cap && pendingPause === undefined) pendingPause = pendingPauseOf(await entriesOf(gate.journal, root.id, context)) ?? pendingPause;
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
         // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.
@@ -1685,8 +1739,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park). */
-  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks) {
+  /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park).
+   *  `wrapUp`: whether the run has taken its share of the cap, so every call the model makes is refused in its fixed words.
+   *  `beforeAsk`: what goes on the record of a call the gate asks about, before its ask is written or read (a CLI's call
+   *  through its tool bridge: its start, marked parked, so its row shows while it waits and reads before its approval). */
+  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: () => Promise<boolean>, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
@@ -1698,6 +1755,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // asked about.
       const budget = spec.gate?.toolCalls;
       if (budget !== undefined && call.callsBefore && (await call.callsBefore(budget)) >= budget) return { deny: TOOL_BUDGET_TEXT };
+      // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
+      // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
+      if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
@@ -1714,6 +1774,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Shown first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES) still names them whatever the input's size.
       // The gate's own fields win over any of the same name in the call's input, which the model wrote.
       const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
+      // The call on the record before its ask (beforeAsk), with the input its model gave it.
+      await beforeAsk?.(call);
       const answer = await answerOf({ ...call, tool, args }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as

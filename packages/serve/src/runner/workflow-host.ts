@@ -37,6 +37,8 @@ export type RunEffect = (params: { readonly node: { readonly label: string; read
 export interface DecisionDriver {
   routeDecision(executionPath: never): unknown;
   decisionRequests(): Record<string, { status: string }>;
+  /** Resolves once the driver's commits so far are durable (a request it ended, before the run parks on it). */
+  flush(): Promise<void>;
 }
 
 /** The run's spend cap over the workflow's adapters (app.ts's budget: stepped/failing/capStopped and the decision cap),
@@ -48,9 +50,12 @@ export interface WorkflowCap {
   node<F>(fn: F): F;
   /** stepped(failing(·)): a call node, which waits for a raise on a held effect and goes again. */
   effect<F>(fn: F): F;
-  /** stepped(gate(capped.before(·))): a decision, held before the driver admits it (admitting and settling it through the
-   *  kernel cap). The driver tells a replayed request, which holds nothing (main's `capped.before(runJudge, askedBefore)`). */
+  /** A decision, before the driver admits its request: priced, or parked by a pause. The driver tells a replayed request,
+   *  which holds nothing. */
   judge<F>(fn: F, driver?: DecisionDriver): F;
+  /** A decision's judge once the driver has admitted its request: held through the kernel cap, sent, and settled. Absent:
+   *  the judge runs as given. */
+  admitted?<F>(fn: F): F;
   /** A call node's wait on a raise (deps.held), left out of its deadline. */
   held?(path: string): number;
 }
@@ -90,6 +95,7 @@ const identityCap: WorkflowCap = { node: (fn) => fn, effect: (fn) => fn, judge: 
  *  Pass the result to createWorkflowLoop's spec.build. */
 export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: readonly Extension[]; readonly host: WorkflowTaskHost } {
   const cap = deps.cap ?? identityCap;
+  const admitted = <F>(fn: F): F => (cap.admitted ? cap.admitted(fn) : fn);
 
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from (app.ts nodeAgent). */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
@@ -124,7 +130,8 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
       const recovered = withRecovery(driver as never, {
         runNode: nodes.on(taskScope(runtime as never), context).runNode,
         runEffect: deps.runEffect as never,
-        ...(deps.decisionProviders ? { runJudge: judgeFromProviders({ ...deps.decisionProviders, loadImage: deps.loadImage } as never) as never, decisionProviders: deps.decisionProviders as never } : {}),
+        // The judge the driver asks once it has admitted a request: the cap holds, sends and settles it there (admitted).
+        ...(deps.decisionProviders ? { runJudge: admitted(judgeFromProviders({ ...deps.decisionProviders, loadImage: deps.loadImage } as never)) as never, decisionProviders: deps.decisionProviders as never } : {}),
         recordDecision: async (receipt: Parameters<typeof decisions.recordDecision>[0], exchange: Parameters<typeof decisions.recordDecision>[1]) => {
           await decisions.recordDecision(receipt, exchange);
           deps.onReceipt?.(receipt as unknown as Record<string, unknown>);

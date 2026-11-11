@@ -39,7 +39,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 0.5 });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const runId = started.body.run_id;
-    const { rows } = await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+    const { rows, pages } = await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
     const paused = await view(api, runId);
     assert.deepEqual([paused.status, paused.state, paused.error, paused.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(paused));
     const spent = paused.pending.spent_usd;
@@ -49,7 +49,8 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.match(paused.pending.said, WORDS);
     assert.equal(await monidRuns(log), 0, "the refused call was not sent");
     const result = rows.find((row) => row.kind === "tool_result");
-    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid_run, could cost up to \$1/, JSON.stringify(result));
+    const now = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "tool_result");
+    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid_run, could cost up to \$1/, `${JSON.stringify(result)} pages ${JSON.stringify(pages.map((page) => [page.status, page.state, page.has_more, page.rows.map((row) => [row.kind, row.id, (row.text ?? row.summary ?? "").slice(0, 40)])]))} read again ${JSON.stringify(now.map((row) => [row.id, (row.text ?? "").slice(0, 60)]))}`);
     // The suggested raise sends the run on, and the model calls again: that call is made, once.
     const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: paused.pending.suggested_cap_usd });
     assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
