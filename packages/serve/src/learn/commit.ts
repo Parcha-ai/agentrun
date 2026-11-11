@@ -40,6 +40,9 @@ export type LearningChange =
        *  note holds that name, so the skill's rule would be lost). Its file is checked against the run's seed as a
        *  skill's file the merge writes is. */
       retire?: { skill: string; note: string }[];
+      /** Files the grader read beside the merge and it does not write (a consolidation's other side of a pair): each
+       *  checked against the seed as a written skill's file is, so one changed since is a conflict. */
+      pinned?: string[];
     }
   | {
       kind: "person";
@@ -208,7 +211,7 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
       by: { run: change.runId, reason: change.reason },
       writes: [...files].map(([path, text]) => ({ path, text })),
       absent: added.map((note) => note.file),
-      ...(change.seed ? { same: [...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring].map((path) => ({ commit: change.seed!, path })) } : {}),
+      ...(change.seed ? { same: [...new Set([...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring, ...(change.pinned ?? [])])].map((path) => ({ commit: change.seed!, path })) } : {}),
     },
   };
 }
@@ -318,6 +321,8 @@ export type ConsolidationMain = {
   readonly notes: readonly NoteText[];
   readonly skills: readonly { readonly name: string; readonly text: string }[];
   readonly workflows: readonly { readonly name: string; readonly json: string; readonly readme: string }[];
+  /** The paths each change on main wrote, newest first, as its log keeps them: which side of a pair changed last. */
+  readonly changes: readonly (readonly string[])[];
 };
 export async function consolidationMain(ws: Workspace): Promise<ConsolidationMain | undefined> {
   return readLearning(ws, async ({ snapshot, body }) => {
@@ -332,7 +337,7 @@ export async function consolidationMain(ws: Workspace): Promise<ConsolidationMai
       const [json, readme] = [fileOf(item, "workflow.json"), fileOf(item, "README.md")];
       return json && readme ? [Promise.all([body(json.path, json.oid), body(readme.path, readme.oid)]).then(([j, r]) => ({ name: item.name, json: j, readme: r }))] : [];
     }));
-    return { seed: snapshot.main, notes, skills, workflows };
+    return { seed: snapshot.main, notes, skills, workflows, changes: snapshot.log.map((change) => change.files) };
   });
 }
 

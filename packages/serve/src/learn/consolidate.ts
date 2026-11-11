@@ -114,13 +114,20 @@ export function driftedPairs(learned: Learned, changed: readonly string[]): Drif
  *  (partnersOf), the newest merge that wrote either decides, out of step when it wrote one side alone. A pair a later
  *  merge wrote whole is in step again. */
 export function driftedSince(learned: Learned, changes: readonly (readonly string[])[]): DriftedPair[] {
-  const touched = (paths: readonly string[], dir: string, name: string) => paths.some((path) => path.startsWith(`${dir}/${name}/`));
   return partnersOf(learned).flatMap(({ skill, workflow }) => {
-    const newest = changes.find((paths) => touched(paths, SKILLS_DIR, skill) || touched(paths, WORKFLOWS_DIR, workflow));
-    if (!newest) return [];
-    const [s, w] = [touched(newest, SKILLS_DIR, skill), touched(newest, WORKFLOWS_DIR, workflow)];
-    return s === w ? [] : [{ skill, workflow, changed: s ? "skill" as const : "workflow" as const }];
+    const changed = changedLast(changes, skill, workflow);
+    return changed === undefined || changed === "both" ? [] : [{ skill, workflow, changed }];
   });
+}
+
+/** Which side of the pair `skill` and `workflow` the newest of `changes` (the paths each change on main wrote, newest
+ *  first) that touched it wrote: `skill`, `workflow`, `both` (in step again), or undefined when none of them did. */
+export function changedLast(changes: readonly (readonly string[])[], skill: string, workflow: string): "skill" | "workflow" | "both" | undefined {
+  const touched = (paths: readonly string[], dir: string, name: string) => paths.some((path) => path.startsWith(`${dir}/${name}/`));
+  const newest = changes.find((paths) => touched(paths, SKILLS_DIR, skill) || touched(paths, WORKFLOWS_DIR, workflow));
+  if (!newest) return undefined;
+  const [s, w] = [touched(newest, SKILLS_DIR, skill), touched(newest, WORKFLOWS_DIR, workflow)];
+  return s && w ? "both" : s ? "skill" : "workflow";
 }
 
 /** Why a consolidation is due after a merge, or undefined: `drift` when a pair is out of step, `growth` once

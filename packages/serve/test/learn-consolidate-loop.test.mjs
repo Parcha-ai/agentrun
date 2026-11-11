@@ -84,6 +84,22 @@ async function consolidate({ store, data, onFolder }, consolidator, { drop = [],
 }
 const statusOf = (snapshot) => Object.fromEntries(snapshot.notes.map((n) => [n.file, n.superseded_by ? `${n.status}:${n.superseded_by}` : n.status]));
 
+/** The skill as a later run's merge changed it, its draft left as it was. */
+const SKILL_NOW = SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.");
+/** A learning folder with a skill and its draft committed by a run's merge (`files` more beside them). */
+const pairWorld = (t, files = [], description = "Finds a store's refund policy") => world(t, {}, async (onFolder) => {
+  const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: `---\nname: find-policies\ndescription: ${description}\n---\n` }, ...files] }));
+  assert.equal(made.ok, true, JSON.stringify(made));
+});
+/** pairWorld put out of step as a consolidation is queued for: a later run's merge changed `skills` (by path) alone. */
+async function driftedWorld(t, files = [], description, skills = { "skills/find-policies/SKILL.md": SKILL_NOW }) {
+  const w = await pairWorld(t, files, description);
+  assert.equal((await mergeOn(w, "run-skill", Object.entries(skills).map(([path, text]) => ({ path, text })))).ok, true);
+  return w;
+}
+/** One run's merge of `files` on the folder, as another learning run's would land. */
+const mergeOn = (w, runId, files) => w.onFolder((ws) => learningCommit(ws, { kind: "merge", runId, reason: "learned more", graded: {}, files }));
+
 /** A consolidator that writes one replacement for each cluster its prompt asks for, superseding all of its notes. */
 const replaceAsked = (prompt) => {
   const asked = [...prompt.matchAll(/^### (\S+\.md) \(/gm)].map((m) => m[1]);
@@ -163,10 +179,8 @@ test("retired notes are never touched, and with nothing to consolidate there is 
 });
 
 test("a skill and its draft out of step are written back in step, both in the merge's one commit", async (t) => {
-  const w = await world(t, {}, async (onFolder) => {
-    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: "---\nname: find-policies\ndescription: Finds a store's refund policy\n---\n" }] }));
-    assert.equal(made.ok, true, JSON.stringify(made));
-  });
+  // Out of step as main's log says it: a later run's merge changed the skill alone.
+  const w = await driftedWorld(t);
   const skill2 = SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.\n3. Say the window in days.");
   const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Say the store's refund policy and its window in days, from the page." } };
   const answer = [`\`\`\`\`skill find-policies\n${skill2}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy and window\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
@@ -187,19 +201,16 @@ test("a skill and its draft out of step are written back in step, both in the me
 });
 
 test("a consolidation that gives the skill back unchanged and rewrites its draft: the grader reads the skill beside the draft, as main holds it, and grades the draft alone; the merge writes the draft", async (t) => {
-  const README = "---\nname: find-policies\ndescription: Finds a store's refund policy\n---\n";
-  const w = await world(t, {}, async (onFolder) => {
-    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: README }] }));
-    assert.equal(made.ok, true, JSON.stringify(made));
-  });
-  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines." } };
-  const answer = [`\`\`\`\`skill find-policies\n${SKILL}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  // Out of step as main's log says it: a later run's merge changed the skill alone.
+  const w = await driftedWorld(t);
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines whole." } };
+  const answer = [`\`\`\`\`skill find-policies\n${SKILL_NOW}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
   const { end, entries, snapshot, asks } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }] });
   assert.deepEqual(end, { state: "ended" }, JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.problems])));
   const grade = asks[1];
   assert.match(grade, /Give one item for each of these files, each once, and for no other: workflows\/find-policies\/workflow\.json\./, "the draft alone is graded");
   const beside = grade.slice(grade.indexOf("## Beside them"), grade.indexOf("## Your verdict"));
-  assert.ok(beside.includes("skills/find-policies/SKILL.md, active") && beside.includes("2. Quote the refund lines."), beside);
+  assert.ok(beside.includes("skills/find-policies/SKILL.md, active") && beside.includes("2. Quote the refund lines whole."), beside);
   assert.ok(grade.indexOf("## The new skill and workflow draft") < grade.indexOf("## Beside them"));
   const commit = snapshot.log[0];
   assert.deepEqual([...commit.files].filter((f) => !f.startsWith(".")), ["workflows/find-policies/workflow.json"], "the draft alone: its README and the skill as they were");
@@ -315,13 +326,6 @@ test("a skill and its draft put out of step are found by a later merge too: one 
   assert.deepEqual(launch.input.consolidate.pairs, [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }]);
 });
 
-/** A learning folder with a skill and its draft committed by a run's merge (`files` more beside them). */
-const pairWorld = (t, files = []) => world(t, {}, async (onFolder) => {
-  const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: "---\nname: find-policies\ndescription: Finds a store's refund policy with quote-refunds\n---\n" }, ...files] }));
-  assert.equal(made.ok, true, JSON.stringify(made));
-});
-/** One run's merge of `files` on the folder, as another learning run's would land. */
-const mergeOn = (w, runId, files) => w.onFolder((ws) => learningCommit(ws, { kind: "merge", runId, reason: "learned more", graded: {}, files }));
 
 test("a consolidation stopped while its first request was cut ends with an unknown cost (null), never $0: the cut request may have been billed", async (t) => {
   const w = await world(t);
@@ -332,7 +336,7 @@ test("a consolidation stopped while its first request was cut ends with an unkno
 
 test("a draft that pairs with two skills, rewritten alone, is graded with both skills beside it, each once, and merges: companion context is no proposed write and has no write caps", async (t) => {
   const QUOTE = "---\nname: quote-refunds\ndescription: Quote a store's refund lines; use when a case asks for them\n---\n1. Quote the refund lines whole.\n";
-  const w = await pairWorld(t, [{ path: "skills/quote-refunds/SKILL.md", text: QUOTE }]);
+  const w = await driftedWorld(t, [{ path: "skills/quote-refunds/SKILL.md", text: QUOTE }], "Finds a store's refund policy with quote-refunds", { "skills/find-policies/SKILL.md": SKILL_NOW, "skills/quote-refunds/SKILL.md": QUOTE.replace("whole.", "whole, each line once.") });
   const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines whole." } };
   const answer = [`\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy with quote-refunds\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
   const { end, entries, snapshot, asks } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }, { skill: "quote-refunds", workflow: "find-policies", changed: "skill" }] });
@@ -355,9 +359,9 @@ test("which side of a pair changed last is read as the consolidation reads the f
 });
 
 test("a companion the grader read beside the rewrite that changes on main before the merge refuses the merge: the pair is never left out of step", async (t) => {
-  const w = await pairWorld(t);
-  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines." } };
-  const answer = [`\`\`\`\`skill find-policies\n${SKILL}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy with quote-refunds\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  const w = await driftedWorld(t);
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines whole." } };
+  const answer = `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy\n---\n${JSON.stringify(draft2)}\n\`\`\`\``;
   // Another run's merge changes the skill after the grader read it beside the draft, before the merge commits.
   const beforeGrade = async () => assert.equal((await mergeOn(w, "run-later", [{ path: "skills/find-policies/SKILL.md", text: SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines, then the window.") }])).ok, true);
   const { end, entries, snapshot } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }], beforeGrade });

@@ -16,14 +16,14 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { GRADE_CAPS, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
 import { mergedNote, parseNoteFile, ruleOf } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace, SKILLS_DIR, WORKFLOWS_DIR } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
 import { notKept, SAME_NOTE, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
-import { clustersOf, clustersWithin, consolidatePrompt, heldToClusters, rankOf } from "../learn/consolidate.js";
+import { changedLast, clustersOf, clustersWithin, consolidatePrompt, heldToClusters, rankOf } from "../learn/consolidate.js";
 import type { ConsolidationMain } from "../learn/commit.js";
 import { KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
@@ -488,7 +488,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             return { state: "ended" };
           }
           const merging = keptOf(proposal, verdict);
-          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded });
+          // What the grader read beside the proposal is pinned too: changed on main since the seed, the merge is refused.
+          const change = { ...mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded }), ...(beside.length ? { pinned: beside.map(({ file }) => file) } : {}) };
           const result = await learning.commit(ws, taken.replace.length ? { ...change, replace: taken.replace } : change);
           if (result.ok) {
             // What the merge left out against the main it committed on (a rule a note holds, a name one holds), each
@@ -558,10 +559,14 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const counts = (file: string) => runs.get(file) ?? { given: 0, read: 0 };
             // The clusters, best first, while what they would supersede fits one merge (the checks' cap).
             const clusters = clustersWithin(clustersOf(notes, (note) => rankOf(counts(note.file))));
+            // Which side of each pair changed last, as main's log says now: a merge since the queue may have changed the
+            // other side (a pair it wrote whole is in step again). A pair past what the log keeps keeps the queue's word.
             const pairs = job.pairs.flatMap((pair) => {
               const skill = main.skills.find(({ name }) => name === pair.skill);
               const workflow = main.workflows.find(({ name }) => name === pair.workflow);
-              return skill && workflow ? [{ skill, workflow, changed: pair.changed }] : [];
+              if (!skill || !workflow) return [];
+              const changed = changedLast(main.changes, pair.skill, pair.workflow) ?? pair.changed;
+              return changed === "both" ? [] : [{ skill, workflow, changed }];
             });
             if (!clusters.length && !pairs.length) return nothing(said.empty);
             const prompt = consolidatePrompt({
@@ -573,10 +578,11 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             try {
               answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS)]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
             } catch {
-              const end = await halted();
-              if (end) return end;
+              // A cut request may have been billed: its cost is unknown before a pending stop ends the run on it.
               asked = null;
               spend = null;
+              const end = await halted();
+              if (end) return end;
               await append(KINDS.learningDropped, { source: who.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: null, tokens: null } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
@@ -598,12 +604,18 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             // A pair the answer wrote one side of (the other given back unchanged, which the checks take out): the other
             // side as main holds it goes to the grader beside it, so it can check both describe the same steps.
             const writes = new Set((proposal.files ?? []).map(({ file }) => file));
-            const beside = pairs.flatMap(({ skill, workflow }): NoteText[] => {
+            // Each companion once (a draft paired with two skills, or a skill with two drafts, is one file each), and no
+            // more than the grader's prompt holds beside (GRADE_CAPS.beside): the merge pins the ones the grader read.
+            const companions = new Map<string, NoteText>();
+            for (const { skill, workflow } of pairs) {
               const [skillFile, json, readme] = [`${SKILLS_DIR}/${skill.name}/SKILL.md`, `${WORKFLOWS_DIR}/${workflow.name}/workflow.json`, `${WORKFLOWS_DIR}/${workflow.name}/README.md`];
               const [s, w] = [writes.has(skillFile), writes.has(json)];
-              if (s === w) return [];
-              return s ? [{ file: json, text: workflow.json }, { file: readme, text: workflow.readme }] : [{ file: skillFile, text: skill.text }];
-            });
+              if (s === w) continue;
+              const other: NoteText[] = s ? [{ file: json, text: workflow.json }, { file: readme, text: workflow.readme }] : [{ file: skillFile, text: skill.text }];
+              if (other.some(({ file }) => companions.has(file)) || companions.size + other.length > GRADE_CAPS.beside) continue;
+              for (const one of other) companions.set(one.file, one);
+            }
+            const beside = [...companions.values()];
             made = { proposal, left, stayActive: held.stayActive, usd: asked, ...(beside.length ? { beside } : {}) };
             await append(KINDS.learningConsolidation, made);
             await deps.flush();

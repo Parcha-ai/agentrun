@@ -131,7 +131,7 @@ export type GradeInput = {
  *  `indexLine`, the user's messages (each cut to `askedMessage`, `askedTotal` in all), and CAPS.supersedes superseded and
  *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
-export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000 });
+export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000, beside: 4 });
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
  *  OK (a risky note, whoever's idea it was), and
@@ -200,6 +200,30 @@ function learnedFilesOf(files: readonly NoteText[] | undefined): NoteText[] {
     if (Buffer.byteLength(text) > cap) throw new Error(`${file.file} is over ${cap} bytes`);
   }
   if (counts.skill > CAPS.skills || counts.workflow > CAPS.workflows) throw new Error(`the proposal holds more than ${CAPS.skills} skill or ${CAPS.workflows} workflow draft`);
+  for (const file of named) {
+    const place = learnedPlace(file)!;
+    const pair = `workflows/${place.name}/${place.kind === "workflow" ? "README.md" : "workflow.json"}`;
+    if (place.kind !== "skill" && !named.has(pair)) throw new Error(`${file} is given without ${pair}`);
+  }
+  return [...files];
+}
+
+/** The skills' and drafts' files given beside a proposal (the other side of a pair it writes one side of): each a
+ *  learned file's path, named once, within its file's cap, a draft's workflow.json with its README.md, and at most
+ *  GRADE_CAPS.beside of them. Context, never a write: a draft may pair with several skills, so no write's count cap. */
+function besideFilesOf(files: readonly NoteText[]): NoteText[] {
+  if (!Array.isArray(files)) throw new Error("the files beside must be a list");
+  if (files.length > GRADE_CAPS.beside) throw new Error(`more than ${GRADE_CAPS.beside} files are given beside`);
+  const named = new Set<string>();
+  for (const file of files) {
+    const place = learnedPlace(file?.file);
+    if (!place || !learnedName(place.kind, place.name)) throw new Error("each skill or workflow file must be skills/<name>/SKILL.md or workflows/<name>/workflow.json or README.md");
+    if (named.has(file.file)) throw new Error(`${file.file} is named twice`);
+    named.add(file.file);
+    const text = checkText(file.text, `${file.file}'s text`);
+    const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
+    if (Buffer.byteLength(text) > cap) throw new Error(`${file.file} is over ${cap} bytes`);
+  }
   for (const file of named) {
     const place = learnedPlace(file)!;
     const pair = `workflows/${place.name}/${place.kind === "workflow" ? "README.md" : "workflow.json"}`;
@@ -308,7 +332,7 @@ function promptWithin(input: GradeInput, budget: number): string {
   if (triggered !== undefined && (!Array.isArray(triggered) || !triggered.every((one) => one && typeof one.text === "string" && typeof one.source === "string" && SOURCE.test(one.source)))) throw new Error("a trigger's input must be a source word and a text");
   if (typeof run !== "string" || !RUN_ID.test(run)) throw new Error("the run id is not 1 to 128 letters, digits, dots, dashes or underscores");
   const learned = learnedFilesOf(input?.files);
-  const beside = input?.beside === undefined ? [] : learnedFilesOf(input.beside);
+  const beside = input?.beside === undefined ? [] : besideFilesOf(input.beside);
   if (beside.length && !learned.length) throw new Error("a skill or workflow draft is given beside none");
   const twice = beside.find(({ file }) => learned.some((one) => one.file === file));
   if (twice) throw new Error(`${twice.file} is both new and beside`);
