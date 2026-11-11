@@ -183,8 +183,7 @@ test("pi on Sonnet 4.5 under $1: no wrap-up at step 0. Nothing priced yet, the t
   assert.deepEqual(rows.map((row) => row.text), [], "no note: $1 is over 3 times the step-0 typical request");
 });
 
-// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
-test.skip("pi on Sonnet 4.5 under $0.10: due at step 0, told in the budget's words, never \"finish now\"", { timeout: 120_000 }, async (t) => {
+test("pi on Sonnet 4.5 under $0.10: due at step 0, told in the budget's words, never \"finish now\"", { timeout: 120_000 }, async (t) => {
   const { rows } = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 0.1, id: "s45-pi-small" });
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")]);
 });
