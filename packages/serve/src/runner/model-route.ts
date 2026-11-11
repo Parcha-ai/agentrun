@@ -41,9 +41,9 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
 export interface ModelRoute {
   readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   readonly model: string;
-  /** The provider the model was chosen on (chooseModel's: `anthropic`, `openai`, the gateway's, `faux`), which `model`, a
-   *  bare id, does not name: two routes are one only when both match. */
-  readonly vendor?: string;
+  /** The model as the run names it (`provider/model-id`, chooseModel's): what the `llm` tool's answer says it ran on,
+   *  never the session provider the runner reaches it through. */
+  readonly named?: string;
   /** The catalog's entry for the model, as pi-ai's model of it takes it: on every wire, what it takes as input (whether it
    *  takes images) and its input limits (an image's most size), which pi's session and its read size an image by; on a
    *  wire that carries its reasoning (Responses), also whether it reasons, its window and its output ceiling. */
@@ -92,7 +92,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // What the model takes as input and its input limits, on every wire: pi's session sends a model that takes no images
   // pi-ai's placeholder in place of one, and pi's read holds an image to the model's limits (port-models.ts sessionModel).
   const sees = { ...(target.input ? { input: target.input } : {}), ...(target.inputLimits ? { inputLimits: target.inputLimits } : {}) };
-  const route = { model: chosen.model.modelId, vendor: chosen.model.provider, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, like: sees };
+  const route = { model: chosen.model.modelId, named: `${chosen.model.provider}/${chosen.model.modelId}`, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, like: sees };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
   if (chosen.model.provider === "anthropic") {
     return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };

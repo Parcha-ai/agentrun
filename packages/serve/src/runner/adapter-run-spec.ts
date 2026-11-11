@@ -33,7 +33,7 @@ import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
-import { layLearningSeed } from "./learning-seed.js";
+import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
@@ -180,8 +180,8 @@ export function capModelOf(route: ModelRoute): CapModel {
 export function oneRoutePerModel(at: ModelRoute, earlier: readonly ModelRoute[]): ModelRoute | { why: string } {
   const same = earlier.find((other) => other.model === at.model);
   if (!same) return at;
-  if (same.vendor === at.vendor) return same;
-  return { why: `its model ${at.model} on ${at.vendor ?? "its provider"} has the id of this run's model on ${same.vendor ?? "another provider"}, and the run's cap prices a request by its model's id alone.` };
+  if (same.named === at.named) return same;
+  return { why: `its model ${at.named ?? at.model} has the id of this run's ${same.named ?? "model"} on another provider, and the run's cap prices a request by its model's id alone.` };
 }
 
 /** A tier's route as the pi adapter takes it (PiAdapterOptions.tiers): the route's own fields. */
@@ -626,6 +626,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(mcp ? { mcp } : {}),
     // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
+    ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,

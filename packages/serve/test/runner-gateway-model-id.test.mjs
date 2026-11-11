@@ -221,6 +221,6 @@ test("a tier on the run's own model takes the run's route and price, so the cap 
   assert.equal(oneRoutePerModel(fast, [own]), fast, "a tier on a model of its own keeps its route and price");
   assert.equal(oneRoutePerModel({ ...fast }, [own, fast]), fast, "a second tier on that model takes the first's");
   // The same id on another provider is no route of the run's: the cap, which prices by id, could not tell them apart.
-  const elsewhere = oneRoutePerModel({ ...strong, vendor: "another" }, [own]);
-  assert.match(elsewhere.why ?? "", /has the id of this run's model on .*the run's cap prices a request by its model's id alone/, JSON.stringify(elsewhere));
+  const elsewhere = oneRoutePerModel({ ...strong, named: `another/${strong.model}` }, [own]);
+  assert.match(elsewhere.why ?? "", /has the id of this run's .* on another provider, and the run's cap prices a request by its model's id alone/, JSON.stringify(elsewhere));
 });
