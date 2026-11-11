@@ -42,12 +42,13 @@ export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec
 export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
 
 /**
- * The capabilities serves() and kindOf() read: one configuration a provider offers. In a descriptor, `image` is the
- * name an agent's setting selects it by (Orgo's `windows`), the image its computer starts from, and `options` are what
- * create() takes to build it ({ os: "windows" }), beside the keys. A configuration with no image is the one a setting
- * that names none gets, as is the one whose image is the kind's defaultImage.
+ * The capabilities serves() and kindOf() read: one configuration a provider offers, with the GPUs it offers (Settings'
+ * GPU choice). In a descriptor, `image` is the name an agent's setting selects it by (Orgo's `windows`), the image its
+ * computer starts from, and `options` are what create() takes to build it ({ os: "windows" }), beside the keys. A
+ * configuration with no image is the one a setting that names none gets, as is the one whose image is the kind's
+ * defaultImage.
  */
-export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups"> & {
+export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu"> & {
 	readonly image?: string;
 	readonly options?: Readonly<Record<string, unknown>>;
 };

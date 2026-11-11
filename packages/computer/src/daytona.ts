@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./child.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT } from "./descriptors/daytona.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
@@ -41,7 +41,9 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	checkGpu,
 	checkTenure,
+	type GpuCapability,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -148,6 +150,8 @@ interface Sandbox {
 	kvm?: boolean;
 	cpu?: number;
 	gpu?: number;
+	/** The GPU type Daytona assigned (its GpuType enum), when the sandbox has GPUs. */
+	gpuType?: string;
 	memory?: number;
 	disk?: number;
 	autoStopInterval?: number;
@@ -180,7 +184,10 @@ interface CallInit {
  */
 export const MOUNT: readonly MountKind[] = DAYTONA.mounts;
 
-/** The machine kind and groups of its one configuration (its descriptor's): a linux computer. */
+/** A copy of its descriptor's DAYTONA_GPU, so no caller can change the provider's own. */
+const daytonaGpuCapability = (): GpuCapability => ({ ...DAYTONA_GPU, types: [...DAYTONA_GPU.types], perGpu: { ...(DAYTONA_GPU.perGpu as NonNullable<GpuCapability["perGpu"]>) } });
+
+/** The machine kind, groups and GPUs of its one configuration (its descriptor's): a linux computer, with GPUs when asked. */
 export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
 
 /** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
@@ -243,7 +250,7 @@ const MAX_CIDRS = 10;
 const TOOLBOX_PORT = 2280;
 const INIT_SESSION = "agentrun-computerd";
 const STAGING = "/tmp/agentrun-computerd-";
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu"]);
 /** The provider's root channel: argv run as root in a session of its own; the image's user is root, never sudo. */
 const ROOT_RUN = [
 	"# agentrun-computer: root",
@@ -541,7 +548,10 @@ function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected
 	if (sb.sandboxClass !== expected.sandboxClass) mismatch("sandboxClass", expected.sandboxClass, sb.sandboxClass);
 	if (sb.public !== false) mismatch("public", false, sb.public);
 	if (sb.kvm === true) mismatch("kvm", false, sb.kvm);
-	if (sb.gpu !== undefined && sb.gpu !== 0) mismatch("gpu", 0, sb.gpu);
+	// The GPUs asked for, read back: how many (none is 0), and the type Daytona assigned.
+	const gpus = spec.gpu?.count ?? 0;
+	if ((sb.gpu ?? 0) !== gpus) mismatch("gpu", gpus, sb.gpu);
+	if (spec.gpu !== undefined && sb.gpuType !== spec.gpu.type) mismatch("gpuType", spec.gpu.type, sb.gpuType);
 	if (Array.isArray(sb.volumes) ? sb.volumes.length > 0 : sb.volumes !== undefined && sb.volumes !== null) mismatch("volumes", [], sb.volumes);
 	if (typeof sb.linkedSandboxId === "string" && sb.linkedSandboxId !== "") mismatch("linkedSandboxId", "none", sb.linkedSandboxId);
 	return found;
@@ -703,6 +713,8 @@ export class DaytonaProvider implements ComputerProvider {
 			stopDeletes: this.#autoDelete === 0,
 			mount: [...MOUNT],
 			vendorAgentPorts: [TOOLBOX_PORT],
+			// A GPU sandbox's limits are stated in gpu: its stop deletes it, it runs in region earth, its size is per GPU.
+			gpu: daytonaGpuCapability(),
 		};
 	}
 
@@ -730,6 +742,7 @@ export class DaytonaProvider implements ComputerProvider {
 				refuse("mount", `an Archil mount's tools run as agentrun-tool, ${tool}:${tool}, and this provider's daemon user is ${this.#uid}:${this.#gid}: give it daemonUser "${tool}:${tool}"`);
 			}
 		}
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (SIZE_FIELDS.has(field)) refuse(field, `a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`);
@@ -762,13 +775,17 @@ export class DaytonaProvider implements ComputerProvider {
 			labels: { ...spec.labels, ...(archil ? archilLabels(archil) : {}), [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline, [IMAGE_LABEL]: spec.image },
 			env: {},
 			public: false,
-			...(this.#target === undefined ? {} : { target: this.#target }),
+			// A GPU sandbox runs in region earth alone, whatever the provider's target.
+			...(spec.gpu !== undefined ? { target: DAYTONA_GPU_REGION } : this.#target === undefined ? {} : { target: this.#target }),
 			ttlMinutes: Math.max(1, Math.ceil(runLifetimeMs(spec) / 60_000)),
 			autoStopInterval: this.#autoStop,
-			autoDeleteInterval: this.#autoDelete,
+			// A GPU sandbox's stop deletes it (no pause, no snapshot), so it is asked for and read back as deleted at stop.
+			autoDeleteInterval: this.#autoDeleteFor(spec.gpu !== undefined),
 			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
 			// holds the tools to none.
 			...(networkBody(archil ? "open" : spec.network) ?? { networkBlockAll: true }),
+			// The GPUs: how many, and the one type asked as Daytona's preference list (CreateSandbox gpu and gpuType).
+			...(spec.gpu === undefined ? {} : { gpu: spec.gpu.count, gpuType: [spec.gpu.type] }),
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: this.#timeouts.createMs }, signal);
 		const made = posted.ok ? (posted.value as Sandbox | null) : undefined;
@@ -809,7 +826,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const sb = started.value;
 		const archil = archilOf(spec);
 		// An Archil computer's network at Daytona is open for root; init's own namespace holds the tools to the spec's none.
-		const vendor = sandboxDrift(archil ? { ...spec, network: "open" } : spec, sb, this.#sandboxExpected(deadline));
+		const vendor = sandboxDrift(archil ? { ...spec, network: "open" } : spec, sb, this.#sandboxExpected(deadline, spec.gpu !== undefined));
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const toolbox = await this.#toolbox(sb, signal);
 		if (!toolbox.ok) return toolbox;
@@ -926,8 +943,13 @@ export class DaytonaProvider implements ComputerProvider {
 		};
 	}
 
-	#sandboxExpected(deadline: string): SandboxExpected {
-		return { deadline, sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDelete };
+	#sandboxExpected(deadline: string, gpu = false): SandboxExpected {
+		return { deadline, sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDeleteFor(gpu) };
+	}
+
+	/** The autoDeleteInterval a sandbox is made and read back with: 0 for a GPU sandbox, which a stop deletes; else the option's. */
+	#autoDeleteFor(gpu: boolean): number {
+		return gpu ? 0 : this.#autoDelete;
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -1114,7 +1136,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const opened = await this.#open(found.value, toolbox.value);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch });
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch, fence: true });
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
 		if (drifted.length === 0) return recordedMount(found.value.labels) ? ok({ ...opened.value, client: syncingClient(opened.value.client) }) : opened;
 		await opened.value.close();
@@ -1168,9 +1190,11 @@ export class DaytonaProvider implements ComputerProvider {
 		// The image create was asked for, from its label; a computer made before the label was written reports its snapshot.
 		const asked = sb.labels?.[IMAGE_LABEL];
 		const specNetwork = archilComputer || (typeof network === "object" && "other" in network) ? "none" : network;
-		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels } as ComputerSpec;
+		// The GPUs Daytona reports, held to what check() allows: a type this provider declares, a count up to its max.
+		const gpu = isWhole(sb.gpu) && sb.gpu > 0 ? { type: String(sb.gpuType), count: sb.gpu } : undefined;
+		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels, ...(gpu === undefined ? {} : { gpu }) } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
-		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? ""));
+		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? "", gpu !== undefined));
 		found.push(
 			...vendor.filter(
 				(line) =>
@@ -1222,6 +1246,7 @@ export class DaytonaProvider implements ComputerProvider {
 				...(workdir === undefined ? {} : { workdir }),
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
+				...(gpu === undefined ? {} : { gpu }),
 			},
 		});
 	}
@@ -1448,8 +1473,10 @@ export class DaytonaProvider implements ComputerProvider {
 			const stopped = await this.#rest.call("POST", this.#rest.sandbox(sb.id, "/stop"), {}, signal);
 			if (!stopped.ok && stopped.error.code !== "invalid" && stopped.error.code !== "not_found") return stopped;
 		}
-		// With autoDeleteInterval 0, Daytona deletes a sandbox as it stops: such a stop is done once the computer is gone.
-		return this.#settle(ref, this.#autoDelete === 0 ? "gone" : "stopped", "stop", signal);
+		// With autoDeleteInterval 0, Daytona deletes a sandbox as it stops: such a stop is done once the computer is gone. A
+		// GPU sandbox is one of those whatever the option (its stop deletes it).
+		const deletes = this.#autoDeleteFor(isWhole(sb.gpu) && sb.gpu > 0) === 0;
+		return this.#settle(ref, deletes ? "gone" : "stopped", "stop", signal);
 	}
 
 	/**

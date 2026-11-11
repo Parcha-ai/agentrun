@@ -222,7 +222,9 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 	for (const [id, builds] of Object.entries(BUILT)) {
 		const entry = PROVIDERS.find((one) => one.id === id);
 		const built = builds.map((build) => build().capabilities());
-		assert.deepEqual(built.map(({ kind, groups }) => ({ kind, groups })), entry.capabilities.map(({ kind, groups }) => ({ kind, groups })), `${id}: each configuration's kind and groups`);
+		// Each configuration's kind, groups and GPUs are its entry's (an image and create() options are the descriptor's alone).
+		const shape = ({ kind, groups, gpu }) => ({ kind, groups, ...(gpu === undefined ? {} : { gpu }) });
+		assert.deepEqual(built.map(shape), entry.capabilities.map(shape), `${id}: each configuration's kind, groups and GPUs`);
 		// Each configuration's network is among its entry's, and together they are all of it (Orgo: Linux none, Windows open).
 		for (const { network } of built) assert.ok(network.every((form) => entry.network.includes(form)), `${id}: ${network} is among ${entry.network}`);
 		assert.deepEqual([...new Set(built.flatMap(({ network }) => network))].sort(), [...entry.network].sort(), `${id}: its configurations make every form its entry declares`);

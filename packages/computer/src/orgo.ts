@@ -51,6 +51,7 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
@@ -156,7 +157,7 @@ const STAGING = "/tmp/agentrun-computerd-";
 const LISTEN_RETRY_MS = 250;
 /** How often a delete that answers 409 (the computer waking) is tried again. */
 const DELETE_TRIES = 5;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels", "gpu"]);
 /** The states in which a computer runs, or is on its way to. */
 const RUNNING = new Set(["running", "creating", "restarting", "updating", "resuming"]);
 /** Why a network other than "none" is refused: this configuration makes none alone. */
@@ -331,6 +332,7 @@ export class OrgoProvider implements ComputerProvider {
 			if (bad) refuse("labels", bad);
 		}
 		refusals.push(...checkMount(mount, MOUNT));
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || field === "mount" || value === undefined) continue;
 			if (field === "user") refuse(field, `an Orgo computer's tools run as the provider's user (${this.#uid}:${this.#gid}, the remote tool user), never as one a spec names`);

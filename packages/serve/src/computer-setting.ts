@@ -1,10 +1,10 @@
 // An agent's computer, its one setting for where its tools run (Settings → Computers): `computer: { kind, provider?,
-// image? }` on its revision. kind is none, sandbox, desktop, phone or browser; provider names one of the computer
+// image?, gpu? }` on its revision. kind is none, sandbox, desktop, phone or browser; provider names one of the computer
 // providers (the computer package's kind registry), and is absent for none; image names one the provider offers for the
-// kind, and absent is the kind's default. The v2 API's `place` is this setting's view, one to one where
-// it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is {kind: "sandbox", provider: X}.
-// Writing either sets both. A desktop, phone or browser computer leaves the run's folder on the runner, so its place reads
-// runner.
+// kind, and absent is the kind's default; a sandbox's gpu is { type, count }. The v2 API's `place` is this setting's view,
+// one to one where it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is {kind: "sandbox",
+// provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder on the runner, so
+// its place reads runner.
 import type { InputIssue } from "./errors.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -13,14 +13,43 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 export const COMPUTER_KINDS = ["none", "sandbox", "desktop", "phone", "browser"] as const;
 export type ComputerKind = (typeof COMPUTER_KINDS)[number];
 
-/** The setting as a revision keeps it. `image`: one the provider's descriptor offers for the kind (Orgo's `windows`);
- *  absent, the kind's default. */
-export type ComputerSetting = { readonly kind: "none" } | { readonly kind: Exclude<ComputerKind, "none">; readonly provider: string; readonly image?: string };
+/** A sandbox's GPUs: a type its provider declares (GET /v2/computers lists each provider's) and how many. */
+export type GpuSetting = { readonly type: string; readonly count: number };
 
-/** What a computer of a kind other than none may say beside its kind and provider, each checked by its own rule: its
- *  words when the value is wrong. The providers' offers are the server's, so only the shape is checked here. */
-const OPTIONAL: Readonly<Record<string, (value: unknown, field: string) => string | undefined>> = {
-  image: (value, field) => (typeof value === "string" && value.trim() !== "" && value === value.trim() ? undefined : `${field} is the name of an image the provider offers for the kind (GET /computers lists them), with no spaces around it`),
+/** The setting as a revision keeps it. `image`: one the provider's descriptor offers for the kind (Orgo's `windows`);
+ *  absent, the kind's default. A sandbox may ask for GPUs; whether its provider gives them is the claim's check. */
+export type ComputerSetting =
+  | { readonly kind: "none" }
+  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting }
+  | { readonly kind: Exclude<ComputerKind, "none" | "sandbox">; readonly provider: string; readonly image?: string };
+
+/** A GPU type's name as a setting keeps it: the vendor's own ("T4", "A100-80GB", "RTX-PRO-6000"); store/agent-body.ts
+ *  keeps the same. */
+const GPU_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** The GPUs a setting asks for, or undefined. */
+export const gpuOf = (computer: { readonly kind: string; readonly gpu?: GpuSetting }): GpuSetting | undefined => (computer.kind === "sandbox" ? computer.gpu : undefined);
+
+/**
+ * What a computer of a kind other than none may say beside its kind and provider: the kinds that take it (absent: any),
+ * and its own rule, the issues of a value that is wrong at `field`. The providers' offers are the server's, so only the
+ * shape is checked here. A sandbox's gpu is { type, count } in the words the computer package's checkGpu uses; whether
+ * its provider offers that type and count is the readiness check's and the claim's (resolve-computer.ts).
+ */
+const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind[]; check(value: unknown, field: string): InputIssue[] }>> = {
+  image: {
+    check: (value, field) => (typeof value === "string" && value.trim() !== "" && value === value.trim() ? [] : [{ field, reason: "invalid", message: `${field} is the name of an image the provider offers for the kind (GET /computers lists them), with no spaces around it` }]),
+  },
+  gpu: {
+    kinds: ["sandbox"],
+    check: (gpu, field) => {
+      if (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count")) return [{ field, reason: "wrong_type", message: "gpu is { type, count }: a GPU type this provider declares, and how many" }];
+      if (typeof gpu.type !== "string" || gpu.type === "") return [{ field: `${field}.type`, reason: "missing", message: "gpu.type is a GPU type the provider declares (GET /v2/computers lists each provider's)" }];
+      if (!GPU_TYPE.test(gpu.type)) return [{ field: `${field}.type`, reason: "wrong_type", message: `gpu.type ${JSON.stringify(gpu.type)} is not a GPU type name: letters, digits, dots, underscores and dashes, as GET /v2/computers lists each provider's` }];
+      if (!Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1) return [{ field: `${field}.count`, reason: "wrong_type", message: `gpu.count ${JSON.stringify(gpu.count)} is not a whole number from 1` }];
+      return [];
+    },
+  },
 };
 
 /** A place as the v2 API names it. */
@@ -45,19 +74,20 @@ export const sameComputer = (a: ComputerSetting, b: ComputerSetting): boolean =>
 export function computerIssues(value: unknown, field: string): InputIssue[] {
   const bad = (reason: string, message: string, fix?: string): InputIssue[] => [{ field, reason, message, ...(fix ? { fix } : {}) }];
   const keeps = ["kind", "provider", ...Object.keys(OPTIONAL)];
-  if (!isObject(value)) return bad("wrong_type", `${field} is an object: {kind}, or {kind, provider}`);
+  if (!isObject(value)) return bad("wrong_type", `${field} is an object: {kind}, or {kind, provider}, with ${Object.keys(OPTIONAL).join(" and ")} where its kind takes them`);
   const extra = Object.keys(value).filter((key) => !keeps.includes(key));
   if (extra.length) return bad("not_allowed", `${field} keeps only ${keeps.join(", ")}, not ${extra.join(" or ")}`, `Remove ${extra.map((key) => `${field}.${key}`).join(" and ")}.`);
   if (typeof value.kind !== "string" || !(COMPUTER_KINDS as readonly string[]).includes(value.kind)) return bad(value.kind === undefined ? "missing" : "not_an_option", `${field}.kind is one of ${COMPUTER_KINDS.join(", ")}`);
-  if (value.kind === "none") {
+  const kind = value.kind as ComputerKind;
+  for (const [key, { kinds }] of Object.entries(OPTIONAL)) {
+    if (value[key] !== undefined && kinds !== undefined && !kinds.includes(kind)) return bad("not_allowed", `only a ${kinds.join(" or ")} computer takes a ${key}, not a ${kind} one`, `Remove ${field}.${key}.`);
+  }
+  if (kind === "none") {
     const named = keeps.filter((key) => key !== "kind" && value[key] !== undefined);
     return named.length === 0 ? [] : bad("not_allowed", `no computer names no ${named.join(" or ")}`, `Remove ${named.map((key) => `${field}.${key}`).join(" and ")}.`);
   }
-  if (typeof value.provider !== "string" || value.provider === "") return bad("missing", `a ${value.kind} computer names its provider (Settings → Computers lists them)`);
-  return Object.entries(OPTIONAL).flatMap(([key, check]) => {
-    const why = value[key] === undefined ? undefined : check(value[key], `${field}.${key}`);
-    return why === undefined ? [] : [{ field: `${field}.${key}`, reason: "invalid", message: why }];
-  });
+  if (typeof value.provider !== "string" || value.provider === "") return bad("missing", `a ${kind} computer names its provider (Settings → Computers lists them)`);
+  return Object.entries(OPTIONAL).flatMap(([key, { check }]) => (value[key] === undefined ? [] : check(value[key], `${field}.${key}`)));
 }
 
 /** The setting and its place a definition says, from `computer` or `place` (both: they must agree), or undefined when
@@ -77,7 +107,7 @@ export function settingOfDefinition(definition: { computer?: unknown; place?: un
 /** Why `computer` and `place`, both given, are not one setting, at `field`; none when they agree. */
 export function settingConflict(computer: unknown, place: unknown, field: string): InputIssue[] {
   if (!isObject(computer) || !isObject(place) || computerIssues(computer, `${field}.computer`).length) return [];
-  // A place says a kind and a provider only: a computer's image is not one it can contradict.
+  // A place says a kind and a provider only: a computer's image or GPUs are not ones it can contradict.
   const said = computerOfPlace(place as PlaceView);
   const { kind, provider } = computer as { kind: ComputerSetting["kind"]; provider?: string };
   if (sameComputer((kind === "none" ? { kind } : { kind, provider }) as ComputerSetting, said)) return [];

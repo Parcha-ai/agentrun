@@ -258,3 +258,12 @@ test("a desktop whose setting names an image is made with that configuration's o
     await answer.release();
   }
 });
+
+test("a sandbox's GPUs go into the spec its provider makes the computer with; GPUs its provider does not give are refused before anything is made", async () => {
+  const { record, run } = await claim({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } });
+  const answer = await run();
+  assert.deepEqual(record.created[0].gpu, { type: "H100", count: 2 });
+  assert.equal(record.created[0].mount?.kind !== undefined, true, "with the run's folder mounted beside them");
+  await answer.release();
+  assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
+});

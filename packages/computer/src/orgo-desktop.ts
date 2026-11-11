@@ -80,6 +80,7 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
@@ -189,7 +190,7 @@ const CPU_FOR_RAM: Record<number, number> = { 4: 1, 8: 2, 16: 4, 32: 6 };
 const CPUS = [0.5, 1, 2, 4, 6];
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DEFAULTS: OrgoDesktopTimeouts = { requestMs: 30_000, createMs: 600_000, execMs: 60_000, listMs: 60_000, goneMs: 120_000, pollMs: 2_000 };
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels", "gpu"]);
 /** The states in which a computer runs, or is on its way to. */
 const RUNNING = new Set(["running", "creating", "restarting", "updating", "resuming"]);
 /** How often a delete that answers 409 (the computer waking) is tried again. */
@@ -498,6 +499,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		const profile = this.#profile;
 		if (image !== profile.image) refuse("image", `this Orgo provider makes ${profile.os} desktops: its image is ${JSON.stringify(profile.image)}`);
 		refusals.push(...checkTenure(given, this.capabilities(), "Orgo"));
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		if (network !== "open") refuse("network", NETWORK);
 		if (memoryMb !== undefined && !profile.ram.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", `memoryMb is one of Orgo's ${profile.os} sizes: ${profile.ram.map((gb) => gb * 1024).join(", ")}`);
 		if (cpus !== undefined && !(profile.cpus && CPUS.includes(cpus as number))) refuse("cpus", profile.cpus ? "cpus is one of Orgo's sizes: 0.5, 1, 2, 4 or 6" : `an Orgo ${profile.os} computer's cpus are its host's: leave cpus unset`);

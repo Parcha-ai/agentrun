@@ -1,4 +1,4 @@
-// The Modal provisioner, VM runtime only: every call through the host's own Modal JS SDK client, of which this package
+// The Modal provisioner, on the VM runtime, and on gVisor for a GPU computer (Modal's one GPU runtime): every call through the host's own Modal JS SDK client, of which this package
 // names only the slice it uses (ModalSdk) and imports nothing. Every SDK fact below is cited in the README's Modal
 // section, from modal-client@64880502 (js/src) and Modal's docs.
 import { createHash, randomBytes } from "node:crypto";
@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
-import { MODAL, MODAL_DEFAULT_IMAGE } from "./descriptors/modal.js";
+import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import {
 	COMPUTER_LABEL,
 	DAEMON_IN_COMPUTER,
@@ -52,7 +52,10 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkTenure,
+	type GpuCapability,
+	type GpuSpec,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -79,7 +82,10 @@ export interface ModalImage {
 
 /** What sandboxes.create is given: every field is one of the SDK's SandboxCreateParams (js/src/sandbox.ts:356-474). */
 export interface ModalCreateParams {
-	runtime: "vm";
+	/** vm, or gvisor for a GPU computer: Modal offers GPUs on gVisor only. */
+	runtime: ModalRuntime;
+	/** The GPUs, as the SDK takes them ("T4", "A100-80GB:4"): a GPU computer only. */
+	gpu?: string;
 	command: string[];
 	timeoutMs: number;
 	workdir: string;
@@ -152,6 +158,11 @@ export interface ModalTimeouts {
 	releaseMs: number;
 	/** The first pause between two of those polls; the pauses double up to 5 s. */
 	releasePollMs: number;
+	/**
+	 * How long a create whose sandbox Modal says is shutting down on its own (its command, init, exited) waits for poll to
+	 * read it finished, to give the command's exit code and words in its failure.
+	 */
+	endedMs: number;
 	/** Each root step of an Archil mount through exec (the preflight, mount or revoke, serve), and its checkin at release. */
 	mountMs: number;
 }
@@ -191,7 +202,15 @@ export interface ModalProviderOptions {
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = MODAL.mounts;
 
-/** The machine kind and groups of its one configuration (its descriptor's): a linux computer. */
+/** The runtime a Modal sandbox runs under: vm, or gvisor for a GPU computer (Modal offers GPUs on gVisor only). */
+export type ModalRuntime = "vm" | "gvisor";
+
+/** A copy of its descriptor's MODAL_GPU, so no caller can change the provider's own. */
+const modalGpuCapability = (): GpuCapability => ({ ...MODAL_GPU, types: [...MODAL_GPU.types], mounts: [] });
+/** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
+const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
+
+/** The machine kind, groups and GPUs of its one configuration (its descriptor's): a linux computer, with GPUs when asked. */
 export const CAPABILITIES: readonly KindCapabilities[] = MODAL.capabilities;
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
@@ -331,6 +350,7 @@ const DEFAULT_TIMEOUTS: ModalTimeouts = {
 	uploadMs: 300_000,
 	releaseMs: 120_000,
 	releasePollMs: 500,
+	endedMs: 30_000,
 	mountMs: 120_000,
 };
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
@@ -420,7 +440,8 @@ const HOLD_SCRIPT = [
 /**
  * Init's arguments, after the daemon's path: the one place they are built, for the image route's command and the
  * entrypoint alike. Init and every tool run in a network namespace of their own, loopback alone (--own-network), an
- * Archil computer's too: its archil client and serve run through exec as root, outside it.
+ * Archil computer's too: its archil client and serve run through exec as root, outside it. Init makes it itself, or, on
+ * gVisor (a GPU computer's runtime), where root may not, inside a user namespace; hello says which (fence).
  */
 function initArgs({ deadline, user }: { deadline: string; user: string }): string[] {
 	return ["init", "--deadline", deadline, "--user", user, "--own-network"];
@@ -454,7 +475,7 @@ export function modalCommands({
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be passed to Modal";
 const FIXED =
 	"a Modal computer's network is fixed at create: Modal cannot update the policy of a sandbox made with blockNetwork, and updates only an allowlist set at create; create a new computer";
@@ -469,9 +490,12 @@ interface Recorded {
 	cpus: number;
 	memoryMb: number;
 	workdir: string;
-	runtime: "vm";
+	/** gvisor exactly when the computer has a GPU. */
+	runtime: ModalRuntime;
 	/** An Archil computer's mount as it reads back (readBackOf, under the claim's epoch): never the token. */
 	mount?: MountReadBack;
+	/** A GPU computer's GPUs, as asked: Modal reads none of them back. */
+	gpu?: GpuSpec;
 }
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -511,6 +535,9 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidError" || code === 3) return "invalid";
 	// gRPC's UNAUTHENTICATED and PERMISSION_DENIED: a token Modal refused.
 	if (code === 16 || code === 7) return "denied";
+	// gRPC's FAILED_PRECONDITION on an exec: the sandbox is ending on its own ("Modal Sandbox is shutting down", from
+	// TaskExecStart, when its command, init, has exited). Gone, so create waits to read why.
+	if (code === 9) return "gone";
 	return "vendor";
 }
 
@@ -689,11 +716,14 @@ function recordedArchil(tags: Record<string, string>): RecordedArchil | undefine
 }
 
 /** Every way the probe's report differs from what the computer should be. */
-function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
+function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec; runtime: ModalRuntime }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
-	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	// The probe's kernel is the only runtime read-back: gVisor exactly for a GPU computer, a VM's kernel for every other.
+	const gvisor = /gvisor/i.test(probe.kernel);
+	if (expected.runtime === "vm" && gvisor) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	if (expected.runtime === "gvisor" && !gvisor) found.push(`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(probe.kernel)})`);
 	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	// Its own network: the live interfaces lo alone (a kernel's quiet tunnels are none), and none it could bring up.
 	found.push(...probeOwnNetworkDrift(probe));
@@ -709,7 +739,7 @@ function tagDrift(given: Record<string, string>, read: Record<string, string>): 
 }
 
 /**
- * Computers that are Modal sandboxes on the VM runtime. The daemon is uploaded right after create, streamed through an
+ * Computers that are Modal sandboxes on the VM runtime, or on gVisor with a GPU. The daemon is uploaded right after create, streamed through an
  * exec's stdin, while the sandbox's command, a small sh entrypoint, waits for it and then becomes `computerd init`; or,
  * with daemonImage, it comes in as a layer of the computer's image (COPY --from) and is the command itself. A
  * connection is `computerd stdio` through exec, so a computer with network none is still reached, and needs no network
@@ -798,13 +828,16 @@ export class ModalProvider implements ComputerProvider {
 			release: ["delete"],
 			mount: [...MOUNT],
 			vendorAgentPorts: [],
+			// A GPU computer runs on gVisor, Modal's one GPU runtime (gpu.isolation): isolation vm is every other computer's.
+			gpu: modalGpuCapability(),
 		};
 	}
 
-	/** What hello must report: this package's version, the kind and groups declared, and Modal's one architecture. */
+	/** What hello must report: this package's version, the kind and groups declared, Modal's one architecture, and the
+	 *  fence init --own-network holds its programs behind (either way: hello says which, and create notes it). */
 	#expected() {
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch: "amd64" };
+		return { version: VERSION, kind, groups, arch: "amd64", fence: true as const };
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
@@ -841,10 +874,12 @@ export class ModalProvider implements ComputerProvider {
 		if (archil && user !== undefined && !isRootUser(user) && userOf(user) !== ARCHIL_USER) {
 			refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
 		}
+		// A GPU computer runs on gVisor, Modal's one GPU runtime, where the Archil client's FUSE mount is not yet proven:
+		// its gpu.mounts is empty, so checkGpu refuses a GPU with a mount.
+		refusals.push(...checkGpu(given.gpu, this.capabilities(), mount));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
-			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
-			else refuse(field, `a Modal computer does not support ${field}`);
+			refuse(field, `a Modal computer does not support ${field}`);
 		}
 		return refusals;
 	}
@@ -880,8 +915,10 @@ export class ModalProvider implements ComputerProvider {
 			cpus,
 			memoryMb,
 			workdir,
-			runtime: "vm",
+			// Modal offers GPUs on gVisor only: a GPU computer's runtime, read back by the probe's kernel like a VM's.
+			runtime: spec.gpu === undefined ? "vm" : "gvisor",
 			...(archil === undefined ? {} : { mount: readBackOf(archil.mount, archil.epoch) }),
+			...(spec.gpu === undefined ? {} : { gpu: { type: spec.gpu.type, count: spec.gpu.count } }),
 		};
 		const tags = { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) };
 		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
@@ -913,7 +950,8 @@ export class ModalProvider implements ComputerProvider {
 				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, ...(gate === undefined ? {} : { gate }) }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
-			runtime: "vm",
+			runtime: recorded.runtime,
+			...(spec.gpu === undefined ? {} : { gpu: modalGpu(spec.gpu) }),
 			command,
 			// Modal ends the sandbox at its timeout: the lifetime, in the whole seconds the SDK takes.
 			timeoutMs: Math.ceil(runLifetimeMs(spec) / 1000) * 1000,
@@ -961,7 +999,8 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (checked.ok) return ok(checked.value.length > 0 ? { ...ref, notes: checked.value } : ref);
 		// Read before the terminate, which would end it with its own code: whether the sandbox's command had already ended.
-		const why = await this.#endedWords(sandbox, archil?.mount.token, signal);
+		// A sandbox Modal says is ending on its own (gone) is waited for, bounded, so its command's exit and words are read.
+		const why = await this.#endedWords(sandbox, name, archil?.mount.token, checked.error.code === "gone", signal);
 		await letGo();
 		const after = await this.#terminate(sandbox, name, signal);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}${why}`);
@@ -969,10 +1008,13 @@ export class ModalProvider implements ComputerProvider {
 
 	/**
 	 * When a create's sandbox has already finished, its command's exit code and the tail of its output (stdout, then
-	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read.
+	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read. With
+	 * `ending` (Modal said the sandbox is shutting down), first waits up to endedMs for poll to read it finished: Modal
+	 * ends a sandbox asynchronously, and poll reads null until then, so its command's words would be lost.
 	 */
-	async #endedWords(sandbox: ModalSandbox, token: string | undefined, signal?: AbortSignal): Promise<string> {
-		const { callMs } = this.#timeouts;
+	async #endedWords(sandbox: ModalSandbox, name: string, token: string | undefined, ending: boolean, signal?: AbortSignal): Promise<string> {
+		const { callMs, endedMs, releasePollMs } = this.#timeouts;
+		if (ending) await untilFinished(() => sandbox.poll(), { name, boundMs: endedMs, callMs, minMs: Math.min(releasePollMs, RELEASE_POLL_MAX_MS), maxMs: RELEASE_POLL_MAX_MS, signal });
 		const polled = await call("poll of the sandbox", () => sandbox.poll(), callMs, signal);
 		if (!polled.ok || polled.value === null) return "";
 		const read = async (stream: ModalSandbox["stdout"]) => {
@@ -1112,10 +1154,13 @@ export class ModalProvider implements ComputerProvider {
 		const found = [
 			...tagDrift(tags, read.value),
 			...helloDrift(inside.value.hello, this.#expected()),
-			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
+			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network, runtime: recorded.runtime }),
 			...(archil === undefined ? [] : mountDrift(archil.expected, inside.value.mount)),
 		];
-		return found.length === 0 ? ok(probeNotes(inside.value.probe, recorded.network)) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		if (found.length > 0) return fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
+		const fence = inside.value.hello.fence === "userns-netns" ? [`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${recorded.runtime} may not make one itself`] : [];
+		return ok([...probeNotes(inside.value.probe, recorded.network), ...fence]);
 	}
 
 	/** One connection's hello and the probe through it, and an Archil computer's mount read back, the connection closed after. */
@@ -1341,9 +1386,11 @@ export class ModalProvider implements ComputerProvider {
 		const recorded = recordedOf(tags);
 		if (typeof recorded === "string") found.push(recorded);
 		else {
-			if (recorded.runtime !== "vm") found.push(`runtime: the tag ${SPEC_TAG} says ${show(recorded.runtime)}; this provider makes vm computers`);
-			const { image, network, cpus, memoryMb, workdir, user } = recorded;
-			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user } as ComputerSpec);
+			// gvisor exactly for a GPU computer, vm for every other: anything else this provider never makes.
+			const runtime = recorded.gpu === undefined ? "vm" : "gvisor";
+			if (recorded.runtime !== runtime) found.push(`runtime: the tag ${SPEC_TAG} says ${show(recorded.runtime)}; this provider makes ${runtime} computers ${recorded.gpu === undefined ? "with no GPU" : "with a GPU"}`);
+			const { image, network, cpus, memoryMb, workdir, user, gpu } = recorded;
+			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user, ...(gpu === undefined ? {} : { gpu }) } as ComputerSpec);
 			found.push(...refusals.map(({ field, message }) => `${field}: ${message}, as recorded at create`));
 			// No exec in a computer whose user is root: the bridge would run what that user could have replaced.
 			if (isRootUser(user)) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
@@ -1353,17 +1400,29 @@ export class ModalProvider implements ComputerProvider {
 		if (!inside.ok) return inside;
 		const { hello, probe, mount } = inside.value;
 		found.push(...helloDrift(hello, this.#expected()));
-		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network }));
+		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network, runtime: recorded.runtime }));
 		// The mount read back from inside is the one the spec tag records, under the computer's epoch label.
 		if (archil !== undefined) found.push(...mountDrift(archil.expected, mount));
 		if (found.length > 0 || typeof recorded === "string" || deadline === undefined) {
 			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
-		const { image, network, cpus, memoryMb, workdir } = recorded;
+		const { image, network, cpus, memoryMb, workdir, gpu } = recorded;
 		const notes = probeNotes(probe, network);
 		return ok({
 			...ref,
-			spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind, ...(archil === undefined || mount === undefined ? {} : { mount }) },
+			spec: {
+				image,
+				user: `${probe.uid}:${probe.gid}`,
+				network,
+				cpus,
+				memoryMb,
+				workdir,
+				deadline,
+				kind: hello.kind,
+				...(archil === undefined || mount === undefined ? {} : { mount }),
+				// Modal reads no GPU back: what create recorded, on a computer the probe read as gVisor, Modal's GPU runtime.
+				...(gpu === undefined ? {} : { gpu }),
+			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
 	}

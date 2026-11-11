@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import type { CallOptions } from "./client.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type Group, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import type { ComputerCapabilities, ComputerSpec, Refusal } from "./provider.js";
-import { checkLifetime } from "./provider.js";
+import { checkGpu, checkLifetime } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result } from "./result.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 
@@ -149,7 +149,7 @@ export async function recoverCreate(
 	return words.join("; ");
 }
 
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "gpu"]);
 
 /**
  * The checks every browser provider makes before a vendor call: the image is chromium, the lifetime is within the
@@ -172,6 +172,8 @@ export function checkBrowser(spec: ComputerSpec, capabilities: ComputerCapabilit
 		if (problem) refusals.push({ field: "labels", message: problem });
 		else if (Object.hasOwn(labels as object, CREATE_LABEL)) refusals.push({ field: "labels", message: `the label ${CREATE_LABEL} is the provider's own: each create writes it, so a lost create finds its browser` });
 	}
+	// A browser declares no gpu: one asked is refused, in the words every provider shares.
+	refusals.push(...checkGpu(given.gpu, capabilities));
 	for (const [field, value] of Object.entries(given)) {
 		if (!SPEC_FIELDS.has(field) && value !== undefined) refusals.push({ field, message: `a ${vendor} browser does not take ${field}` });
 	}

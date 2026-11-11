@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { DaemonClient, EPOCH_LABEL, epochOf, ownerLabels, RUN_LABEL } from "../dist/index.js";
+import { checkGpu, DaemonClient, EPOCH_LABEL, epochOf, ownerLabels, RUN_LABEL } from "../dist/index.js";
 import { MAX_OUTPUT_BYTES, PROTOCOL_VERSION } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -155,7 +155,14 @@ function fakeDaemon(hello, computer) {
 				const cat = catOf(request.params.argv, request.params.cwd, computer);
 				// A computer has no sudo for its user (the Archil image ships none).
 				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
-				const ran = cat ?? sudo ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
+				// nvidia-smi -L: one line per GPU the computer was made with and its user sees, else not found.
+				const smi =
+					request.params.argv[0] === "sh" && request.params.argv[2] === "nvidia-smi -L"
+						? computer.gpus
+							? { exitCode: 0, stdout: Array.from({ length: computer.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${computer.gpus.type} (UUID: GPU-${i}-fake)\n`).join(""), stderr: "" }
+							: { exitCode: 127, stdout: "", stderr: "sh: nvidia-smi: not found\n" }
+						: undefined;
+				const ran = cat ?? sudo ?? smi ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
 			} else if (request.method === "files.read" && request.params.path === "/proc/self/environ") {
 				// Root's once init has dropped to its programs' uid (non-dumpable), as on a real computer: unreadable.
@@ -213,6 +220,9 @@ function fakeDaemon(hello, computer) {
  *   claim's run and epoch, refusing a claim of the same run below the epoch it carries. Without it, an owner and a detach
  *   are refused in words. `brokenPersistence`: "detach-deletes" (a detach deletes the computer), "forgets" (an attach
  *   brings it back with no files), "no-fence" (a claim below the epoch is taken).
+ * - `gpu`: capabilities().gpu, left out unless given (a computer asked with one has it, read back by attach and listed by
+ *   nvidia-smi -L inside); `gpuUnseen`: its programs see no GPU (nvidia-smi not found); `gpuReadBack`: what attach
+ *   reports instead; `checkIgnoresGpu`: check() takes any spec.gpu, declared or not.
  */
 export function fakeComputers({
 	id = "fake",
@@ -264,6 +274,10 @@ export function fakeComputers({
 	display,
 	persistence,
 	brokenPersistence,
+	gpu,
+	gpuUnseen = false,
+	gpuReadBack,
+	checkIgnoresGpu = false,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -302,6 +316,7 @@ export function fakeComputers({
 			...(mount ? { mount } : {}),
 			...(vendorAgentPorts ? { vendorAgentPorts } : {}),
 			...(persistence ? { persistence } : {}),
+			...(gpu ? { gpu } : {}),
 		}),
 		check(spec) {
 			const refusals = [];
@@ -318,6 +333,7 @@ export function fakeComputers({
 			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
+			if (!checkIgnoresGpu) refusals.push(...checkGpu(spec.gpu, { gpu }));
 			return refusals;
 		},
 		async create(spec) {
@@ -340,6 +356,7 @@ export function fakeComputers({
 				network: spec.network,
 				mount: spec.mount,
 				owner: spec.owner,
+				gpu: spec.gpu,
 				deadline: spec.owner !== undefined ? undefined : new Date(Date.now() + spec.lifetimeMs),
 				state: "running",
 				daemon: {
@@ -361,6 +378,7 @@ export function fakeComputers({
 					pathSockets,
 					socketSearchIncomplete,
 					display,
+					...(spec.gpu && !gpuUnseen ? { gpus: spec.gpu } : {}),
 					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},
 			};
@@ -392,7 +410,8 @@ export function fakeComputers({
 				c.detachedAt = undefined;
 			}
 			const [u, g = u] = c.daemon.uid.split(":");
-			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels) };
+			const gpus = gpuReadBack === undefined ? c.gpu : gpuReadBack;
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels), ...(gpus ? { gpu: gpus } : {}) };
 			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {

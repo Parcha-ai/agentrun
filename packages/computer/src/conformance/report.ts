@@ -2,7 +2,7 @@
 // --only left out, the verdict last.
 import type { CaseGroup, CaseResult, ConformanceReport } from "./types.js";
 
-const GROUPS: CaseGroup[] = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime", "browser"];
+const GROUPS: CaseGroup[] = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime", "browser", "gpu"];
 const NAMES_WIDTH = 44;
 const INDENT = " ".repeat("core ".length + "provider ".length + 1);
 

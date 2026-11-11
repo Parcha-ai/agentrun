@@ -9,8 +9,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { spentOverStore } = await import("../dist/store-reads/cap.js");
+const { runGraphView } = await import("../dist/run-reads-over-store.js");
 
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
@@ -255,4 +259,66 @@ test("a claude-agent run's paid MCP charge renders a Tool cost row under its cal
   const usage = rows.filter((x) => x.kind === "usage");
   assert.equal(usage.length, 1);
   assert.deepEqual([usage[0].usage, usage[0].summary], [{ usd: 0.05, requests: 0 }, "Cost so far: $0.0500 over 0 model requests and 1 paid tool call"]);
+});
+
+test("an ended CLI run that left a request unanswered serves its Timeline cost unknown, with the known part: never a known total", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "codex", runId: "run-1" });
+  const j = store.journal(claim);
+  const [conv, key] = [await j.mintId(), await j.mintId()];
+  const [req1, turn1, req2] = [await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
+    { type: "conversation", value: { id: conv } },
+    entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
+    // One request answered at $0.01, one admitted whose answer was never booked (its end came first).
+    { type: "entry", value: { id: req1, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "gpt-test", heldUsd: 0.02 } } },
+    { type: "entry", value: { id: turn1, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
+    { type: "entry", value: { id: req2, conversationId: conv, kind: "runner.request", data: { turn: 2, model: "gpt-test", heldUsd: 0.02 } } },
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Done." }),
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", endedAt: T0 + 9 });
+  const usage = (await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, store, "run-1", context)).filter((row) => row.kind === "usage");
+  assert.deepEqual(usage.map((row) => row.usage), [{ usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 }], `the unanswered request is a cost unknown on an ended run: ${JSON.stringify(usage)}`);
+});
+
+test("a running CLI run whose booked request has no figure lists its spend unknown (null), never $0", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "claude-agent", runId: "run-1" });
+  const j = store.journal(claim);
+  const [conv, key, req, turn] = [await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
+    { type: "conversation", value: { id: conv } },
+    entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
+    { type: "entry", value: { id: req, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "claude-sonnet-4-5" } } },
+    { type: "entry", value: { id: turn, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: null } } },
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Working." }),
+  ], context);
+  assert.equal(await spentOverStore(store, "run-1", context), null, "its booked spend is unknown");
+});
+
+test("a workflow whose only bookings are decisions has a graph model-node cost of 0: its decisions are counted from their receipts alone", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-w", name: "Flow" }, { id: "rev-w", kind: "workflow", body: { workflow: { v: 2, name: "decide", root: { node: "chain", steps: [] } } } });
+  await store.runs.create({ id: "run-w", agentId: "agent-w", revisionId: "rev-w" }, { body: { input: {}, title: "t", place: { mode: "runner" } } });
+  const claim = await store.claim("run-w", "runner-a", { leaseMs: 60_000 });
+  const j = store.journal(claim);
+  const [flow, flowKey, dec, decKey, req, turn] = [await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    { type: "conversation", value: { id: flow } },
+    entry(flowKey, "agentrun.session.key", { key: "workflow", conversation: flow }),
+    { type: "conversation", value: { id: dec } },
+    entry(decKey, "agentrun.session.key", { key: "decisions", conversation: dec }),
+    { type: "entry", value: { id: req, conversationId: dec, kind: "runner.request", data: { turn: 1, model: "jev", heldUsd: 0.01 } } },
+    { type: "entry", value: { id: turn, conversationId: dec, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Decided.", costUsd: 0.01, endedAt: T0 + 9 });
+  const view = { kind: "workflow", status: "completed", agent_id: "agent-w", revision: "rev-w", created_at: new Date(T0).toISOString(), ended_at: new Date(T0 + 9).toISOString() };
+  const graph = await runGraphView(store, "run-w", { env: {}, runWorkspace: async () => null, runView: async () => view, withheld: async () => false, cutValues: async () => ({ values: [] }), context });
+  // No receipt here, so the graph's total is its model-node part alone: 0, never the decisions' $0.01 again.
+  assert.equal(graph.totals.cost_usd, 0, `the graph's model-node cost leaves the decisions out: ${JSON.stringify(graph.totals)}`);
 });

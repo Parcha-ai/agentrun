@@ -226,9 +226,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const side: ClaimSide = {
     keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
-    async launch(entry, { kind, keys, configuration, mount, signal }) {
+    async launch(entry, { kind, keys, configuration, mount, gpu, signal }) {
       if (deps.launch) {
-        const own = await deps.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        const own = await deps.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
@@ -255,7 +255,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       // configuration that names its image starts from it, else the kind's default.
       const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
       const ready = await readyImage(entry, provider, signal, deps.onImageWait);
-      const spec: ComputerSpec = { ...asked, ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      const spec: ComputerSpec = { ...asked, ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
