@@ -329,13 +329,6 @@ test("a skill and its draft put out of step are found by a later merge too: one 
 });
 
 
-test("a consolidation stopped while its first request was cut ends with an unknown cost (null), never $0: the cut request may have been billed", async (t) => {
-  const w = await world(t);
-  const { end, row } = await consolidate(w, () => { throw new Error("the consolidation request was cut"); }, { stopFirst: true });
-  assert.deepEqual(end, { state: "stopped" });
-  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "unknown, never 0");
-});
-
 test("a draft that pairs with two skills, rewritten alone, is graded with both skills beside it, each once, and merges: companion context is no proposed write and has no write caps", async (t) => {
   const QUOTE = "---\nname: quote-refunds\ndescription: Quote a store's refund lines; use when a case asks for them\n---\n1. Quote the refund lines whole.\n";
   const w = await driftedWorld(t, [{ path: "skills/quote-refunds/SKILL.md", text: QUOTE }], "Finds a store's refund policy with quote-refunds", { "skills/find-policies/SKILL.md": SKILL_NOW, "skills/quote-refunds/SKILL.md": QUOTE.replace("whole.", "whole, each line once.") });

@@ -694,9 +694,13 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             let reply: ConsolidationAskedData;
             if (saved) reply = saved;
             else {
+              // A person's stop before the request: nothing is sent, so nothing is spent.
+              const before = await halted();
+              if (before) return before;
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS)]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+                // A stop while it runs cuts it at once (stopAsk), as it cuts the grade's.
+                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS), stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch {
                 // A cut request may have been billed: its cost is unknown before a pending stop ends the run on it.
                 asked = null;

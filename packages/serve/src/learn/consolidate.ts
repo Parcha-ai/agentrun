@@ -135,9 +135,12 @@ export function changedLast(changes: readonly (readonly string[])[], skill: stri
  *  queue, so one that merged nothing is asked again only CONSOLIDATE_MERGES merges later) with the active notes past
  *  CONSOLIDATE_BUDGET. Never while one is queued or running (`queued`): it reads main as it starts, and what merges after
  *  is counted for the next. */
-export function consolidationDue(state: { readonly mergesSince: number; readonly activeBytes: number; readonly drifted: number; readonly queued: boolean }): "drift" | "growth" | undefined {
+export function consolidationDue(state: { readonly mergesSince: number; readonly activeBytes: number; readonly drifted: number; readonly carried?: number; readonly queued: boolean }): "drift" | "growth" | undefined {
   if (state.queued) return undefined;
   if (state.drifted > 0) return "drift";
+  // A pair still out of step from before the last queue (one it left unfixed) is due again CONSOLIDATE_MERGES merges
+  // later, whatever the notes' bytes, so it is never left out of step for good, nor asked about at every merge.
+  if ((state.carried ?? 0) > 0 && state.mergesSince >= CONSOLIDATE_MERGES) return "drift";
   return state.mergesSince >= CONSOLIDATE_MERGES && state.activeBytes > CONSOLIDATE_BUDGET ? "growth" : undefined;
 }
 

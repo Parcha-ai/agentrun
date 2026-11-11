@@ -127,8 +127,13 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
         const queued = last !== undefined && !FINAL_STATES.includes(last.state);
         if (queued) return;
         const state = await consolidationState(ws as Workspace, { ...(last?.after ? { after: last.after } : {}), consolidated: isConsolidationRun });
-        const pairs = driftedSince(state, state.changes);
-        const due = consolidationDue({ mergesSince: state.mergesSince, activeBytes: state.activeBytes, drifted: pairs.length, queued });
+        // Out of step since the last queue: due at once. Out of step still, from before it (one a consolidation left
+        // unfixed): asked about again by the next consolidation, which those make due only as merges since the queue
+        // count up (consolidationDue's `carried`), never at every merge.
+        const fresh = driftedSince(state, state.changes);
+        const carried = driftedSince(state, state.allChanges).filter(({ skill, workflow }) => !fresh.some((one) => one.skill === skill && one.workflow === workflow));
+        const pairs = [...fresh, ...carried];
+        const due = consolidationDue({ mergesSince: state.mergesSince, activeBytes: state.activeBytes, drifted: fresh.length, carried: carried.length, queued });
         if (!due) return;
         const source = await store.runs.get(runId);
         if (!source) return;

@@ -360,20 +360,26 @@ export async function consolidationMain(ws: Workspace): Promise<ConsolidationMai
  *  pairs out of step (consolidate.ts driftedSince); the bytes of the active notes; and each active skill's name and
  *  draft's name and README. Counted from the queue, never from a consolidation's commit: one that merged nothing still
  *  starts the count again, and the count never sits at the log's cap. */
-export async function consolidationState(ws: Workspace, since: { readonly after?: string; readonly consolidated: (run: string) => boolean }): Promise<{ main?: string; mergesSince: number; changes: string[][]; activeBytes: number; skills: { name: string }[]; workflows: { name: string; readme: string }[] }> {
+export async function consolidationState(ws: Workspace, since: { readonly after?: string; readonly consolidated: (run: string) => boolean }): Promise<{ main?: string; mergesSince: number; changes: string[][]; allChanges: string[][]; activeBytes: number; skills: { name: string }[]; workflows: { name: string; readme: string }[] }> {
   return readLearning(ws, async ({ snapshot, body }) => {
-    if (!snapshot) return { mergesSince: 0, changes: [], activeBytes: 0, skills: [], workflows: [] };
+    if (!snapshot) return { mergesSince: 0, changes: [], allChanges: [], activeBytes: 0, skills: [], workflows: [] };
+    // `changes`: the runs' merges since the last queue (`after`), consolidations' left out: what the growth counter counts
+    // and what put a pair out of step since. `allChanges`: every run's merge in the log, consolidations' too, newest first:
+    // whether a pair is out of step now, so one a consolidation left unfixed is asked about again.
     const changes: string[][] = [];
+    const allChanges: string[][] = [];
+    let counting = true;
     for (const change of snapshot.log) {
-      if (change.commit === since.after) break;
-      if (!("run" in change.by) || since.consolidated(change.by.run)) continue;
-      changes.push(change.files);
+      if (change.commit === since.after) counting = false;
+      if (!("run" in change.by)) continue;
+      allChanges.push(change.files);
+      if (counting && !since.consolidated(change.by.run)) changes.push(change.files);
     }
     const activeBytes = snapshot.notes.filter((note) => note.status === "active").reduce((sum, note) => sum + note.bytes, 0);
     const workflows = await Promise.all(snapshot.workflows.filter((item) => item.status === "active").flatMap((item) => {
       const readme = item.files.find((file) => file.path.endsWith("/README.md"));
       return readme ? [body(readme.path, readme.oid).then((text) => ({ name: item.name, readme: text }))] : [];
     }));
-    return { main: snapshot.main, mergesSince: changes.length, changes, activeBytes, skills: snapshot.skills.filter((item) => item.status === "active").map(({ name }) => ({ name })), workflows };
+    return { main: snapshot.main, mergesSince: changes.length, changes, allChanges, activeBytes, skills: snapshot.skills.filter((item) => item.status === "active").map(({ name }) => ({ name })), workflows };
   });
 }
