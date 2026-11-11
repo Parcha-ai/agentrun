@@ -455,8 +455,6 @@ async function hiddenRun(t, dir, data, log) {
   return { runId, ref };
 }
 
-});
-
 /** A run of agent `alpha` that browsed signed in and ended repeating its sign-in's pointer, then the sign-in forgotten
  *  (allowed: the run ended): the server, the run's id and the pointer. */
 async function forgottenAfterEnd(t, dir, log) {
