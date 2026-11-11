@@ -873,3 +873,16 @@ test("OpenCode's skills note gives a served skill's description as YAML reads it
   const note = skillsNote([{ name: "refunds", files: { "SKILL.md": served } }]);
   assert.match(note, /^- refunds: Find "refund" policies, then the \\\\ path$/m, note);
 });
+
+test("OpenCode's skills note gives a revision skill's description from its own line when the strict reader can't read the whole front matter (a key in a syntax it refuses), as the adapter's check accepted it", async () => {
+  const { skillsNote } = await import("../dist/harness-opencode/adapter.js");
+  const { learnedFront } = await import("../dist/learn/skills.js");
+  const { skillProblems } = await import("@parcha/agentrun-kernel");
+  const md = '---\nname: refunds\ndescription: Find a shop\'s refund policy page\n"license": MIT\n---\nSteps.\n';
+  assert.deepEqual(skillProblems([{ name: "refunds", files: { "SKILL.md": md } }]), [], "the adapter's check accepts it");
+  assert.equal(learnedFront(md), undefined, "setup: the strict reader can't read it whole");
+  assert.match(skillsNote([{ name: "refunds", files: { "SKILL.md": md } }]), /^- refunds: Find a shop's refund policy page$/m);
+  // A quoted description line reads without its quotes.
+  const quoted = md.replace("description: Find a shop's refund policy page", 'description: "Find a refund page"');
+  assert.match(skillsNote([{ name: "refunds", files: { "SKILL.md": quoted } }]), /^- refunds: Find a refund page$/m);
+});
