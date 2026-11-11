@@ -80,7 +80,7 @@ export function inputBound(request: ModelCapRequest): number | undefined {
   if (typeof measured !== "number" || !Number.isFinite(measured) || measured < 0) return undefined;
   // Below 0 only by images' data counted at their billed size instead; a shape that says more such bytes than were
   // measured is no bound.
-  const added = request.shape ? providerInputOverhead(request.model.api, request.shape) : 0;
+  const added = request.shape ? providerInputOverhead(request.model.api, { model: request.model.id, ...request.shape }) : 0;
   const bound = measured + added + (request.extraInputTokens ?? 0);
   return bound < 0 ? undefined : bound;
 }

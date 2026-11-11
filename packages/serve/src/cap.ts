@@ -888,10 +888,11 @@ export const inputBound = (sent: string, overhead = 0): number => Buffer.byteLen
 /** What pi's provider adds server-side to a request of `context`, the same table the model proxy uses, by the model's API
  *  kind: undefined for a kind whose additions are not known. The context does not say how the request chooses a tool,
  *  so the dearer choice is taken. */
-export function piOverhead(model: Pick<Model<Api>, "api">, context: Context): number | undefined {
+export function piOverhead(model: Pick<Model<Api>, "api"> & { id?: string }, context: Context): number | undefined {
   const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown; data?: unknown }[] }).content) : []));
-  // Each image at what it is billed as by its size, in place of its base64's bytes in what is sent (imageInputOf).
-  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").map((part) => imageInputOf(part.data)) });
+  // Each image, in every turn, at what the model's provider bills it as by its size, in place of its base64's bytes in
+  // what is sent (imageInputOf, imageTokens).
+  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").map((part) => imageInputOf(part.data)), ...(model.id ? { model: model.id } : {}) });
 }
 
 const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;

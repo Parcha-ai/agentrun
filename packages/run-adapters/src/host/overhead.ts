@@ -4,9 +4,10 @@
 //
 // A request's input can never be more tokens than its body's UTF-8 bytes (`inputTokensMaxOf`), except for what the
 // provider adds or bills by another measure: a prompt it adds itself when tools are present, and images, which it bills by
-// their area after it resizes them, not by their bytes. An image is counted at what it is billed as, in place of the bytes
-// its data takes in the body (a screenshot's base64 is a megabyte; Claude bills it as some 1,200 tokens). Each figure is
-// the largest the provider documents for any current model, so no model is undercounted.
+// their area after it resizes them, not by their bytes. An image is counted at what the routed model's provider bills it
+// as by its size (Anthropic's, OpenAI's or Google's rule; the most of the three for another provider), in place of the
+// bytes its data takes in the body: a screenshot's base64 is a megabyte, and Claude bills it as some 1,200 tokens. Each
+// figure is the largest the provider documents for any current model, so no model is undercounted.
 
 /** One image a request carries: the bytes its data takes in the body (its base64, or its data URL; 0 for an image the
  *  provider fetches by URL), which are counted at the image's billed size instead, and its pixel size when its data's own
@@ -23,8 +24,11 @@ export interface InputShape {
   tools: boolean;
   /** Its tool_choice, as Anthropic names them; absent for the provider's default. */
   toolChoice?: "auto" | "none" | "any" | "tool";
-  /** Its image inputs, at any depth (a tool's result included). */
+  /** Its image inputs, at any depth (earlier turns' and a tool's result included). */
   images: readonly ImageInput[];
+  /** The model it is routed to, as the session names it (`anthropic/claude-sonnet-5.5` through a gateway): its provider's
+   *  rule bills its images (`imageTokens`). Absent or unknown: the most any known rule bills each one as. */
+  model?: string;
 }
 
 /**
@@ -115,15 +119,66 @@ function checkedImage(image: ImageInput): ImageInput {
 export function providerInputOverhead(api: string, shape: InputShape): number {
   if (!Array.isArray(shape.images)) throw new Error(`not a list of images: ${String(shape.images).slice(0, 40)}`);
   const images = shape.images.map(checkedImage);
-  const dataBytes = images.reduce((sum, image) => sum + image.bytes, 0);
-  if (api === "anthropic-messages") {
-    const billed = images.reduce((sum, image) => sum + (image.width !== undefined ? anthropicImageTokens(image.width, image.height!) : ANTHROPIC_IMAGE_TOKENS_MAX), 0);
-    return anthropicToolPrompt(shape) + billed - dataBytes;
-  }
-  const openai = images.length * OPENAI_IMAGE_TOKENS_MAX - dataBytes;
-  if (api === CHAT_COMPLETIONS) return (shape.tools ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : 0) + openai;
-  if (INPUT_OVERHEAD_APIS.includes(api)) return openai;
-  return (shape.tools ? ASSUMED_TOOL_PROMPT_TOKENS : 0) + openai;
+  // Each image at what the routed model's provider bills it as (imageTokens), whatever API carries it: a gateway speaks
+  // one API for every provider it routes to.
+  const imagesNet = images.reduce((sum, image) => sum + imageTokens(shape.model, image) - image.bytes, 0);
+  if (api === "anthropic-messages") return anthropicToolPrompt(shape) + imagesNet;
+  if (api === CHAT_COMPLETIONS) return (shape.tools ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : 0) + imagesNet;
+  if (INPUT_OVERHEAD_APIS.includes(api)) return imagesNet;
+  return (shape.tools ? ASSUMED_TOOL_PROMPT_TOKENS : 0) + imagesNet;
+}
+
+/** The provider whose image rule a model id is billed by, by the id as the session names it (a gateway's
+ *  `vendor/model`, or the vendor's own): undefined for one the rules do not know. */
+export function imageProviderOf(model: string | undefined): "anthropic" | "openai" | "google" | undefined {
+  if (!model) return undefined;
+  if (/^anthropic\/|(^|\/)claude/i.test(model)) return "anthropic";
+  if (/^openai\/|(^|\/)(gpt|chatgpt|codex|o\d)/i.test(model)) return "openai";
+  if (/^google\/|(^|\/)gemini/i.test(model)) return "google";
+  return undefined;
+}
+
+/**
+ * The most tokens OpenAI bills an image of `width` x `height` as, by its "Calculating costs" rules
+ * (https://developers.openai.com/api/docs/guides/images-vision), the more of:
+ *  - the tile rule (high detail): the image fit within 2048 x 2048, then its shorter side brought to 768 (up as well as
+ *    down, the dearer reading for a small image), each 512 px tile 170 tokens beside a base of 85; for a gpt-4o-mini
+ *    model, 5,667 a tile beside 2,833;
+ *  - the patch rule: its 32 px patches at the largest multiplier listed, 2.46.
+ * At most `OPENAI_IMAGE_TOKENS_MAX`.
+ */
+export function openaiImageTokens(width: number, height: number, model?: string): number {
+  const fit = Math.min(1, 2048 / Math.max(width, height));
+  const short = 768 / Math.min(width * fit, height * fit);
+  const tiles = Math.ceil((width * fit * short) / 512) * Math.ceil((height * fit * short) / 512);
+  const tiled = model && /4o-mini/i.test(model) ? 2_833 + 5_667 * tiles : 85 + 170 * tiles;
+  const patched = Math.ceil(Math.ceil(width / 32) * Math.ceil(height / 32) * 2.46);
+  return Math.min(OPENAI_IMAGE_TOKENS_MAX, Math.max(tiled, patched));
+}
+
+/** What Gemini bills a picture as at the most ("Media resolution" and "Image understanding" in its API docs): 258 tokens
+ *  an image at most 384 px on each side, else 258 for each 768 px tile; and a picture at Gemini 3's high media resolution
+ *  1,120 tokens. The more of the two. */
+export const GEMINI_HIGH_RESOLUTION_TOKENS = 1_120;
+export function geminiImageTokens(width: number, height: number): number {
+  const tiled = width <= 384 && height <= 384 ? 258 : 258 * Math.ceil(width / 768) * Math.ceil(height / 768);
+  return Math.max(tiled, GEMINI_HIGH_RESOLUTION_TOKENS);
+}
+
+/**
+ * The most tokens `image` is billed as by the routed `model`'s provider: Anthropic's, OpenAI's or Google's rule by its
+ * size; for a model of another provider, or of none known, the most any of the three rules bills it as. An image whose
+ * size cannot be read counts at the largest per-image maximum documented, `OPENAI_IMAGE_TOKENS_MAX` (Anthropic's own,
+ * `ANTHROPIC_IMAGE_TOKENS_MAX`, on a Claude model), never at its bytes.
+ */
+export function imageTokens(model: string | undefined, image: ImageInput): number {
+  const provider = imageProviderOf(model);
+  if (image.width === undefined || image.height === undefined) return provider === "anthropic" ? ANTHROPIC_IMAGE_TOKENS_MAX : OPENAI_IMAGE_TOKENS_MAX;
+  const { width, height } = image;
+  if (provider === "anthropic") return anthropicImageTokens(width, height);
+  if (provider === "openai") return openaiImageTokens(width, height, model);
+  if (provider === "google") return geminiImageTokens(width, height);
+  return Math.max(anthropicImageTokens(width, height), openaiImageTokens(width, height, model), geminiImageTokens(width, height));
 }
 
 /** The pixel size an image's base64 `data` says in its own header (PNG, JPEG, GIF or WebP), or undefined: another format,
@@ -155,24 +210,41 @@ export function imageSizeOf(data: string): { width: number; height: number } | u
 }
 
 const plain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-/** Each item of `type` at any depth of `value` (a tool's result holds them), as `read` reads it. */
-function itemsOf(value: unknown, type: string, read: (item: Record<string, unknown>) => ImageInput, out: ImageInput[] = []): ImageInput[] {
-  if (Array.isArray(value)) for (const item of value) itemsOf(item, type, read, out);
-  else if (plain(value)) {
-    if (value.type === type) out.push(read(value));
-    for (const item of Object.values(value)) itemsOf(item, type, read, out);
+const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/** A Messages body's images, only where the API reads one as an image: a block of a message's content, or of a
+ *  tool_result's content, in every turn. Each is a base64 source's data, or a URL's (no bytes). An image-shaped object
+ *  anywhere else (a tool call's arguments) is text to the provider: its bytes stay counted as they are. */
+export function messagesImagesIn(messages: unknown): ImageInput[] {
+  const out: ImageInput[] = [];
+  const image = (block: unknown) => {
+    if (plain(block) && block.type === "image") out.push(plain(block.source) && block.source.type === "base64" ? imageInputOf(block.source.data) : { bytes: 0 });
+  };
+  for (const message of list(messages)) {
+    if (!plain(message)) continue;
+    for (const block of list(message.content)) {
+      image(block);
+      if (plain(block) && block.type === "tool_result") for (const inner of list(block.content)) image(inner);
+    }
   }
   return out;
 }
 
-/** A Messages body's images (`{type: "image", source}`), at any depth: a base64 source's data, or a URL's (no bytes). */
-export function messagesImagesIn(value: unknown): ImageInput[] {
-  return itemsOf(value, "image", (item) => (plain(item.source) && item.source.type === "base64" ? imageInputOf(item.source.data) : { bytes: 0 }));
-}
-
-/** A Responses body's images (`{type: "input_image", image_url}`), at any depth: a data URL, or a URL or file id (no bytes). */
-export function responsesImagesIn(value: unknown): ImageInput[] {
-  return itemsOf(value, "input_image", (item) => imageInputOf(item.image_url));
+/** A Responses body's images, only where the API reads one as an image: an `input_image` item, a part of an item's
+ *  content, or a part of a function call's output, in every turn. Each is a data URL's, or a URL's or file id's (no
+ *  bytes). An image-shaped object anywhere else is text to the provider: its bytes stay counted as they are. */
+export function responsesImagesIn(input: unknown): ImageInput[] {
+  const out: ImageInput[] = [];
+  const image = (part: unknown) => {
+    if (plain(part) && part.type === "input_image") out.push(imageInputOf(part.image_url));
+  };
+  for (const item of list(input)) {
+    if (!plain(item)) continue;
+    image(item);
+    for (const part of list(item.content)) image(part);
+    if (item.type === "function_call_output") for (const part of list(item.output)) image(part);
+  }
+  return out;
 }
 
 /** The image a body's `data` (base64, or a data URL) carries: the bytes it takes, and its size when its header says it.

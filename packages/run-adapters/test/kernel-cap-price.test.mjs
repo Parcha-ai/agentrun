@@ -110,7 +110,9 @@ test("the input adds the provider's server-side tokens from the proxy's table: t
   const { cap } = capOn(10, { mode: "strict" });
   const shape = { tools: true, toolChoice: "auto", images: [{ bytes: 0 }] };
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 1_000, { shape }));
-  near(admitted.worstUsd, usd(10_000 + providerInputOverhead("anthropic-messages", shape), 3.75) + usd(1_000, 15));
+  // Its image at its model's provider's figure (a Claude model: Anthropic's per-image maximum, its size unread).
+  near(admitted.worstUsd, usd(10_000 + providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 3.75) + usd(1_000, 15));
+  assert.equal(providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 675 + 4784);
 });
 
 test("a gateway or provider with no documented figure is priced and sent, never refused for its API", async () => {

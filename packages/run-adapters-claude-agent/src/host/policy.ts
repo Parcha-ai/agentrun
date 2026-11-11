@@ -401,6 +401,8 @@ export function anthropicServerInputOverhead(body: Record<string, unknown>, sear
     tools: Array.isArray(body.tools) && body.tools.length > 0,
     ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}),
     images: messagesImagesIn(body.messages),
+    // Its images at the routed model's provider's rule (a gateway may route the Messages API to another vendor's model).
+    ...(typeof body.model === "string" ? { model: body.model } : {}),
   };
   return (providerInputOverhead("anthropic-messages", shape) as number) + (searches ? searchAllowance! : 0);
 }

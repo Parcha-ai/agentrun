@@ -128,34 +128,57 @@ test("providerInputOverhead holds each provider's figures in one place: Anthropi
     of('anthropic-messages', { tools: true, images: [] }),
     of('anthropic-messages', { tools: true, toolChoice: 'none', images: [] }),
     of('anthropic-messages', { tools: true, toolChoice: 'any', images: [] }),
-    of('anthropic-messages', { tools: true, toolChoice: 'tool', images: unsized(2) }),
+    of('anthropic-messages', { tools: true, toolChoice: 'tool', images: unsized(2), model: 'claude-sonnet-5-5' }),
+    of('anthropic-messages', { tools: false, images: unsized(1), model: 'anthropic/claude-sonnet-5.5' }),
     of('anthropic-messages', { tools: false, images: unsized(1) }),
+    of('anthropic-messages', { tools: false, images: unsized(1), model: 'openai/gpt-5' }),
     of('openai-responses', { tools: true, images: [] }),
-    of('openai-responses', { tools: false, images: unsized(2) }),
+    of('openai-responses', { tools: false, images: unsized(2), model: 'gpt-5.1-codex' }),
     of('azure-openai-responses', { tools: false, images: unsized(1) }),
     of('openai-codex-responses', { tools: false, images: unsized(1) }),
-  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 0, 2 * 73_800, 73_800, 73_800]);
+  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 73_800, 73_800, 0, 2 * 73_800, 73_800, 73_800]);
   assert.deepEqual([...host.INPUT_OVERHEAD_APIS].sort(), ['anthropic-messages', 'azure-openai-responses', 'openai-codex-responses', 'openai-completions', 'openai-responses']);
   for (const images of [1, [{ bytes: -1 }], [{ bytes: 1.5 }], [{ bytes: 0, width: 10 }], [{ bytes: 0, width: 0, height: 10 }]]) {
     assert.throws(() => of('anthropic-messages', { tools: false, images }), /not (a list of images|an image's bytes and size)/, JSON.stringify(images));
   }
 });
 
-test("an image is counted at what it can be billed as by its size, in place of the bytes its data takes in the body: Claude's 28 px patches or its area at 750 pixels a token, at most 4,784; OpenAI's per-image maximum whatever its size", () => {
+test("an image is counted at what the routed model's provider bills it as by its size, whatever API carries it, in place of the bytes its data takes in the body; a provider of no known rule gets the most of the three rules", () => {
   const of = host.providerInputOverhead;
   const screen = { bytes: 1_300_000, width: 1280, height: 720 };
+  assert.deepEqual(['claude-sonnet-5-5', 'anthropic/claude-sonnet-5.5', 'openai/gpt-5', 'gpt-4o-mini', 'o4-mini', 'gpt-5.1-codex', 'google/gemini-3-pro', 'gemini-2.5-flash', 'meta-llama/llama-4', 'faux-model', undefined].map(host.imageProviderOf),
+    ['anthropic', 'anthropic', 'openai', 'openai', 'openai', 'openai', 'google', 'google', undefined, undefined, undefined]);
+  // OpenAI: 1280x720 is 1365x768 with its shorter side at 768, 3 x 2 tiles: 85 + 6 x 170 = 1,105; its 40 x 23 patches at
+  // 2.46: 2,264.
+  assert.equal(host.openaiImageTokens(1280, 720), 2264, 'the patch rule, above the tile rule');
+  assert.equal(host.openaiImageTokens(1280, 720, 'gpt-4o-mini'), 2833 + 6 * 5667, 'gpt-4o-mini\'s tiles');
+  assert.equal(host.openaiImageTokens(100, 100), 765, 'its shorter side brought to 768 either way: 2 x 2 tiles, above its 16 patches');
+  assert.equal(host.openaiImageTokens(20_000, 20_000), 73_800, 'at most the per-image maximum');
+  // Gemini: 258 a 768 px tile (2 x 1 for 1280x720 = 516), or 258 for one at most 384 px; at least Gemini 3's 1,120.
+  assert.deepEqual([host.geminiImageTokens(1280, 720), host.geminiImageTokens(300, 300), host.geminiImageTokens(4000, 4000)], [1120, 1120, 258 * 36]);
+  assert.deepEqual([
+    of('anthropic-messages', { tools: false, images: [screen], model: 'anthropic/claude-sonnet-5.5' }),
+    of('anthropic-messages', { tools: false, images: [screen], model: 'openai/gpt-5' }),
+    of('anthropic-messages', { tools: false, images: [screen], model: 'google/gemini-3-pro' }),
+    of('anthropic-messages', { tools: false, images: [screen], model: 'meta-llama/llama-4' }),
+    of('openai-completions', { tools: false, images: [screen], model: 'anthropic/claude-sonnet-5.5' }),
+    of('openai-responses', { tools: false, images: [{ bytes: 900 }], model: 'gpt-5' }),
+  ], [1229 - 1_300_000, 2264 - 1_300_000, 1120 - 1_300_000, 2264 - 1_300_000, 1229 - 1_300_000, 73_800 - 900], 'never the image\'s bytes; an unread size at the largest maximum');
+});
+
+test("Claude's rule by an image's size", () => {
   assert.equal(host.anthropicImageTokens(1280, 720), 1229, 'its area: 921,600 / 750, above its 46 x 26 = 1,196 patches');
   assert.equal(host.anthropicImageTokens(1000, 1000), 1334, 'the more of its 36 x 36 = 1,296 patches and its 1,334 by area');
   assert.equal(host.anthropicImageTokens(29, 29), 4, 'its 2 x 2 patches, above its 2 by area');
   assert.equal(host.anthropicImageTokens(8000, 8000), 4784, 'at most the high-resolution tier\'s maximum');
   assert.equal(host.anthropicImageTokens(1, 1), 1);
+  const of = host.providerInputOverhead;
+  const claude = 'claude-sonnet-5-5';
   assert.deepEqual([
-    of('anthropic-messages', { tools: true, images: [screen] }),
-    of('anthropic-messages', { tools: false, images: [{ bytes: 900 }] }),
-    of('openai-responses', { tools: false, images: [screen] }),
-    of('openai-completions', { tools: false, images: [screen] }),
-    of('something-new', { tools: false, images: [screen] }),
-  ], [675 + 1229 - 1_300_000, 4784 - 900, 73_800 - 1_300_000, 73_800 - 1_300_000, 73_800 - 1_300_000]);
+    of('anthropic-messages', { tools: true, images: [{ bytes: 1_300_000, width: 1280, height: 720 }], model: claude }),
+    of('anthropic-messages', { tools: false, images: [{ bytes: 900 }], model: claude }),
+    of('something-new', { tools: false, images: [{ bytes: 1_300_000, width: 1280, height: 720 }], model: claude }),
+  ], [675 + 1229 - 1_300_000, 4784 - 900, 1229 - 1_300_000]);
 });
 
 test("imageInputOf reads the size an image's own header gives (PNG, GIF, WebP, JPEG) and the bytes its data takes; a URL the provider fetches takes none", () => {

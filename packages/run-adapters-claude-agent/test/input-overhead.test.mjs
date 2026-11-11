@@ -69,7 +69,7 @@ test("each image counts at the most it can be billed as by its size (a 2000x2000
   assert.equal(overheadOf(withResult([image])), 675 + 4784 - B);
   assert.equal(overheadOf(withResult([{ type: 'text', text: 'two views' }, image, image])), 675 + 2 * (4784 - B));
   assert.equal(overheadOf(bodyWith({ messages: [{ role: 'user', content: [image] }] })), 4784 - B, 'an image with no tools');
-  assert.equal(overheadOf(withResult([image])), host.providerInputOverhead?.('anthropic-messages', { tools: true, images: [{ bytes: B, width: 2000, height: 2000 }] }), 'the policy and the shared function agree');
+  assert.equal(overheadOf(withResult([image])), host.providerInputOverhead?.('anthropic-messages', { tools: true, images: [{ bytes: B, width: 2000, height: 2000 }], model: 'claude-main' }), 'the policy and the shared function agree');
   assert.equal(overheadOf(bodyWith({ messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } }] }] })), 4784, 'an image the provider fetches: its most, its URL\'s bytes kept');
   assert.ok(Buffer.byteLength(BIG_SMALL_PNG) < 1000, `the test image is ${Buffer.byteLength(BIG_SMALL_PNG)} bytes of base64 for 2000x2000 px`);
 });
@@ -173,6 +173,32 @@ test("a 1280x720 screenshot is counted at the area Claude bills it by (within 3x
   const image = bound - rest - PROMPT.autoOrNone;
   assert.ok(image >= SCREEN_TOKENS, `never under what Claude bills it: ${image} tokens for the image, billed ${SCREEN_TOKENS}`);
   assert.ok(image <= 3 * SCREEN_TOKENS, `within 3x of what Claude bills it: ${image} tokens for the image (${bound} in all), billed ${SCREEN_TOKENS}`);
+});
+
+test("every screenshot in the history counts the same way: a request carrying five earlier screens is bounded within 3x of what Claude bills for them, never under", () => {
+  const body = desktopBody(5);
+  const sent = JSON.stringify(body);
+  const bound = inputTokensMaxOf(policy, body, sent);
+  const rest = Buffer.byteLength(sent, 'utf8') - 5 * SCREEN.length;
+  const images = bound - rest - PROMPT.autoOrNone;
+  assert.ok(images >= 5 * SCREEN_TOKENS && images <= 3 * 5 * SCREEN_TOKENS, `five screens: ${images} tokens, billed ${5 * SCREEN_TOKENS}`);
+});
+
+test("through a gateway, a screenshot counts at the routed model's provider's rule, never its bytes: an OpenAI or Gemini model on the Messages API, and one of no known provider at the most of the rules", () => {
+  const counted = (model) => {
+    const body = { ...desktopBody(1), model };
+    const sent = JSON.stringify(body);
+    return inputTokensMaxOf(policy, body, sent) - (Buffer.byteLength(sent, 'utf8') - SCREEN.length) - PROMPT.autoOrNone;
+  };
+  assert.deepEqual(['anthropic/claude-sonnet-5.5', 'openai/gpt-5', 'google/gemini-3-pro', 'meta-llama/llama-4'].map(counted), [1229, 2264, 1120, 2264]);
+});
+
+test("an image-shaped object in a tool call's arguments is text to the provider: its bytes stay counted, never swapped for an image's allowance", () => {
+  const big = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: SCREEN } };
+  const body = applyAnthropic(bodyWith({ tools: [tool], messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: tool.name, input: { q: 'look', attachment: big } }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] }] }), MESSAGES, options);
+  assert.equal(overheadOf(body), PROMPT.autoOrNone, 'no image read from the arguments: its tool prompt alone');
+  const sent = JSON.stringify(body);
+  assert.equal(inputTokensMaxOf(policy, body, sent), Buffer.byteLength(sent, 'utf8') + PROMPT.autoOrNone, 'every byte of the arguments counted');
 });
 
 test("a desktop run on Sonnet under a $1.50 cap takes step after step of screenshots: each step's least is cents, never the dollars its base64 would read as", () => {
