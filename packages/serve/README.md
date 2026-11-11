@@ -729,6 +729,21 @@ the provider with them and starts nothing. A key set in the server's environment
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
 
+**GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
+"count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
+most one computer gets, and where a GPU computer differs from its others. A provider whose GPU computers cannot hold
+this server's run folder says why there. The save checks the shape, and only a sandbox takes one. The run's start (409)
+and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
+computer is made with the GPUs asked.
+
+- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
+  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
+  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
+  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
+  its network allowlist, are not yet proven live.
+- **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
+  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
+
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
@@ -1629,7 +1644,7 @@ a restart drives again finds its run. A firing's key stays bound to that run: wh
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
-takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+takes](#webhook-triggers) starts its own run); a firing over the run limit starts its run `queued`, and one the server can't take now (busy or unavailable) stays due and is tried again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1725,15 +1740,15 @@ conditions holding. A verified delivery no rule takes (GitHub's `ping` among the
 `accept`, every verified request fires, as before. A trigger holds at most 20 rules, each at most 20 conditions and 20
 actions; an `in` lists at most 20 values of at most 1024 characters of JSON each, a pointer is at most 512 characters,
 and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
-run active or not, since the events it takes are each their own work (a review per pull request); the server's run
-limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
-delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
-included. Runs start in the order their events came while the server has room; while one firing waits to be tried
-again after a `429`, a later one can start first.
+run active or not, since the events it takes are each their own work (a review per pull request); the run limit still
+holds on the runner: a run past it waits `queued`. A start the server can't take now keeps the firing due and tries it
+again, and past 20 firings due a new delivery answers `429`. This holds for every firing of such a trigger, a run now
+(`POST /v2/triggers/{id}/fire`) included. Runs start in the order their events came; while one firing waits to be
+tried again, a later one can start first.
 
-Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
-`max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
-again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
+Such a trigger can fill the runner's places and the queue behind them, starving other triggers and the runs people
+start. Give it `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and
+is tried again, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
 opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
 webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
@@ -3001,7 +3016,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Test
 
 ```sh
-npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-disk -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
+npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
 npm test -w @parcha/agentrun-serve
 ```
 

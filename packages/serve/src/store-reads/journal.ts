@@ -14,7 +14,7 @@ import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
-import { bookedSpend } from "../runner/metrics.js";
+import { bookedSpend, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -116,22 +116,26 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
- *  (withPaidCosts). A CLI run's record carries no per-request cost, so the usage row the renderer folds from its model
- *  turns is put in its booking's words (bookedUsage): its model requests at what the run's model proxy booked them at,
- *  and its paid tool calls at what they charged, as a pi run's usage row counts them. The end-of-run turn's rows are
- *  labelled as the server labels them (reflect-range.ts labelled). */
+ *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
+ *  costIsBooked) has the usage row the renderer folds from its model turns put in its booking's words (bookedUsage): its
+ *  model requests at what the run's model proxy booked them at, and its paid tool calls at what they charged, as a pi
+ *  run's usage row counts them; its decisions' rows and cost come from their receipts (decision-rows.ts withDecisions),
+ *  once. The end-of-run turn's rows are labelled as the server labels them (reflect-range.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
-  const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+  const cli = isCliRecord(entries);
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
-  const rows = cli ? bookedUsage(rendered, entries, options) : rendered;
+  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
 }
 
-/** A CLI run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every session of the
- *  run): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
+/** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every
+ *  session of the run but its decisions'): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
  *  costsofar/1), in the renderer's words (`Cost` once ended, else `Cost so far`). The renderer's own row is replaced in
  *  place; a run that booked a request and rendered none gets one at the end. One that booked none keeps its rows, with no
  *  usage row. */
