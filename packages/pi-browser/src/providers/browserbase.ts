@@ -2,20 +2,17 @@
 // URL (it carries a signing key) is held here, found again by `retrieve` after a restart.
 import { createReadStream } from "node:fs";
 import { isRefusal } from "../core/failures.js";
-import { fetchUsage, resolvePrices, searchUsage } from "../core/usage.js";
-import type { AttachTarget, BrowserProvider, FetchRequest, FetchResult, Geo, LiveView, PriceTable, ProviderCaps, Recording, RemoteFile, SearchRequest, SearchResult, SessionSpec } from "../core/host.js";
+import { resolvePrices } from "../core/usage.js";
+import type { AttachTarget, BrowserProvider, Geo, LiveView, PriceTable, ProviderCaps, Recording, RemoteFile, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall, type CdpSession } from "./cdp-call.js";
 import { applyBrowserbaseNoProxy, bindConnectDial, installWebSocketWrapper, rewriteConnectUrl, unbindConnectDial } from "./browserbase-net.js";
 import { directFetch } from "./http.js";
 import { claimWriter, fileProfileStore, freeWriter, isWriter, noteWriter, type ProfileStore } from "./profiles.js";
-import { accountKey, assertTag, browserbaseHoldings, defaultSleep, DEFAULT_CONFIRM, extensionArchive, nonEmpty, releaseAndConfirm, tagValue, untilAborted, uploadOnce } from "./shared.js";
+import { accountKey, assertTag, browserbaseHoldings, defaultSleep, DEFAULT_CONFIRM, extensionArchive, nonEmpty, releaseAndConfirm, tagValue, uploadOnce } from "./shared.js";
 
 export { rewriteConnectUrl, browserbaseNoProxyHosts, applyBrowserbaseNoProxy } from "./browserbase-net.js";
 export { fileProfileStore, memoryProfileStore, type ProfileStore } from "./profiles.js";
-
-export const SEARCH_QUERY_MAX = 200;
-export const SEARCH_RESULTS_MAX = 25;
 
 export type BrowserbaseSdk = {
   sessions: {
@@ -28,13 +25,8 @@ export type BrowserbaseSdk = {
   };
   extensions: { create(body: { file: unknown }, options?: RequestOptions): Promise<{ id: string }> };
   contexts: { create(body: { projectId?: string }, options?: RequestOptions): Promise<{ id: string }> };
-  fetchAPI: { create(body: { url: string; allowRedirects?: boolean; proxies?: boolean; format?: string }, options?: RequestOptions): Promise<FetchApiResult> };
-  search: { web(body: { query: string; numResults?: number }, options?: RequestOptions): Promise<SearchApiResult> };
   get<T = unknown>(path: string, options?: RequestOptions & { query?: Record<string, unknown>; headers?: Record<string, string>; __binaryResponse?: boolean }): Promise<T>;
 };
-type FetchApiResult = { statusCode?: unknown; contentType?: unknown; content?: unknown } | null | undefined;
-type SearchRow = { url?: unknown; title?: string | null; author?: string | null; publishedDate?: string | null; published?: string | null };
-type SearchApiResult = { results?: SearchRow[] } | null | undefined;
 type BrowserbaseSessionBody = {
   proxies: boolean | Array<Record<string, unknown>>;
   timeout: number;
@@ -328,29 +320,6 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
         return response.body as ReadableStream<Uint8Array>;
       },
     },
-
-    async fetch(request: FetchRequest, signal?: AbortSignal): Promise<FetchResult> {
-      signal?.throwIfAborted();
-      const result = await untilAborted((async () => (await client()).fetchAPI.create({ url: request.url, proxies: request.proxies, allowRedirects: true, format: request.format }, { signal }))(), signal);
-      // The Fetch API reports no final URL.
-      return { finalUrl: null, statusCode: Number(result?.statusCode) || null, contentType: typeof result?.contentType === "string" ? result.contentType : null, content: contentText(result?.content), usage: fetchUsage(prices, request.proxies) };
-    },
-
-    async search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult> {
-      signal?.throwIfAborted();
-      // The facade validates strictly (query 1 to 200 characters, 1 to 25 results): clamp, so a long query degrades and
-      // never throws.
-      const query = request.query.slice(0, SEARCH_QUERY_MAX);
-      const numResults = Math.max(1, Math.min(SEARCH_RESULTS_MAX, Math.floor(request.n) || 10));
-      const result = await untilAborted((async () => (await client()).search.web({ query, numResults }, { signal }))(), signal);
-      const rows: SearchRow[] = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
-      return { results: rows.filter((r): r is SearchRow & { url: string } => typeof r?.url === "string").map((r) => ({ url: r.url, title: r.title ?? null, author: r.author ?? null, published: r.publishedDate ?? r.published ?? null })), usage: searchUsage(prices) };
-    },
   };
 }
 
-function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((c: unknown) => (typeof c === "string" ? c : typeof (c as { text?: unknown } | null)?.text === "string" ? (c as { text: string }).text : JSON.stringify(c))).join("\n");
-  return content && typeof content === "object" ? JSON.stringify(content) : "";
-}
