@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, DockerProvider } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
@@ -57,10 +58,13 @@ test("check() refuses in words, field by field, with no docker call", () => {
 	assert.deepEqual(refused({ ...SPEC, pids: 0 }), ["pids"]);
 	assert.deepEqual(refused({ ...SPEC, workdir: "relative" }), ["workdir"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
-	const gpu = provider.check({ ...SPEC, gpu: "a100" });
-	assert.equal(gpu.length, 1);
-	assert.equal(gpu[0].field, "gpu");
-	assert.match(gpu[0].message, /Docker computer does not support gpu/);
+	// Docker declares no gpu: any spec.gpu is refused once, in the words every provider shares.
+	for (const asked of ["a100", { type: "T4", count: 1 }]) {
+		const gpu = provider.check({ ...SPEC, gpu: asked });
+		assert.equal(gpu.length, 1, JSON.stringify(asked));
+		assert.equal(gpu[0].field, "gpu");
+		assert.match(gpu[0].message, /this provider offers no GPU/);
+	}
 	assert.deepEqual(refused({ lifetimeMs: 0, network: { allow: [] } }), ["image", "lifetimeMs", "network"]);
 	assert.equal(calls().length, 0);
 });
@@ -333,7 +337,7 @@ test("connect() opens the daemon over docker exec and says hello", async () => {
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	assert.deepEqual(connected.value.hello, { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
+	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
 	assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
 	await connected.value.close();
 	const after = await connected.value.client.call("ping", {});

@@ -51,6 +51,15 @@ test("a revision keeps the place it names, {mode, box?}; one that names none kee
   }
 });
 
+test("a revision's computer keeps a sandbox's gpu, {type, count}: a GPU type name and a whole count from 1; anything else is refused", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu: { count: 2, type: "H100" } } }).body.computer, { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona" } }).body.computer, { kind: "sandbox", provider: "daytona" }, "no gpu named, none kept");
+  for (const gpu of ["H100", null, { type: "H100" }, { type: "", count: 1 }, { type: "H 100", count: 1 }, { type: "H100", count: 0 }, { type: "H100", count: 1.5 }, { type: "H100", count: 1, region: "earth" }]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu } }), refused(/gpu is not \{type, count\}/), JSON.stringify(gpu));
+  }
+  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", image: "x" } }), refused(/not \{kind, provider\?, gpu\?\}/));
+});
+
 test("a revision keeps a default spend cap and its mode, and the learning switch, when they are set; bad values are refused", () => {
   assert.equal(bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body.maxCostUsd, 2.5);
   assert.equal(bodyOf({ ...A, maxCostUsd: 2.5, capMode: "strict" }).body.capMode, "strict");

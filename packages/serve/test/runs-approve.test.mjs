@@ -5,10 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { approve } from "../dist/runs-over-store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
-import { onPostgres, raw } from "./store-target.mjs";
-
-/** The one-answer index is SQLite's today (schema.ts COMMANDS_ONE_ANSWER); Postgres gets it in its own migration. */
-const ONE_ANSWER_INDEX = { skip: onPostgres ? "waits on the Postgres commands_one_answer migration (pgstore-1)" : false };
+import { raw } from "./store-target.mjs";
 
 const CALL = "call-1";
 /** The moment a server reads before the runner took any answer: the call waits, nothing answered yet. */
@@ -37,7 +34,7 @@ test("a deny the runner has not taken yet: an allow after it is 409 with deny", 
   assert.deepEqual(await answers(store), [["deny", CALL]]);
 });
 
-test("two answers racing on one stale moment: exactly one is written, the other is 409 with the winner's decision", ONE_ANSWER_INDEX, async (t) => {
+test("two answers racing on one stale moment: exactly one is written, the other is 409 with the winner's decision", async (t) => {
   const { store } = await storeOn(t);
   await queued(store);
   const moment = waiting();
@@ -50,7 +47,44 @@ test("two answers racing on one stale moment: exactly one is written, the other 
   assert.ok(alreadyAnswered(winner)(lost));
 });
 
-test("the same answer racing itself: both succeed, one command row", ONE_ANSWER_INDEX, async (t) => {
+/** The store as approve() reads and writes it, on its own connection, with its first read of the run's commands held until
+ *  `peers` answers have each made theirs: every answer reads the call unanswered before any is written. */
+function readsTogether(peers) {
+  let read = 0;
+  let open;
+  const allRead = new Promise((resolve) => (open = resolve));
+  return (store) => {
+    let first = true;
+    return {
+      command: (runId, input) => store.command(runId, input),
+      async commands(...args) {
+        const rows = await store.commands(...args);
+        if (first) {
+          first = false;
+          if (++read === peers) open();
+          await allRead;
+        }
+        return rows;
+      },
+    };
+  };
+}
+
+test("an approve and a deny on two connections, each having read the call unanswered: one is written, the other is 409 with its decision", async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  // A second connection to the same store (a runner's role: the server's owns it).
+  const { store: other } = await storeOn(t, { file, role: "runner" });
+  const held = readsTogether(2);
+  const settled = await Promise.allSettled([approve(held(store), waiting(), CALL, "allow"), approve(held(other), waiting(), CALL, "deny", "no")]);
+  const won = await answers(store);
+  assert.equal(won.length, 1, `one command row, not both answers: ${JSON.stringify(won)}`);
+  const winner = won[0][0] === "approve" ? "allow" : "deny";
+  assert.deepEqual(settled.map((s) => s.status).sort(), ["fulfilled", "rejected"]);
+  assert.ok(alreadyAnswered(winner)(settled.find((s) => s.status === "rejected").reason));
+});
+
+test("the same answer racing itself: both succeed, one command row", async (t) => {
   const { store } = await storeOn(t);
   await queued(store);
   const moment = waiting();

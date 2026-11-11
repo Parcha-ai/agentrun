@@ -10,8 +10,8 @@
 // is the run view's to read from the journal (the server's view layer, run-view.ts). These writers take it as `RunMoment`
 // and never recompute it; the coarse facts a row already holds (its state, its launch cap) they read from the store.
 import { randomBytes } from "node:crypto";
-import type { Revision } from "@parcha/pi-durable-agent";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { Revision } from "./agent-rows.js";
+import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
@@ -19,7 +19,7 @@ import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
-import { launchBody, type RunLaunch } from "./run-launch.js";
+import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
@@ -232,6 +232,18 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
   return row && { decision: row.kind === "approve" ? "allow" : "deny" };
 }
 
+/** How a stop or cancel written to run `runId` before `before` (a command id; absent, any) answers every call still waiting:
+ *  the runner reads commands in the order they were written, so it applies the stop first and withdraws (or, on a cancel,
+ *  cancels) the call, and refuses every answer written after it. An answer written then is told so at once, the same 409
+ *  the call's withdrawal gives, never 204 for a call that will not run. Read by the rows' order, so a stop that lands
+ *  between this read and the answer's write is caught once the answer is written (approve). Untaken rows only, unless
+ *  `taken` (a run already final: the end its runner applied). */
+async function endBefore(store: RunsStore, runId: string, { before = Number.POSITIVE_INFINITY, taken = false }: { before?: number; taken?: boolean } = {}): Promise<{ decision: "withdrawn" | "canceled" } | undefined> {
+  // The first: the runner applies the first stop or cancel it reads and stops reading there.
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before && command.refused === null && (taken || command.takenAt === null));
+  return row && { decision: row.kind === "cancel" ? "canceled" : "withdrawn" };
+}
+
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
  *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
  *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
@@ -244,14 +256,27 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
   if (given) return settle(given);
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
+  const ending = await endBefore(store, moment.id);
+  if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
+  let sent: { id: number };
   try {
-    await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+    sent = await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
   } catch (error) {
+    // The run went final since it was read (its runner took a stop or a cancel, or it ended): its calls were answered by
+    // that end, so the answer is told how, never a 500.
+    if (error instanceof RunFinal) {
+      const end = await endBefore(store, moment.id, { taken: true });
+      throw alreadyAnswered(id, end?.decision ?? "withdrawn", end === undefined);
+    }
     const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
     if (!won) throw error;
-    settle(won);
+    return settle(won);
   }
+  // A stop or cancel written between the read above and this answer comes first in the runner's order: the answer will be
+  // refused at that end, so the person is told now.
+  const raced = await endBefore(store, moment.id, { before: sent.id });
+  if (raced) throw alreadyAnswered(id, raced.decision);
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
@@ -310,6 +335,8 @@ export interface StartDeps {
   readonly documents?: string;
   /** What a run's box may reach, as the server resolved it, or "none". */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set that (run-launch.ts boxAllowSet). */
+  readonly boxAllowSet?: true;
   /** The run's model, pinned at start: resolved exactly as the old per-run process resolved it from the revision and agent
    *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
    *  resolution happens, here. Required. */
@@ -348,23 +375,29 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; gradeModel?: string } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "", ...grade };
-  // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
-  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
-  // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
-  // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
-  // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-  const { section, given } = learnedParts(seeded.seed, options);
-  // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
-  // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
-  // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
-  const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
-  return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...grade };
+  // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
+  // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...grade };
+  try {
+    // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
+    const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
+    // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
+    // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
+    // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
+    const { section, given } = learnedParts(seeded.seed, options);
+    // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
+    // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
+    // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+    const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...grade };
+  } catch {
+    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
+  }
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
@@ -499,6 +532,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(deps.approvers !== undefined ? { approvers: deps.approvers } : {}),
     ...(deps.documents !== undefined ? { documents: deps.documents } : {}),
     ...(deps.boxAllow !== undefined ? { boxAllow: deps.boxAllow } : {}),
+    ...(deps.boxAllowSet ? { boxAllowSet: true as const } : {}),
     ...(fileIds.length ? { files: fileIds } : {}),
     ...(learning ? { learning } : {}),
     ...(trigger ? { trigger } : {}),

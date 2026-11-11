@@ -8,7 +8,7 @@
 import type { RunFolder } from "./conformance/types.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type { ComputerProvider } from "./provider.js";
+import type { ComputerProvider, NetworkForm } from "./provider.js";
 
 /** Where the conformance side reads its settings: process.env, or a record of the same shape. */
 export type ProviderEnv = Readonly<Record<string, string | undefined>>;
@@ -40,6 +40,11 @@ export interface ProviderModule {
 	 */
 	readonly MOUNT: readonly MountKind[];
 	/**
+	 * The network forms its computers make, the same as its provider's capabilities().network: a caller tells which
+	 * provider takes an allowlist, or runs only on the vendor's own network, from the registry alone.
+	 */
+	readonly NETWORK: readonly NetworkForm[];
+	/**
 	 * The machine kind and groups of each configuration it offers, as its built providers' capabilities() declare them:
 	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
 	 */
@@ -64,6 +69,7 @@ export const providers = {
 	e2b: () => import("./e2b.js"),
 	browserbase: () => import("./browserbase.js"),
 	kernel: () => import("./kernel.js"),
+	local: () => import("./local.js"),
 	"phone-harness": () => import("./phone-harness.js"),
 	orgo: () => import("./orgo.js"),
 } satisfies Record<string, () => Promise<ProviderModule>>;

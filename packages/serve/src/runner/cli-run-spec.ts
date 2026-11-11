@@ -50,7 +50,7 @@ import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
-import { claimSecrets, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -69,6 +69,10 @@ export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./
 /** What the runner hands the CLI spec builder: the same deps the pi spec takes (computerForClaim, computerDeps and
  *  makeArchilDisk are on AdapterSpecDeps, shared by both). One per runner. */
 export type CliSpecDeps = AdapterSpecDeps;
+
+/** What a CLI harness refuses of an agent's computer, in words: a browser, which only pi's browser tool drives. */
+export const cliRefusesKind = (kind: string): string | undefined =>
+  kind === "browser" ? "This agent's computer is a browser, which only the pi harness drives here: pick pi for this agent, or another kind of computer in Settings → Computers." : undefined;
 
 /** The revision's body, as the fields the spec reads of it. */
 type RevisionBody = {
@@ -207,7 +211,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
+    // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
+    // whose computer is a browser is refused in words at its claim, before anything is made.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
   holds.hold({ computer });
 
@@ -313,8 +319,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       };
 
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
-  // store at each decide, and the turn's origin read through the run's Workspace (Mode 2: on the run's disk) — adapterRunGate
-  // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
+  // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
+  // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
@@ -343,6 +349,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   if (webNames.length || learns) {
     // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
     const toolEnv: NodeJS.ProcessEnv = { ...claimed };
+    // The decision keys its learned workflows' typed questions need, as the pi spec reads them (claim-secrets.ts
+    // learnedDecisionKeys): onto this copy alone, never the CLI's own environment or its model's (cliRunEnv, above), and
+    // held by the redactors as the claim's keys are.
+    if (learns) {
+      const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
+      for (const redact of new Set([held, cut])) holdClaimed(redact, learnedKeys);
+      Object.assign(toolEnv, learnedKeys);
+    }
     handedKeys = runnerSecrets(toolEnv);
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
@@ -410,7 +424,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
       const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      const costUsd = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model").usd;
+      // Its model requests and its decisions (a learned workflow's) at what they were booked at (bookedSpend).
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      const model = bookedSpend(all, "model").usd;
+      const decisions = bookedSpend(all, "decisions").usd;
+      const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
