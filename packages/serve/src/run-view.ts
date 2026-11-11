@@ -538,6 +538,9 @@ export interface RunMoment {
   readonly waitingApprovalId?: string;
   /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
   readonly approvalIds?: ReadonlySet<string>;
+  /** What is archived of it, when anything is: its agent, else the run itself. Archiving closes a run: it takes no message
+   *  (runs-over-store.ts message). Absent when neither is. */
+  readonly archived?: "run" | "agent";
   /** The approvals already answered, by call id, as the run view folds them (for the first-wins refusal and its words). */
   readonly answeredApprovals?: Readonly<Record<string, { readonly decision: ApprovalDecision; readonly ended?: true }>>;
 }

@@ -475,7 +475,10 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
 export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  return momentOf(run.view, factsOf(run), run.live);
+  // What is archived of it: its agent (whose archive holds its runs too, so it is said first: unarchiving the run alone would
+  // not open it), else the run's own archive time.
+  const archived = (await store.agents.get(run.row.agent))?.archivedAt ? "agent" : run.row.archivedAt ? "run" : undefined;
+  return { ...momentOf(run.view, factsOf(run), run.live), ...(archived ? { archived } : {}) };
 }
 
 /** A run's timeline rows as the VIEW renders them (storeRunOf's view.rows: withAsks, so a run waiting on a question carries
