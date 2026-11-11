@@ -160,9 +160,13 @@ test("the cap's refusal of a child's request fails its call in the cap's words a
   assert.equal(capped.last.status, "input_required", `parked at its cap: ${JSON.stringify(capped.view)}`);
   assert.equal(capped.view.pending?.kind, "budget", JSON.stringify(capped.view.pending));
   // One behaviour: the child's refused request ends its turn, its call fails in the cap's words, and the run's own next
-  // request is refused the same way, so the run parks with the call's result on its record.
-  const [result] = resultsOf(capped.rows);
-  assert.equal(result?.tool_status, "failed", JSON.stringify(capped.rows.map((row) => [row.kind, row.tool_name, row.tool_status])));
+  // request is refused the same way, so the run parks with the call's result on its record. The run reads parked from the
+  // moment the child's request is refused (its pause lands first), and the call's result is written as the child's turn
+  // ends, just after: on a loaded machine the run can read parked before it, so its rows are read again until it shows.
+  let rows = capped.rows;
+  await until(async () => resultsOf((rows = await rowsNow(api, capped.view.run_id))).length > 0, "the subagent call's result on the record");
+  const [result] = resultsOf(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.tool_status])));
   assert.match(result.tool_result_preview ?? "", /subagent: it stopped before it answered: .*spend_cap_reached/);
   const asked = requests(lines()).length;
   await new Promise((resolve) => setTimeout(resolve, 1_000));
