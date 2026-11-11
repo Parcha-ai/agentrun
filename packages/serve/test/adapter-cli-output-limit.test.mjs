@@ -66,7 +66,10 @@ async function runOnce(t, text, end) {
     return ["ended", "failed"].includes(now.state) && now.runner === null && now;
   }, "the run settled and released", 5_000);
   const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
-  return { row, said: records.entries.filter((entry) => entry.kind === "agentrun.message" && entry.data?.role === "model").map((entry) => entry.data) };
+  // Each message is stamped when it was written (`at`, the loop's clock): checked here, then left out of what is compared.
+  const said = records.entries.filter((entry) => entry.kind === "agentrun.message" && entry.data?.role === "model").map((entry) => entry.data);
+  for (const message of said) assert.equal(typeof message.at, "number", `the record's message is stamped: ${JSON.stringify(message)}`);
+  return { row, said: said.map(({ at: _at, ...rest }) => rest) };
 }
 
 test("a CLI turn whose final answer the output limit cut ends the run failed, saying so, its cut answer kept", async (t) => {

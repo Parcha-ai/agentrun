@@ -43,7 +43,10 @@ async function sweep(argv, fake, { env = ENV, waitMs = 200, pollMs = 10 } = {}) 
 	return { code, stdout: stdout.text, stderr: stderr.text, made };
 }
 
-const tagged = (extra = {}) => ({ tags: { [COMPUTER]: "1", [`${COMPUTER}.name`]: "computer-0123456789ab", ...extra } });
+/** A conformance run's computer: the provider's tag and the run's (RUN_LABEL, agentrun.conformance). */
+const tagged = (extra = {}) => ({ tags: { [COMPUTER]: "1", [`${COMPUTER}.name`]: "computer-0123456789ab", "agentrun.conformance": "run-1", ...extra } });
+/** A computer another user of the app made: the provider's tag, no conformance label. */
+const notOfARun = () => ({ tags: { [COMPUTER]: "1", [`${COMPUTER}.name`]: "computer-00000000000f", "agentrun.run": "r-staging" } });
 /** The ids a call names, as its first argument after the method's name. */
 const named = (fake) => new Set(fake.calls.filter(([name]) => name.startsWith("sandbox.") || name === "sandboxes.fromId").map(([, id]) => id));
 
@@ -70,16 +73,23 @@ test("--before records every running sandbox in the app that carries the compute
 	assert.deepEqual(fake.names().filter((name) => name.startsWith("sandbox.")), [], "no sandbox was read or ended");
 });
 
-test("--after terminates every tagged sandbox that was not there before, reads each back until it has finished, and touches no other", async () => {
+test("--after terminates every new conformance sandbox, reads each back until it has finished, and touches no other: not one there before, nor one another user made mid-run", async () => {
 	const fake = fakeModal({ sandboxes: [tagged(), { tags: { other: "1" } }] });
 	const [kept, untagged] = [...fake.sandboxes.keys()];
 	const file = fileIn();
 	assert.equal((await sweep(["--before", file], fake)).code, 0);
 	const fresh = [fake.add(tagged()), fake.add(tagged({ run: "x" }))];
+	const midRun = fake.add(notOfARun());
 	fake.calls.length = 0;
 	const ran = await sweep(["--after", file], fake);
 	assert.equal(ran.code, 0, ran.stderr);
-	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, gone: 2, stillThere: [] });
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, gone: 2, stillThere: [], leftAlone: 1 });
+	assert.equal(fake.sandboxes.get(midRun).running, true, "the sandbox made mid-run with no conformance label runs on");
+	assert.deepEqual(
+		fake.calls.filter(([, of]) => of === midRun).map(([name]) => name),
+		["sandbox.getTags"],
+		"its tags read, and nothing else: no terminate, no read back",
+	);
 	for (const id of fresh) {
 		assert.equal(fake.sandboxes.get(id).running, false, `${id} was terminated`);
 		assert.equal(fake.sandboxes.get(id).terminated, 1);
@@ -102,7 +112,7 @@ test("--after with nothing new sweeps nothing and exits 0", async () => {
 	await sweep(["--before", file], fake);
 	const ran = await sweep(["--after", file], fake);
 	assert.equal(ran.code, 0);
-	assert.deepEqual(JSON.parse(ran.stdout), { swept: 0, gone: 0, stillThere: [] });
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 0, gone: 0, stillThere: [], leftAlone: 0 });
 	assert.equal(fake.names().includes("sandbox.terminate"), false);
 });
 
@@ -116,7 +126,7 @@ test("--after exits 1 and names a sandbox still running once its wait runs out",
 	const ran = await sweep(["--after", file], fake, { waitMs: 150, pollMs: 10 });
 	assert.ok(Date.now() - started < 5_000, "bounded");
 	assert.equal(ran.code, 1);
-	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, gone: 1, stillThere: [stuck] });
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, gone: 1, stillThere: [stuck], leftAlone: 0 });
 	assert.match(ran.stderr, new RegExp(`${stuck} is still running after 0\\.15 s`));
 	assert.equal(fake.sandboxes.get(ended).running, false);
 });
@@ -128,7 +138,7 @@ test("--after: a terminate that fails is said, and the sandbox counts as still t
 	const id = fake.add(tagged());
 	const ran = await sweep(["--after", file], fake, { waitMs: 60 });
 	assert.equal(ran.code, 1);
-	assert.deepEqual(JSON.parse(ran.stdout), { swept: 1, gone: 0, stillThere: [id] });
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 1, gone: 0, stillThere: [id], leftAlone: 0 });
 	assert.match(ran.stderr, /terminate failed on the server/);
 });
 
@@ -213,7 +223,7 @@ test("--before records the server COMPUTER_MODAL_SERVER_URL names, and --after t
 	const fresh = fake.add(tagged());
 	const ran = await sweep(["--after", file], fake, { env });
 	assert.equal(ran.code, 0, ran.stderr);
-	assert.deepEqual(JSON.parse(ran.stdout), { swept: 1, gone: 1, stillThere: [] });
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 1, gone: 1, stillThere: [], leftAlone: 0 });
 	assert.equal(fake.sandboxes.get(fresh).running, false);
 });
 
