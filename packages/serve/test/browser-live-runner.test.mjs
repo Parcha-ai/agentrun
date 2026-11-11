@@ -2,7 +2,8 @@
 // it): with the tool host's live-viewer seam (ToolHost.liveViewers, built as runner/adapter-run-spec.ts builds it, over
 // the real store and a real claim from runs.claimMany), each session's viewer goes to the store as it launches or is
 // reopened, its own row goes at its release, every row of the run at the run's release, and nothing goes to the run's
-// directory. Without the seam (the old per-run process), the run's directory's files, as before. The server's reads over
+// directory. Without the seam nothing is handed over and nothing is written: never a file in the run's folder, the
+// agent's workspace. The server's reads over
 // the store (liveViewerLink, the dep run-reads-over-store's runBrowserState takes; liveViewerById for the proxy) see what
 // the runner put. The token's plaintext is in no store column and no file under the data directory.
 import assert from "node:assert/strict";
@@ -11,7 +12,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BROWSER_LIVE_DIR, dropLiveViewer, liveViewerById, liveViewerFor, liveViewerLink, putLiveViewer, readHandovers, readLiveViewers, sessionHandovers } from "../dist/browser-live.js";
+import { dropLiveViewer, liveViewerById, liveViewerFor, liveViewerLink, putLiveViewer, readLiveViewers, sessionHandovers } from "../dist/browser-live.js";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { raw, storeAtRest } from "./store-target.mjs";
 
@@ -52,14 +53,14 @@ async function runnerRun(t) {
 
 test("on the runner path the browser's hand-over goes to the store under the run's claim, never to the run's directory: put at launch and at a reopen, its own row dropped at its release, every row at the run's release", async (t) => {
   const r = await runnerRun(t);
-  const handed = sessionHandovers(r.root, r.seam);
+  const handed = sessionHandovers(r.seam);
   const a = viewer("ar-run-1-1");
   const b = viewer("ar-run-1-2");
   await handed.changed(a.row, "created");
   r.clock.now += 10;
   await handed.reopened(b.tag, b.row.liveView.fullscreen);
   assert.deepEqual((await readLiveViewers(r.store, KEY, "run-1")).map(({ id, token, tag }) => ({ id, token, tag })), [b, a].map(({ id, token, tag }) => ({ id, token, tag })));
-  assert.equal(existsSync(join(r.root, BROWSER_LIVE_DIR)), false, "nothing in the run's directory");
+  assert.equal(existsSync(join(r.root, "browser-live")), false, "nothing in the run's directory");
   // A session with no viewer, or a vendor's own URL, hands nothing over.
   await handed.changed({ session: { tag: "ar-run-1-3" }, liveView: null }, "created");
   await handed.changed({ session: { tag: "ar-run-1-4" }, liveView: { fullscreen: "https://vendor.example/live/abc" } }, "created");
@@ -71,23 +72,23 @@ test("on the runner path the browser's hand-over goes to the store under the run
   assert.deepEqual(await rawRows(r.file), []);
 });
 
-test("without the seam (the old per-run process) the hand-over is the run's directory's files, as before", async (t) => {
+test("without the seam no viewer is handed over and nothing is written in the run's folder: a viewer's token never lands where the run's agent and its file list reach", async (t) => {
   const r = await runnerRun(t);
-  const handed = sessionHandovers(r.root);
+  // On the runner the run's folder is its workspace; a hand-over with no store to go to goes nowhere.
+  const handed = sessionHandovers(undefined);
   const a = viewer("ar-run-1-1");
   await handed.changed(a.row, "created");
-  assert.deepEqual((await readHandovers(r.root)).map(({ id, token, tag }) => ({ id, token, tag })), [{ id: a.id, token: a.token, tag: a.tag }]);
-  assert.deepEqual(await rawRows(r.file), [], "nothing in the store");
+  await handed.reopened(a.tag, a.row.liveView.fullscreen);
+  assert.deepEqual(filesUnder(r.root).filter(([, bytes]) => bytes.includes(a.token)).map(([path]) => path), [], "no file holds the viewer's token");
+  assert.equal(existsSync(join(r.root, "browser-live")), false, "no hand-over directory in the run's folder");
+  assert.deepEqual(await rawRows(r.file), [], "and nothing in the store");
   await handed.changed(a.row, "released");
-  assert.deepEqual(await readHandovers(r.root), []);
-  await handed.changed(a.row, "created");
   await handed.released();
-  assert.equal(existsSync(join(r.root, BROWSER_LIVE_DIR)), false, "the run's release takes the directory");
 });
 
 test("the server reads what the runner put: liveViewerLink names the newest viewer whose port answers, liveViewerById the one the proxy asks for; none once released or when no port answers", async (t) => {
   const r = await runnerRun(t);
-  const handed = sessionHandovers(r.root, r.seam);
+  const handed = sessionHandovers(r.seam);
   const a = viewer("ar-run-1-1");
   const b = viewer("ar-run-1-2");
   await handed.changed(a.row, "created");
@@ -109,7 +110,7 @@ test("the server reads what the runner put: liveViewerLink names the newest view
 
 test("on the runner path the viewer's token is in no computer_viewers column in plaintext and in no file under the data directory: the store's file (its journal and command rows among its tables) and the run's directory hold none of it", async (t) => {
   const r = await runnerRun(t);
-  const handed = sessionHandovers(r.root, r.seam);
+  const handed = sessionHandovers(r.seam);
   const a = viewer("ar-run-1-1");
   await handed.changed(a.row, "created");
   await r.store.command("run-1", { kind: "steer", body: { content: "go on" } });
@@ -126,7 +127,7 @@ test("on the runner path the viewer's token is in no computer_viewers column in 
 
 test("the live route over the store serves only what the runner put: a viewer's page by its path id, the viewer's files while the run has one open, nothing at any other address, and nothing once released", async (t) => {
   const r = await runnerRun(t);
-  const handed = sessionHandovers(r.root, r.seam);
+  const handed = sessionHandovers(r.seam);
   const a = viewer("ar-run-1-1");
   const b = viewer("ar-run-1-2");
   await handed.changed(a.row, "created");

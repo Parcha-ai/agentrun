@@ -133,11 +133,13 @@ export function learnedText(text: string): string {
  *  The check before the run refuses such a workflow first (draftProblems); this one holds should it not. */
 export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
 
-/** The tool's description: what it does, and each workflow by name with the line its README says what it does with. */
+/** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
+ *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
+ *  one; what it answers), then each workflow on a line of its own (workflowLine): its name, its input's fields and the
+ *  line its README says what it does with. */
 export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]): string =>
   [
-    "Run a workflow this agent learned, as one step: give its name and its input, a JSON object as the workflow's input",
-    "schema says. It answers the workflow's output as JSON, or why it did not run. The workflows:",
+    "Runs one of this agent's learned workflows in one call, by name, on a JSON input with the fields below (* required). Answers its output as JSON, or why it did not run.",
     ...workflows.map(workflowLine),
   ].join("\n");
 
@@ -176,8 +178,9 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       additionalProperties: false,
       required: ["name", "input"],
       properties: {
-        name: { type: "string", enum: names, description: "The learned workflow to run." },
-        input: { type: "object", description: "The workflow's input, as its input schema says." },
+        // No words of their own: the description says what each is, and the parameters go with every request too.
+        name: { type: "string", enum: names },
+        input: { type: "object" },
       },
     } as unknown as TSchema,
     execute: async (args, api, context) => {

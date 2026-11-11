@@ -67,7 +67,6 @@ export type TriggerSource = Trigger["source"];
 export type TriggerTarget = Extract<Trigger["target"], { kind: "start_run" }>;
 /** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. */
 export type Firing = NonNullable<Trigger["last_firing"]>;
-export type FiringStatus = Firing["status"];
 /** An edit's body. */
 export type TriggerInput = Body<"updateTrigger">;
 /** A create's body (POST /v2/triggers). */
@@ -76,14 +75,10 @@ export type TriggerCreate = Body<"createTrigger">;
 export type TriggerMade = Answer<"createTrigger">;
 /** A webhook trigger's new signing secret (POST /v2/triggers/{id}/secret), shown that once. */
 export type TriggerSecret = Answer<"rotateTriggerSecret">;
-/** A question the run asked a person (ask_person): a message answers it. */
-export type PendingQuestion = Extract<NonNullable<Run["pending"]>, { kind: "question" }>;
 /** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it. */
 export type PendingApproval = Extract<NonNullable<Run["pending"]>, { kind: "approval" }>;
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
 export type BudgetPending = Extract<NonNullable<Run["pending"]>, { kind: "budget" }>;
-
-export type RunReview = NonNullable<Run["review"]>;
 
 export type TimelineKind = components["TimelineKind"];
 export type TimelineRow = components["TimelineRow"];
@@ -162,8 +157,6 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
 export type ComputerKindView = Computers["kinds"][number];
-/** A kind of computer an agent can be given. */
-export type ComputerKind = ComputerKindView["kind"];
 /** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
  *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
 export type ComputerProvider = Answer<"saveComputerKeys">;
