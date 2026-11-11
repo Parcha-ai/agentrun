@@ -13,10 +13,11 @@ import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERS
 import type { Revision } from "@parcha/pi-durable-agent";
 import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
-import { isWorkspaceError, localFolderOf, localWorkspace, type Workspace } from "./workspace/index.js";
+import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
+import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
