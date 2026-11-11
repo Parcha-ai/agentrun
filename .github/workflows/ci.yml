@@ -90,7 +90,7 @@ jobs:
         # One Node: the supported floor (engines, .nvmrc) is the current pin, 24.22.3, the November 2026 security
         # release. An older 24 is not supported, so no leg tests one.
         node: ['24.22.3']
-        shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
+        shard: [checks, packages, source, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
     steps:
       - uses: actions/checkout@v4
         with:

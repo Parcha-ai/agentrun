@@ -33,6 +33,7 @@ import computersKeys from "./computers-keys.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
+import agentCardFooter from "./agent-card-footer.mjs";
 import toolCards from "./tool-cards.mjs";
 
 export const flows = [
@@ -59,5 +60,6 @@ export const flows = [
   { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
   triggerRowLabel,
   computerStep,
+  agentCardFooter,
   toolCards,
 ];
