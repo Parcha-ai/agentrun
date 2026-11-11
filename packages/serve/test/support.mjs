@@ -21,6 +21,7 @@ import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
+import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
@@ -283,7 +284,8 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`, its grade cut at
  *  `gradeTimeoutMs` when given. It holds at most the server's run cap (`maxRuns`, else AGENTRUN_MAX_RUNS, else what the
- *  host's memory holds: host.ts maxRunsOf), as the CLI's runner does; a run past it waits queued. Returns a close() that
+ *  host's memory holds: host.ts maxRunsOf), and only the runs whose harnesses' sizes the host's memory holds together
+ *  (memory-claim.ts runnerMemory), as the CLI's runner does; a run past either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
 export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
@@ -313,6 +315,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
     runner = startRunner({
       store,
       loops: maxRunsOf(process.env, switches.maxRuns),
+      // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
+      // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
+      memory: runnerMemory(store),
       onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
@@ -610,6 +615,18 @@ export async function startRun(api, id, content, extra = {}, skills) {
   const run = await api("POST", `/agents/${id}/runs`, { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body;
+}
+
+/** `send`'s answer, sent again while the store answers 409 home_busy (retryable: another write holds it, such as a CLI's
+ *  first-use install), after the retry_after_ms it names, as an API client does; at most 20 tries. The claude-agent MCP
+ *  cases went red on the first busy answer to an agent's create or a run's start (any-4 on #2410 and #2383, any-6 on #2470). */
+export async function whenFree(send) {
+  for (let tries = 1; ; tries++) {
+    const answer = await send();
+    const error = answer.body?.error;
+    if (answer.status !== 409 || error?.code !== "home_busy" || error.retryable !== true || tries >= 20) return answer;
+    await new Promise((resolve) => setTimeout(resolve, error.retry_after_ms ?? 500));
+  }
 }
 
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
