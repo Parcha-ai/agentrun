@@ -39,7 +39,7 @@ import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
-import { withoutLoopback } from "./key-refusal.js";
+import { withoutLoopbackAddresses } from "./key-refusal.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 import { type Entry, isWorkspaceError, type Workspace, WorkspaceError, workspaceAt } from "./workspace/index.js";
@@ -136,14 +136,15 @@ const REDACTED = "[redacted]";
 /** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
  *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
  *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. A text served
- *  has no loopback address (key-refusal.ts withoutLoopback, as a run's words, run-view.ts shownOf): the host's own, never a
- *  person's. `local`: kept, for what a run itself is given (its .learning/ notes, runner/learning-seed.ts, and its
+ *  has no loopback address, the address alone (key-refusal.ts withoutLoopbackAddresses, the pattern a run's words share,
+ *  run-view.ts shownOf): the host's own, never a person's; a run error's `url:` tail is no rule of a note's, a patch's or a
+ *  workflow.json's, so their label, line ends and JSON stay. `local`: kept, for what a run itself is given (its .learning/ notes, runner/learning-seed.ts, and its
  *  # Learned section, server.ts's learning start), where an address on the run's own machine is the note's to give. */
 export function secretsShown(values: readonly string[], { local = false }: { local?: boolean } = {}): Shown {
   const matches = valueMatcher(values);
   const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
   const cut = (text: string) => (holds(text) ? redactSecrets(text, values) : text);
-  return { holds, text: local ? cut : (text) => withoutLoopback(cut(text)), name: (name) => (holds(name) ? REDACTED : name) };
+  return { holds, text: local ? cut : (text) => withoutLoopbackAddresses(cut(text)), name: (name) => (holds(name) ? REDACTED : name) };
 }
 
 const isText = (value: unknown): value is string => typeof value === "string";
