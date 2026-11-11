@@ -182,18 +182,25 @@ async function ownerOf(api, base) {
 
 // ---- one series ------------------------------------------------------------------------------------------------------
 
-/** The agent's active learned items now: each name with its text's sha256, and the files waiting for the owner's OK. */
-async function activeOf(api, agentId) {
+/** The agent's active learned items now: each name with its text's sha256, and the files waiting for the owner's OK.
+ *  Every page of its notes: the view holds the first, and the notes route the rest (next_cursor). */
+export async function activeOf(api, agentId) {
   const view = ok("reading the agent's learning", await api("GET", `/agents/${q(agentId)}/learning`)) ?? {};
+  const allNotes = [...(view.notes?.items ?? [])];
+  for (let cursor = view.notes?.next_cursor; cursor; ) {
+    const page = ok("reading the agent's notes", await api("GET", `/agents/${q(agentId)}/learning/notes?cursor=${q(cursor)}`)) ?? {};
+    allNotes.push(...(page.items ?? []));
+    cursor = page.next_cursor;
+  }
   const text = async (file) => {
     const got = await api("GET", `/agents/${q(agentId)}/learning/files/${q(file)}`);
     return got.status === 200 ? (typeof got.body === "string" ? got.body : JSON.stringify(got.body)) : "";
   };
   const notes = {}, skills = {}, workflows = {};
-  for (const n of view.notes?.items ?? []) if (n.status === "active") notes[n.file] = sha(n.text ?? "");
+  for (const n of allNotes) if (n.status === "active") notes[n.file] = sha(n.text ?? "");
   for (const s of view.skills ?? []) if (s.status === "active") skills[s.name] = sha(await text(s.file));
   for (const w of view.workflows ?? []) if (w.status === "active") workflows[w.name] = sha(await text(w.file));
-  const pending = [...(view.notes?.items ?? []).filter((n) => n.status === "pending").map((n) => n.file), ...(view.skills ?? []).filter((s) => s.status === "pending").map((s) => s.file), ...(view.workflows ?? []).filter((w) => w.status === "pending").map((w) => w.readme ?? w.file)];
+  const pending = [...allNotes.filter((n) => n.status === "pending").map((n) => n.file), ...(view.skills ?? []).filter((s) => s.status === "pending").map((s) => s.file), ...(view.workflows ?? []).filter((w) => w.status === "pending").map((w) => w.readme ?? w.file)];
   return { notes, skills, workflows, pending };
 }
 
@@ -216,6 +223,18 @@ async function agentFor(ctx, job, harness, learns) {
   return agentId;
 }
 
+/** A run's cost: the server's figure, a known $0 included; null when the server says it is unknown, or when the run
+ *  completed having booked no request at all (no usage row with requests, no tokens), which is no price of zero but a
+ *  usage the server does not see (`unpriced`). */
+export function runCost(view, usage, tokens) {
+  const priced = usd(view.cost?.usd);
+  const unpriced = priced === 0 && view.status === "completed" && !(usage?.requests > 0) && !(tokens?.requests > 0);
+  return { total: unpriced ? null : priced, unpriced };
+}
+
+/** When a wait started `now` gives up: the earlier of the run's own timeout and the bench's deadline. */
+export const waitUntil = (options, now = Date.now()) => Math.min(now + options.runTimeoutMs, options.deadline);
+
 /** Waits for run `runId` to end and, for a learning agent, for its learning to settle. */
 async function settled(api, runId, learns, deadline) {
   for (;;) {
@@ -237,7 +256,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { api, options } = ctx;
   const started = ok("starting the run", await api("POST", `/agents/${q(agentId)}/runs`, { input: { content: kase.input }, ...(kase.maxCostUsd !== undefined ? { max_cost_usd: kase.maxCostUsd } : {}) }));
   const runId = String(started.run_id);
-  const { view, timedOut } = await settled(api, runId, learns, Date.now() + options.runTimeoutMs);
+  const { view, timedOut } = await settled(api, runId, learns, waitUntil(options));
   const rows = (ok("reading the timeline", await api("GET", `/runs/${runId}/timeline`))?.rows) ?? [];
   const servers = Object.keys(kase.mcp);
   const record = { answer: typeof view.result?.final_answer === "string" ? view.result.final_answer : "", calls: TE.callsOf(rows, harness, servers), mcpCalls: ctx.fakes.flatMap((f) => f.calls.map((c) => ({ ...c }))), files: await filesOf(api, runId, kase) };
@@ -259,11 +278,10 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     }
   }
   const verdictFiles = (learning?.verdict?.items ?? []).map((item) => item.file ?? "");
-  // A run that answered cost something: $0 is a usage with no price (a harness whose requests the server could not price),
-  // so it reads unknown, never $0 (cost_unpriced), as an unpriced grade does.
-  const priced = usd(view.cost?.usd);
-  const costUnpriced = priced === 0 && view.status === "completed";
-  const total = costUnpriced ? null : priced;
+  // The run's cost (runCost): a known $0 stays $0; unknown from the server's null, or a run that booked no request.
+  const usageRow = (() => { const u = rows.findLast((r) => r.kind === "usage")?.usage; return u ? JSON.parse(JSON.stringify(u)) : null; })();
+  const tokens = await tokensOf(ctx.store, runId);
+  const { total, unpriced: costUnpriced } = runCost(view, usageRow, tokens);
   // The run's cost split: its job's own turns (what it had cost when the job answered) and its end-of-run learning turn
   // (what looking back cost), from its kept learning row. A run that did not learn, or did not look back, spent it all on
   // its job.
@@ -271,13 +289,11 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const looked = learns && kept.answered_at !== undefined;
   const work = costUnpriced ? null : looked ? usd(kept.job_cost_usd) : total;
   const reflect = looked ? usd(kept.look_back_usd) : total === null ? null : 0;
-  // The grade's cost as its learning says it; 0 with tokens counted is a usage with no price: unknown, never $0.
-  const gradeTokens = learning?.tokens?.grade;
-  const counted = gradeTokens && typeof gradeTokens === "object" && Object.values(gradeTokens).some((n) => typeof n === "number" && n > 0);
+  // The grade's cost as its learning says it: a known $0 stays $0, the server's null is unknown.
   // A learning that ended with no grade run (dropped before it was proposed: empty, unparsed, the checks) graded nothing: 0.
   const gradeRan = Boolean(learning?.verdict) || learning?.state === "merged" || learning?.reason === "grader";
   const gradeRaw = !learning ? null : learning.cost_usd?.grade !== undefined ? usd(learning.cost_usd.grade) : ["merged", "dropped"].includes(learning.state) && !gradeRan ? 0 : null;
-  const unpriced = Boolean(learning && gradeRaw === 0 && counted);
+
   const learned = learning ? { notes: (learning.learned ?? []).map((x) => x.name), skills: (learning.skills ?? []).map((x) => x.name), workflows: (learning.workflows ?? []).map((x) => x.name) } : null;
   const toolRows = rows.filter((r) => r.kind === "tool_use" && r.agent_label !== "learning" && r.tool_name);
   return {
@@ -288,10 +304,10 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     answer: record.answer.slice(0, 4000),
     cost_usd: total, cost_unpriced: costUnpriced, work_cost_usd: work,
     // The run's usage row as the timeline gives it (its requests, tokens and cost): why a cost reads unknown.
-    usage: (() => { const u = rows.findLast((r) => r.kind === "usage")?.usage; return u ? JSON.parse(JSON.stringify(u)) : null; })(),
+    usage: usageRow,
     cost_view: view.cost ?? null, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
     learning: learning ? { state: learning.state ?? null, reason: learning.reason ?? null, detail: learning.detail ?? null } : null,
-    grade_cost_usd: unpriced ? null : gradeRaw, grade_cost_unpriced: unpriced,
+    grade_cost_usd: gradeRaw,
     learned, workflow_proposed: Boolean(learned && (learned.workflows.length || verdictFiles.some((f) => f.startsWith("workflows/")))),
     // The grader's word on each item it was shown: kept or not, held for the owner's OK, whose idea (origin), the rubric
     // question it failed, and why. And the text of each item this step's learning kept, as the folder holds it now.
@@ -299,7 +315,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     kept_texts: learns ? await keptTexts(api, agentId, learning) : null,
     // The run's tokens as its end stored them (the run row's metrics: the job's turns and its end-of-run turn); null when
     // the run booked no request (a harness whose usage the server does not see).
-    tokens: await tokensOf(ctx.store, runId),
+    tokens,
     learned_workflow_calls: toolRows.filter((r) => r.tool_name === "learned_workflow").length,
     tools: [...new Set(toolRows.map((r) => r.tool_name))].sort(),
     approvals,
@@ -341,14 +357,16 @@ async function filesOf(api, runId, kase) {
 }
 
 /** An llm grader's verdict: one run of the grader agent on the grader's input, read as {pass, reason}. */
-async function gradeLlm(ctx, input) {
+export async function gradeLlm(ctx, input) {
   const { api, options } = ctx;
+  // A grader run is paid: none starts once the bench's deadline has passed.
+  if (Date.now() >= options.deadline) return { pass: false, reason: "not graded: the bench's deadline passed", cost_usd: null };
   if (!ctx.grader) {
     const made = ok("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: TE.GRADER_NAME, description: "Grades the learning bench's runs against a rubric: answers {pass, reason}.", instructions: TE.GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, place: { mode: "runner" }, max_cost_usd: TE.GRADER_CAP_USD, ...(options.evalGraderModel ? { model: options.evalGraderModel } : {}) } }));
     ctx.grader = String(made.agent_id);
   }
   const started = ok("starting a grader run", await api("POST", `/agents/${q(ctx.grader)}/runs`, { input: { content: input } }));
-  const { view } = await settled(api, String(started.run_id), false, Date.now() + options.runTimeoutMs);
+  const { view } = await settled(api, String(started.run_id), false, waitUntil(options));
   const verdict = view.status === "completed" ? TE.verdictOf(view.result?.final_answer ?? "") : undefined;
   return { pass: verdict?.pass ?? false, reason: verdict?.reason ?? `the grader run ended ${view.status}`, cost_usd: usd(view.cost?.usd), run_id: String(started.run_id) };
 }
@@ -424,7 +442,7 @@ export function metricsOf(steps, learns) {
     wrong_keeps: learns && plantAt >= 0 ? plantGraders.filter((g) => !g.pass).length : null,
     plant_graders: learns && plantAt >= 0 ? plantGraders.length : null,
     grade_cost_usd: learns ? round(steps.reduce((s, x) => s + (x.grade_cost_usd ?? 0), 0)) : null,
-    grade_cost_unknown_steps: learns ? steps.filter((x) => x.grade_cost_unpriced || (x.learning?.state === "merged" && x.grade_cost_usd === null)).length : null,
+    grade_cost_unknown_steps: learns ? steps.filter((x) => x.learning?.state === "merged" && x.grade_cost_usd === null).length : null,
     eval_grader_cost_usd: steps.some((s) => s.eval_grader_cost_usd !== null) ? round(steps.reduce((s, x) => s + (x.eval_grader_cost_usd ?? 0), 0)) : null,
     approvals: steps.reduce((n, s) => n + (s.approvals?.length ?? 0), 0),
     cost_unknown_steps: steps.filter((s) => s.cost_unpriced).length,
@@ -558,7 +576,7 @@ export function render(results) {
     for (const x of s.steps) {
       const failed = x.graders.filter((g) => !g.pass).map((g) => g.grader);
       const kept = x.learned ? Object.entries(x.learned).filter(([, v]) => v.length).map(([k, v]) => `${k.slice(0, -1)} ${v.join(", ")}`).join("; ") : "";
-      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"} grade=${x.grade_cost_unpriced ? "unknown" : money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
+      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"} grade=${x.grade_cost_usd === null ? "unknown" : money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
     }
   }
   return out.join("\n") + "\n";
@@ -574,7 +592,8 @@ async function serverPins(api, pkg, job) {
   ok("pinning the job's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const { isMain } = await import(pathToFileURL(join(serveDir, "..", "..", "scripts", "is-main.mjs")).href);
+if (isMain(import.meta)) {
   main().catch((error) => {
     console.error(`learn-bench: ${error.message}`);
     process.exit(1);
