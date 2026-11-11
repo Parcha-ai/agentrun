@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, ChevronDown, Hourglass, Layers, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -97,6 +97,12 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
+  // The notes each one replaces, as the server marks them (`superseded_by`): a consolidation's one note names several.
+  const replaced = useMemo(() => {
+    const by = new Map<string, LearningNote[]>();
+    for (const x of all) if (x.status === "superseded" && x.superseded_by) by.set(x.superseded_by, [...(by.get(x.superseded_by) ?? []), x]);
+    return by;
+  }, [all]);
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
   const from = useMemo(() => provenance([...(view?.log.items ?? []), ...olderLog.items]), [view, olderLog.items]);
   // A note an address points at past the pages read: the next pages are read until it shows, at most MORE_PAGES of them.
@@ -143,7 +149,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
@@ -166,7 +172,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
@@ -346,9 +352,11 @@ type From = { run?: { id: string; at: string; reason: string } } | undefined;
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
+ *  `replaces`: the older notes it replaces (each `superseded_by` it), said in its footer and listed on expand.
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; replaces?: LearningNote[] }) {
   const [editing, setEditing] = useState(false);
+  const [older, setOlder] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
   const [saved, setSaved] = useState<string | null>(null);
@@ -413,7 +421,17 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
         {/* As the server counts them: the runs it was given to, and the runs that opened it (once one did). */}
         <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Given to {runsWord(note.runs.given)}</span>
         {note.runs.read > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Read in {runsWord(note.runs.read)}</span>}
+        {replaces.length > 0 && (
+          <button type="button" onClick={() => setOlder((o) => !o)} aria-expanded={older} className="flex items-center gap-1.5 hover:text-foreground">
+            <Layers className="size-3" aria-hidden />Replaces {replaces.length} older {replaces.length === 1 ? "note" : "notes"}<ChevronDown className={cn("size-3 transition-transform", older && "rotate-180")} aria-hidden />
+          </button>
+        )}
       </footer>
+      {older && replaces.length > 0 && (
+        <ul aria-label="Notes it replaces" className="space-y-1 border-t px-5 py-2.5 text-body text-muted-foreground">
+          {replaces.map((x) => <li key={x.file} className="break-words">{x.name}</li>)}
+        </ul>
+      )}
       {retiring && <RetireConfirm name={note.name} kind="note" retire={() => v2.retireNote(agentId, note.file, note.etag)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );

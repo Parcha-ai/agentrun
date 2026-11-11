@@ -182,6 +182,57 @@ describe("the Learning tab's notes", () => {
   });
 });
 
+// LS-05: consolidation merges related notes into one that replaces them (its front matter's `supersedes`; the server marks
+// each old one `superseded_by` it). The tab shows fewer notes: the new one says how many it replaces, listed on expand,
+// and each old one sits under Earlier notes naming what replaced it.
+describe("a note that replaces older ones (consolidation)", () => {
+  const MERGED = "refund-policy-pages.md";
+  const consolidated = () => view({
+    notes: { items: [
+      note(MERGED, "Refund policy pages", { text: `---\nname: Refund policy pages\ndescription: Where a shop's refund policy is\ntype: feedback\nsupersedes: [${FIRST}, ${OLD}]\n---\nTry /policies/refund-policy first.\n` }),
+      note(MINE, "Keep it to three lines"),
+      note(FIRST, "Try /policies/refund-policy first", { status: "superseded", superseded_by: MERGED }),
+      note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: MERGED }),
+    ], total: 4, next_cursor: null },
+  });
+
+  it("the note in use says it replaces 2 older notes, closed, and opens to their names", async () => {
+    const t = await open(agent(true), { learning: async () => consolidated() });
+    expect(t.text()).toContain("2 notes in use.");
+    const card = t.card("Refund policy pages")!;
+    const toggle = [...card.querySelectorAll("button")].find((b) => /^Replaces 2 older notes/.test(b.textContent ?? ""))!;
+    expect(toggle).toBeTruthy();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(card.querySelector('ul[aria-label="Notes it replaces"]')).toBeNull();
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const names = [...card.querySelectorAll('ul[aria-label="Notes it replaces"] li')].map((li) => li.textContent);
+    expect(names).toEqual(["Try /policies/refund-policy first", "Shopify refund policy path"]);
+    // A note that replaces none says nothing of it.
+    expect(t.card("Keep it to three lines")!.textContent).not.toContain("Replaces");
+  });
+
+  it("one that replaces a single note says so in the singular", async () => {
+    const t = await open(agent(true));
+    expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Replaces 1 older note");
+    expect(t.card("Try /policies/refund-policy first")!.textContent).not.toContain("older notes");
+  });
+
+  it("each replaced note sits under Earlier notes, says what replaced it, and takes you to it", async () => {
+    const t = await open(agent(true), { learning: async () => consolidated() });
+    expect(t.card("Try /policies/refund-policy first")).toBeNull();
+    expect(t.text()).toContain("Earlier notes2 no longer read");
+    await t.click(/^Earlier notes/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier notes"]')!;
+    expect(earlier.textContent).toContain("Try /policies/refund-policy firstReplacedReplaced by Refund policy pages");
+    expect(earlier.textContent).toContain("Shopify refund policy pathReplacedReplaced by Refund policy pages");
+    const to = [...earlier.querySelectorAll("button")].filter((b) => b.textContent === "Refund policy pages");
+    expect(to).toHaveLength(2);
+    await act(async () => { (to[1] as HTMLButtonElement).click(); });
+    expect(document.activeElement).toBe(t.card("Refund policy pages"));
+  });
+});
+
 describe("what runs did not keep", () => {
   it("lists a refused note and a skip with their words, newest first, and counts the runs with nothing new", async () => {
     const t = await open(agent(true));
