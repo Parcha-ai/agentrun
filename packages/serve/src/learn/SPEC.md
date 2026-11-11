@@ -207,8 +207,8 @@ only a path the merge changed, such as a note it marked superseded), one item a 
 (a re-filed skill whose note file the run's own note takes is left out), so what it wrote is learned and nothing else. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
 each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts `ruleOf`), is
 exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the seed's active
-notes, and of two new notes the same, the second; a note refused for its own merge, what it supersedes say, holds
-no rule, so its valid copy is kept), and the merge's own computation leaves it out unsaid, against the
+notes, and of two new notes the same, the second; duplicates are settled with the merge's checks: a note
+those refuse, what it supersedes say, holds no rule, so its valid copy is kept, and a repeat never fills the index), and the merge's own computation leaves it out unsaid, against the
 main it commits on (computed again on the main that won when another write landed first), as it leaves out a name main
 came to hold meanwhile. A note that supersedes the one it repeats updates it, never a duplicate. Anything near is the
 grader's to judge. Steps or a format for one kind of job,

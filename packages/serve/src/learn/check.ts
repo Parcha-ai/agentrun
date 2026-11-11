@@ -230,10 +230,9 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   }
   const changes = given.slice(0, CAPS.changes);
   const base = new Set(input.base.files);
-  const notes: ProposedNote[] = [];
-  // Each rule held, by the file that holds it: the seed's active notes', then each new note's as it passes. A new note
-  // of a rule held already is a duplicate, whatever its name; of two new notes the same, the first is kept.
-  const rules = new Map(input.base.rules ?? []);
+  // The new notes that pass their own checks, in the answer's order. Which of them is a duplicate is settled after,
+  // with the merge's checks (settled below).
+  const candidates: ProposedNote[] = [];
   const skills: string[] = [];
   const workflows = new Set<string>();
   const added: string[] = [];
@@ -257,15 +256,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
     if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
-    const rule = ruleOf(note.body);
-    const holder = rules.get(rule);
-    // One that supersedes the note it repeats updates it (its name or description, say): no duplicate.
-    if (holder !== undefined && !note.supersedes.includes(holder)) return add("duplicate", `it says what ${holder} says`, path);
-    // A note reserves its rule only once it passes its other checks, its own merge onto the base among them (what it
-    // supersedes, mergeProblems): one the merge check refuses never makes a valid copy of its rule a duplicate, and the
-    // pass that leaves it out (proposeRun) keeps that copy.
-    if (!mergeProblems(input.base, [note], values).length) rules.set(rule, path);
-    notes.push(note);
+    candidates.push(note);
   };
   for (const change of changes) one(change);
   for (const path of added.slice(CAPS.newNotes)) add("too_many_notes", `${added.length} new notes; the cap is ${CAPS.newNotes} a run, and this one is past it`, path);
@@ -280,8 +271,43 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     const [json, readme] = ["workflow.json", "README.md"].map((file) => `${WORKFLOWS_DIR}/${name}/${file}`) as [string, string];
     if (after.has(json) !== after.has(readme)) add("workflow", `the folder holds ${after.has(json) ? "workflow.json" : "README.md"} without the other file`, after.has(json) ? readme : json);
   }
-  if (!problems.length) problems.push(...mergeProblems(input.base, notes, values));
+  const notes = problems.length ? [] : settled(candidates);
   return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
+
+  /** `candidates` once nothing else is wrong: which are duplicates, and what the merge's checks (mergeProblems) refuse,
+   *  settled together so a refused note never holds a rule. A new note of a rule held already (the seed's active
+   *  notes', then each earlier new note's) is a duplicate, whatever its name, unless it supersedes the note it repeats
+   *  (an update); of two new notes the same, the first is kept. The merge's checks read the rest, duplicates left out
+   *  (so a repeat never fills the index); a note they name is refused and holds no rule, and the duplicates are read
+   *  again without it, so a valid copy of its rule is kept. A refusal of the whole set (the index past its lines) ends
+   *  it. The notes that pass. */
+  function settled(all: readonly ProposedNote[]): ProposedNote[] {
+    let kept = [...all];
+    for (;;) {
+      const rules = new Map(input.base.rules ?? []);
+      const rest: ProposedNote[] = [];
+      const dupes: [string, string][] = [];
+      for (const note of kept) {
+        const rule = ruleOf(note.body);
+        const holder = rules.get(rule);
+        if (holder !== undefined && !note.supersedes.includes(holder)) {
+          dupes.push([note.file, holder]);
+          continue;
+        }
+        rules.set(rule, note.file);
+        rest.push(note);
+      }
+      const merged = mergeProblems(input.base, rest, values);
+      problems.push(...merged);
+      const named = new Set(merged.flatMap((problem) => (problem.path === undefined ? [] : [problem.path])));
+      if (merged.length && merged.every((problem) => problem.path !== undefined) && kept.some((note) => named.has(note.file))) {
+        kept = kept.filter((note) => !named.has(note.file));
+        continue;
+      }
+      for (const [path, holder] of dupes) add("duplicate", `it says what ${holder} says`, path);
+      return rest;
+    }
+  }
 }
 
 /** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its
