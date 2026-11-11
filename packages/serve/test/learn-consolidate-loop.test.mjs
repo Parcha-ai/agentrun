@@ -115,6 +115,10 @@ test("twelve notes saying three rules: a consolidation replaces the two clusters
   // Its cost is its asks', on its row; it is no run a list names.
   assert.equal(Math.round(row.costUsd * 100) / 100, 0.02);
   assert.ok(!(await w.store.runs.list({ agentId: "agent-1" })).some((run) => run.id === "run-0-consolidate"));
+  // And learning's usage counts it (store learning.spend, GET /v2/usage's learning meter): each consolidation, its cost
+  // its row's, the agent's, when it ended.
+  const spent = (await w.store.learning.spend({ from: 0, to: Date.now() + 60_000 })).filter((one) => one.agentId === "agent-1");
+  assert.deepEqual(spent.map((one) => Math.round((one.costUsd ?? NaN) * 100) / 100), [0.02, Math.round(((await w.store.runs.get("run-1-consolidate")).costUsd) * 100) / 100], JSON.stringify(spent));
 });
 
 test("a replacement the grader drops (it loses a rule) merges nothing: the notes it would replace stay active", async (t) => {

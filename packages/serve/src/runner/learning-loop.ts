@@ -322,17 +322,24 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
         const context: Context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
         const journal: Journal = deps.journal(claim);
         let rooted = false;
+        /** What the grade spent, as the run's learning end reads it (store-reads/learning.ts runLearningEnd): the graded
+         *  entry's, a failed or cut grade's (null: unknown), else nothing graded, 0. Kept as the learning run's cost when it
+         *  ends ended, failed or stopped, so what learning spent reads from the run rows alone (store learning.spend): a
+         *  stop seen after a paid grade never hides it. */
+        let spend: number | null = 0;
+        /** A consolidation run's own ask's spend, before its grade's (0 for a run that grades another run's learning): a
+         *  consolidation's cost is both, its ask's and its grade's, on its row as any learning run's. */
+        let asked: number | null = 0;
+        const plus = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : a + b);
         /** One entry on the root, committed; `end` stages the run's state with it (keyed to this entry, its effect), and
-         *  `take` the stop row it applies. */
-        /** A consolidation run's spend so far (its ask's and its grade's), kept as its cost at its end; undefined for a run
-         *  that grades another run's learning (its grade's spend is its learning end's). */
-        let spend: number | null | undefined;
+         *  `take` the stop row it applies. An end that ends, fails or stops the run keeps what the grade spent as its cost. */
         const append = async (kind: string, data: unknown, end?: "ended" | "failed" | "stopped" | "parked", take?: number) => {
           const writes: StorageWrite[] = [];
+          if (kind === KINDS.learningDropped && data !== null && typeof data === "object" && "usd" in data) spend = plus(asked, (data as DroppedData).usd ?? null);
           if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } } as StorageWrite);
           const id = await journal.mintId();
           writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } } as StorageWrite);
-          if (end) journal.stage({ run: { state: end, ...(spend !== undefined && (end === "ended" || end === "failed") ? { costUsd: spend } : {}) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
+          if (end) journal.stage({ run: { state: end, ...(end === "parked" ? {} : { costUsd: spend }) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
           const result = await journal.commit([writes], () => {}, context);
           if (result.stored === 0) throw result.refused;
           rooted = true;
@@ -356,6 +363,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
 
           // The grade: once. A verdict already in the journal is the one the merge goes on.
           let graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
+          if (graded) spend = plus(asked, graded.usd);
           if (!graded) {
             const main = await learning.readMain(ws, proposal);
             if ("problems" in main) {
@@ -402,16 +410,17 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               // An answer the host cannot read is asked once more, as the server's grade did.
               if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
             } catch (error) {
+              // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
+              spend = plus(asked, usd);
               const end = await halted();
               if (end) return end;
-              if (spend !== undefined) spend = null;
               await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
               void error;
               return { state: "ended" };
             }
             if (settledItems.length) verdict = { ...verdict, items: [...verdict.items, ...settledItems] };
             graded = { source: source.runId, verdict, usd, tokens, graded: main.graded };
-            if (spend !== undefined) spend = spend === null || usd === null ? null : spend + usd;
+            spend = plus(asked, usd);
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.
             await deps.flush();
@@ -487,7 +496,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           rooted = entries.length > 0;
           let made = entries.find((entry) => entry.kind === KINDS.learningConsolidation)?.data as ConsolidationData | undefined;
           const graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
-          spend = made ? (made.usd === null || (graded && graded.usd === null) ? null : made.usd + (graded?.usd ?? 0)) : 0;
+          asked = made ? made.usd : 0;
+          spend = graded ? plus(asked, graded.usd) : asked;
           const nothing = async (detail: string, problems?: readonly Problem[]): Promise<LoopEnd> => {
             await append(KINDS.learningDropped, { source: who.runId, reason: problems?.length ? "checker" : "empty", detail: problems?.length ? said.checker(problems as never) : detail, ...(problems?.length ? { problems } : {}) } satisfies DroppedData, "ended");
             return { state: "ended" };
@@ -521,11 +531,13 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             } catch {
               const end = await halted();
               if (end) return end;
+              asked = null;
               spend = null;
               await append(KINDS.learningDropped, { source: who.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: null, tokens: null } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
-            spend = answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd;
+            asked = answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd;
+            spend = asked;
             const checked = await consolidating.checkAnswer(ws, { seed: main.seed, answer: typeof answer.text === "string" ? answer.text : "", ...(job.tools ? { tools: job.tools } : {}) });
             if (checked.state !== "proposed") return nothing(checked.reason === "empty" ? said.empty : (checked.detail ?? said.empty), checked.problems);
             // Held to what it was asked (the code check behind the grader's question): each note supersedes only notes of
@@ -539,7 +551,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: main.seed };
             const left = [...(checked.left ?? []), ...held.problems];
             if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
-            made = { proposal, left, stayActive: held.stayActive, usd: spend };
+            made = { proposal, left, stayActive: held.stayActive, usd: asked };
             await append(KINDS.learningConsolidation, made);
             await deps.flush();
           }

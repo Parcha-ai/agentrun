@@ -6,7 +6,7 @@
 // refused (403, in the view's words), as its graph and its files are; so is one whose agent's sign-in can't be.
 import { ApiError } from "./errors.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
-import { secretsShown } from "./learning.js";
+import { type ItemStatus, secretsShown } from "./learning.js";
 import { runCutValues } from "./run-cut.js";
 import { type SignInReader, WITHHELD_SIGN_IN } from "./run-view.js";
 import { runLearningOverStore } from "./store-reads/learning.js";
@@ -25,9 +25,9 @@ async function learningCutOf(deps: { serverSecrets: () => string[]; signIns?: Si
 }
 
 /** Run `runId`'s learning as GET /runs/{id}/learning serves it, or ApiError forbidden for a withheld run. */
-export async function servedRunLearning(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Store, runId: string) {
+export async function servedRunLearning(deps: { serverSecrets: () => string[]; signIns?: SignInReader; statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined> }, store: Store, runId: string) {
   const values = await learningCutOf(deps, store, runId);
-  return runLearningOverStore(store, runId, secretsShown(values), values);
+  return runLearningOverStore(store, runId, secretsShown(values), values, deps.statuses);
 }
 
 /** Run `runId`'s learning diff as GET /runs/{id}/learning/diff serves it (learning-routes.ts runDiffOverStore), cut as its
