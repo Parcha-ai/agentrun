@@ -37,7 +37,8 @@ async function providers(t) {
   withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_JEV_COST: "0.00002" });
   const registry = await decisionProvidersIn({ TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
   assert.ok(registry?.providers.jev, "setup: the faux Jev");
-  return { registry, sent: () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0) };
+  const lines = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+  return { registry, sent: () => lines().length, lines };
 }
 
 /** The run's decisions as the adapter loop hands them (RunLedger.decisions), recording each admission and settle;
@@ -180,4 +181,25 @@ test("a draft with a judge node dry-runs: its decision's answer is synthesized l
   const { sent } = await providers(t);
   assert.deepEqual(await draftDryRun(dsl, JSON.stringify(judgeFlow()), JSON.stringify({ claim: "Six times seven is 42." })), { status: "passed" });
   assert.equal(sent(), 0, "the dry run asks no provider");
+});
+
+/** A 1x1 PNG. */
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==", "base64");
+
+test("a learned workflow's judge node that sends an image runs: the image is read from the run's work folder and sent with the decision", async (t) => {
+  const { writeFileSync } = await import("node:fs");
+  const { registry, sent, lines } = await providers(t);
+  const work = await scratch(t);
+  writeFileSync(join(work, "shot.png"), PNG);
+  const doc = judgeFlow();
+  doc.schemas.In = { type: "object", required: ["claim", "image"], properties: { claim: { type: "string" }, image: { type: "string" } } };
+  doc.schemas.Check.properties.right.description = "Is the claim right, judging by page_1?";
+  Object.assign(doc.root.steps[0], { state: { claim: "{claim}", page: "page_1" }, images: { page_1: "{image}" } });
+  const flow = learned(doc);
+  const book = booking();
+  const out = await runLearned({ ...runOf(flow, { providers: registry, book }), work }, flow, { claim: "The screenshot shows a receipt.", image: "shot.png" });
+  assert.equal(out.isError, false, out.text);
+  assert.equal(sent(), 1, "the decision reached the provider");
+  assert.equal(lines()[0].images, 1, "with its image");
+  assert.equal(book.admitted.length, 1);
 });

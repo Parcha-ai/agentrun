@@ -17,6 +17,7 @@
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, frontMatter, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, statusOnOneLine, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -350,7 +351,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string> }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; decisions?: DraftDecisions }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -427,9 +428,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated } = await input.draftTools();
+              const { tools, gated, decisions } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, {}, decisions)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {

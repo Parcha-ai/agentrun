@@ -306,9 +306,11 @@ function decisionsOf(run: LearnedWorkflowRun, dsl: Parameters<typeof decisionsAs
  *  (decisionJudge, as a workflow agent's decision is). A refusal of the cap pauses the run (`decisions.pause`): the
  *  decision node fails with the cap's words, and nothing is sent. */
 async function learnedJudge(run: LearnedWorkflowRun, decisions: NonNullable<LearnedWorkflowRun["decisions"]>) {
-  const [{ judgeFromProviders }, { decisionJudge }] = await Promise.all([import("@parcha/agentrun-dsl"), import("./runner/workflow-spec.js")]);
+  const [{ judgeFromProviders }, { decisionJudge }, { imageLoader }] = await Promise.all([import("@parcha/agentrun-dsl"), import("./runner/workflow-spec.js"), import("./pdf-pages.js")]);
   type Judge = ReturnType<typeof judgeFromProviders>;
-  const inner = judgeFromProviders({ providers: decisions.providers.providers, default: decisions.providers.default });
+  // A decision node's images (a page drawn by pdf_pages, a screenshot) are read from the run's work folder, as a workflow
+  // agent's are (pdf-pages.ts imageLoader).
+  const inner = judgeFromProviders({ providers: decisions.providers.providers, default: decisions.providers.default, loadImage: imageLoader(run.work) });
   const capped = decisionJudge<Judge>(inner, {
     getCap: () => decisions.book,
     providers: decisions.providers as never,

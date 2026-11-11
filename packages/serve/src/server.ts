@@ -38,6 +38,7 @@ import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -1533,14 +1534,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. */
-  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
+  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string>; decisions?: DraftDecisions }> {
     const revision = (await needAgent(id)).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
+    const [{ learnedDraftTools }, { permissionFrom }, { decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./decisions.js"), import("./tool-plane.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
-    return learnedDraftTools(body.tools ?? [], (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"));
+    const approvals = body.approvals === "never" ? "never" : "ask";
+    const setting = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, approvals);
+    const { tools, gated } = learnedDraftTools(body.tools ?? [], (name) => setting(name).permission);
+    // A draft's decision nodes (LS-07), as a run's learning end checks them: on this server's decision providers (its
+    // keys, saved ones among them: env), each held to the gate by its bare id; deny alone refuses one.
+    const providers = await decisionProvidersIn(env);
+    if (!providers) return { tools, gated };
+    const decided: Record<string, string> = {};
+    const deniedBy: Record<string, "agent" | "server" | "default"> = {};
+    for (const provider of DECISION_PROVIDER_KEYS) {
+      const { permission, from } = setting(provider);
+      if (permission === "allow") continue;
+      decided[provider] = permission;
+      if (permission === "deny") deniedBy[provider] = from as "agent" | "server" | "default";
+    }
+    return { tools, gated, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
