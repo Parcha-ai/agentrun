@@ -543,23 +543,29 @@ test.skip("a partial tree is not Claude Code: one whose MCP library would resolv
   assert.ok(existsSync(join(data, "harnesses", "claude-agent", "node_modules", ...MCP.split("/"), "package.json")), "the MCP library is in the harnesses now");
 });
 
-// SKIP (follow-up #2078): the server's run cap is not enforced on the runner: a start over the cap is 202, not 429
-test.skip("runs that wait for the install keep their places: at max_concurrent_runs 1, a second run during the install is refused, so no two run at once after it", { timeout: 300_000, skip }, async (t) => {
+test("runs that wait for the install keep their places: at max_concurrent_runs 1, a second run started during the install is queued, not taken, so no two run at once after it", { timeout: 300_000, skip }, async (t) => {
   let letGo;
   const hold = new Promise((resolve) => (letGo = resolve));
   t.after(() => letGo());
   const registry = await fakeRegistry(t, { hold });
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
-  const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
+  const { api, runnerBeats } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
   assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const first = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   await until("the run waits for the install", async () => (await api("GET", `/runs/${first.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
+  // A start over the run limit is queued, not refused.
   const second = await api("POST", "/agents/claude/runs", { input: { content: "Say hello too." } });
-  assert.deepEqual([second.status, second.body.error?.code], [429, "rate_limited"], `the waiting run holds the one place: ${JSON.stringify(second.body)}`);
+  assert.equal(second.status, 202, JSON.stringify(second.body));
+  // The waiting run holds the one place: past three more of the runner's beats (polls, each of which would claim a queued
+  // run had it a place), the second is still queued and untouched while the first waits for the install.
+  const seen = runnerBeats();
+  await until("three more runner beats", () => runnerBeats() >= seen + 3, 60_000);
+  assert.equal((await api("GET", `/runs/${second.body.run_id}`)).body.status, "queued", "the second run waits for the place");
+  assert.deepEqual((await api("GET", `/runs/${second.body.run_id}/timeline`)).body.rows ?? [], [], "nothing of it has run");
   letGo();
-  assert.equal((await follow(api, first.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
+  for (const id of [first.body.run_id, second.body.run_id]) assert.equal((await follow(api, id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
 });
 
 test("the manual command replaces an install the server made, read-only as it left it: run as shown, it puts a whole install in its place", { timeout: 300_000, skip }, async (t) => {
