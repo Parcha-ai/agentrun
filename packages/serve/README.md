@@ -2457,7 +2457,8 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
   When a run's learned workflows name decision providers (Jev, Parallel, OpenRouter), the runner opens those providers'
   keys as it opens the run's own, from the server's environment first and then its saved keys, for the run's tools alone:
-  never for its model or a CLI harness's own environment. A provider the run's tool gate denies gets no key.
+  never for its model or a CLI harness's own environment. A provider the run's tool gate denies gets no key. Learned
+  workflows can use them once decision nodes land (see Coming).
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -2596,6 +2597,8 @@ proposed and reused, staleness after a rule changes, and wrong keeps after a pla
 
 ### Coming
 
+- One copy of each rule: a note that repeats an active note's rule is a duplicate, and a skill re-filed as a note retires the old skill (#2256).
+- A learned workflow may hold decision nodes (judge, pick, sift), answered by the run's decision provider under the run's cap (#2363).
 - Consolidation: related notes merged into one, and a skill and its workflow brought back in step (#2335).
 - A learned workflow's node of a tier runs on the server's model of that tier, at its own price (#2408).
 - A learned workflow's call node runs an MCP tool through the run's own MCP, under its gate, and the grader holds one that writes for the owner's OK (#2424).
