@@ -593,8 +593,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  answer (waitInClaim), once. */
   let idleSteer: { requestId: string; placed: Promise<boolean> } | undefined;
   /** The messages a harness with no mid-turn steer (a CLI's: claude-agent, codex, opencode) took while its turn ran, in the
-   *  order they came: each is sent as a turn of its own once the turn in flight ends, its row taken in its submission's
-   *  commit (#2174: refused here, a message the API had accepted was lost). Kept across a pass's restart; a row still here
+   *  order they came: each is sent as a turn of its own once the turn in flight ends, its row taken once the session holds
+   *  it (sendAfterTurn) (#2174: refused here, a message the API had accepted was lost). Kept across a pass's restart; a row still here
    *  when the claim ends is untaken, so the run's next claim takes it again, or the run's end refuses it in the end's words. */
   const afterTurn: { commandId: number; text: string; requestId: string; origin?: MessageOrigin }[] = [];
   /** Set once the claim's last turn has ended and nothing more is sent: a message after it waits for the run's end, as one
@@ -837,9 +837,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return { taken: true };
   };
 
-  /** A message the turn in flight could not take (afterTurn), sent as a turn of its own: on the run's record first, as the
-   *  person's input is, its row taken in that record's commit (a CLI's session writes no submission to the run's journal),
-   *  or, for an adapter keeping its own record, in its submission's commit. Its turn's end is what this gives. */
+  /** A message the turn in flight could not take (afterTurn), sent as a turn of its own. Its row is taken only once the
+   *  session holds the prompt (send resolves once it is placed): in the commit that writes it on the run's record, right
+   *  after the send (a CLI's session writes no submission to the run's journal), or, for an adapter keeping its own record,
+   *  in its submission's commit. A runner lost before that leaves the row untaken, so the next claim sends it again: a
+   *  message may be sent twice after a crash, never lost. Its turn's end is what this gives. */
   const sendAfterTurn = async (theGate: Gate, next: (typeof afterTurn)[number]): Promise<TurnEnd> => {
     const origin = next.origin === undefined ? undefined : JSON.stringify(next.origin);
     const match = !cliRecord
@@ -849,8 +851,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         : writesEntry(KINDS.message, (data) => data.role === "person" && data.text === next.text);
     const taken = theGate.expect(match, { take: [next.commandId] });
     taken.catch(() => undefined);
-    await cliRecord?.message(next.text, next.origin);
     await session!.send(next.text, { id: next.requestId, ...(next.origin ? { origin: next.origin } : {}) });
+    await cliRecord?.message(next.text, next.origin);
     return session!.turnEnd();
   };
 
