@@ -86,7 +86,8 @@ export async function runGraph(given: GraphInput) {
   }
   // The call nodes' effects, as the runner logged each one's start and end on the run's journal (KINDS.nodeEffect).
   const { runEntries } = await import("./store-reads/journal.js");
-  const lines = (await runEntries(given.store, id, given.context)).filter((entry) => entry.kind === KINDS.nodeEffect).map((entry) => entry.data as unknown as NodeLine);
+  const entries = await runEntries(given.store, id, given.context);
+  const lines = entries.filter((entry) => entry.kind === KINDS.nodeEffect).map((entry) => entry.data as unknown as NodeLine);
   const nodeAt = (path: unknown) => (typeof path === "string" ? (graphNodeOf(graph, path)?.path ?? (graph.nodes.some((n) => n.path === path) ? path : undefined)) : undefined);
   const kinds = new Map(graph.nodes.map((node) => [node.path, node.kind]));
 
@@ -231,9 +232,8 @@ export async function runGraph(given: GraphInput) {
   // Each model node's model once it ran: its tier's, as the run's claims kept it (KINDS.nodeModel, workflow-spec.ts
   // modelOf), else the default tier's, as modelOf falls back; the tier beside it when the node names one. A decision
   // node's model is its provider's, from its newest receipt. Any other node has none.
-  const { runEntries } = await import("./store-reads/journal.js");
   const tierModels = new Map<string, string>();
-  for (const entry of await runEntries(given.store, id, given.context)) {
+  for (const entry of entries) {
     const data = (entry.data ?? {}) as { tier?: unknown; model?: unknown };
     if (entry.kind === KINDS.nodeModel && typeof data.tier === "string" && typeof data.model === "string") tierModels.set(data.tier, data.model);
   }
