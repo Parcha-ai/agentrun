@@ -159,7 +159,9 @@ export async function message(
     );
     if (declined) return { mode: "answer", messageId };
   }
-  if (moment.terminal) throw finished(moment);
+  // A person's message puts no check of the run's end in front of its steer: the store's reopen alone says whether an ended
+  // run opens again with it (steerOrReopen). A trigger's message to an ended run is refused here, as before.
+  if (queue && moment.terminal) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
   if (moment.pausedWords !== undefined) {
     throw new ApiError("budget_reached", `The run is paused at its ${money(moment.maxCostUsd ?? 0)} cap: raise the cap first. ${moment.pausedWords}`, { details: { cap_usd: moment.maxCostUsd ?? null } });
@@ -173,26 +175,30 @@ export async function message(
     const queued = await queue({ kind: "steer", body });
     return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
   }
-  await steerOrReopen(store, moment.id, { kind: "steer", body });
+  await steerOrReopen(store, moment, { kind: "steer", body });
   return { mode, messageId };
 }
 
 /** A steer command row, as message() writes it. */
 export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
 
-/** The message's steer row. A run the store holds final takes no new row (RunFinal): one a person stopped (it reads
- *  input_required and idle, not over) takes the message through runs.reopen instead, which opens it again with the steer
- *  in one transaction, as main runs a message to a stopped run as its next turn. The store alone says which runs reopen
- *  (reopenableWhere); any other refuses as before. */
-async function steerOrReopen(store: RunsStore, runId: string, command: SteerCommand): Promise<void> {
+/** The message's steer row: one door. A run the store holds final takes no new row (RunFinal); the message then goes
+ *  through runs.reopen, which opens the run again with the steer in one transaction when the store says it may
+ *  (reopenableWhere: an agentic run that completed, or that a person stopped, as the console offers a follow-up to both).
+ *  Any other (cancelled, failed, a workflow's, an imported or a learning run) answers 409 finished, nothing written. */
+async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand): Promise<void> {
   try {
-    await sendCommand(store, runId, command);
+    await sendCommand(store, moment.id, command);
   } catch (error) {
     if (!(error instanceof RunFinal)) throw error;
     try {
-      await store.runs.reopen(runId, command);
+      await store.runs.reopen(moment.id, command);
     } catch (again) {
-      throw again instanceof RunFinal ? error : again;
+      if (!(again instanceof RunFinal)) throw again;
+      // Worded by the run's end as the store holds it now: the moment may have been read before that end (a race).
+      const state = (await store.runs.get(moment.id))?.state;
+      const terminalKind = state === "failed" ? "failed" : state === "stopped" ? "cancelled" : "completed";
+      throw finished({ ...moment, terminal: true, terminalKind });
     }
   }
 }

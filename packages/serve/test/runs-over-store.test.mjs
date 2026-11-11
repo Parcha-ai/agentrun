@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { openSqliteStore, RunFinal } = await import("../dist/store/index.js");
+const { openSqliteStore } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { momentOverStore } = await import("../dist/store-view.js");
@@ -156,12 +156,36 @@ test("a message to a cancelled run answers 409 finished in today's words, nothin
   assert.equal((await store.runs.get("run-1")).state, "stopped");
 });
 
-test("a message racing a cancel's end (the moment read before it) is refused by the store's reopen: the run stays cancelled, nothing written", async () => {
+test("a message racing a run's end (the moment read before it) is refused by the store's reopen in that end's words: cancelled or failed, nothing written", async () => {
   const store = await freshStore();
-  await endedRun(store, "run-1", { state: "stopped", summary: "cancelled", outcome: "cancelled" });
-  await assert.rejects(() => message(store, moment({ working: false }), "Go on."), RunFinal);
+  for (const [id, patch, words] of [
+    ["run-c", { state: "stopped", summary: "cancelled", outcome: "cancelled" }, "This run was cancelled. Start a new run of the agent."],
+    ["run-f", { state: "failed", summary: "it broke" }, "This run failed. Start a new run of the agent."],
+  ]) {
+    await endedRun(store, id, patch);
+    await assert.rejects(() => message(store, moment({ id, working: false }), "Go on."), (e) => e.code === "not_continuable" && e.status === 409 && e.message === words, id);
+    assert.equal((await commandsOf(store, id)).length, 0, id);
+    assert.equal((await store.runs.get(id)).state, patch.state, id);
+  }
+});
+
+test("a message to a run that failed, or to a completed workflow run, answers 409 finished in today's words through the store's refusal, nothing written", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "failed", summary: "it broke" });
+  await assert.rejects(
+    () => message(store, moment({ terminal: true, terminalKind: "failed", working: false }), "Go on."),
+    (e) => e.code === "not_continuable" && e.status === 409 && e.message === "This run failed. Start a new run of the agent.",
+  );
   assert.equal((await commandsOf(store, "run-1")).length, 0);
-  assert.equal((await store.runs.get("run-1")).state, "stopped");
+  await store.agents.addRevision({ agentId: "a1", id: "r-wf", kind: "workflow", body: { workflow: { name: "w", nodes: [] } } });
+  await store.runs.create({ id: "run-wf", agentId: "a1", revisionId: "r-wf" });
+  await store.runs.update(await store.claim("run-wf", "runner-a", { leaseMs: 30_000 }), { state: "ended" });
+  await assert.rejects(
+    () => message(store, moment({ id: "run-wf", kind: "workflow", terminal: true, terminalKind: "completed", working: false }), "Go on."),
+    (e) => e.code === "not_continuable" && e.status === 409 && e.message === "This run is finished. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, "run-wf")).length, 0);
+  assert.equal((await store.runs.get("run-wf")).state, "ended");
 });
 
 test("a message to a run whose harness takes no mid-turn steer follows the turn", async () => {

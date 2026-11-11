@@ -807,15 +807,17 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
 });
 
-test("a run's outcome takes 'stopped' and 'cancelled' on a fresh schema and on one an earlier build set up (0001 and 0002) and migrated since", ONLY, async (t) => {
+test("a run's outcome takes 'stopped' and 'cancelled' on a fresh schema and on one an earlier build set up (every migration before the outcome's) and migrated since", ONLY, async (t) => {
   const outcomeCheck = async (schema) => (await sql(schema, "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'runs'::regclass AND conname = 'runs_outcome_check'")).map((row) => row.def);
-  for (const from of ["fresh", "0002"]) {
+  const widened = migrationsIn().find((m) => m.name === "runs_outcome_stop_or_cancel").version;
+  for (const from of ["fresh", "earlier"]) {
     const schema = await schemaFor(t);
-    if (from === "0002") {
-      // A schema an earlier build set up (0001 and 0002: the outcome's CHECK takes no stop), migrated by this build's server.
+    if (from === "earlier") {
+      // A schema an earlier build set up (the migrations before the outcome's: its CHECK takes no stop), migrated by this
+      // build's server.
       const connection = await PgConnection.open({ url: PG_URL, schema });
       try {
-        await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().filter((m) => m.version <= 2)));
+        await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().filter((m) => m.version < widened)));
       } finally {
         await connection.close();
       }
