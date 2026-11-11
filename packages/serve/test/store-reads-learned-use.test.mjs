@@ -181,7 +181,7 @@ test("a read of a learned skill's SKILL.md is credited at its laid path only, ne
       ["read", { path: "notes/skills/in-notes/SKILL.md" }, true],
       ["read", { path: ".learning/skills/in-learning/SKILL.md" }, true],
       ["read", { path: ".agents/skills/relative/SKILL.md" }, true],
-      ["read", { path: "/srv/runs/r1/work/.agents/skills/absolute/SKILL.md" }, true],
+      ["read", { path: "/var/agentrun/runs/r1/work/.agents/skills/absolute/SKILL.md" }, true],
       ["read", { path: "./.agents/skills/dotted/SKILL.md" }, true],
     ],
   });
