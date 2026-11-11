@@ -654,7 +654,7 @@ function onlyTheServerHolds(root, canary) {
   return under.map((p) => p.cmdline.toString().replaceAll("\0", " "));
 }
 
-/** The names of `names` shaped like a key (the one rule: the env cut's, the import cut's and pi-durable-disk's). */
+/** The names of `names` shaped like a key (the one rule, secret-name.ts: the env cut's and the import cut's). */
 const keyShapedIn = (names) => names.filter((name) => keyShaped(name));
 
 // SKIP (follow-up #2078): the launcher's custody report for the run is never written on the runner

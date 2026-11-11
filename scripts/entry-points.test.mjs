@@ -68,7 +68,6 @@ const bare = new Map([
   ['examples/run-support-answer.mjs', copiedOut],
   ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
   ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
-  ['packages/serve/test/record-door-one-input.mjs', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);
