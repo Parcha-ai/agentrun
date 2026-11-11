@@ -9,13 +9,18 @@
 // - any other model answers through the route's own fetch: the Messages request runs on pi-ai's model of it (the faux
 //   core under --faux, never the network; another provider's or the gateway's on its key from `env`), and its events
 //   come back as a Messages stream.
+//   A model whose catalog entry takes its tools as text (local-models.ts `toolsAs`) gets them in its system prompt and
+//   its calls read back from its reply (text-tools.ts), on this translation alone.
 // Its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past a model's tier is priced at
 // the tier, as its provider bills it), and its cost is that catalog entry, tiers included, for the cap's judgement.
+import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
+import type { ToolsAs } from "../local-models.js";
 import { chooseModel, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
 export type RouteCost = {
@@ -53,12 +58,12 @@ export interface ModelRoute {
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
-type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown };
+type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown; toolsAs?: ToolsAs };
 /** The wires a caller of routeOf speaks when it names none: Anthropic's Messages alone. */
 const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
-type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string };
+type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string }[] };
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`; a claimed run's pin, sent as
  *  pinned: chooseModel's PinnedModel), resolved from `env` as main resolves a run's model, on a wire of `wires` (the
@@ -109,8 +114,13 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
   };
   return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
-    const context = contextOf(body, target, (id) => providerIds.get(id) ?? id);
-    const events = models.streamSimple(target as never, context as never, { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) } as never);
+    const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
+    // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
+    // result of its history as text, and its calls read from its reply. A request with no tools goes as it is.
+    const asText = target.toolsAs === "text" && (built.tools?.length ?? 0) > 0;
+    const context = asText ? toolsAsText(built) : built;
+    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) };
+    const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -130,7 +140,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
           return index;
         };
         try {
-          for await (const event of events) {
+          for await (const event of asText ? [] : events) {
             const at = event.contentIndex;
             if (event.type === "text_start") send({ type: "content_block_start", index: open(at), content_block: { type: "text", text: "" } });
             else if (event.type === "text_delta") send({ type: "content_block_delta", index: blockOf.get(at ?? -1), delta: { type: "text_delta", text: event.delta ?? "" } });
@@ -162,6 +172,52 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
               const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
               send({ type: "message_delta", delta: { stop_reason: stopReasonOf(event.reason ?? message.stopReason), stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite } });
               send({ type: "message_stop" });
+            }
+          }
+          if (asText) {
+            // The reply whole, then its text and its calls as Messages blocks. A reply that opens a call block and
+            // holds no call it can read is asked again, at most TEXT_TOOL_TRIES times in all, its usage summed.
+            const tools = built.tools ?? [];
+            const used = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+            let replies = events;
+            for (let attempt = 1; ; attempt++) {
+              let again = false;
+              for await (const event of replies) {
+                if (event.type !== "done" && event.type !== "error") continue;
+                const message = (event.type === "done" ? event.message : event.error) ?? {};
+                if (event.type === "error") {
+                  sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
+                  break;
+                }
+                const part = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+                used.input += part.input;
+                used.output += part.output;
+                used.cacheRead += part.cacheRead ?? 0;
+                used.cacheWrite += part.cacheWrite ?? 0;
+                const said = (message.content ?? []).filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
+                const read = callsOfText(said, tools);
+                if (read.broken && attempt < TEXT_TOOL_TRIES) {
+                  again = true;
+                  break;
+                }
+                if (read.text) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
+                  send({ type: "content_block_delta", index, delta: { type: "text_delta", text: read.text } });
+                  send({ type: "content_block_stop", index });
+                }
+                for (const call of read.calls) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "tool_use", id: messagesId(`call_${randomUUID().replace(/-/g, "").slice(0, 24)}`), name: call.name, input: {} } });
+                  send({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(call.arguments) } });
+                  send({ type: "content_block_stop", index });
+                }
+                const reason = read.calls.length ? "tool_use" : stopReasonOf(event.reason === "toolUse" ? "stop" : event.reason ?? message.stopReason);
+                send({ type: "message_delta", delta: { stop_reason: reason, stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite } });
+                send({ type: "message_stop" });
+              }
+              if (!again) break;
+              replies = models.streamSimple(target as never, context as never, streamOptions as never);
             }
           }
         } catch (error) {
@@ -244,3 +300,6 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
     ...(body.tools?.length ? { tools: body.tools.map((tool) => ({ name: tool.name, description: tool.description ?? "", parameters: tool.input_schema ?? { type: "object", properties: {} } })) } : {}),
   };
 }
+
+/** How many times a text-tools reply is asked for when it opens a call block that holds no call it can read. */
+const TEXT_TOOL_TRIES = 3;
