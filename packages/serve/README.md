@@ -2064,9 +2064,7 @@ into place and made read-only. `node scripts/harness-locks.mjs` makes the locks 
 checks them). Every run that needs one waits for that one install, its ready time counted from the install's end, and
 shows a `phase` row, `Installing Claude Code (first use)…` or `Installing Codex (first use)…`, while it does. Each run
 then loads the harness from its own packages inside its install and nowhere else, never from a `node_modules` above it;
-a tree that is not whole is installed again. Claude Code as an earlier build installed it, at the top of `<data>/harnesses`
-itself, is removed before the first install (the server logs `harness_install_removed`), and it installs again; a
-`harnesses` directory that holds anything else is left as it is. Until it is installed, capabilities list the harness with `installs:
+a tree that is not whole is installed again. Until it is installed, capabilities list the harness with `installs:
 "on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked
 install: the shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses/<harness>.new`, `npm ci
 --ignore-scripts --include=optional` there, then that directory put in place of `<data>/harnesses/<harness>` (made

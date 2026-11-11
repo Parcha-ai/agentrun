@@ -30,7 +30,7 @@ import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } fro
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
-import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
+import { HarnessInstall, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -1166,14 +1166,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // of each at a time, which every run on that harness, and the save of an agent on it, waits for or starts; once one is
   // in, the offers are probed again, so capabilities no longer say it installs on first use. Each is its table entry's
   // `installs` (a test's stand-in has none).
-  // Claude Code as an earlier build installed it, at the top of the harnesses directory itself (read-only): removed once,
-  // before the first install, which then goes in beside nothing. Any other layout is left as it is.
-  let flat: Promise<void> | undefined;
-  const flatRemoved = () =>
-    (flat ??= removeFlatInstall(harnessesOf(data)).then(
-      (removed) => void (removed && log?.(logLine("harness_install_removed", { dir: harnessesOf(data), said: `removed the earlier Claude Code install at ${harnessesOf(data)}: it installs again under harnesses/claude-agent` }))),
-      (error: unknown) => ((flat = undefined), Promise.reject(error)),
-    ));
   const installed = HARNESSES.flatMap((id) => {
     const harness = harnessOf(base, id);
     return harness?.installs && harness.pins ? [{ entry: harness.installs, pins: harness.pins }] : [];
@@ -1182,7 +1174,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const lock = options.harnessLocks?.[entry.id];
     // npm past its SIGTERM's grace (it waits on a tarball once it writes): killed, and the line says so.
     const onKilled = () => log?.(logLine("harness_install_killed", { harness: entry.id, said: `npm did not stop within ${NPM_STOP_GRACE_MS / 1000} s of SIGTERM; killed` }));
-    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) })), (ms) => {
+    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, (entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) }), (ms) => {
       log?.(logLine("harness_installed", { harness: entry.id, ms, dir: installDirOf(data, entry.id) }));
       void probe(`${entry.id}_installed`).catch(() => undefined);
     })];
