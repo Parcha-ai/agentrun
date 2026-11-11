@@ -45,6 +45,9 @@ const MCP_TOOL = /^[A-Za-z0-9_.-]{1,128}$/;
 export const MAX_FILE_BYTES = 256 << 10;
 export const MAX_PACKAGE_BYTES = 1 << 20;
 export const MAX_PACKAGE_FILES = 256;
+/** A file of a package's evals/ (a case's fake MCP server fixture, say), which no agent is given: its own bound, apart
+ *  from the agent's files' limits above. */
+export const MAX_EVAL_FILE_BYTES = 32 << 20;
 /** A parameter's sample, of its type, for the check that compiles a package before any apply. */
 const SAMPLES = { string: "x", number: 1, integer: 1, boolean: true } as const;
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
@@ -248,12 +251,16 @@ export function readPackage(dir: string): Package {
     if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
-  const all = files("");
+  // The agent's files' bytes (evals/ is the package's own test data, never part of an agent) under POST /v2/agents'
+  // limits, an eval's file under MAX_EVAL_FILE_BYTES alone; every file, evals/ too, counts toward MAX_PACKAGE_FILES.
+  const listed = files("");
+  const all = listed.filter((path) => !path.startsWith("evals/"));
   const sizes = all.map((path) => [path, lstatSync(join(dir, path)).size] as const);
   const limits = [
+    ...listed.filter((path) => path.startsWith("evals/") && lstatSync(join(dir, path)).size > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
     ...sizes.filter(([, size]) => size > MAX_FILE_BYTES).map(([path]) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...(sizes.reduce((sum, [, size]) => sum + size, 0) > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
-    ...(all.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
+    ...(listed.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
   ];
   if (limits.length) throw new PackageError(dir, [...problems, ...limits]);
   const manifest = front(MANIFEST);

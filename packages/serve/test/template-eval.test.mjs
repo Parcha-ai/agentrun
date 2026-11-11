@@ -5,13 +5,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
-import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -448,4 +448,36 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
     assert.match(refused.err, said);
     assert.equal(refused.out, "");
   }
+});
+
+test("a fake's answer keyed by a list of whens is taken when any one matches; one no answer matches falls to its search, then its default", () => {
+  const file = { content: [{ type: "text", text: "the file at abc" }] };
+  const fixture = { server: "github", description: "", tools: {
+    get_file_contents: { description: "", input: { type: "object" }, answers: [{ when: [{ path: "a.ts", sha: "abc" }, { path: "a.ts", ref: "abc" }, { path: "a.ts", ref: "refs/pull/7/head" }], result: file }], default: { content: [{ type: "text", text: "not here" }], isError: true } },
+    search_code: { description: "", input: { type: "object" }, answers: [{ when: { query: "pinned" }, result: { content: [{ type: "text", text: "pinned answer" }] } }],
+      search: { query: "query", note: "a subset", limit: 2, files: [{ path: "src/a.ts", text: "export function load(id) {\n  return cache.get(id);\n}\nload(1);\nload(2);" }, { path: "src/b.py", text: "def load(x):\n    return x" }] } },
+  } };
+  for (const args of [{ path: "a.ts", sha: "abc" }, { path: "a.ts", ref: "abc", owner: "o" }, { path: "a.ts", ref: "refs/pull/7/head" }]) assert.equal(fakeAnswer(fixture, "get_file_contents", args).content[0].text, "the file at abc", JSON.stringify(args));
+  assert.equal(fakeAnswer(fixture, "get_file_contents", { path: "a.ts", sha: "def" }).isError, true, "no entry of the list matches");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: "pinned" }).content[0].text, "pinned answer", "an answer wins over the search");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: "load language:typescript" }).content[0].text, "a subset\n3 matching lines in 1 file (the first 2 shown)\nsrc/a.ts:1: export function load(id) {\nsrc/a.ts:4: load(1);");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: '"return x" path:src/' }).content[0].text, "a subset\n1 matching line in 1 file\nsrc/b.py:2: return x");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: "/cache\\.get\\(/ NOT nothing-here" }).content[0].text, "a subset\n1 matching line in 1 file\nsrc/a.ts:2: return cache.get(id);");
+  assert.match(fakeAnswer(fixture, "search_code", { query: "load NOT cache" }).content[0].text, /^a subset\n1 matching line in 1 file\nsrc\/b\.py:1: def load\(x\):$/);
+  assert.match(searched({ query: "q", files: [] }, "anything"), /^0 matching lines in 0 files$/);
+});
+
+test("a package's evals/ files are bounded apart from the agent's files: a fixture past 256 KiB loads, one past the eval bound does not", async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const fixture = JSON.parse(readFileSync(join(dir, "evals/mcp-match/fixtures/crm.json"), "utf8"));
+  fixture.description = "x".repeat(MAX_FILE_BYTES + 1024);
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/crm.json"), JSON.stringify(fixture));
+  assert.doesNotThrow(() => readPackage(dir), "an eval fixture over the agent's file limit");
+  assert.equal(readCases(dir, ["mcp-match"]).cases[0].mcp.crm.description.length, MAX_FILE_BYTES + 1024);
+  writeFileSync(join(dir, "big.md"), "y".repeat(MAX_FILE_BYTES + 1));
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /big\.md: is over \d+ bytes, a package file's limit/.test(e.message), "the agent's own files keep their limit");
+  rmSync(join(dir, "big.md"));
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/huge.json"), Buffer.alloc(MAX_EVAL_FILE_BYTES + 1, 32));
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/huge\.json: is over \d+ bytes, an eval file's limit/.test(e.message));
 });
