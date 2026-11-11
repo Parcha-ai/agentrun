@@ -1928,7 +1928,7 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.

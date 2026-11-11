@@ -1,7 +1,6 @@
 // The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes alone
-// and refuses every other address before anything else reads the request: the console at "/" and its assets, the
-// store page's /api/*, sign-in and setup, settings, MCP, triggers and their webhook hooks, agents, templates and the
-// rest. Off by default.
+// and refuses every other address before anything else reads the request: the console at "/" and its assets, sign-in
+// and setup, settings, MCP, triggers and their webhook hooks, agents, templates and the rest. Off by default.
 import type { Route } from "./server.js";
 
 /** The variable that turns the profile on. */
