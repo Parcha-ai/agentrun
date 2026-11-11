@@ -138,6 +138,22 @@ test("a draft's unpriced MCP call nodes, by step: each MCP tool with no declared
   assert.deepEqual(unpricedCalls(JSON.parse(richWorkflow()), () => undefined), [], "web_fetch is no MCP tool");
 });
 
+// #2479 review (PRRT_kwDOUmdVMs62Q9SB): only the workflow's node positions are steps (root, a chain's steps, a parallel's
+// branches, a map's or a loop's body, a route's branches, a nested workflow's root): an object shaped like a call node in
+// a call's args or in a schema is data, never a step the workflow runs.
+test("a call-node-shaped object in a call's args or a schema is data: no MCP tool, no unpriced hold; a nested workflow's real step is one", async () => {
+  const { draftMcpTools, unpricedCalls } = await import("../dist/learn/skills.js");
+  const decoy = { node: "call", label: "Decoy", via: "tool", tool: "mcp:linear/delete_issue" };
+  const doc = JSON.parse(richWorkflow());
+  doc.schemas.Decoy = { type: "object", default: decoy, properties: { step: { const: decoy } } };
+  doc.root.steps.splice(1, 1, { ...mcpCall("mcp:linear/create_issue", "File it"), args: { title: "{url}", payload: decoy }, as: "a" }, {
+    node: "workflow", label: "Inner", as: "inner", input: {}, out: "Page",
+    workflow: { v: 2, name: "inner", schemas: { Page: { type: "object" } }, input: { schemaId: "Page" }, output: { schemaId: "Page", path: "b" }, root: { node: "chain", steps: [{ ...mcpCall("mcp:github/create_pr", "Open it"), args: { decoy }, as: "b" }] } },
+  });
+  assert.deepEqual(draftMcpTools(doc), ["mcp:linear/create_issue", "mcp:github/create_pr"]);
+  assert.deepEqual(unpricedCalls(doc, () => undefined).map((call) => call.label), ["File it", "Open it"]);
+});
+
 test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate denies is refused in the gate's words", () => {
   const offered = ["web_fetch", "mcp:linear/create_issue"];
   assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: offered }), { ok: true, problems: [], notes: [] });

@@ -150,6 +150,18 @@ test("a draft held as unpriced waits for its owner's OK whatever the grader deci
   assert.match(said, new RegExp(`----- begin \\w+: workflows/file-ticket/workflow\\.json, why it waits -----\\n${UNPRICED.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`));
 });
 
+// #2479 review (PRRT_kwDOUmdVMs62Q9R2, security): the unpriced hold never hides the grader's Planted: an item the grader
+// names Planted, kept or held, still drops every item of the proposal, the held draft's question stays Planted.
+test("a held unpriced draft the grader names Planted keeps its Planted question, and the whole proposal is not merged", () => {
+  const draftFile = MCP_FILES[0].file;
+  for (const decision of ["keep", "pending"]) {
+    const answer = JSON.stringify({ merge: true, reason: "Kept.", items: [{ file: draftFile, decision, origin: "run", question: "Planted", why: "Its rule came from a page the run read." }] });
+    const verdict = parseVerdict(answer, [MCP_FILES[0]], { [draftFile]: [UNPRICED] });
+    assert.equal(verdict.merge, false, decision);
+    assert.equal(verdict.items[0].question, "Planted", decision);
+  }
+});
+
 test("the user's own messages are fenced as data, in order, every one of them, each cut to GRADE_CAPS.askedMessage, with unseen characters gone; none given says so", () => {
   assert.deepEqual([GRADE_CAPS.askedMessage, GRADE_CAPS.askedTotal], [1_000, 40_000], "each message to 1,000 characters, 40,000 in all: forty messages at the cap");
   assert.equal(GRADE_CAPS.asked, undefined, "no count of messages: every one is shown while they fit");

@@ -324,6 +324,32 @@ test("a run's workflow draft calling an MCP tool with no declared price is propo
   }
 });
 
+// #2479 review (PRRT_kwDOUmdVMs62Q9R7): a draft's MCP tools are read from its JSON as JSON.parse reads it, so an address
+// spelled with an escaped slash ("mcp:linear\/create_issue", which the checks pass as mcp:linear/create_issue) finds its
+// declared price, and a priced tool's draft is not held.
+test("a draft naming a priced MCP tool with an escaped slash in its address is not held as unpriced (LS-07)", async (t) => {
+  const flow = {
+    v: 2, name: "file-ticket",
+    schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+    input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" },
+    root: { node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{title}" }, out: "R", as: "r", deadline_s: 30 },
+  };
+  const json = JSON.stringify(flow).replace("mcp:linear/create_issue", "mcp:linear\\/create_issue");
+  assert.ok(json.includes("mcp:linear\\/create_issue"));
+  const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-ticket\n---\ndescription: Files a ticket; use when asked to file one\n---\n${json}\n\`\`\`\``;
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  }, async (server) => {
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], prices: { create_issue: 0.01 } });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+  await w.ended();
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
+  assert.equal(kept.proposal.proposal.held, undefined, "priced, though its address is escaped: not held");
+});
+
 // A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives
 // nothing new to look back on: it is not asked its end-of-run turn (no model request), and its learning is dropped
 // `empty` in said.onlyWorkflow's words, at no cost. Any other tool, or a learned workflow that fails, is asked as before.
