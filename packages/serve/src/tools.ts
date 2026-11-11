@@ -10,10 +10,11 @@ import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
-import type { Revision } from "@parcha/pi-durable-agent";
-import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
+import type { Revision } from "./agent-rows.js";
+import { registerTurnEnding } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
+import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -135,6 +136,9 @@ export type ToolHost = {
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
   workspace?: Workspace;
+  /** The agent's computer, where it is a browser (computer-for-claim.ts): the browser tool opens its sessions through the
+   *  claim's provider and drives each over its CDP URL with pi-browser's raw-CDP driver, in place of the plane's vendor. */
+  browserComputer?: ClaimBrowser;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -369,18 +373,25 @@ const browserTool: ToolEntry = {
       import("./browser-live.js"),
       import("./browser-person.js"),
     ]);
-    const vendor = planeOf(host.env).browser ?? "browserbase";
-    const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
+    // The agent's computer, where it is a browser, wins over the plane's pick: the run's sessions are that provider's,
+    // opened through the claim and driven over their CDP URL by the raw-CDP driver, with no pi-browser vendor provider,
+    // saved sign-in or plane check of their own.
+    const computer = host.browserComputer;
+    const planeVendor = planeOf(host.env).browser ?? "browserbase";
+    const vendor = computer?.provider ?? planeVendor;
+    const refused = !computer && isUnavailable(planeVendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(planeVendor)}.`)) : undefined;
     // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
     // (sign-ins-store.ts runSignIn), never from the process; on the old per-run process, over its own secrets' pipe.
     // An agent with none saved has its first made at the vendor now, over this run's own claim keys (host.env), as main's
     // launch makes it: never the process's environment, so one run's keys never make another's.
     const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
     const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
-    const handed = host.claim ? (refused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
+    const handed = computer ? undefined : host.claim ? (refused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
-    const parts = faux
+    const parts = computer
+      ? { provider: (await import("./browser-computer.js")).claimBrowserProvider(computer), driver: (await import("@parcha/pi-browser/driver/cdp")).cdpDriver() }
+      : faux
       ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { provider: unknown; driver: unknown } }).default(host.env, vendor, kept)
       : {
           provider: refused

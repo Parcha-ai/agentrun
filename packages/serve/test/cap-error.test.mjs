@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "../dist/timeline/index.js";
 import { spentIn } from "../dist/cap.js";
 
 

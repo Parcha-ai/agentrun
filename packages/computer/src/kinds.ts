@@ -7,9 +7,9 @@
 // The default images are values: each from the provider module that owns it. Those modules import this one for types
 // alone, so this is no import cycle.
 import { BROWSER_IMAGE } from "./browser.js";
-import { DAYTONA_DEFAULT_SNAPSHOT } from "./daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU } from "./daytona.js";
 import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-import { MODAL_DEFAULT_IMAGE } from "./modal.js";
+import { MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./modal.js";
 import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
 import { PHONE_IMAGE } from "./phone-harness.js";
@@ -45,8 +45,8 @@ export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec
 /** Every setting kind, in the table's order. */
 export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
 
-/** The capabilities serves() and kindOf() read. */
-export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups">;
+/** The capabilities serves() and kindOf() read, and the GPUs a configuration offers (Settings' GPU choice). */
+export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu">;
 
 /** Why capabilities do not serve a setting kind, in words; none when they do. */
 export function servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[] {
@@ -111,6 +111,8 @@ export interface ProviderEntry {
 
 const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
 const LINUX_DESKTOP: KindCapabilities = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
+/** A provider's GPU capability as its configuration carries it: a deep copy of the module's own. */
+const gpuOf = (gpu: Readonly<NonNullable<KindCapabilities["gpu"]>>): NonNullable<KindCapabilities["gpu"]> => structuredClone(gpu) as NonNullable<KindCapabilities["gpu"]>;
 
 /** An entry with its kinds derived from its capabilities. */
 function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
@@ -134,7 +136,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		mounts: ["archil"],
 		network: ["none"],
 		metered: true,
-		capabilities: [SANDBOX],
+		capabilities: [{ ...SANDBOX, gpu: gpuOf(DAYTONA_GPU) }],
 		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	}),
 	entry({
@@ -147,7 +149,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		mounts: ["archil"],
 		network: ["none"],
 		metered: true,
-		capabilities: [SANDBOX],
+		capabilities: [{ ...SANDBOX, gpu: gpuOf(MODAL_GPU) }],
 		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
 	}),
 	entry({
@@ -201,6 +203,17 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		network: ["open"],
 		metered: true,
 		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
+		defaultImage: { browser: BROWSER_IMAGE },
+	}),
+	// This machine's Chrome: no key, nothing billed, no live view (a person watching runs it headed).
+	entry({
+		id: "local",
+		label: "Local Chrome",
+		keys: [],
+		mounts: [],
+		network: ["open"],
+		metered: false,
+		capabilities: [{ kind: "browser", groups: ["cdp"] }],
 		defaultImage: { browser: BROWSER_IMAGE },
 	}),
 ];

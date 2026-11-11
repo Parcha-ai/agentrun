@@ -42,6 +42,7 @@ export function runnableCode(code: string): string {
 }
 
 export type RunAction =
+  | { op: "goto"; url: string }
   | { op: "click"; id: string }
   | { op: "hover"; id: string }
   | { op: "fill"; id: string; value: string }
@@ -54,7 +55,12 @@ export type PageDriver = BrowserDriver & {
   /** `checked`: an action after the first of a run of several, sent alone (driving-guard sends a batch one action at a time)
    *  after the whole batch was checked against the page's snapshot: the page's address, which the batch's own earlier
    *  actions may have moved (a same-page link), is not checked against the snapshot again. Its ids still are. */
-  run(input: { code?: string; actions?: RunAction[]; checked?: true }): Promise<unknown>;
+  run(input: { code?: string; actions?: RunAction[]; checked?: true; rest?: number }): Promise<unknown>;
+  /** Whether the last `run` moved the driver to another tab (it followed a tab the page opened, or left one that
+   *  closed): the batch's actions after it name the old tab's ids, so driving-guard sends none of them. `rest`, given to
+   *  `run`, is how many of the batch's actions follow the ones it was sent, for its answer to say they were not run.
+   *  Optional: a driver that never changes tabs has neither. */
+  movedTab?(): boolean;
   /** The page's URL, cheaply: no page content is read. */
   url(): Promise<string>;
   /** Drops every snapshot's element ids, so an action by an old id fails as a stale snapshot (a person changed the page, whatever its URL). Optional:
