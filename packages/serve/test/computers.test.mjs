@@ -86,18 +86,18 @@ test("a provider that offers images by name lists them for the kind, its default
   assert.equal("images" in providerOf(view, "desktop", "e2b"), false);
 });
 
-test("under AGENTRUN_BOX_ALLOW=none a computer that runs only on the vendor's own network is not ready, and a kind only such computers serve is not offered, in words; a host list leaves them as they are", async (t) => {
-  const keys = { PHONE_HARNESS_API_KEY: "good-phone", BROWSERBASE_API_KEY: "good-browser", BROWSERBASE_PROJECT_ID: "project", KERNEL_API_KEY: "good-kernel" };
+test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready, and a kind only such computers serve is not offered, in words; a host list leaves them as they are", async (t) => {
+  const keys = { PHONE_HARNESS_API_KEY: "fake", BROWSERBASE_API_KEY: "fake", BROWSERBASE_PROJECT_ID: "project", KERNEL_API_KEY: "fake" };
   const none = await (await setup(t, { env: { ...keys, AGENTRUN_BOX_ALLOW: "none" } })).routes.view();
   for (const [kind, id, label] of [["phone", "phone-harness", "Phone harness"], ["browser", "browserbase", "Browserbase"], ["browser", "kernel", "Kernel"]]) {
     const provider = providerOf(none, kind, id);
     assert.equal(provider.ready, false, `${id} is never usable on a server with no network`);
-    assert.equal(provider.why, `${label} runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network, or set AGENTRUN_BOX_ALLOW to a host list`);
-    assert.equal(provider.network, "the vendor's own network, which this server refuses: its AGENTRUN_BOX_ALLOW is none");
+    assert.equal(provider.why, `${label} needs a network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network, or set AGENTRUN_BOX_ALLOW to a host list`);
+    assert.equal(provider.network, "needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none");
   }
   for (const kind of ["phone", "browser"]) {
-    assert.equal(kindOf(none, kind).offered, false, `${kind}: every provider of it runs only on the vendor's own network`);
-    assert.equal(kindOf(none, kind).why, `every provider of a ${kind} computer runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network)`);
+    assert.equal(kindOf(none, kind).offered, false, `${kind}: every provider of it needs a network`);
+    assert.equal(kindOf(none, kind).why, `every provider of a ${kind} computer needs a network, and this server's AGENTRUN_BOX_ALLOW is none (no network)`);
   }
   // A computer with no network of its own, or one that takes the list, is as it was.
   assert.deepEqual([kindOf(none, "sandbox").offered, providerOf(none, "sandbox", "docker").ready, providerOf(none, "desktop", "orgo").network], [true, true, "no network, so this server's allow-list isn't offered"]);
