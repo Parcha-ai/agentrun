@@ -62,6 +62,36 @@ test("a claude-agent run pinned to OpenRouter at its start is handed OpenRouter'
   assert.equal(claimed.ANTHROPIC_API_KEY, undefined, "Anthropic's, saved since, is not");
 });
 
+// Ported from tester-path-saved-openrouter.test.mjs (deleted at the cutover; it drove each harness's own run process): an
+// OpenRouter key saved in Settings, with none where AgentRun started, reaches every harness's run on the runner.
+test("a pi run pinned to OpenRouter at its start is handed the saved OpenRouter key at its claim, and its route sends it", async (t) => {
+  const store = await storeWith(t, { OPENROUTER_API_KEY: OPENROUTER_SAVED });
+  const launch = { plane: {}, model: { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" } };
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: [] } }, launch);
+  assert.equal(claimed.OPENROUTER_API_KEY, OPENROUTER_SAVED, "the saved key is opened for the run");
+  // OpenRouter is pi-ai's own translation behind the route: its request upstream carries the key as a bearer token.
+  const seen = [];
+  const upstream = async (url, init = {}) => {
+    const headers = new Headers(url instanceof Request ? url.headers : undefined);
+    for (const [name, value] of new Headers(init.headers)) headers.set(name, value);
+    seen.push({ url: String(url instanceof Request ? url.url : url), authorization: headers.get("authorization"), apiKey: headers.get("x-api-key") });
+    return new Response(JSON.stringify({ error: { message: "stand-in" } }), { status: 400, headers: { "content-type": "application/json" } });
+  };
+  const route = await routeOf(modelAskOf(launch.model, undefined), withModelKeys({}, claimed), "default", PI_WIRES, upstream);
+  const answer = await route.fetch(`${route.provider.origin}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: route.model, max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }) });
+  await answer.text().catch(() => "");
+  assert.ok(seen.length > 0, "the route sent the request upstream");
+  assert.ok(seen.every((request) => request.url.startsWith("https://openrouter.ai/") && (request.authorization === `Bearer ${OPENROUTER_SAVED}` || request.apiKey === OPENROUTER_SAVED)), `to OpenRouter, with the saved key: ${JSON.stringify(seen)}`);
+});
+
+test("a codex run pinned to OpenRouter at its start is handed the saved OpenRouter key at its claim", async (t) => {
+  const store = await storeWith(t, { OPENROUTER_API_KEY: OPENROUTER_SAVED });
+  const launch = { plane: {}, model: { provider: "openrouter", modelId: "openai/gpt-6.1-sol" } };
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: [], harness: "codex" } }, launch);
+  assert.equal(claimed.OPENROUTER_API_KEY, OPENROUTER_SAVED, "the saved key is opened for the run");
+  assert.equal(withModelKeys({}, claimed).OPENROUTER_API_KEY, OPENROUTER_SAVED, "and is in the environment its CLI's session is started with");
+});
+
 test("a provider's credential the runner was handed where AgentRun started wins over a key of the same provider saved in Settings: no saved name of that provider is added", async (t) => {
   const store = await storeWith(t, { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, AWS_SECRET_ACCESS_KEY: `not-a-secret-${"aws-saved"}` });
   const runner = piped({ ANTHROPIC_AUTH_TOKEN: LAUNCHER_TOKEN, AWS_ACCESS_KEY_ID: LAUNCHER_AWS });

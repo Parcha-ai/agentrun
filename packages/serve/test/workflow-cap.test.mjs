@@ -12,7 +12,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST } from "../dist/timeline/index.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { decisionSpentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";

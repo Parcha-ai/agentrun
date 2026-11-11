@@ -9,8 +9,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
-import { openStore } from "@parcha/pi-durable-agent";
-import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve, startRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -72,29 +71,6 @@ async function workingFlow(api, id, instructions = "Answer soon.") {
 
 /** Refusals of the run's end, 100 ms apart, that add up to more than a request's 2 s wait. */
 const PAST_A_REQUEST = 21;
-
-/** Holds each of the next two commits until both have arrived: each read its current revision and passed its checks, and
- *  both reach the store's own check of the body together, as two edits in flight at once do. */
-async function twoCommitsAtOnce(t) {
-  const probe = await scratch(t);
-  const store = openStore(probe);
-  const proto = Object.getPrototypeOf(store);
-  store.close();
-  const commit = proto.commitRevision;
-  t.after(() => void (proto.commitRevision = commit));
-  const arrived = [];
-  let armed = true;
-  proto.commitRevision = async function (agentId, input, options) {
-    if (armed) {
-      await new Promise((resolve) => {
-        arrived.push(resolve);
-        if (arrived.length === 2) (armed = false), arrived.forEach((go) => go());
-      });
-    }
-    return commit.call(this, agentId, input, options);
-  };
-  return () => assert.equal(arrived.length, 2, "both edits reached the store's commit together");
-}
 
 // SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a follow-up to a stopped run is taken while another connection holds the agent store, and runs; taken or refused, never both", { timeout: 120_000 }, async (t) => {

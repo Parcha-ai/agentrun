@@ -10,8 +10,8 @@
 // is the run view's to read from the journal (the server's view layer, run-view.ts). These writers take it as `RunMoment`
 // and never recompute it; the coarse facts a row already holds (its state, its launch cap) they read from the store.
 import { randomBytes } from "node:crypto";
-import type { Revision } from "@parcha/pi-durable-agent";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { Revision } from "./agent-rows.js";
+import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
@@ -335,6 +335,8 @@ export interface StartDeps {
   readonly documents?: string;
   /** What a run's box may reach, as the server resolved it, or "none". */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set that (run-launch.ts boxAllowSet). */
+  readonly boxAllowSet?: true;
   /** The run's model, pinned at start: resolved exactly as the old per-run process resolved it from the revision and agent
    *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
    *  resolution happens, here. Required. */
@@ -530,6 +532,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(deps.approvers !== undefined ? { approvers: deps.approvers } : {}),
     ...(deps.documents !== undefined ? { documents: deps.documents } : {}),
     ...(deps.boxAllow !== undefined ? { boxAllow: deps.boxAllow } : {}),
+    ...(deps.boxAllowSet ? { boxAllowSet: true as const } : {}),
     ...(fileIds.length ? { files: fileIds } : {}),
     ...(learning ? { learning } : {}),
     ...(trigger ? { trigger } : {}),
