@@ -129,8 +129,7 @@ test("a file sent in one call takes an Idempotency-Key: the same bytes replay th
   assert.deepEqual((await readdir(join(server.data, "files"))).filter((name) => name.startsWith(".")), [], "the replays' bytes dropped");
 });
 
-// SKIP (follow-up #2432): an upload deleted right after a run's start is gone before the runner copies it at the claim
-test.skip("GET /v2/files lists the server's uploads newest first a page at a time, GET one reads its record, and DELETE removes it; a run that copied it keeps its copy", async (t) => {
+test("GET /v2/files lists the server's uploads newest first a page at a time, GET one reads its record, and DELETE removes it; a run started with it keeps its copy", async (t) => {
   const server = await served(t);
   const { api } = server;
   const sent = (await sendFile(server, { path: "kept.txt" }, Buffer.from("kept bytes"))).json.file;
@@ -150,7 +149,12 @@ test.skip("GET /v2/files lists the server's uploads newest first a page at a tim
   server.check("File", read.body);
   assert.deepEqual(read.body, sent);
   assert.equal((await api("GET", "/files/no-such-file")).status, 404);
-  // A run that copied the file keeps its copy when the upload goes.
+  // A run started with the file keeps its copy when the upload goes, even one deleted before the runner's claim copies it:
+  // the copy waits here until the delete is done.
+  let deleted;
+  const afterDelete = new Promise((resolve) => (deleted = resolve));
+  uploadTestHooks.beforeCopy = () => afterDelete;
+  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
   assert.equal((await api("POST", "/agents", agent("keeper"))).status, 201);
   const run = await api("POST", "/agents/keeper/runs", { input: { content: "Hello." }, file_ids: [sent.file_id] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -159,8 +163,10 @@ test.skip("GET /v2/files lists the server's uploads newest first a page at a tim
   assert.equal((await api("GET", `/files/${sent.file_id}`)).status, 404);
   assert.equal((await send(server.port, "DELETE", `/v2/files/${sent.file_id}`, undefined, bearer(server))).status, 404, "deleted once");
   assert.equal(await stat(join(server.data, "files", sent.file_id)).catch(() => null), null, "its bytes are gone");
-  assert.equal(await readFile(join(runDir(server.data, run.body.run_id), "work", "inputs", "kept.txt"), "utf8"), "kept bytes", "the run's copy stays");
+  deleted();
   await follow(api, run.body.run_id, ["completed"]);
+  assert.equal(await readFile(join(runDir(server.data, run.body.run_id), "work", "inputs", "kept.txt"), "utf8"), "kept bytes", "the run's copy stays");
+  assert.deepEqual(await readdir(join(server.data, "files", ".held")), [], "the run's hold went once its copy was made");
   // A run started after names it in vain; a pending one deleted takes no bytes.
   const late = await api("POST", "/agents/keeper/runs", { input: { content: "Hello." }, file_ids: [sent.file_id] });
   assert.deepEqual([late.status, late.body.error.fields[0].field], [422, "file_ids[0]"]);

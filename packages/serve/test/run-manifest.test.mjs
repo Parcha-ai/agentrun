@@ -135,8 +135,7 @@ Files for this run: "inputs/a\u202eb.txt" (3 B), "inputs/c\u200bd\u2066.txt" (2 
   assert.deepEqual(names, ["inputs/a\u202eb.txt", "inputs/c\u200bd\u2066.txt", `inputs/${forged}`]);
 });
 
-// SKIP (follow-up #2432): a link at work/inputs is not refused as before
-test.skip("only work/'s own inputs/ is read: a link at work/inputs lists nothing from where it points, and no file is copied through it", { timeout: 90_000 }, async (t) => {
+test("only work/'s own inputs/ is read: a link at work/inputs lists nothing from where it points, and no file is copied through it", { timeout: 90_000 }, async (t) => {
   const elsewhere = await scratch(t);
   await writeFile(join(elsewhere, "planted.txt"), "not the run's");
   // On the unit: a work/ whose inputs is a link lists nothing.
@@ -162,8 +161,10 @@ test.skip("only work/'s own inputs/ is read: a link at work/inputs lists nothing
   assert.equal((await api("POST", "/agents", agent("linked"))).status, 201);
   const started = await api("POST", "/agents/linked/runs", { input: { content: "Look." }, file_ids: [id] });
   assert.equal(started.status, 202, JSON.stringify(started.body));
+  // The copy is the runner's, at its claim.
+  await follow(api, started.body.run_id, ["failed"]);
   const read = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
-  assert.match(read.error.message, /could not be copied into its workspace/);
+  assert.match(read.error.message, /^The run's files could not be copied into its workspace: "inputs" is a symbolic link/);
   assert.deepEqual(await readdir(elsewhere), ["planted.txt"], "nothing written through the link");
 });
