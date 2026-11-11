@@ -93,7 +93,7 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 		"--pull", "never", "--entrypoint", "node", EGRESS_IMAGE,
 		"/code/docker/egress-main.js", "--socket", "/egress/egress.sock", "--deadline", deadline, "--allow", ALLOW.join(","), ...(LOCAL.length ? ["--local", LOCAL.join(",")] : []),
 	]);
-	assert.match(EGRESS_IMAGE, /^node:22\.\d+\.\d+-bookworm-slim@sha256:[0-9a-f]{64}$/, "the proxy's image is pinned by digest");
+	assert.match(EGRESS_IMAGE, /^node:22\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "the proxy's image is pinned by digest");
 	assert.deepEqual(valuesOf(computer, "--network"), ["none"], "the computer itself has no network");
 	assert.deepEqual(valuesOf(computer, "--env"), ["HOME=/work"], "init's relay gives every program its proxy variables, not docker run");
 	assert.deepEqual(valuesOf(computer, "--mount").at(-1), `type=volume,src=${volume},dst=/opt/agentrun/egress,readonly`);
