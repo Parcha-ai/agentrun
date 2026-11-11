@@ -34,7 +34,7 @@ function personAt({ root, note, answered, ...options }) {
   const journal = journalAt(root);
   return personHands({
     ...options,
-    asks: journal.asks,
+    asks: options.asks ?? journal.asks,
     answered: answered ?? journal.answered,
     note: async (kind, data) => {
       await note?.(kind, data);
@@ -639,6 +639,25 @@ test("a take-over the person hands back (given) answers the open ask on its sess
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
   assert.equal(await person.handoff.outcome(b.interactionId), "done");
   assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "done", first: false }, "nothing waiting: the newest's answer, written no more");
+});
+
+test("a hand-back given before the ask expires answers it done, though the journal's read of the asks finishes after the expiry", async (t) => {
+  const root = await scratch(t);
+  const journal = journalAt(root);
+  let slow = false;
+  const person = personAt({
+    root, gates: () => ({ give: () => false }), pollMs: 60_000, holdMs: 200, note: async () => {},
+    personTime: async () => ({ drop() {} }),
+    // The read the hand-back makes takes longer than what is left of the ask.
+    asks: async () => (slow && (await sleep(400)), journal.asks()),
+  });
+  t.after(() => person.close());
+  const asked = await person.handoff.request(ask(91, "ar-run-91-1"));
+  const taken = await person.take("ar-run-91-1");
+  taken.started();
+  slow = true;
+  await taken.end("given");
+  assert.equal(await person.handoff.outcome(asked.interactionId), "done", "answered at the hand-back's own time");
 });
 
 test("one hand-back, one row: a give that answers the session's open ask writes one 'You handed the browser back', as a give with no ask and the console's Done each do", async (t) => {

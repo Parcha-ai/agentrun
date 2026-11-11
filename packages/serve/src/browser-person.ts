@@ -331,16 +331,17 @@ export function personHands(options: {
 
   /** Session `tag`'s newest ask still waiting (unanswered, unexpired), as the journal has it, answered done: the person
    *  handed that session's browser back. Its hold goes with it (settle), and another session's ask is never touched. True
-   *  when an ask was answered here, whose row (settle's) says the hand-back. */
-  const givenDone = async (tag: string): Promise<boolean> => {
+   *  when an ask was answered here, whose row (settle's) says the hand-back. `at` (ms) is when the person handed it back:
+   *  an ask open then is answered then, though the journal's read finishes after its expiry. */
+  const givenDone = async (tag: string, at: number): Promise<boolean> => {
     await readAsks();
     const newest = [...known.values()].filter((ask) => ask.tag === tag).sort((a, b) => Date.parse(b.asked_at) - Date.parse(a.asked_at) || b.id.localeCompare(a.id));
     for (const ask of newest) {
       await writing.get(ask.id);
-      if (settled.has(ask.id) || Date.parse(ask.expires_at) <= Date.now() || (await journalRead(ask.id))) continue;
+      if (settled.has(ask.id) || Date.parse(ask.expires_at) <= at || (await journalRead(ask.id))) continue;
       // Written as the journal's answer, now, unless the ask has one there already (a person's answer that came first
       // writes its own row, settle's, as this one would).
-      await answerInJournal(ask.id, tag, "done", new Date(now()).toISOString()).then(() => settle(ask.id), () => undefined);
+      await answerInJournal(ask.id, tag, "done", new Date(at).toISOString()).then(() => settle(ask.id), () => undefined);
       return true;
     }
     return false;
@@ -449,7 +450,7 @@ export function personHands(options: {
           if (why === "answered") return Promise.resolve();
           if (why !== "given") return note(HOST_PHASE, { summary: TAKE_ENDED[why], at });
           // The session's open ask is read from the run's journal first; settled once the hand-back's row is written.
-          const given = givenDone(tag).then((answeredAsk) => (answeredAsk ? undefined : note(HOST_PHASE, { summary: TAKE_ENDED.given, at })), () => undefined);
+          const given = givenDone(tag, at).then((answeredAsk) => (answeredAsk ? undefined : note(HOST_PHASE, { summary: TAKE_ENDED.given, at })), () => undefined);
           giving.add(given);
           void given.finally(() => giving.delete(given));
           return given;
