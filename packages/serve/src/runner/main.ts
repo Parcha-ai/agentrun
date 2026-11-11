@@ -9,7 +9,8 @@
 // its turn for up to --drain-timeout (default AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT), then every loop left is stopped where it can resume
 // and its run handed back for another runner (a loop that never stops is given up when its claim would run out, and its
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
-import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+// An error nothing handles exits 1 at once, said with its stack (lastResort).
+import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
@@ -27,7 +28,8 @@ import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { routeOf } from "./model-route.js";
-import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent } from "./runner.js";
+import { runnerMemory } from "./memory-claim.js";
+import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -38,6 +40,9 @@ export interface RunnerProcessOptions {
   loops?: number;
   /** How long close() lets each busy run finish its turn (--drain-timeout; RunnerOptions.drainMs). Default 0. */
   drainMs?: number;
+  /** Its memory budget and its runs' weights (RunnerOptions.memory). Default: this host's memory, each run weighed by its
+   *  harness (memory-claim.ts runnerMemory). */
+  memory?: RunnerMemory;
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
   /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop). */
@@ -202,6 +207,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       name,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
+      memory: options.memory ?? runnerMemory(store),
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
@@ -313,6 +319,20 @@ export async function runUntilSignalled(process: RunnerProcess, signals: readonl
   await process.close();
 }
 
+/** The runner process's last resort (runnerMain installs it for unhandledRejection and uncaughtException): says what
+ *  went wrong, in the runner's name with its stack, then exits 1 at once, closing nothing. A runner that went on after
+ *  an error nothing handled could keep renewing the claim of a run whose loop is dead, and that run would hang claimed
+ *  by a live runner. Exiting lets the claim lapse: another runner (or this one, started again) takes the run back at the
+ *  next epoch, and the fence refuses the dead loop's late writes. The line is written to stderr synchronously
+ *  (writeSync), so a pipe's slow reader still gets the whole stack before the exit. Exported for its test. */
+export function lastResort(name: string, write: (line: string) => void = (line) => void writeSync(2, line), exit: (code: number) => void = (code) => process.exit(code)): (reason: unknown) => void {
+  return (reason) => {
+    const said = reason instanceof Error ? (reason.stack ?? `${reason.name}: ${reason.message}`) : String(reason);
+    write(`agentrun-serve runner: Runner ${name}: an error nothing handled, so the runner exits (its claims lapse, and are taken back): ${said}\n`);
+    exit(1);
+  };
+}
+
 /** One line of what the runner did, in its name. */
 function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
@@ -357,6 +377,11 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
   }
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();
+  // The last resort, in this process only (never the library, the server's CLI or the runner beside a server): an error
+  // nothing handled is said with its stack, and the process exits 1 at once (lastResort: crashing is the safe failure).
+  const fatal = lastResort(runnerOf);
+  process.on("unhandledRejection", fatal);
+  process.on("uncaughtException", fatal);
   try {
     started = await startRunnerProcess({
       dataDir: args.dataDir,

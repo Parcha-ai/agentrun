@@ -76,7 +76,8 @@ export function mountsOf(box) {
 	}
 	return `${lines.join("\n")}\n`;
 }
-export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+/** What init --own-network's hello says on the VM runtime, where root makes the network namespace itself. */
+export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"], fence: "netns" };
 /** What computerd probe reports in a VM sandbox: Modal's docs show `uname -srn` there as "Linux modal 7.2.6". */
 export const VM_KERNEL = "7.2.6";
 /** What gVisor reports (guide/troubleshooting: "4.19.0-gvisor"). */
@@ -187,12 +188,31 @@ function bridge(box, fake) {
 			if (argv[0] === DAEMON && argv[1] === "probe") {
 				if (box.probe === "fails") return reply({ result: { exitCode: 2, stdout: "", stderr: Buffer.from("probe: usage\n").toString("base64"), timedOut: false, truncated: false } });
 				if (box.probe === "hangs") return;
-				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
+				const sockets = argv[2] === "--sockets";
+				const targets = argv.slice(sockets ? 3 : 2).filter((_, i) => i % 2 === 1);
 				const reached = box.network === "none" ? [] : targets;
-				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, interfaces: box.interfaces ?? ["lo"], quiet: box.quiet ?? [], raised: box.raised ?? [], reached: box.reached ?? reached, accepted: box.accepted ?? [] };
+				const answered = box.reached ?? reached;
+				const accepted = box.accepted ?? [];
+				// Each target's outcome, as computerd's probe gives it: what isolation.vendor-agent reads.
+				const results = targets.map((target) => ({
+					target,
+					protocol: target.endsWith("/udp") ? "dns" : "tls",
+					outcome: answered.includes(target) ? "answered" : accepted.includes(target) ? "accepted" : "refused",
+					bytes: answered.includes(target) ? 1 : 0,
+					detail: answered.includes(target) ? "answered" : accepted.includes(target) ? "accepted, nothing back" : "refused",
+				}));
+				// With --sockets, the path unix sockets a program can connect to: none of anyone's but the computer's own here.
+				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, interfaces: box.interfaces ?? ["lo"], quiet: box.quiet ?? [], raised: box.raised ?? [], reached: answered, accepted, results, ...(sockets ? { sockets: { sockets: [], incomplete: [] } } : {}) };
 				if (box.probe === "no-accepted") delete report.accepted;
 				const text = box.probe === "garbled" ? "not json\n" : `${JSON.stringify(report)}\n`;
 				return reply({ result: { exitCode: 0, stdout: Buffer.from(text).toString("base64"), stderr: "", timedOut: false, truncated: false } });
+			}
+			// nvidia-smi -L, as the computer's user: one line per GPU the sandbox was made with, else not found (no GPU, no
+			// driver's tools).
+			if (argv[0] === "sh" && argv[2] === "nvidia-smi -L") {
+				if (!box.gpus) return reply({ result: { exitCode: 127, stdout: "", stderr: Buffer.from("sh: nvidia-smi: not found\n").toString("base64"), timedOut: false, truncated: false } });
+				const lines = Array.from({ length: box.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${box.gpus.type} (UUID: GPU-0000000${i}-fake)`);
+				return reply({ result: { exitCode: 0, stdout: Buffer.from(`${lines.join("\n")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 			}
 			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 		}
@@ -344,10 +364,15 @@ function rooter(found, command, fake, answers) {
  *    finishes with 137, and list still yields it for the next `lists` listings, finished or not (default none);
  *  - bridgeMs: how long exec of the daemon's stdio bridge takes to answer with its process (default at once);
  *  - archil: answers of an Archil computer's root commands, by verb (see rooter).
+ *  - initExits: { exitCode, stderr, polls }: the sandbox's command, once the daemon is in place, becomes init and exits
+ *    at once (as init that cannot isolate its programs ends, failing closed). Modal then ends the sandbox on its own and
+ *    asynchronously: every exec from then on throws Modal's ClientError FAILED_PRECONDITION "Modal Sandbox is shutting
+ *    down" (gRPC code 9), poll reads null for the next `polls` polls (default 2), then the exit code; the sandbox's
+ *    stderr holds init's words.
  * fake.events records, in order, every SDK call on a sandbox, every root command and every daemon method, each as
  * { sandbox, what }; fake.rootRuns each root command with what its stdin was given; fake.syncs each mount.sync.
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {}, ended } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {}, ended, initExits } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [], events: [], rootRuns: [], syncs: [] };
@@ -368,8 +393,12 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			// copies one in.
 			daemon: !isScript(params?.command, ENTRYPOINT_MARK) || copies,
 			...(gateAt >= 0 ? { gate: params.command[gateAt + 1], gateOpen: false } : {}),
-			hello: { ...HELLO },
-			kernel: VM_KERNEL,
+			// On gVisor root may not make a network namespace, so init makes it inside a user namespace, and hello says so.
+			hello: { ...HELLO, ...(params?.runtime === "gvisor" ? { fence: "userns-netns" } : {}) },
+			// Modal offers GPUs on gVisor only: a sandbox made with runtime gvisor reports gVisor's kernel.
+			kernel: params?.runtime === "gvisor" ? GVISOR_KERNEL : VM_KERNEL,
+			// The GPUs asked for, as the SDK takes them ("T4", "H100:2"): what nvidia-smi lists inside.
+			...(typeof params?.gpu === "string" ? { gpus: { type: params.gpu.split(":")[0], count: Number(params.gpu.split(":")[1] ?? 1) } } : {}),
 			uid,
 			gid,
 			network: params?.blockNetwork === true ? "none" : "open",
@@ -389,7 +418,7 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 	const handle = (id) => ({
 		sandboxId: id,
 		stdout: streamOf(ended?.stdout ?? ""),
-		stderr: streamOf(ended?.stderr ?? ""),
+		stderr: streamOf(ended?.stderr ?? initExits?.stderr ?? ""),
 		async getTags() {
 			record("sandbox.getTags", id);
 			const found = sandboxes.get(id);
@@ -403,6 +432,13 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			if (found.lingering?.polls > 0) {
 				found.lingering.polls--;
 				return null;
+			}
+			if (found.shutting) {
+				if (found.shutting.polls > 0) {
+					found.shutting.polls--;
+					return null;
+				}
+				if (found.running) Object.assign(found, { running: false, exitCode: initExits.exitCode });
 			}
 			if (found.lingering && found.running) Object.assign(found, { running: false, exitCode: 137 });
 			return found.running ? null : found.exitCode;
@@ -421,6 +457,11 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			const found = sandboxes.get(id);
 			if (!found) throw new NotFoundError(`Sandbox ${id} not found`);
 			if (!found.running) throw new ConflictError(`Sandbox ${id} has already finished`);
+			// init exits as soon as the daemon is in place (the upload's or the image's): the sandbox is shutting down.
+			if (initExits && found.box.daemon && !found.shutting) found.shutting = { polls: initExits.polls ?? 2 };
+			if (found.shutting) {
+				throw Object.assign(new Error("/modal.task_command_router.TaskCommandRouter/TaskExecStart FAILED_PRECONDITION: Modal Sandbox is shutting down."), { name: "ClientError", code: 9 });
+			}
 			if (command[0] === DAEMON && command[1] === "stdio" && command.length === 2) {
 				if (bridgeMs > 0) await sleep(bridgeMs);
 				return bridge(found.box, fake);
