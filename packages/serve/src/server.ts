@@ -37,11 +37,12 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./box-settings.js";
+import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
@@ -67,7 +68,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -90,6 +91,8 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_S
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
+import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
+import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
@@ -118,11 +121,12 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
-import { writeApprovers } from "./server-approvers.js";
+import { readApprovers, writeApprovers } from "./server-approvers.js";
+import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
@@ -136,7 +140,6 @@ import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
-// server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -296,8 +299,7 @@ export type ServeOptions = {
    *  the CLI says a first build in words, as it starts and as it ends. */
   onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
-   *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
-   *  standard error, after `agentrun-serve: `. */
+   *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
@@ -512,6 +514,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/promote$/, name: "promoteLearnedWorkflow" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -765,7 +768,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
-  boxLimitsOf(process.env);
+  // A Docker computer's size an operator sets (workspace/computer-deps.ts): a value the Docker provider refuses stops the
+  // start, in its words.
+  dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
   const boxAllow = boxAllowOf(process.env);
@@ -777,9 +782,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
-  // One server per data root is the store's own EXCLUSIVE lock (StoreOwned), taken when startHolding opens the store; a
-  // data directory an earlier version wrote is refused there too (StoreFromEarlierVersion), in words, to start fresh. No
-  // server.lock, no oldHomes/oldLayout checks, no migration.
+  // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
+  // when startHolding opens the store; a data directory an earlier version wrote is refused there too
+  // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
   // What a start that fails stops: the webhook deliveries it began, which would write the next server's outbox, and the
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
@@ -788,6 +793,26 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
+  }
+}
+
+/** How much longer than its drain timeout a start waits for the server it replaces (a redeploy, a restart that starts the
+ *  new server before the old one has exited): the old one's close, after its runs' drain. */
+const START_WAIT_MARGIN_MS = 30_000;
+
+/** `take()`, tried again every 250 ms while `held(error)` says the server this one replaces still holds what it takes, up
+ *  to `until` (epoch ms); `waiting` is told this wait's `until` once, as it begins. Past `until`, or on any other error,
+ *  it throws. */
+async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknown) => boolean, until: number, waiting: (until: number) => void): Promise<T> {
+  let told = false;
+  for (;;) {
+    try {
+      return await take();
+    } catch (error) {
+      if (!held(error) || Date.now() >= until) throw error;
+      if (!told) (told = true), waiting(until);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 }
 
@@ -801,13 +826,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const pending = await pendingCount(data, entry.agent.id);
     return pending === undefined ? undefined : { pending };
   };
-  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
-  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
-  const token = options.token ?? stored!.token;
-  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
-  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
-  // new file and token.
-  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
@@ -822,17 +840,47 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
-  // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
-  // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
+  // owner lock holds the store to this server (the data root's own lock follows), and it refuses a data directory an
+  // earlier version wrote, in words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
-  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
+  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts).
   // A server deploying while the old one still holds the schema waits for it (said once), never exits at once.
-  const store = await openStore({
+  // The server this one replaces may still be stopping (a redeploy, a restart that starts this one before the old one has
+  // exited): its close comes after its runs' drain, so this start waits for as long as its own drain timeout and a
+  // margin, saying so once, before it refuses. On Postgres the store's owner lock waits on its own (store/open.ts); on
+  // SQLite the store file's owner lock is waited for here, and the data root's lock below on either.
+  const replacedDrainMs = durationMs(options.drainTimeout ?? DRAIN_TIMEOUT) ?? 0;
+  const replacedUntil = Date.now() + replacedDrainMs + START_WAIT_MARGIN_MS;
+  const sayReplaced = noticeOf(options);
+  let replacedTold = false;
+  const waitingForReplaced = (until: number) => {
+    if (replacedTold) return;
+    replacedTold = true;
+    sayReplaced(`another server holds this data root: waiting up to ${Math.max(1, Math.ceil((until - Date.now()) / 1000))} s for the previous server to stop`);
+  };
+  const onSqlite = storeTarget(data).kind === "sqlite";
+  const store = await whileReplaced(() => openStore({
     dataDir: data, role: "server",
     warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`),
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
-  });
+  }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
   stops.push(() => store.close());
+  // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
+  // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
+  // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
+  // Postgres) would share. The lock is SQLite's EXCLUSIVE lock (server-lock.ts): the kernel drops it when its process
+  // dies, so a crashed server never leaves it held.
+  // Its wait runs from when the store was held at the earliest, since a store on Postgres may have been waited for first.
+  const dataLock = await whileReplaced(() => takeServerLock(data), (error) => error instanceof ServerLockHeldError, Math.max(replacedUntil, Date.now() + START_WAIT_MARGIN_MS), waitingForReplaced);
+  stops.push(async () => dataLock.release());
+  // The token, once both locks are held: a start the locks refuse reads, makes and removes nothing in the data root.
+  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
+  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
+  const token = options.token ?? stored!.token;
+  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
+  // new file and token.
+  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
@@ -1027,10 +1075,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process sees it.
   const vmSecrets = () => [...serverSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
   const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
-  const vmLimits = (() => {
-    const limits = boxLimitsOf(env);
-    return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };
-  })();
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
   // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
   const onNoBoxList = (code: string, message: string) => {
@@ -1167,6 +1211,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // temp file found now is a crashed one's.
   const swept = await uploads.sweep();
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
+  // A run's hold of its files goes at its claim, once they are in its workspace; one that ended before any claim copied
+  // them (cancelled while queued) leaves its hold, which goes here, as does one whose run is gone.
+  for (const runId of await uploads.holders()) {
+    const row = await store.runs.get(runId);
+    if (!row || FINAL_STATES.includes(row.state)) await uploads.release(runId);
+  }
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
@@ -1214,6 +1264,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     told: (error) => told(error),
     runnable,
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
+    files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
     workflowTitle,
     serverSecrets,
@@ -1300,6 +1351,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+    completedOutput: async (runId: string) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (view?.status !== "completed") return undefined;
+      return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null };
+    },
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
@@ -1533,15 +1589,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
-   *  current revision's, those the gate allows under the server's settings and the agent's own. */
-  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
-    const revision = (await needAgent(id)).revision;
+   *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
+   *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
+    const revision = (entry ?? (await needAgent(id))).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
+    const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
-    return learnedDraftTools(body.tools ?? [], (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"));
+    // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
+    const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
+    const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
+    const { tools, gated, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"), undefined, undefined, { mcp: true, approvers: await readApprovers(store.settings) });
+    // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
+    return { tools, gated, ask: { asked, fits: learnedAskFits } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1690,6 +1752,48 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { entry, warnings };
   }
 
+  /** Agent `source`'s learned workflow `raw` made into a workflow agent of its own, as POST /agents makes one
+   *  (createAgentOf: the definition's checks, the workflow's validation and what this host refuses of it). Only an active
+   *  one, checked again as a restore checks it (learning-routes.ts promotable). Its revision is a workflow revision of the
+   *  learned workflow.json, its tools those its call nodes call (each one the source agent has and its gate allows), and
+   *  the source's policy as it is now: its own tool settings, its approvals and its default cap, never more. Named
+   *  `body.name`, else the workflow's own; its id is the workflow's name, with -2, -3 and on past an agent's id or name
+   *  already here. The learned workflow stays where it is, unchanged. */
+  async function promoteOf(source: AgentEntry, raw: string, body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    const extra = unknownFields(body, ["name"]);
+    if (body.name !== undefined && (typeof body.name !== "string" || body.name.trim() === "" || body.name.length > 200)) extra.push({ field: "name", reason: "wrong_type", message: "name is the new agent's name: text of 1 to 200 characters" });
+    if (extra.length) throw invalid(extra);
+    const id = source.agent.id;
+    const learned = await promotable(data, id, raw, { refuse: await learningValues(id), draftTools: () => learnedDraftToolsOf(id, source) });
+    // Its policy from the same read of the source as the tools checked above: one revision's, whatever is saved meanwhile.
+    const policy = (source.revision?.body ?? {}) as { toolSettings?: Record<string, unknown>; approvals?: string; maxCostUsd?: number; capMode?: string };
+    const promoted = (agentId: string) => ({
+      id: agentId,
+      name: typeof body.name === "string" ? body.name.trim() : agentId,
+      ...(learned.description ? { description: learned.description } : {}),
+      workflow: learned.workflow,
+      tools: learned.calls,
+      ...(policy.toolSettings ? { tool_settings: policy.toolSettings } : {}),
+      ...(policy.approvals === "never" ? { approvals: "never" } : {}),
+      ...(policy.maxCostUsd !== undefined ? { max_cost_usd: policy.maxCostUsd } : {}),
+      ...(policy.capMode !== undefined ? { cap_mode: policy.capMode } : {}),
+    });
+    const note = `Made from the learned workflow ${learned.name} of agent ${id}.`;
+    // Another promotion (or a create) may take the id between the read and the write: the next one is tried.
+    for (let tries = 0; ; tries++) {
+      const all = [...(await agents.list()), ...(await agents.list({ archived: true }))];
+      const taken = new Set(all.flatMap((entry) => [entry.agent.id, entry.agent.name]));
+      let n = 1;
+      while (taken.has(n === 1 ? learned.name : `${learned.name}-${n}`)) n++;
+      const agentId = n === 1 ? learned.name : `${learned.name}-${n}`;
+      try {
+        return await createAgentOf({ definition: promoted(agentId), note });
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "agent_exists") || tries >= 4) throw error;
+      }
+    }
+  }
+
   /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
    *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
    *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
@@ -1777,7 +1881,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
-      ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: GITHUB_TRIGGER_UNCONNECTED } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
+      ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
       : []));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
@@ -2439,6 +2543,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Making a learned workflow an agent of its own gives it runs of its own, outside any agentic run's turn: the owner's
+    // click alone, the same session as an approval.
+    if (found.name === "promoteLearnedWorkflow" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "promote_without_session");
+      throw new ApiError("forbidden", owner ? "Making a learned workflow an agent takes the owner's password sign-in in the console, never a token." : "Making a learned workflow an agent takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
     // approving a note is (never a token a run, an MCP client or a script may hold).
     if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -2992,6 +3102,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
+      case "promoteLearnedWorkflow": {
+        // The source read once the body is in, as it is then: what promoteOf checks and what it copies are that one read.
+        const body = await bodyOf(req);
+        const source = await needAgent(id);
+        const answer = await idempotent(req, `/agents/${id}/learning/workflows/${second}/promote`, body, async () => {
+          const { entry, warnings } = await promoteOf(source, second!, body);
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
+      }
       case "getRunLearning": {
         const run = await needRun(id);
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
@@ -3386,6 +3506,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
+    dataLock.release();
     seal.release();
   }
   return {

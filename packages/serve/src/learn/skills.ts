@@ -661,6 +661,96 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
 
+/** An MCP tool a learned workflow's call node may run, by its address (`via: "tool"`, `tool: "mcp:<server>/<tool>"`,
+ *  LS-07): its server's name as a server is named (mcp-probe.ts MCP_SERVER_NAME) and one tool's name in MCP's own
+ *  charset, never a wildcard. The one rule for it: the tools a draft may name (tools.ts learnedWorkflowTools), the
+ *  end-of-run prompt that prints them (reflect.ts), and what the grader is told of a draft (grade.ts). */
+export const LEARNED_MCP_TOOL = /^mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+
+/** The MCP tools a draft's call nodes run, each once, in the order they come (LS-07): every call node in `doc`, nested
+ *  ones too, whose tool is an MCP tool's address. Read from the JSON as it is, for the grader's words; never a check. */
+export function draftMcpTools(doc: unknown): string[] {
+  const found = new Set<string>();
+  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
+  return [...found];
+}
+
+/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions, as the
+ *  DSL's inspection visits them (its root, a chain's steps, a parallel's branches, a map's and a loop's body, a route's
+ *  branches' bodies, a nested workflow's root), never an object in a call's args, a schema or any other data, however
+ *  it is shaped. Walked with a stack of its own, never the call stack, so no draft's nesting can throw here. */
+function callNodes(doc: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const asNode = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
+  const stack: unknown[] = [asNode(doc)?.root];
+  while (stack.length) {
+    const node = asNode(stack.pop());
+    if (!node) continue;
+    if (node.node === "call") out.push(node);
+    const children: unknown[] =
+      node.node === "chain" && Array.isArray(node.steps) ? node.steps
+        : node.node === "parallel" && Array.isArray(node.branches) ? node.branches
+          : (node.node === "map" || node.node === "loop") ? [node.body]
+            : node.node === "route" && asNode(node.branches) ? Object.values(node.branches as Record<string, unknown>).map((branch) => asNode(branch)?.body)
+              : node.node === "workflow" ? [asNode(node.workflow)?.root]
+                : [];
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+  }
+  return out;
+}
+
+/** One step of a learned workflow that runs an MCP tool with no declared per-call price: its label, the tool and its
+ *  server. */
+export type UnpricedCall = { readonly label: string; readonly tool: string; readonly server: string };
+
+/** The call nodes of a learned workflow (`doc`, its parsed workflow.json, nested ones too) whose tool is an MCP tool
+ *  (LEARNED_MCP_TOOL) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
+ *  metered", outside the run's cost and cap (mcp-gateway.ts), so a learned workflow that calls one unattended waits for
+ *  its owner's OK whatever the grade (LS-07): a structural fact, held in code. Each step once, in order. */
+export function unpricedCalls(doc: unknown, priceOf: (tool: string) => number | undefined): UnpricedCall[] {
+  return callNodes(doc).flatMap((node): UnpricedCall[] => {
+    if (node.via !== "tool" || typeof node.tool !== "string" || !LEARNED_MCP_TOOL.test(node.tool) || priceOf(node.tool) !== undefined) return [];
+    const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
+    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server }];
+  });
+}
+
+/** Why a learned workflow that calls `call` waits for its owner's OK, in a person's words. */
+export const unpricedLine = (call: UnpricedCall): string => `its step ${call.label} calls ${call.tool} on ${call.server}, which has no price here, so it runs outside the run's cost and cap`;
+
+/** Every string a learned workflow's workflow.json decodes to, each object's keys too, as JSON.parse reads them (its
+ *  escapes decoded: what draftProblems and a learned call's run read, and a model node is given). Text a scan of the
+ *  stored JSON misses, spelled in \u escapes, is there as it will be read. None for a text that does not parse (the
+ *  checks refuse it as no workflow). */
+export function decodedStrings(json: string): string[] | "too_deep" {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  // Walked with a stack of its own, never the call stack, and no deeper than DECODED_DEPTH: a draft nested past any
+  // workflow (thousands of arrays in a few KB) is refused on its own (check.ts), never a throw that takes its siblings.
+  const out: string[] = [];
+  const stack: [unknown, number][] = [[doc, 0]];
+  while (stack.length) {
+    const [value, depth] = stack.pop()!;
+    if (typeof value === "string") {
+      out.push(value);
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    if (depth >= DECODED_DEPTH) return "too_deep";
+    if (Array.isArray(value)) for (let i = value.length - 1; i >= 0; i--) stack.push([value[i], depth + 1]);
+    else for (const [key, child] of Object.entries(value).reverse()) stack.push([child, depth + 1], [key, depth + 1]);
+  }
+  return out;
+}
+
+/** How deep a learned workflow's JSON may nest (decodedStrings): far past any workflow the DSL writes, a node's schemas
+ *  included, and short of what a walk of it could not bound. */
+export const DECODED_DEPTH = 100;
+
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
 export const LEARNED_MAX_TURNS = 8;
@@ -701,7 +791,11 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
  *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}): DraftProblem[] {
+/** The MCP tools set to ask a learned call would ask its approver about (`asked`, learnedDraftTools), and whether a card
+ *  names them all (`fits`: learned-workflow.ts learnedAskFits, the gate's own rule, handed in so it is never copied). */
+export type DraftAsk = { readonly asked: readonly string[]; readonly fits: (asks: readonly string[]) => boolean };
+
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -720,6 +814,10 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
     if (typeof path !== "string" || !path) out.push({ rule: "workflow", detail: LEARNED_OUTPUT_PATH });
+    // Its MCP tools set to ask, on one approval card per learned call (#2424): a card that can't name them all is refused
+    // at the gate at every call, so the draft is refused here, in the gate's words.
+    const asks = ask ? draftMcpTools(doc).filter((tool) => ask.asked.includes(tool)) : [];
+    if (ask && asks.length && !ask.fits(asks)) out.push({ rule: "workflow", detail: `its approval card can't name all ${asks.length} MCP tools it would call that are set to ask: set some of them to allow or deny for this agent.` });
     // A composed workflow node's child too: its output is the value at its own output.path, or it fails the same way.
     for (const node of dsl.inspectWorkflow(doc).nodes) {
       if (node.kind !== "workflow") continue;
