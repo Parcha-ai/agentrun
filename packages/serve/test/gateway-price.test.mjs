@@ -1,5 +1,5 @@
 // A gateway model's price, which a run's cost is reckoned from: AGENT_MODEL_PRICE (or its tier's) when set, else the list
-// price pi-ai's catalog gives that model id (a $0 entry included), else none: the cost of its answers is then unknown,
+// price pi-ai's catalog gives that model id (a metered entry, never a plan's $0: #2339), else none: the cost of its answers is then unknown,
 // never $0. No network: runModels only builds the models, and the runs below talk to a Responses endpoint on loopback.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -195,10 +195,24 @@ test("an answer of a model with no price carries no total, so its run's cost is 
   assert.equal(plain.usage.cost.total, undefined, "an answer through the provider's stream");
 });
 
-test("a model the catalog lists at $0 is a known $0, not one with no price", async () => {
-  const free = builtinModels().getModels().find((model) => entries(model.id).length > 0 && entries(model.id).every(({ cost }) => total(cost) === 0));
-  assert.ok(free, "pi-ai's catalog lists a model at $0");
-  const { unpriced } = await runModels({ ...GATEWAY, AGENT_MODEL: free.id }, undefined);
-  assert.deepEqual([...unpriced], [], `${free.id} is listed, so its price is known`);
-  assert.deepEqual((await costOf({ AGENT_MODEL: free.id })).default, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+// #2339: a plan's $0 listing never prices a metered model. pi-ai's catalog lists the bare id `deepseek-v4-flash` only under
+// subscription plans (qwen-token-plan, at $0), while the gateways that meter it list `deepseek/deepseek-v4-flash` at a
+// price. Through a gateway the model is metered: it takes the metered price, under its vendor's id, and an id listed only
+// at $0 with no metered listing anywhere has no price (unknown), never $0.
+test("a plan's $0 listing never prices a metered model: deepseek-v4-flash takes its metered price, bare or named; an id listed only at $0 is unpriced", async () => {
+  const bare = entries("deepseek-v4-flash");
+  assert.ok(bare.length && bare.every(({ cost }) => total(cost) === 0), `the catalog lists the bare id at $0 alone: ${JSON.stringify(bare.map(({ provider, cost }) => [provider, cost.input]))}`);
+  const metered = highest("deepseek/deepseek-v4-flash");
+  assert.ok(total(metered) > 0, "a gateway lists its vendor's id at a price");
+  for (const ref of ["deepseek-v4-flash", "deepseek/deepseek-v4-flash"]) {
+    const cost = (await costOf({}, ["default"], ref)).default;
+    assert.ok(total(cost) > 0, `${ref}: never $0: ${JSON.stringify(cost)}`);
+    assert.deepEqual(cost, metered, `${ref}: the metered price, the highest a gateway lists`);
+  }
+  // An id every listing prices at $0, with no metered listing under any vendor's id: unknown, never $0.
+  const ids = [...new Set(builtinModels().getModels().map((model) => model.id))];
+  const onlyFree = ids.find((id) => !id.includes("/") && entries(id).every(({ cost }) => total(cost) === 0) && !ids.some((other) => other.endsWith(`/${id}`) && entries(other).some(({ cost }) => total(cost) > 0)));
+  assert.ok(onlyFree, "the catalog lists some id at $0 alone");
+  const { unpriced } = await runModels({ ...GATEWAY, AGENT_MODEL: onlyFree }, undefined);
+  assert.deepEqual([...unpriced], [onlyFree], `${onlyFree}: listed at $0 alone, so through a gateway it has no price`);
 });
