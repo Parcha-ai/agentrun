@@ -17,8 +17,8 @@ const { gradePrompt } = await import("../dist/learn/grade.js");
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: retry twice\n---\nRetry a flaky fetch twice." };
 const PROPOSAL = { seed: "s1", notes: [NOTE], asked: ["please be careful with retries"] };
 const MAIN = { active: [], superseded: [], graded: { "old.md": "oid-1" } };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", keep: true, why: "useful" }] });
-const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", keep: false, why: "vague" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", decision: "drop", why: "vague" }] });
 const MERGED = { ok: true, main: "c0ffee", commit: "c0ffee", files: ["retries.md"] };
 
 /** A source run that ended keeping PROPOSAL, and its queued learning run, claimed by a runner. */

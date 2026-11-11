@@ -532,9 +532,9 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
   const items: VerdictItem[] = [];
   for (const item of answer.items as unknown[]) {
     if (!isObject(item) || typeof item.file !== "string" || typeof item.why !== "string") return UNREADABLE;
-    // The decision, keep, pending, note or drop; an answer in the older shape gives `keep` alone. `note` re-files a skill
-    // as a note (a standing rule for every reply): only a skill's item may say it.
-    const said = item.decision === undefined ? (typeof item.keep === "boolean" ? (item.keep ? "keep" : "drop") : undefined) : item.decision;
+    // The decision, keep, pending, note or drop, as the prompt asks it: an item without one is no verdict. `note`
+    // re-files a skill as a note (a standing rule for every reply): only a skill's item may say it.
+    const said = item.decision;
     if (said !== "keep" && said !== "pending" && said !== "drop" && said !== "note") return UNREADABLE;
     if (said === "note" && learnedPlace(item.file)?.kind !== "skill") return UNREADABLE;
     const question = item.question ?? undefined;
