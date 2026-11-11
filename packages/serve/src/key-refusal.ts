@@ -181,15 +181,27 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
  *  address. Every pattern is tried at one place or advances past what it read, so a rewrite takes time in proportion to
  *  the text. */
 const LOOPBACK_TAIL = /^url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
-const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?[^\s,;:)\x22\x27\]]*/gi; // key-gate: loopback-rule replaces any loopback address in a run error
-// A bare one: its port, then its path when one follows, up to the first space, quote or closing mark, or a full stop
-// that ends a sentence (one followed by a space or the text's end, which stays). A port followed by any other full stop,
-// a letter, a digit or a dash names no address of the host's, so it is kept.
-const LOOPBACK_BARE = /(?<![\w.\/-])(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)(?:\/[^\s,;:)\x22\x27\]]*?(?=[\s,;:)\x22\x27\]]|\.(?:\s|$)|$))?(?![\w-])(?!\.(?!\s|$))/gi; // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
+/** A loopback host, by any of its names. */
+const LOOPBACK_HOST = String.raw`(?:127\.0\.0\.1|localhost|\[::1\])`; // key-gate: loopback-rule the loopback host names every address pattern below shares
+/** What ends an address's path: a space, a quote, a backslash (a JSON string's escape), a closing mark, the text's end, or
+ *  a full stop followed by one of those (a sentence's, which stays). */
+const STOP = String.raw`[\s,;:)\x22\x27\]\\]`;
+const PATH = String.raw`[^\s,;:)\x22\x27\]\\]*?(?=${STOP}|\.(?:${STOP}|$)|$)`;
+/** One with a scheme, its port and its path. */
+const LOOPBACK = new RegExp(String.raw`https?:\/\/${LOOPBACK_HOST}(?![\w.-])(?::\d+)?${PATH}`, "gi"); // key-gate: loopback-rule replaces any loopback address with a scheme
+/** A bare one: its port, then its path when one follows. A port followed by a letter, a digit, a dash or a full stop
+ *  that ends no sentence names no address of the host's, so it is kept. */
+const LOOPBACK_BARE = new RegExp(String.raw`(?<![\w.\/-])${LOOPBACK_HOST}:\d+(?:\/${PATH})?(?![\w-])(?!\.(?!${STOP}|$))`, "gi"); // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
+
+/** `text` with each loopback address in it, with a scheme or bare with its port, its path with it, as "a local address",
+ *  and nothing else of it changed: a sentence's full stop, a label before it, its line's end and a JSON string's quotes
+ *  stay. What a learning text is served through (learning.ts secretsShown), and what withoutLoopback ends with. */
+export function withoutLoopbackAddresses(text: string): string {
+  return text.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
+}
 
 /** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes (tried at the last "url:" only), and
- *  any other, with a scheme or bare with its port (and its path), becomes "a local address"; a sentence's full stop after a
- *  bare one stays. */
+ *  any other address alone becomes "a local address" (withoutLoopbackAddresses). */
 export function withoutLoopback(text: string): string {
   let at = -1;
   for (const found of text.matchAll(/url:/gi)) at = found.index;
@@ -198,7 +210,7 @@ export function withoutLoopback(text: string): string {
     out = text.slice(0, at).trimEnd();
     if (out.endsWith(",")) out = out.slice(0, -1);
   }
-  return out.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
+  return withoutLoopbackAddresses(out);
 }
 
 /** `value` with each string in it, however deep, through `cut`: what a run error's details hold is served and kept as its
