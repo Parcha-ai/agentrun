@@ -19,6 +19,7 @@ import { streamingSandbox } from "./fixtures/streaming-sandbox.mjs";
 import { agent, follow, runRecordOf, serve, startInProcessRunner, withEnv } from "./support.mjs";
 
 const { runFolder } = await import("../dist/workspace/paths.js");
+const { chosenTools } = await import("../dist/runner/subagent.js");
 
 const FAUX_SUBAGENT = new URL("./fixtures/faux-subagent.mjs", import.meta.url).pathname;
 /** A faux Docker box: the server offers a sandbox place, so an agent may name bash (the runner's computer is the test's). */
@@ -120,6 +121,16 @@ test("a child gets exactly the tools the call names, an MCP tool among them, on 
   const outside = await run("subset-outside", { tools }, delegate([{ prompt: "Say hi", tools: ["web_fetch"], model: "strong" }]));
   assert.match(outside.answer, /web_fetch is not one of this agent's tools, so no subagent may have it\. A subagent may be given read, write, mcp:fake\/add\. Nothing ran\./);
   assert.equal(lines().filter((line) => line.child).length, before, "no child started");
+});
+
+test("a session name gives the child that one tool alone; its catalog name gives every tool of it", () => {
+  const BROWSER = ["browser_read", "browser_click", "browser_upload", "run"];
+  const options = { granted: ["read", "browser", "mcp:fake/add"], sessionNames: (catalog) => (catalog === "browser" ? BROWSER : [catalog === "mcp:fake/add" ? "mcp__fake__add" : catalog]) };
+  assert.deepEqual(chosenTools(["browser_read"], options), { catalog: ["browser"], names: ["browser_read"] });
+  assert.deepEqual(chosenTools(["browser_read", "browser_click", "read"], options), { catalog: ["browser", "read"], names: ["browser_read", "browser_click", "read"] });
+  assert.deepEqual(chosenTools(["browser"], options), { catalog: ["browser"], names: BROWSER });
+  assert.deepEqual(chosenTools(["mcp__fake__add"], options), { catalog: ["mcp:fake/add"], names: ["mcp__fake__add"] });
+  assert.deepEqual(chosenTools(["mcp:fake/add"], options), { catalog: ["mcp:fake/add"], names: ["mcp__fake__add"] });
 });
 
 test("depth 1: a child is never offered subagent, and a call that names it is refused", { timeout: 240_000 }, async (t) => {

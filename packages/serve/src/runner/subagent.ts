@@ -99,17 +99,21 @@ export function boundedAnswer(text: string): string {
   return text.slice(0, HOST_RESULT_MAX_CHARS - note.length) + note;
 }
 
-/** The catalog names of `asked` (each a catalog or session name of a granted tool), or what is wrong with them. */
-export function chosenTools(asked: readonly string[], options: Pick<SubagentOptions, "granted" | "sessionNames">): { catalog: string[] } | { refused: string } {
+/** The catalog names of `asked` (each a catalog or session name of a granted tool) and the session names the child gets,
+ *  or what is wrong with them. A catalog name gives every session name of its tool (`browser`: each browser tool); a
+ *  session name gives that one alone (`browser_read`: never the rest of the browser's). */
+export function chosenTools(asked: readonly string[], options: Pick<SubagentOptions, "granted" | "sessionNames">): { catalog: string[]; names: string[] } | { refused: string } {
   const catalog: string[] = [];
+  const names: string[] = [];
   const offered = options.granted.filter((name) => !NEVER_GIVEN.includes(name));
   for (const name of asked) {
     if (NEVER_GIVEN.includes(name)) return { refused: `subagent: a subagent is never given ${name}${name === SUBAGENT_TOOL ? " (subagents go one level deep)" : " (only the run itself asks its person)"}. Nothing ran.` };
     const found = options.granted.find((granted) => granted === name || options.sessionNames(granted).includes(name));
     if (found === undefined) return { refused: `subagent: ${name} is not one of this agent's tools, so no subagent may have it. A subagent may be given ${offered.length ? offered.join(", ") : "no tool here"}. Nothing ran.` };
     if (!catalog.includes(found)) catalog.push(found);
+    for (const session of found === name ? options.sessionNames(found) : [name]) if (!names.includes(session)) names.push(session);
   }
-  return { catalog };
+  return { catalog, names };
 }
 
 /** The subagent tool: one of the session's own tools (adapters/pi.ts `tools`), so it needs no extension of its own. */
@@ -150,8 +154,8 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
       const toolCalls = args.max_tool_calls === undefined ? undefined : budgetOf(options.toolCalls, args.max_tool_calls);
       const chosen = chosenTools(args.tools ?? [], options);
       if ("refused" in chosen) return fail(chosen.refused);
-      // The registrations the parent's agent enables, by session name: exactly these are the child's.
-      const names = new Set(chosen.catalog.flatMap((name) => options.sessionNames(name)));
+      // The registrations the parent's agent enables, by session name: exactly the ones the call named are the child's.
+      const names = new Set(chosen.names);
       const parent = await api.agent(context);
       const tools = parent.tools.filter((registration) => names.has(registration.name));
       const missing = [...names].filter((name) => !tools.some((registration) => registration.name === name));
