@@ -18,9 +18,9 @@ import { closeOpenSessions, openSessions, piAdapterSpec, scriptedOrigin } from "
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-/** A lease no stall of a loaded machine outlasts, for every case: on a short lease a stall of the box longer than it lets
- *  the claim lapse unrenewed, the runner takes the run back, and a step or a replay-safe tool runs again (a mark written
- *  twice, a step asked twice). A lost claim here is a runner's close, which releases the run. */
+/** A lease no stall of a loaded machine outlasts, for every case (none's point is the lease: a lost claim is the runner's
+ *  close). On a short lease a stall of the box longer than it lets the claim lapse unrenewed, the runner takes the run
+ *  back, and a step or a replay-safe tool runs again (a mark written twice, a step asked twice). */
 const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const told = (marker) => ({ table: "channel_told", row: { channel: "learning:test", marker } });
@@ -310,9 +310,11 @@ test("pi through the adapter: a run whose step returns nothing stores no row bes
 });
 
 test("pi through the adapter: a lost claim during the end-of-run turn writes no end; the next claim asks again, and the end is written once", async (t) => {
-  const { start, until, toldRows, endEntries } = await setup(t);
+  // The steady lease: the claim is lost by the runner's close, never by a stall of a loaded box lapsing a short one (which
+  // let runner-a take the run back and ask its step a second time, CI 11-11).
+  const { start, until, toldRows, endEntries } = await setup(t, STEADY);
   // Every request the model got, on both claims: the end-of-run turn's reaches it once, the next claim's ask answered
-  // from its submission.
+  // from its submission, never a second paid turn.
   const requests = [];
   const script = [{ say: "done" }, { say: "a note" }];
   const fetch = scriptedOrigin(script, requests);
@@ -327,8 +329,6 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
     await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
     throw new Error("aborted");
   };
-  // Both runners on a lease no stall outlasts: runner A's claim is lost by its close alone (which releases the run), never
-  // by a lapse that would let it take the run back and run the step again on a claim of its own before runner B.
   const runnerA = await start(loopWith(piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch }), {}, { endOfRun: first }), "runner-a");
   await firstAsked;
   await runnerA.close();
