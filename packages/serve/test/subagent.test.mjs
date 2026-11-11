@@ -189,18 +189,20 @@ test("the cap's refusal of a child's request fails its call in the cap's words a
   assert.equal(requests(lines()).filter((line) => line.child).length, child, "the child was not resumed");
 });
 
-test("a child mid-turn when its runner goes is the same child on the next claim: it answers once, and no finished request is sent again", { timeout: 240_000 }, async (t) => {
+test("a child mid-turn when its runner goes is the same child on the next claim: it answers once, and no finished request is sent again; a tier's model changed meanwhile is the one it resumes on", { timeout: 240_000 }, async (t) => {
   const { start, ended, lines, api, data, release } = await setup(t, { runner: false });
   const closeFirst = await startInProcessRunner(data, { faux: FAUX_SUBAGENT });
   let firstClosed = false;
   t.after(() => (firstClosed ? undefined : closeFirst()));
-  const runId = await start("restart", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say first" }, { prompt: "Hold second" }]));
+  const runId = await start("restart", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say first" }, { prompt: "Hold second", model: "strong" }]));
   // The first child has answered and its answer is on the run's record; the second is mid-request.
   await until(async () => lines().some((line) => line.held === "second") && (await rowsNow(api, runId)).some((row) => row.parent_tool_use_id && JSON.stringify(row).includes("first") && row.kind !== "tool_call"), "the first child's answer and the second child's held request");
   const held = runRecordOf(data, runId);
   await closeFirst();
   firstClosed = true;
   release();
+  // The server's strong model changes before the next claim (setup's withEnv puts it back after the test).
+  process.env.AGENT_MODEL_STRONG = "faux-strong-2";
   const closeSecond = await startInProcessRunner(data, { faux: FAUX_SUBAGENT });
   t.after(() => closeSecond());
   const done = await ended(runId, ["completed", "failed", "cancelled"]);
@@ -210,7 +212,7 @@ test("a child mid-turn when its runner goes is the same child on the next claim:
   const asked = requests(lines());
   assert.equal(asked.filter((line) => line.asked === "Say first").length, 1, "the first child's finished request was never sent again");
   assert.equal(asked.filter((line) => !line.child).length, 2, "the run's own finished turn was never sent again: one turn that delegated, one that answered");
-  assert.equal(asked.filter((line) => line.asked === "Hold second").length, 2, "the second child's cut request was sent again, once, on the next claim");
+  assert.deepEqual(asked.filter((line) => line.asked === "Hold second").map((line) => line.model), ["faux-strong", "faux-strong-2"], "the second child's cut request was sent again, once, on the next claim, on the strong tier's model now");
   // The same two children: one started row and one completed row each, never a third child for the resumed call.
   assert.equal(done.rows.filter((row) => row.kind === "subagent_started").length, 2, JSON.stringify(done.rows.map((row) => [row.kind, row.summary])));
   assert.equal(done.rows.filter((row) => row.kind === "subagent_completed").length, 2);

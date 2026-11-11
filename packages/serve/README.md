@@ -990,7 +990,8 @@ does. So one template can run wide reviewers at `medium` with 30 calls and deep 
 A child is a conversation in the run's own journal, owned by its call, so it lives and ends with the run:
 
 - **A restart or a moved claim** resumes it. The next claim finds the same child, which answers its call once. A request
-  it had finished is never sent again, and one the stop cut is sent again.
+  it had finished is never sent again, and one the stop cut is sent again. A child on a tier whose model changed in the
+  meantime (the server's `AGENT_MODEL_STRONG`, say) resumes on the tier's model now.
 - **A cancel** stops every child with the run: their requests are aborted, and nothing more is asked.
 - **The cap.** When the run's cap refuses a child's request, the child stops and its call fails in the cap's words
   (`subagent: it stopped before it answered: ... spend_cap_reached`). The run's next request is refused the same way, so

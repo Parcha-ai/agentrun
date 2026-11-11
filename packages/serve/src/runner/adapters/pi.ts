@@ -183,7 +183,17 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // Each tier's model at its own proxy, under its own provider id (tierProvider): a conversation whose agent names it
   // (a subagent's) is sent there, and booked as the session's own requests are.
   for (const [tier, route, at] of tiers) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
-  run.setModels(models);
+  // A child made on an earlier claim keeps the tier's model it was made on; when the tier's model has changed since (the
+  // server's AGENT_MODEL_STRONG, say), that one is not here, and the child resumes on the tier's model now, as a new call
+  // on the tier would run.
+  const tierModel = new Map(tiers.map(([tier, route]) => [tierProvider(tier), route.model]));
+  run.setModels(tierModel.size === 0 ? models : new Proxy(models, {
+    get(target, key) {
+      if (key === "getModel") return (provider: string, id: string) => target.getModel(provider, id) ?? (tierModel.has(provider) ? target.getModel(provider, tierModel.get(provider)!) : undefined);
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }));
 
   // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
   // piTool-wrapped here too: one tool by that name on the agent, offered once.
