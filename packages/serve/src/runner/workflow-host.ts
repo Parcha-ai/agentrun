@@ -80,6 +80,9 @@ export interface WorkflowHostDeps {
   readonly flush: () => Promise<void>;
   /** The node log's node.start/node.end lines; absent: no log. */
   readonly log?: (line: Record<string, unknown>) => void;
+  /** Told each workflow step's start and end, by its label (the workflow's node.start/node.end): what a cap's pause reads
+   *  to name the node whose step it held (workflow-spec.ts openSteps). */
+  readonly steps?: { start(label: string): void; end(label: string): void };
   /** What a decision's receipt is shown as, as it is recorded (the live view); absent: not shown. */
   readonly onReceipt?: (receipt: Record<string, unknown>) => void;
   /** The run's spend cap over the adapters; absent: the workflow runs with no cap. */
@@ -107,7 +110,12 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
 
   /** The node log's starts and ends, from the workflow's events (app.ts onEvent). */
-  const onEvent = (event: { type: string; detail?: unknown; executionPath?: string }) => {
+  const onEvent = (event: { type: string; label?: string; detail?: unknown; executionPath?: string }) => {
+    // A nested `workflow` step stays open while its own steps run and sends no request itself: the steps open are the ones
+    // that can, so a pause inside it names its step, never nothing.
+    const enclosing = (event.detail as { kind?: unknown } | undefined)?.kind === "workflow";
+    if (typeof event.label === "string" && event.type === "node.start" && !enclosing) deps.steps?.start(event.label);
+    if (typeof event.label === "string" && event.type === "node.end" && !enclosing) deps.steps?.end(event.label);
     if (!deps.log || (event.type !== "node.start" && event.type !== "node.end") || typeof event.executionPath !== "string") return;
     const detail = (event.detail ?? {}) as { kind?: string; status?: string; duration_ms?: number; error?: unknown };
     deps.log({
