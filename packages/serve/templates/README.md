@@ -77,8 +77,13 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
       "answers": [ { "when": { "path": "README.md" }, "result": { "content": [ { "type": "text", "text": "..." } ] } } ],
       "default": { "content": [ { "type": "text", "text": "not found" } ], "isError": true } } } }
   ```
-  An answer is taken when every argument its `when` lists equals the call's, the first that does; else `default`. Each
-  `result` is an MCP tool result.
+  An answer is taken when every argument its `when` lists equals the call's, the first that does; else `default`. A
+  `when` may be a list of such mappings, taken when any one matches (one answer for each spelling of a call: a file by
+  `sha` or by `ref`). Each `result` is an MCP tool result. A tool may also hold `search`, `{query, files: [{path,
+  text}], limit?, note?}`: a call no answer matches is answered by searching its `query` argument over those files
+  (GitHub code search's syntax, read loosely: terms every one of which a file holds, `NOT` before a term or a
+  qualifier, and `path:`, `filename:`, `extension:`, `language:`; a `/.../` term is read as literal text, never as a
+  regular expression, so no query can stall the eval), as `path:line: text` lines, at most `limit` (100).
 - `fixtures/`: what the case's fakes and notes read.
 - `graders/*.md`, each one check of every run, by its front matter's `type`:
   - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its preview) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
