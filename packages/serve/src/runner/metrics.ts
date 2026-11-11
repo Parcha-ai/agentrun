@@ -19,19 +19,29 @@ export type BookedSpend = { readonly usd: number | null; readonly known: number;
 /** What the run's booking (the kernel's runner.request and runner.turn records, the model proxy's own) says its requests
  *  cost, over `entries`, every conversation of the run's journal: its model requests (`model`: every session but the
  *  paid-tools one, TOOL_SESSION), or its paid tool calls (`paid`: that session alone). Each request at what it was booked
- *  at (`bookedUsd`, else its `usd`); one booked at no known cost makes the sum unknown (null), its known part kept. A CLI
- *  harness's own record carries no per-request cost: its model requests' cost is this, the booking's. */
+ *  at (`bookedUsd`, else its `usd`); one booked at no known cost, or with no runner.turn yet (in flight, or cut off by a
+ *  crash before its answer was booked), makes the sum unknown (null), its known part kept, as sessionSpendOf counts it.
+ *  A CLI harness's own record carries no per-request cost: its model requests' cost is this, the booking's. */
 export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid"): BookedSpend {
   const session = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION);
   const paidConv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
+  const chosen = (e: EntryLike) => (e.conversationId === paidConv) === (which === "paid");
+  const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const answered = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.turn && chosen(e)).map(turnOf));
   let known = 0;
   let unpriced = 0;
   let requests = 0;
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const e of entries) {
-    if (e.kind !== RUNNER_RECORDS.turn || (e.conversationId === paidConv) !== (which === "paid")) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; givenBack?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
-    if (d.givenBack === true) continue;
+    if (!chosen(e)) continue;
+    if (e.kind === RUNNER_RECORDS.request && !answered.has(turnOf(e))) {
+      requests += 1;
+      unpriced += 1;
+      continue;
+    }
+    if (e.kind !== RUNNER_RECORDS.turn) continue;
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
     const usd = typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
     if (usd === null) unpriced += 1;
