@@ -8,7 +8,6 @@ import { blurbOf } from "./tool-blurbs.js";
 import { LEARNED_MCP_TOOL } from "./learn/skills.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";

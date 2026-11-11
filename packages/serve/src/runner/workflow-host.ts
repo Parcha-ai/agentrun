@@ -11,7 +11,7 @@
 // per-run process's pause gate is gone: a cap hold parks the run through the loop (workflow-loop.ts), not a file gate.
 import type { Context } from "@earendil-works/chord";
 import type { Extension } from "@earendil-works/pi-durable";
-import { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
+import { decisionRecovery, nodeRunner, taskScope, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
 import { judgeFromProviders } from "@parcha/agentrun-dsl";
 import { withRecovery, workspaceFiles } from "@parcha/agentrun-dsl/recovery";
 
