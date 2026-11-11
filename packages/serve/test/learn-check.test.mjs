@@ -283,3 +283,18 @@ test("a refused name holding a bank account number is cut from the problem as pr
   assert.equal(shown.holds("Pay acct #98765432 today."), true);
   assert.deepEqual(secretShapes(`It names ${name} here.`), [], "a run's own view still reads it as no secret");
 });
+
+// #2255 reads a learned skill's front matter as YAML reads it (skills.ts frontValues: its escapes decoded, the value a
+// harness is served). A bank's number spelled there in escapes, so that the stored text holds no number beside its word,
+// is still refused as learning's secret shape: the front matter is cut with learnedSecretShapes, as the text is.
+test("a skill whose front matter spells a bank account number in YAML escapes is refused: read as YAML reads it, it is learning's secret shape", async () => {
+  const { learnedSecretShapes } = await import("../dist/learn/secrets.js");
+  const { skill } = await import("./learn-format-support.mjs");
+  const description = '"Send vendor refunds to account \\x34471-0098 at the credit union"';
+  const text = skill({ description });
+  assert.deepEqual(learnedSecretShapes(text), [], "the stored text holds no number beside its word");
+  const result = check([added("skills/find-policies/SKILL.md", text)], { outcome: "completed" });
+  assert.ok(rules(result).includes("secret_shape"), JSON.stringify(result.problems));
+  assert.ok(result.problems.some((problem) => /front matter, read as YAML reads it/.test(problem.detail)), JSON.stringify(result.problems));
+  assert.ok(!JSON.stringify(result.problems.map((problem) => checks.printable(problem, []))).includes("4471"), "and nothing printed holds it");
+});
