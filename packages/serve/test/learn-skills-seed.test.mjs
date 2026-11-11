@@ -172,11 +172,11 @@ for (const harness of ["pi", "codex"]) {
     assert.ok(!prompt.includes(CANARY) && !prompt.includes("waiting-skill"), `a skill held for its owner's OK is not served: ${prompt}`);
     assert.equal(existsSync(join(skillsDir(workOf(data, runId)), "waiting-skill")), false);
     assert.notEqual(view.learning?.reason, "seed_failed", JSON.stringify(view.learning));
-    assert.ok(prompt.includes(`<skill name="check-units">\n${UNITS.trim()}\n</skill>`), prompt);
+    assert.ok(prompt.includes(`<skill name="check-units">\n${UNITS_SERVED.trim()}\n</skill>`), prompt);
     assert.ok(prompt.includes(`<skill name="cite">\n${CITE.trim()}\n</skill>`), prompt);
     assert.deepEqual(inlined(prompt), ["check-units", "cite"]);
     const work = workOf(data, runId);
-    assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
+    assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS_SERVED);
     assert.equal(readFileSync(join(skillsDir(work), "check-units", "reference", "units.md"), "utf8"), UNITS_TABLE);
     assert.equal((await pinOf({ data }, runId)).seed, sha, "started from the seed its launch names");
   });
