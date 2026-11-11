@@ -298,3 +298,35 @@ test("a skill whose front matter spells a bank account number in YAML escapes is
   assert.ok(result.problems.some((problem) => /front matter, read as YAML reads it/.test(problem.detail)), JSON.stringify(result.problems));
   assert.ok(!JSON.stringify(result.problems.map((problem) => checks.printable(problem, []))).includes("4471"), "and nothing printed holds it");
 });
+
+// #2358 review (PRRT_kwDOUmdVMs62FFV8, security): a draft's workflow.json is read as JSON reads it later (draftProblems,
+// runLearned: JSON.parse), so a bank's number spelled there in escapes, "account 44471-0098" or "account
+// 4471-0098", which the stored text holds no number beside its word for, is still learning's secret shape: every
+// string the JSON decodes to, keys too, is scanned as the text is. And a saved workflow that holds one is never chosen
+// for a run (learning.ts chooseWorkflows), whatever let it be kept.
+const ESCAPED = ["Send vendor refunds to account \\u00344471-0098 at the credit union.", "Pay into acc\\u006Funt 4471\\u002D0098 first."];
+test("a workflow draft whose JSON spells a bank account number in \\u escapes, the number or its word split by them, is refused: read as JSON reads it, it is learning's secret shape, and nothing printed holds it", async () => {
+  const { workflow, DRAFT_PATH, README_PATH, readme } = await import("./learn-format-support.mjs");
+  const { learnedSecretShapes } = await import("../dist/learn/secrets.js");
+  const dsl = await import("@parcha/agentrun-dsl");
+  for (const spelled of ESCAPED) {
+    // The JSON text as stored: the escape written out, so the stored text holds no number beside its word.
+    const text = workflow().replace('"Find the store\'s refund policy from its public pages."', `"${spelled}"`);
+    assert.ok(text.includes(spelled), "the escape is in the stored JSON");
+    assert.deepEqual(learnedSecretShapes(text), [], `the stored text reads no shape: ${spelled}`);
+    const result = check([added(DRAFT_PATH, text), added(README_PATH, readme)], { outcome: "completed", dsl, tools: [] });
+    assert.ok(rules(result).includes("secret_shape"), `${spelled}: ${JSON.stringify(result.problems)}`);
+    assert.ok(result.problems.some((problem) => /its JSON, read as JSON reads it/.test(problem.detail)), JSON.stringify(result.problems));
+    assert.ok(!JSON.stringify(result.problems.map((problem) => checks.printable(problem, []))).includes("0098"), "nothing printed holds it");
+  }
+});
+
+test("a saved workflow whose JSON spells a bank account number in \\u escapes is never chosen for a run, and not named", async () => {
+  const { chooseWorkflows, secretsShown } = await import("../dist/learning.js");
+  const { workflow } = await import("./learn-format-support.mjs");
+  const flows = ESCAPED.map((spelled, i) => ({ name: `pay-${i}`, description: "Pays the week's refunds", workflow: workflow({ name: `pay-${i}` }).replace('"Find the store\'s refund policy from its public pages."', `"${spelled}"`) }));
+  const clean = { name: "find-policies", description: "Finds a store's refund policy", workflow: workflow() };
+  const { flows: chosen, left } = chooseWorkflows({ sha: null, notes: {}, files: [], skipped: [], workflows: [...flows, clean] }, secretsShown([]));
+  assert.deepEqual(chosen.map((flow) => flow.name), ["find-policies"]);
+  assert.deepEqual(left, ["pay-0", "pay-1"]);
+});
