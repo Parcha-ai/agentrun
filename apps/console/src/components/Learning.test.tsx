@@ -218,6 +218,34 @@ describe("a note that replaces older ones (consolidation)", () => {
     expect(t.card("Try /policies/refund-policy first")!.textContent).not.toContain("older notes");
   });
 
+  // Review on #2351: the server pages notes 50 at a time, active ones first, so a replaced note can sit on a later page.
+  // The count comes from the replacing note's own `supersedes` (whole on its card), never from the notes loaded so far;
+  // a replaced note not loaded yet is listed by its file until a later page names it.
+  it("counts the notes it replaces from its own supersedes, whole, when some are on a later page; their names fill in as pages load", async () => {
+    const first = view({ notes: { items: [
+      note(MERGED, "Refund policy pages", { text: `---\nname: Refund policy pages\ndescription: Where a shop's refund policy is\ntype: feedback\nsupersedes: [${FIRST}, "${OLD}"]\n---\nTry /policies/refund-policy first.\n` }),
+      note(FIRST, "Try /policies/refund-policy first", { status: "superseded", superseded_by: MERGED }),
+    ], total: 3, next_cursor: "p2" } });
+    const t = await open(agent(true), { learning: async () => first, notes: async () => ({ items: [note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: MERGED })], total: 3, next_cursor: null }) });
+    const card = t.card("Refund policy pages")!;
+    const toggle = [...card.querySelectorAll("button")].find((b) => /^Replaces \d+ older notes?/.test(b.textContent ?? ""))!;
+    expect(toggle.textContent).toMatch(/^Replaces 2 older notes/);
+    await act(async () => { toggle.click(); });
+    const names = () => [...t.card("Refund policy pages")!.querySelectorAll('ul[aria-label="Notes it replaces"] li')].map((li) => li.textContent);
+    expect(names()).toEqual(["Try /policies/refund-policy first", OLD]);
+    await t.click(/^Load more notes$/);
+    expect(names()).toEqual(["Try /policies/refund-policy first", "Shopify refund policy path"]);
+  });
+
+  it("a note its supersedes names that is no longer superseded by it (restored) is not counted", async () => {
+    const t = await open(agent(true), { learning: async () => view({ notes: { items: [
+      note(MERGED, "Refund policy pages", { text: `---\nname: Refund policy pages\ndescription: Where a shop's refund policy is\ntype: feedback\nsupersedes: [${FIRST}, ${OLD}]\n---\nBody.\n` }),
+      note(FIRST, "Try /policies/refund-policy first"),
+      note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: MERGED }),
+    ], total: 3, next_cursor: null } }) });
+    expect(t.card("Refund policy pages")!.textContent).toContain("Replaces 1 older note");
+  });
+
   it("each replaced note sits under Earlier notes, says what replaced it, and takes you to it", async () => {
     const t = await open(agent(true), { learning: async () => consolidated() });
     expect(t.card("Try /policies/refund-policy first")).toBeNull();

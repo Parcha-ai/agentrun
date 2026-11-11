@@ -12,7 +12,7 @@ import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
   APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
-  counted, type LearnedItem, statusFile,
+  counted, type LearnedItem, statusFile, supersedesOf,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
 import { cn } from "@/lib/utils";
@@ -97,10 +97,22 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
-  // The notes each one replaces, as the server marks them (`superseded_by`): a consolidation's one note names several.
+  // The notes each one replaces: the ones its own `supersedes` names (whole on its card, whatever page the old ones are on)
+  // and the ones the server marks `superseded_by` it, less one loaded that no longer is (restored). One not loaded yet is
+  // named by its file until a later page brings it.
   const replaced = useMemo(() => {
-    const by = new Map<string, LearningNote[]>();
-    for (const x of all) if (x.status === "superseded" && x.superseded_by) by.set(x.superseded_by, [...(by.get(x.superseded_by) ?? []), x]);
+    const byFile = new Map(all.map((x) => [x.file, x]));
+    const by = new Map<string, Replaced[]>();
+    for (const x of all) {
+      if (x.status === "superseded") continue;
+      const files = [...new Set([...supersedesOf(x.text), ...all.filter((y) => y.status === "superseded" && y.superseded_by === x.file).map((y) => y.file)])];
+      const items = files.flatMap((file): Replaced[] => {
+        const known = byFile.get(file);
+        if (!known) return [{ file, name: null }];
+        return known.status === "superseded" && known.superseded_by === x.file ? [{ file, name: known.name }] : [];
+      });
+      if (items.length) by.set(x.file, items);
+    }
     return by;
   }, [all]);
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
@@ -349,12 +361,15 @@ function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: 
 }
 
 type From = { run?: { id: string; at: string; reason: string } } | undefined;
+/** A note another one replaces: its file, and its name once a page read has it (null until then). */
+type Replaced = { file: string; name: string | null };
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
- *  `replaces`: the older notes it replaces (each `superseded_by` it), said in its footer and listed on expand.
+ *  `replaces`: the older notes it replaces (its `supersedes`, and each `superseded_by` it), said in its footer and listed
+ *  on expand, by name, or by file while the page that names one is not read yet.
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; replaces?: LearningNote[] }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; replaces?: Replaced[] }) {
   const [editing, setEditing] = useState(false);
   const [older, setOlder] = useState(false);
   const [retiring, setRetiring] = useState(false);
@@ -429,7 +444,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
       </footer>
       {older && replaces.length > 0 && (
         <ul aria-label="Notes it replaces" className="space-y-1 border-t px-5 py-2.5 text-body text-muted-foreground">
-          {replaces.map((x) => <li key={x.file} className="break-words">{x.name}</li>)}
+          {replaces.map((x) => <li key={x.file} className={cn("break-words", x.name === null && "font-mono text-small")}>{x.name ?? x.file}</li>)}
         </ul>
       )}
       {retiring && <RetireConfirm name={note.name} kind="note" retire={() => v2.retireNote(agentId, note.file, note.etag)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
