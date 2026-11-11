@@ -15,6 +15,7 @@ const { journalRecords, messagesOf } = await import("../dist/runner/journal-read
 const { emptyState, snapshotOf, translate } = await import("../dist/live/translate.js");
 const { reflectRequestId, REFLECT_LABEL } = await import("../dist/runner/end-of-run.js");
 const { said } = await import("../dist/learning-words.js");
+const { reflectDryRun } = await import("../dist/learn/index.js");
 const { LEARNING_LABEL } = await import("../dist/learning.js");
 
 const ROOT = 1;
@@ -26,20 +27,28 @@ const assistant = (text) => [{ role: "assistant", content: [{ type: "text", text
 /** Run run-1's journal, commit by commit: the person's input and the job's answer, then the end-of-run turn (its input
  *  under the turn's request id, placed, then answered), then the run's end. `upTo` stops after that many commits (a run
  *  still in its turn). */
-async function journaled(t, upTo = Infinity) {
+async function journaled(t, upTo = Infinity, { again } = {}) {
   const { store } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const journal = store.journal(await store.claim("run-1", "runner-a", { leaseMs: 60_000 }));
   const id = () => journal.mintId();
   const [input, inputEntry, answer, turn, turnEntry, turnAnswer, end] = [await id(), await id(), await id(), await id(), await id(), await id(), await id()];
+  // The turn asked once more (reflect-hook.ts: a draft whose dry run failed), under the same request id, then answered.
+  const [again1, againEntry, againAnswer] = again ? [await id(), await id(), await id()] : [];
+  // The run's end comes after everything it wrote: with the turn asked again, its id is minted after that ask's.
+  const last = again ? await id() : end;
   const commits = [
     // The job's input has a request id of its own (the launch's): only the turn's prefix makes an input the turn's.
     [{ type: "conversation", value: { id: ROOT } }, { type: "submission", value: { id: input, conversationId: ROOT, type: "input", requestId: "launch-run-1", status: "placed", entry: inputEntry } }, { type: "entry", value: { id: inputEntry, conversationId: ROOT, kind: "pi.user", model: user("Follow the script.") } }],
     [{ type: "entry", value: { id: answer, conversationId: ROOT, kind: "pi.assistant", model: assistant("the job's answer") } }, { type: "submission", value: { id: input, conversationId: ROOT, type: "input", requestId: "launch-run-1", status: "done", entry: inputEntry, answer } }],
     [{ type: "submission", value: { id: turn, conversationId: ROOT, type: "input", requestId: reflectRequestId("run-1"), status: "placed", entry: turnEntry } }, { type: "entry", value: { id: turnEntry, conversationId: ROOT, kind: "pi.user", model: user(ASKED) } }],
     [{ type: "entry", value: { id: turnAnswer, conversationId: ROOT, kind: "pi.assistant", model: assistant("a note") } }, { type: "submission", value: { id: turn, conversationId: ROOT, type: "input", requestId: reflectRequestId("run-1"), status: "done", entry: turnEntry, answer: turnAnswer } }],
-    [{ type: "entry", value: { id: end, conversationId: ROOT, kind: "agentrun.end", data: { state: "ended" } } }],
+    ...(again ? [
+      [{ type: "submission", value: { id: again1, conversationId: ROOT, type: "input", requestId: reflectRequestId("run-1"), status: "placed", entry: againEntry } }, { type: "entry", value: { id: againEntry, conversationId: ROOT, kind: "pi.user", model: user(again) } }],
+      [{ type: "entry", value: { id: againAnswer, conversationId: ROOT, kind: "pi.assistant", model: assistant("a fixed draft") } }, { type: "submission", value: { id: again1, conversationId: ROOT, type: "input", requestId: reflectRequestId("run-1"), status: "done", entry: againEntry, answer: againAnswer } }],
+    ] : []),
+    [{ type: "entry", value: { id: last, conversationId: ROOT, kind: "agentrun.end", data: { state: "ended" } } }],
   ];
   for (const writes of commits.slice(0, upTo)) await commitWrites(journal, writes, context);
   return { store, journal, turnEntry };
@@ -66,6 +75,16 @@ test("the replayed timeline labels the end-of-run turn's rows learning: its mess
   assert.deepEqual(turn.map((row) => [row.kind, row.text]), [["user_message", said.asked], ["text_block", "a note"]], JSON.stringify(shown));
   assert.equal(rows.some((row) => row.text === ASKED), false, "what the model was asked shows on no row");
   assert.ok(rows.some((row) => row.kind === "final_answer" && row.agent_label !== LEARNING_LABEL && row.text === "the job's answer"), JSON.stringify(shown));
+});
+
+test("the turn asked once more for a draft whose dry run failed reads so on the timeline, in the host's words, never the ask itself", async (t) => {
+  const asked = reflectDryRun("workflows/invoice-total/workflow.json", 'output: path "total" has no input or upstream producer');
+  const { store } = await journaled(t, Infinity, { again: asked });
+  const rows = await runTimeline(store, "run-1", context, { settled: true });
+  const turn = rows.filter((row) => row.agent_label === LEARNING_LABEL);
+  assert.deepEqual(turn.map((row) => [row.kind, row.text]), [["user_message", said.asked], ["text_block", "a note"], ["user_message", said.askedDryRun], ["text_block", "a fixed draft"]], JSON.stringify(rows.map((row) => [row.kind, row.text])));
+  assert.match(said.askedDryRun, /did not pass its dry run/);
+  assert.equal(rows.some((row) => row.text === asked || String(row.text).includes("upstream producer")), false, "what the model was asked shows on no row");
 });
 
 test("the kernel's reader marks the end-of-run turn's messages learning, and the job's not", async (t) => {

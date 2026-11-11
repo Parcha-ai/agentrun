@@ -55,3 +55,25 @@ describe("WorkflowEditor", () => {
     expect([...box.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Retry");
   });
 });
+
+// The editor edits the workflow's JSON as text: an MCP call node's graph card reads "<tool> on <server>" with its MCP
+// badge, and what the editor writes back keeps the raw `mcp:<server>/<tool>` key as typed.
+describe("WorkflowEditor, an MCP call node", () => {
+  const flow = { v: 2, name: "t", root: { node: "chain", steps: [{ node: "call", label: "file the bug", via: "tool", tool: "mcp:linear/create_issue", args: {}, as: "issue" }] } };
+  it("draws it as <tool> on <server> with an MCP badge, and an edit writes the raw key back unchanged", async () => {
+    const text = JSON.stringify(flow, null, 2);
+    const onText = vi.fn();
+    await mount({ text, onText });
+    const card = box.querySelector('svg g[data-path="/root/steps/0"]')!;
+    expect(card.querySelector(".kind")?.textContent).toBe("call · create_issue on linear");
+    expect([...card.querySelectorAll(".badge")].map((x) => x.textContent)).toEqual(["MCP"]);
+    // An edit elsewhere (Tab inserts two spaces at the cursor) hands back the whole text, the key as it was.
+    const area = box.querySelector("textarea")!;
+    area.setSelectionRange(0, 0);
+    await act(async () => { area.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); });
+    expect(onText).toHaveBeenCalledTimes(1);
+    const written = onText.mock.calls[0]![0] as string;
+    expect(written).toBe(`  ${text}`);
+    expect(JSON.parse(written).root.steps[0].tool).toBe("mcp:linear/create_issue");
+  });
+});
