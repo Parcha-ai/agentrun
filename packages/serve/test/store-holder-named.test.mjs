@@ -45,10 +45,13 @@ test("a begin that waits out its busy timeout names the transaction open in this
   const path = await file(t);
   const holder = await Connection.open(path);
   const waiter = await Connection.open(path, { busyTimeoutMs: 200 });
-  t.after(async () => { await waiter.close(); await holder.close(); });
-  await holder.exec("CREATE TABLE notes (text TEXT)");
   let release;
   const released = new Promise((resolve) => { release = resolve; });
+  // Let go whatever the assertions say, before the closes (after-hooks run in order), so the holder's transaction never
+  // waits out its own deadline.
+  t.after(() => release());
+  t.after(async () => { await waiter.close(); await holder.close(); });
+  await holder.exec("CREATE TABLE notes (text TEXT)");
   let began;
   const begun = new Promise((resolve) => { began = resolve; });
   const lockHolderOfThisTest = () => holder.transaction(async (tx) => {
