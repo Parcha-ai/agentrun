@@ -8,7 +8,7 @@
 // passes its decisions. `effort` is the level the run ran at and `model`, on a harness other than pi, the model its
 // revision named — both as storedMetrics added them, resolved by the caller from the run's launch and harness.
 import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMetrics, timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { answeredUnpriced, RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS } from "./journal-kinds.js";
 
@@ -40,10 +40,11 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
       continue;
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
     if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
-    const usd = typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
+    // An answer with no price of its own was booked at its hold for the cap (answeredUnpriced): as a cost it is unknown.
+    const usd = answeredUnpriced(d) ? null : typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
     if (usd === null) unpriced += 1;
     else known += usd;
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
