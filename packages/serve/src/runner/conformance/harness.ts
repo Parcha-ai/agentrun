@@ -137,10 +137,6 @@ const STORE_URLS = new WeakMap<ConformanceSubject, string>();
 const POSTGRES_PENDING: Readonly<Record<string, string>> = {};
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
- *  the run over. */
-const TAKEOVER: Partial<typeof TIMING> = {};
-
 /** The stores' clock skew a runner process reads (child.ts): the file holds the milliseconds the clock moved, so the
  *  process's store moves with the case's (runOut). */
 export const storeClockOf = (file: string | undefined): (() => number) => {

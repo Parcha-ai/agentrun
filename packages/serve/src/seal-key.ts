@@ -50,9 +50,6 @@ export type SealKey = { readonly key: Buffer; readonly text: string; readonly pa
  *  as it closes. */
 export type BootedSealKey = SealKey & { readonly release: () => void };
 
-/** Where the data directory `dataDir` keeps its seal key. */
-export const sealKeyPath = (dataDir: string): string => join(dataDir, SEAL_KEY_DIR, SEAL_KEY_FILE);
-
 const HOW = `Hand the server ${SEAL_KEY_ENV} (32 random bytes in base64, e.g. \`openssl rand -base64 32\`), or let it keep one in ${SEAL_KEY_DIR}/${SEAL_KEY_FILE} in its data directory, made at the first start.`;
 const refused = (why: string) => new SealKeyRefused(`No seal key: ${why}. ${HOW}`);
 

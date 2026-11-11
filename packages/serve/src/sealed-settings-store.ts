@@ -5,7 +5,7 @@
 // synchronous off a snapshot the server (the one writer) loads once and keeps in step with every write; set/mint/remove
 // are durable before they resolve.
 import { seal, unseal } from "./sealing.js";
-import { ApiError, invalid } from "./errors.js";
+import { invalid } from "./errors.js";
 import { keyBytes, MIN_KEY_BYTES, mintSecret, SECRET_PREFIX } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import type { TriggerSettings } from "./store/index.js";
@@ -17,8 +17,6 @@ import type { TriggerSettings } from "./store/index.js";
  *  in the list of the server's secrets, so no run's text is cut of it, and of any length. `format: "pem"`: a PEM private
  *  key, whose lines each are listed as secrets. */
 export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number; public?: true; format?: "pem" }> };
-/** The scope of a server-scoped adapter's settings. */
-export const SERVER_SCOPE = "server";
 
 /** The store's documented AAD for a trigger setting (store schema `trigger_settings`): the composite row key is in the
  *  AAD, not store/seal.ts's single-row aadOf, which refuses a key holding the separator. */

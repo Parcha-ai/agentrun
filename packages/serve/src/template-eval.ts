@@ -20,7 +20,7 @@ import { NOTE_FILE } from "./learn/notes.js";
 import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, filledPins, type Package, PackageError, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
 import { isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */

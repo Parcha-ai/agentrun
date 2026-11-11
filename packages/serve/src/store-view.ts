@@ -9,8 +9,7 @@ import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
-import { MIN_SECRET } from "./learn/secrets.js";
-import { handedValuesOf, launchOf } from "./handed-values.js";
+import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
   momentOf,
@@ -21,7 +20,6 @@ import {
   type RunView,
   type RunViewMeta,
   type SignInReader,
-  type State,
   type Status,
   approvalOf,
   asksOf,
