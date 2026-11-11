@@ -297,6 +297,17 @@ test("Orgo list: a computer that is not running is listed stopped, and never wok
 	assert.deepEqual(fakes.channel.calls, []);
 });
 
+test("Orgo list: a Windows or macOS desktop in the workspace is the other provider's, so neither list nor the janitor's sweep touches it, past its deadline too", async () => {
+	const fakes = setup();
+	const past = new Date(Date.now() - HOUR);
+	const others = ["windows", "macos"].map((os, i) => fakes.api.add({ name: orgoName(SPEC.labels, `00000000000${i + 1}`, past), os, workspace_id: WORKSPACE }));
+	const mine = fakes.api.add({ name: orgoName(SPEC.labels, "00000000000c", past), os: "linux", workspace_id: WORKSPACE });
+	assert.deepEqual((await fakes.provider.list({})).value.map(({ ref }) => ref.id), [mine.id]);
+	const swept = await sweep(fakes.provider, { now: new Date() });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [mine.name], kept: 0 } });
+	for (const other of others) assert.notEqual(fakes.api.computers.get(other.id).deleted, true, other.os);
+});
+
 test("Orgo attach: the labels file is the truth; the spec read back from inside; a name that disagrees with the file is drift", async () => {
 	const fakes = setup();
 	const { ref } = seeded(fakes);
