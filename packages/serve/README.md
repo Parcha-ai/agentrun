@@ -722,7 +722,12 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
-refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
+daemon on this server: where none answers `docker version` (Render and most hosted services run none), Docker is not
+ready and says to use a vendor's computer. The server asks again every 30 s, so a daemon that stops is seen. A daemon
+started after the server is taken at the next restart, since the start's checks of Docker (its host, this server's
+paths and addresses) ran without it.
+`GET /v2/computers` lists each kind,
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
@@ -878,11 +883,13 @@ it starts:
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
-`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
-it is never off, and a model node that names its own thinking level keeps it. An agentic run started with an `effort` also
-gets a short note on how to work, right after its instructions, on every harness (`src/effort-guidance.ts`): `low`
-answers directly, `medium` plans briefly and checks once, `high` plans each part, fills the gaps and reviews. A run
-started with none gets no note.
+`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING` (one of those
+levels exactly), else at its harness's own default; it is never off, and a model node that names its own thinking level
+keeps it. The level is fixed in the run's launch when it starts, and its metrics name the level its harness ran at: one
+above the harness's highest runs at that highest (Codex and OpenCode stop at `xhigh`). An agentic run whose level is
+`low`, `medium` or `high` also gets a short note on how to work, right after its instructions, on every harness
+(`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
+the gaps and reviews. A run with no level, or one above `high`, gets no note.
 
 ## Tools
 
@@ -1947,7 +1954,7 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -2232,15 +2239,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
-comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
-the rest of the store page's data), for a
-script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
+comes through `/v2`. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
 token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
 `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
-`/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
+`/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 

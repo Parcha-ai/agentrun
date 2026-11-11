@@ -377,6 +377,50 @@ class Rules(unittest.TestCase):
             self.assertEqual((response.status, response.headers.get("content-type")), (200, "application/octet-stream"))
             self.assertEqual(b"".join(response.iter_bytes(100)), data)
 
+    def test_a_streamed_download_cut_midway_or_stalled_is_unreachable_with_a_code_never_a_raw_error_and_never_tried_again(self) -> None:
+        data = bytes(range(256))
+
+        def answer(request: Request, reply: Reply) -> Any:
+            reply.head(200, {"content-type": "application/octet-stream", "content-length": str(len(data))})
+            reply.write(data[:100])
+            if request.url.endswith("/stall.bin"):
+                reply.hold()
+            else:
+                reply.wait(0.05)
+                reply.destroy()
+            return None
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY)
+
+        def read_all(response: StreamedResponse, how: str) -> bytes:
+            got = b""
+            if how == "read":
+                return response.read()
+            if how == "read1":
+                while True:
+                    chunk = response.read1()
+                    if not chunk:
+                        return got
+                    got += chunk
+            for chunk in response.iter_bytes(64):
+                got += chunk
+            return got
+
+        for how in ("read", "read1", "iter_bytes"):
+            with client.runs.read_file("r1", "cut.bin", stream=True) as response:
+                cut = self.thrown(read_all, response, how)
+            assert isinstance(cut, AgentRunUnreachable), f"{how}: {cut!r}"
+            self.assertRegex(cut.cause, r"^[A-Za-z0-9_]+$", how)
+            self.assertIsNone(cut.__context__, f"{how}: raised past the except, chained to nothing that holds the body")
+            self.assertNotIn(KEY, printed(cut))
+        self.assertEqual(len(server.requests), 3, "each cut download was sent once: bytes already read are the caller's")
+        with client.runs.read_file("r1", "stall.bin", stream=True, timeout=0.3) as response:
+            self.assertEqual(response.read(100), data[:100], "what came is read")
+            stalled = self.thrown(response.read)
+        assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual((stalled.cause, len(server.requests)), ("timeout", 4))
+
     def test_a_body_cut_after_a_2xx_is_tried_again_for_a_get_and_a_download_and_a_posts_is_unreachable_with_a_code(self) -> None:
         data = bytes(range(256))
         tries: dict[str, int] = {}
