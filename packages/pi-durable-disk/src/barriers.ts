@@ -53,7 +53,10 @@ export const BARRIERS = {
   browserSessionOpen: {
     store: "one-store",
     site: "serve/src/browser-cost.ts",
-    status: "planned",
+    call: "await ledger.flush?.();",
+    via: { file: "pi-browser/src/durable.ts", text: "await c.options.beforeCreate({ conversationId: scope.cid, tag, commit: scope.commit });" },
+    status: "active",
+    proof: ["packages/serve/test/browser-open-flush.test.mjs", "packages/serve/test/store-flush.test.mjs"],
     why: "a browser session's open record (its tag, the call's hold), flushed before the vendor's session is created",
   },
   decisionHold: {
@@ -190,7 +193,7 @@ export const NORMAL_PRECONDITIONS = {
   },
   browserSessionBarrier: {
     done: true,
-    what: "the durable unit is the session open (browserSessionOpen, written before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
+    what: "the durable unit is the session open (browserSessionOpen, written and flushed before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
   },
   barrierProofs: {
     done: false,
