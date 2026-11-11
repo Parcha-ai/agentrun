@@ -1,9 +1,12 @@
 name: Learning live weekly
 
 # Learning's live checks, on real models, once a week and on demand (never on a pull request): the grader on the
-# held-out eval set over three grade models (packages/serve/scripts/learn-eval.mjs --set heldout --grade-models, LS-09),
-# and one seed of the learning bench on pi (packages/serve/scripts/learn-bench.mjs, LS-01). Each has a hard dollar cap
-# (--max-usd): it stops asking past it, and a cost it can't read stops it too. Model traffic goes only to the endpoint the
+# held-out eval set over the grade models LEARNING_LIVE_GRADE_MODELS names (packages/serve/scripts/learn-eval.mjs --set
+# heldout --grade-models, LS-09), and one seed of the learning bench on pi (packages/serve/scripts/learn-bench.mjs, LS-01).
+# Each has a dollar cap (--max-usd) and exits 3 when it stops at it. The eval reads its spend before each model request
+# and a cost it can't read stops it too; the bench reads the server's spend before each step and starts one only when
+# that step's worst case (its run's cap and its graders') still fits, so only a step's learning grade, a fraction of a
+# cent, can pass it. Model traffic goes only to the endpoint the
 # repository's secrets name, with the key they hold; neither is printed. Results are kept as an artifact, and the
 # summaries are this run's job summary.
 on:
@@ -71,7 +74,7 @@ jobs:
         run: npm ci --ignore-scripts
       - if: steps.ready.outputs.ready == 'true'
         run: npm run build
-      - name: The grader on the held-out set, over three grade models
+      - name: The grader on the held-out set, over the grade models named
         id: eval
         if: steps.ready.outputs.ready == 'true'
         continue-on-error: true
