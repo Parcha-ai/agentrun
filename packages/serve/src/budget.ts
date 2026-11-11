@@ -25,8 +25,6 @@ export const CAP_RAISED = "cap.json";
 export const CAP_STOPPED = "cap-stopped.json";
 /** How long a workflow run's pause keeps its process before it lets it go (the lead's ruling: 10 minutes). */
 export const BUDGET_HOLD_MS = 10 * 60_000;
-/** The process's environment variable naming another hold, in ms (the server's `budgetHold` option, for its tests). */
-export const BUDGET_HOLD_ENV = "AGENTRUN_SERVE_BUDGET_HOLD_MS";
 const POLL_MS = 250;
 
 /** Where a step stands in its workflow: its node's label and execution path. */
@@ -62,11 +60,6 @@ const readJson = <T>(file: string): T | undefined => {
 export const budgetPausedIn = (root: string): BudgetMark | undefined => {
   const mark = readJson<BudgetMark>(join(root, BUDGET_PAUSE));
   return mark && typeof mark.words === "string" && typeof mark.cap_usd === "number" ? mark : undefined;
-};
-/** The refusal that ended the run at `root` for good, as its process wrote it; undefined when none did. */
-export const capStoppedIn = (root: string): CapStopped | undefined => {
-  const stop = readJson<CapStopped>(join(root, CAP_STOPPED));
-  return stop && typeof stop.words === "string" ? stop : undefined;
 };
 /** A raise's cap, for the run's process to read (the server writes it after serve.json keeps it). */
 export const writeRaisedCap = (root: string, usd: number): void => writeWhole(join(root, CAP_RAISED), { max_cost_usd: usd });

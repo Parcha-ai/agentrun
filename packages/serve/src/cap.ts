@@ -81,13 +81,6 @@ export const CAP_MODES = ["expected", "strict"] as const;
 export type CapMode = (typeof CAP_MODES)[number];
 /** A run's cap mode, passed to its process; absent is "expected". */
 export const CAP_MODE_ENV = "AGENTRUN_SERVE_CAP_MODE";
-/** The run's cap mode from its process's environment. */
-export function capModeOf(env: NodeJS.ProcessEnv): CapMode {
-  const text = env[CAP_MODE_ENV];
-  if (text === undefined || text === "") return "expected";
-  if (!(CAP_MODES as readonly string[]).includes(text)) throw new Error(`${CAP_MODE_ENV} is ${text}, not one of ${CAP_MODES.join(", ")}`);
-  return text as CapMode;
-}
 
 /** How long after a request ended the next one in its conversation is expected to read its cache: 4 minutes, inside
  *  Anthropic's 5 (a cache kept that long from its last use; OpenAI's lasts longer). A request later than that is priced
@@ -322,14 +315,6 @@ export const NATIVE_SEARCH_ALLOWANCE_TOKENS = 8 * 25_000;
 export type SideRequest = { label: string; extraInputTokens: number; maxFeeUsd: number; feeUsd(): number };
 export const sideRequests = new WeakMap<object, SideRequest>();
 
-/** The run's cap from its process's environment; absent for a run without one. */
-export function capOf(env: NodeJS.ProcessEnv): number | undefined {
-  const text = env[CAP_ENV];
-  if (text === undefined || text === "") return undefined;
-  const cap = Number(text);
-  if (!(Number.isFinite(cap) && cap > 0)) throw new Error(`${CAP_ENV} is ${text}, not a number above 0`);
-  return cap;
-}
 
 /** The code a cap's refusal begins with: `spend_cap_reached: `, or with a note after it, as a request it limited refuses
  *  in (CAP_REFUSAL_CODE, "spend_cap_reached (out of budget): "). Every reader of a refusal's text (a run's end, its
@@ -935,10 +920,6 @@ export const CAP_REFUSAL_CODE = `${SPEND_CAP_REACHED} (out of budget): `;
  *  pending), and its cap's raise is checked against them. `boundUsd`: the most a cache miss could make the refused
  *  request cost beyond what it needs (BOUND_USD; absent for 0). */
 export type RefusalFigures = { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number };
-/** A refusal's figures as its start mark keeps them (`spentUsd`, `needsUsd`, `leastCapUsd`, and `boundUsd` when above 0);
- *  none without. */
-export const refusalFields = (figures: RefusalFigures | undefined): Record<string, number> =>
-  figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd, leastCapUsd: figures.leastCapUsd, ...(typeof figures.boundUsd === "number" && figures.boundUsd > 0 ? { boundUsd: figures.boundUsd } : {}) } : {};
 /** The words of a refusal for room (CAP_REFUSAL_CODE: what is left of the cap cannot buy the request's least), which a
  *  higher cap would send; undefined for any other text, a refusal no cap could fix included (an unknown spend, no price,
  *  no output ceiling, an input not measured: the bare `spend_cap_reached: ` code). The one reader of that difference. */
