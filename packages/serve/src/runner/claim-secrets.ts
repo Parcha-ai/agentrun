@@ -15,7 +15,7 @@ import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import type { SealedKeys } from "../store/store.js";
 import { handsParallel } from "../tool-plane.js";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "../agent-rows.js";
 
 /** Every server secret a run might be handed (runs.ts RUN_SECRETS is the tool and model keys; the decision keys go beside
  *  them). Read from the store into a working environment, then scoped to the run below. */

@@ -174,3 +174,10 @@ test("a decision node's provider is refused only on deny: one the gate answers a
   assert.equal(out.isError, false, out.text);
   assert.equal(sent(), 1);
 });
+
+test("a draft with a judge node dry-runs: its decision's answer is synthesized like any node's, nothing sent", async (t) => {
+  const { draftDryRun } = await import("../dist/learn/skills.js");
+  const { sent } = await providers(t);
+  assert.deepEqual(await draftDryRun(dsl, JSON.stringify(judgeFlow()), JSON.stringify({ claim: "Six times seven is 42." })), { status: "passed" });
+  assert.equal(sent(), 0, "the dry run asks no provider");
+});

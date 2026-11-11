@@ -18,12 +18,9 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { DESKTOP_TOOL_DEFS, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
-import type { TurnOrigin } from "./reflect-range.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
@@ -303,10 +300,6 @@ export const ARGS_PREVIEW_BYTES = 2048;
 
 
 
-/** The file in a run's directory that names the origin of the turn it runs now: written by the server alone, as it sends
- *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone before a person's turn is sent (runs.ts's personsTurn).
- *  The gate refuses that turn's writes under work/.learning/ (NOTE_ONLY_TEXT). */
-export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
  *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
 export const NOTE_ONLY_TEXT = "A note is kept only from your answer: write it in a ```note block, not to a file.";
@@ -353,39 +346,36 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` whose folder is `where`, on its pinned revision. `serverSettings`: the server's tool
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
- *  claim). `files`: where the run's own files are read (RunFiles), the run's folder when absent. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, files: RunFiles | undefined, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals), files);
+ *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
-/** Where a gate reads the run's own files (the turn's origin): the run's Workspace (Mode 2: its folder on the run's disk,
- *  read by path in the folder, never a folder of this machine), or the local folder's path. */
+/** A run's folder as its spec names it: the run's Workspace (Mode 2: its folder on the run's disk, never a folder of this
+ *  machine), or the local folder's path. The gate checks paths against it and reads nothing in it. */
 export type RunFiles = Pick<Workspace, "read"> | string;
 
-/** A run's tool gate on the runner: its policy and the turn's origin, asked before each call's intent (decide). */
+/** A run's tool gate on the runner: its policy, asked before each call's intent (decide). */
 export class RunGate {
 
   /** `readServerSettings`: the server's tool settings, read at each call; `overrides`: the pinned revision's own;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
-   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom);
-   *  `files`: where the run's own files are read (RunFiles), the run's folder `where.root` when absent. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask", private readonly files: RunFiles = where.root) {}
+   *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
   readonly policy = (tool: string): Permission => this.setting(tool).permission;
 
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
-   *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. `enter`'s
-   *  order: the end-of-run turn's write under .learning/ (learningRefusal), the deny (with where it was set, and that
-   *  nothing was sent or charged), a pin, then the allow, then the ask, so an allow that approvals "never" made is decided
+   *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. The order:
+   *  the deny (with where it was set, and that nothing was sent or charged), a pin, then the allow, then the ask, so an
+   *  allow that approvals "never" made is decided
    *  only after every refusal. Where no one can approve (accounts off: the store's approvers row a runner reads at each
    *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
     const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
     const tool = this.askedAs(name);
-    const learning = await this.learningRefusal(key, args);
-    if (learning) return { deny: learning };
     const verdict = this.policy(name);
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
@@ -454,27 +444,5 @@ export class RunGate {
     return this.lastGood;
   }
 
-  /** The origin of the turn running now: what the server's internal path wrote for it (TURN_ORIGIN_FILE in the run's
-   *  folder, read through `files`: the run's Workspace or the local folder's path); none for a person's turn, or a file
-   *  that is not there or does not read. */
-  async turnOrigin(): Promise<TurnOrigin | undefined> {
-    try {
-      const text = typeof this.files === "string" ? readFileSync(join(this.files, TURN_ORIGIN_FILE), "utf8") : new TextDecoder().decode(await this.files.read(TURN_ORIGIN_FILE));
-      return (JSON.parse(text) as { origin?: unknown })?.origin === "reflect" ? "reflect" : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** The end-of-run turn's refusal of a write or edit under work/.learning/ (NOTE_ONLY_TEXT, the adapter loop's one text
-   *  too), whatever the tool's permission: its notes are kept only from its answer. Undefined for any other call or turn,
-   *  whose write there follows its permission, as anywhere. The first check of `enter` and `decide`. */
-  private async learningRefusal(key: string, args: unknown): Promise<string | undefined> {
-    if (key !== "write" && key !== "edit") return undefined;
-    // The folder's path a file tool resolves against: the local folder's, or a computer's name for it (the Workspace's paths
-    // are in the run's folder, so a path there is relative or under COMPUTER_ROOT).
-    const work = typeof this.files === "string" ? this.where.work : COMPUTER_ROOT;
-    return underLearning(work, args) && (await this.turnOrigin()) === "reflect" ? NOTE_ONLY_TEXT : undefined;
-  }
 
 }
