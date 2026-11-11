@@ -17,6 +17,9 @@
     "status": "completed",
     "state": "idle",
     "title": "Write the release notes for 2.4.1 from: #430 fix the sign-in page on phones, #4…",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:24.718Z",
     "updated_at": "2026-10-28T21:19:54.870Z",
     "ended_at": "2026-10-28T19:33:31.403Z",

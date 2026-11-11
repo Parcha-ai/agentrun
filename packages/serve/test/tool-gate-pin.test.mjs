@@ -1,14 +1,19 @@
 // A pin (tool-gate.ts pinRefusal): an MCP tool's setting may fix top-level arguments, and the gate refuses a call whose
 // arguments are not as pinned before it runs or asks anyone, whatever the permission. The agent's pin and the server's
 // both hold; two that fix one argument differently refuse every call. Settings validate a pin (an MCP tool's own key,
-// 1 to 8 arguments, JSON scalars), the server keeps it, and a pin in its file that does not read fails closed.
+// 1 to 8 arguments, JSON scalars), the server keeps it in the one store, and a stored pin that does not read fails
+// closed. The gate is the runner's (RunGate.decide), on the settings it read from the store.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
-import { pinRefusal, RunGate } from "../dist/tool-gate.js";
-import { canonicalToolSettings, pinIssues, readToolSettings, settingsIssues, sortedPin, ToolSettings, withDefaults } from "../dist/tool-plane.js";
-import { scratch } from "./support.mjs";
+import { pinRefusal } from "../dist/tool-gate.js";
+import { canonicalToolSettings, loadToolSettings, pinIssues, saveToolSettings, settingsIssues, sortedPin, TOOL_SETTINGS_KEY, withDefaults } from "../dist/tool-plane.js";
+import { runnerGate } from "./gate-support.mjs";
+
+/** The one store's settings rows, as loadToolSettings and saveToolSettings reach them. */
+const settingsStore = () => {
+  const rows = new Map();
+  return { settings: { get: async (key) => structuredClone(rows.get(key)), put: async (key, value) => void rows.set(key, structuredClone(value)) } };
+};
 
 const SEND = "mcp:slack/slack_send_message";
 
@@ -71,71 +76,52 @@ test("settings validate a pin: on an MCP tool's own key only, 1 to 8 top-level a
   assert.match(settingsIssues({ "mcp:slack/*": { pin: { channel_id: "C0123" } } })[0].message, /one MCP tool's own key/);
 });
 
-test("the server keeps a pin: written whole, read back, served; a pin in its file that does not read refuses the tool's every call", async (t) => {
-  const data = await scratch(t);
-  const settings = new ToolSettings(data, () => undefined);
-  const put = settings.put({ [SEND]: { permission: "allow", pin: { channel_id: "C0123" } }, "mcp:slack/*": { permission: "ask" } });
+test("the server keeps a pin: written whole, read back, served; a stored pin that does not read refuses the tool's every call", async () => {
+  const store = settingsStore();
+  const put = await saveToolSettings(store, { [SEND]: { permission: "allow", pin: { channel_id: "C0123" } }, "mcp:slack/*": { permission: "ask" } });
   assert.deepEqual(put[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
-  assert.deepEqual(JSON.parse(await readFile(join(data, "tool-settings.json"), "utf8"))[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
-  assert.deepEqual(new ToolSettings(data, () => undefined).get()[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
+  assert.deepEqual((await store.settings.get(TOOL_SETTINGS_KEY))[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
+  assert.deepEqual((await loadToolSettings(store)).settings[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
   assert.deepEqual(withDefaults(put)[SEND], { permission: "allow", pin: { channel_id: "C0123" } }, "as served");
 
-  // Hand-edited into something no save writes: never dropped to no pin, which would let every call through.
-  await writeFile(join(data, "tool-settings.json"), JSON.stringify({ [SEND]: { permission: "allow", pin: { channel_id: { any: true } } } }));
-  const read = readToolSettings(data);
+  // Stored as something no save writes: never dropped to no pin, which would let every call through.
+  await store.settings.put(TOOL_SETTINGS_KEY, { [SEND]: { permission: "allow", pin: { channel_id: { any: true } } } });
+  const read = await loadToolSettings(store);
   assert.equal(read.settings[SEND].permission, "allow");
   assert.equal(read.settings[SEND].brokenPin, true);
   assert.equal(read.problems.length, 1);
   assert.equal(withDefaults(read.settings)[SEND].brokenPin, undefined, "never served");
-  const gate = new RunGate({ root: await scratch(t), work: await scratch(t), data, runId: "r1" });
-  const answer = await gate.enter(SEND, { channel_id: "C0123" }, "c1", { commit: () => assert.fail("nothing parks") });
-  assert.equal(answer.isError, true);
-  assert.match(answer.text, /its pin in this server's tool settings does not read/);
+  const answer = await runnerGate({ settings: () => read }).decide(SEND, { channel_id: "C0123" });
+  assert.match(answer.deny, /its pin in this server's tool settings does not read/);
 });
+/** A run's gate with `agent` the revision's own settings and `server` the server's stored ones. */
+const gateOf = (agent, server) => runnerGate({ overrides: agent, settings: server });
 
-/** A gate on its own data directory, with `agent` the revision's own settings, and a park that records what it commits. */
-async function gateOf(t, agent, server) {
-  const data = await scratch(t);
-  if (server) await writeFile(join(data, "tool-settings.json"), JSON.stringify(server));
-  const gate = new RunGate({ root: await scratch(t), work: await scratch(t), data, runId: "r1" }, agent);
-  const committed = [];
-  const park = { commit: (change) => change({ appendEntry: async (_, entry) => void committed.push(entry) }), parked: () => undefined };
-  return { gate, park, committed };
-}
-
-test("RunGate.enter: an allowed pinned call runs only as pinned; under ask a call not as pinned is refused and never asks", async (t) => {
+test("the gate's decision: an allowed pinned call runs only as pinned; under ask a call not as pinned is refused and never asks", async () => {
   {
-    const { gate, park, committed } = await gateOf(t, { [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
-    assert.equal(await gate.enter(SEND, { channel_id: "C0123", message: "hi" }, "c1", park), undefined, "as pinned: it runs");
-    const refused = await gate.enter(SEND, { channel_id: "C0EVIL", message: "hi" }, "c2", park);
-    assert.deepEqual([refused.isError, refused.parked], [true, undefined]);
-    assert.match(refused.text, /may only be called with channel_id = C0123: its destination is fixed by the agent's settings/);
-    assert.deepEqual(committed, [], "nothing parked");
+    const gate = gateOf({ [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
+    assert.equal(await gate.decide(SEND, { channel_id: "C0123", message: "hi" }), "allow", "as pinned: it runs");
+    const refused = await gate.decide(SEND, { channel_id: "C0EVIL", message: "hi" });
+    assert.match(refused.deny, /may only be called with channel_id = C0123: its destination is fixed by the agent's settings/);
   }
   {
     // The MCP default, ask: a call not as pinned is refused at once (no approval waits), one as pinned asks.
-    const { gate, park, committed } = await gateOf(t, { [SEND]: { pin: { channel_id: "C0123" } } });
-    const refused = await gate.enter(SEND, { channel_id: "C0EVIL" }, "c1", park);
-    assert.deepEqual([refused.isError, refused.parked], [true, undefined]);
-    assert.equal(gate.waiting(), false);
-    assert.deepEqual(committed, []);
-    const asked = await gate.enter(SEND, { channel_id: "C0123" }, "c2", park);
-    assert.deepEqual([asked.isError, asked.parked], [false, true]);
-    assert.equal(committed.length, 1, "the pinned call's request");
+    const gate = gateOf({ [SEND]: { pin: { channel_id: "C0123" } } });
+    assert.ok((await gate.decide(SEND, { channel_id: "C0EVIL" })).deny, "refused, never asked");
+    assert.equal(await gate.decide(SEND, { channel_id: "C0123" }), "ask", "the pinned call asks");
   }
   {
     // A deny is a deny first: its own refusal, whatever the arguments.
-    const { gate, park } = await gateOf(t, { [SEND]: { permission: "deny", pin: { channel_id: "C0123" } } });
-    assert.match((await gate.enter(SEND, { channel_id: "C0EVIL" }, "c1", park)).text, /^Permission denied: mcp:slack\/slack_send_message is set to deny for this agent/);
+    const gate = gateOf({ [SEND]: { permission: "deny", pin: { channel_id: "C0123" } } });
+    assert.match((await gate.decide(SEND, { channel_id: "C0EVIL" })).deny, /^Permission denied: mcp:slack\/slack_send_message is set to deny for this agent/);
   }
   {
     // The server's pin binds a run the agent allowed, read at each call; the agent's pin and the server's both hold.
-    const { gate, park } = await gateOf(t, { [SEND]: { permission: "allow" } }, { [SEND]: { pin: { channel_id: "C0SERVER" } } });
-    assert.match((await gate.enter(SEND, { channel_id: "C0123" }, "c1", park)).text, /channel_id = C0SERVER: its destination is fixed by this server's settings/);
-    assert.equal(await gate.enter(SEND, { channel_id: "C0SERVER" }, "c2", park), undefined);
+    const gate = gateOf({ [SEND]: { permission: "allow" } }, { [SEND]: { pin: { channel_id: "C0SERVER" } } });
+    assert.match((await gate.decide(SEND, { channel_id: "C0123" })).deny, /channel_id = C0SERVER: its destination is fixed by this server's settings/);
+    assert.equal(await gate.decide(SEND, { channel_id: "C0SERVER" }), "allow");
   }
 });
-
 const REVIEW = "mcp:github/pull_request_review_write";
 
 test("a one-of pin: the argument must equal one of its list (null: left out), said in the list's order", () => {
@@ -192,44 +178,43 @@ test("the one pin rule (pinIssues) and its one form (sortedPin): a one-of list i
   assert.equal(JSON.stringify(a), JSON.stringify({ [REVIEW]: { pin: { event: [null, "COMMENT"], method: ["create", "submit_pending"] } } }));
 });
 
-test("a broken pin survives a save of other keys and keeps refusing, until the owner sets a valid pin or removes the setting", async (t) => {
-  const data = await scratch(t);
-  const file = join(data, "tool-settings.json");
+test("a broken pin survives a save of other keys and keeps refusing, until the owner sets a valid pin or removes the setting", async () => {
+  const store = settingsStore();
   const broken = { channel_id: { any: true } };
-  await writeFile(file, JSON.stringify({ [SEND]: { permission: "allow", pin: broken }, web_search: { provider: "auto" } }));
-  const gate = new RunGate({ root: await scratch(t), work: await scratch(t), data, runId: "r1" });
-  const call = (channel = "C0123") => gate.enter(SEND, { channel_id: channel }, `c-${Math.random()}`, { commit: () => assert.fail("nothing parks") });
-  const settings = new ToolSettings(data, () => undefined);
+  await store.settings.put(TOOL_SETTINGS_KEY, { [SEND]: { permission: "allow", pin: broken }, web_search: { provider: "auto" } });
+  // The gate reads the settings at each call, as the runner loaded them; a reload after each save stands for the next claim.
+  let current = await loadToolSettings(store);
+  const gate = runnerGate({ settings: () => current });
+  const call = (channel = "C0123") => gate.decide(SEND, { channel_id: channel });
+  const save = async (map) => { await saveToolSettings(store, map); current = await loadToolSettings(store); };
   // The answer says the tool's pin is broken, so the console can show it; the whole map it saves back carries that.
-  const served = withDefaults(settings.get());
+  const served = withDefaults(current.settings);
   assert.deepEqual(served[SEND], { permission: "allow", pin_broken: true });
   assert.deepEqual(settingsIssues(served), [], "a save of the answer as served is taken");
 
-  // A console's whole-map save that changes another tool: still broken, in the file and at the gate.
-  settings.put({ ...served, web_search: { provider: "exa-keyless" } });
-  assert.deepEqual(JSON.parse(await readFile(file, "utf8"))[SEND], { permission: "allow", pin: broken }, "the broken value is kept as written");
-  assert.match((await call()).text, /its pin in this server's tool settings does not read/);
+  // A console's whole-map save that changes another tool: still broken, as stored and at the gate.
+  await save({ ...served, web_search: { provider: "exa-keyless" } });
+  assert.deepEqual((await store.settings.get(TOOL_SETTINGS_KEY))[SEND], { permission: "allow", pin: broken }, "the broken value is kept as written");
+  assert.match((await call()).deny, /its pin in this server's tool settings does not read/);
   // The key kept with its pin left out (no mark either): still broken.
-  settings.put({ [SEND]: { permission: "allow" }, web_search: { provider: "exa-keyless" } });
-  assert.deepEqual(withDefaults(settings.get())[SEND], { permission: "allow", pin_broken: true });
-  assert.match((await call()).text, /does not read/);
-  // A restart reads it broken still.
-  assert.equal(new ToolSettings(data, () => undefined).get()[SEND].brokenPin, true);
+  await save({ [SEND]: { permission: "allow" }, web_search: { provider: "exa-keyless" } });
+  assert.deepEqual(withDefaults(current.settings)[SEND], { permission: "allow", pin_broken: true });
+  assert.match((await call()).deny, /does not read/);
+  // A later read finds it broken still.
+  assert.equal((await loadToolSettings(store)).settings[SEND].brokenPin, true);
 
   // Repaired with a valid pin: the call as pinned goes, another is refused by that pin.
-  settings.put({ [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
-  assert.deepEqual(withDefaults(settings.get())[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
-  assert.equal(await call("C0123"), undefined);
-  assert.match((await call("C0EVIL")).text, /may only be called with channel_id = C0123/);
+  await save({ [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
+  assert.deepEqual(withDefaults(current.settings)[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
+  assert.equal(await call("C0123"), "allow");
+  assert.match((await call("C0EVIL")).deny, /may only be called with channel_id = C0123/);
 
   // Broken again, then the setting removed on purpose (its key left out): cleared, the tool takes its default.
-  await writeFile(file, JSON.stringify({ [SEND]: { permission: "allow", pin: broken } }));
-  const again = new ToolSettings(data, () => undefined);
-  again.put({});
-  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {});
+  await store.settings.put(TOOL_SETTINGS_KEY, { [SEND]: { permission: "allow", pin: broken } });
+  await save({});
+  assert.deepEqual(await store.settings.get(TOOL_SETTINGS_KEY), {});
   assert.equal(gate.policy(SEND), "ask", "the default, no pin");
 });
-
 test("pin_broken is the server's mark: only `true` on an MCP tool's own key of the server's settings, never in an agent's", () => {
   assert.deepEqual(settingsIssues({ [SEND]: { permission: "allow", pin_broken: true } }), []);
   assert.deepEqual(settingsIssues({ [SEND]: { pin_broken: false } }).map((i) => [i.field, i.reason]), [[`${SEND}.pin_broken`, "not_an_option"]]);

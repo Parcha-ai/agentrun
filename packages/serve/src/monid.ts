@@ -274,8 +274,6 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
   }) as unknown as ToolRegistration;
 }
 
-/** The three, as another harness's host tools. */
-export const monidTools = (env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
 
 /** The table's entry for `monid.<kind>`: it needs MONID_API_KEY, and no workflow node names it yet. */
 export const monidTool = (kind: Kind): ToolEntry => ({
