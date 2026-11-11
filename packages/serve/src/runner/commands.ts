@@ -1,7 +1,7 @@
 // Commands as rows (design: "Commands from the console are rows, not files or doors"). The server inserts one through
 // sendCommand; a runner reads them with store.commands(run, after) and hands each to the run's loop. A command's
 // taken_at is set once: by the loop's journal commit that applies it, or by the runner's refusal with a reason.
-import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { originOf } from "../timeline/index.js";
 import type { Command } from "./loop-contract.js";
 
 /** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good.

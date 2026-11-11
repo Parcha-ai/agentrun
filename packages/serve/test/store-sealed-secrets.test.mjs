@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { seal, unseal } from "@parcha/pi-durable-agent";
+import { seal, unseal } from "../dist/sealing.js";
 
 const { openSqliteStore, sealColumn, sealedAt, sealMcpCredential } = await import("../dist/store/index.js");
 const { DDL } = await import("../dist/store/schema.js");

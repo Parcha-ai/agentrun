@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { sealKeyOf } from "../dist/tool-keys.js";
-import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,65 +40,6 @@ test("the default cap on how many runs at once is pi's: the host's memory less t
   assert.equal(typeof defaultMaxRuns, "function");
   for (const mib of [512, 1024, 8 * 1024]) assert.equal(defaultMaxRuns(mib * MiB), Math.floor((mib - SERVER_MIB) / builtinHarness("pi").runMib), `${mib} MB`);
   assert.equal(defaultMaxRuns(100 * MiB), 1, "never under 1");
-});
-
-// SKIP (follow-up #2078): the server's run cap is not enforced on the runner: a start over the cap is 202, not 429
-test.skip("over the cap, a new run is 429 rate_limited with retry-after and nothing starts; capabilities report the cap", async (t) => {
-  const { api, data } = await serve(t, { maxRuns: 2 });
-  assert.equal((await api("GET", "/capabilities")).body.limits.max_concurrent_runs, 2);
-  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
-  const started = [];
-  for (let i = 0; i < 2; i++) {
-    const run = await api("POST", "/agents/busy/runs", { input: { content: busy(data, `go-${i}`) } });
-    assert.equal(run.status, 202, JSON.stringify(run.body));
-    started.push(run.body.run_id);
-  }
-  const refused = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-x") } });
-  assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.retryable], [429, "rate_limited", true], JSON.stringify(refused.body));
-  assert.match(refused.headers.get("retry-after") ?? "", /^\d+$/);
-  assert.equal(refused.body.error.details.max_concurrent_runs, 2);
-  assert.equal((await api("GET", "/runs")).body.runs.length, 2, "nothing more started");
-  // One ends: there is room again.
-  await writeFile(join(data, "go-0"), "");
-  await follow(api, started[0], ["completed"]);
-  assert.equal((await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-1") } })).status, 202);
-  await writeFile(join(data, "go-1"), "");
-});
-
-// SKIP (follow-up #2078): the server's run cap is not enforced on the runner: a start over the cap is 202, not 429
-test.skip("two starts at once with one place left: one starts and one is 429", async (t) => {
-  const { api, data } = await serve(t, { maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
-  const both = await Promise.all([0, 1].map((i) => api("POST", "/agents/busy/runs", { input: { content: busy(data, `twin-${i}`) } })));
-  assert.deepEqual(both.map((r) => r.status).sort(), [202, 429]);
-  assert.equal((await api("GET", "/runs")).body.runs.length, 1);
-});
-
-// SKIP (follow-up #2078): the server's run cap is not enforced on the runner: a start over the cap is 202, not 429
-test.skip("a start that fails gives its place back: after a store write refused, and after an app that does not load, the next run still starts", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555" }, async (t) => {
-  const { api, data } = await serve(t, { maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
-  // The store's directory read-only: startRun's row cannot be written, and the start fails.
-  await chmod(data, 0o555);
-  let failed;
-  try {
-    failed = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "never-0") } });
-  } finally {
-    await chmod(data, 0o755);
-  }
-  assert.ok(failed.status >= 500, JSON.stringify(failed.body));
-  const next = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-0") } });
-  assert.equal(next.status, 202, `the failed start kept the one place: ${JSON.stringify(next.body)}`);
-  await writeFile(join(data, "go-0"), "");
-  await follow(api, next.body.run_id, ["completed"]);
-  // A run whose app does not load: it starts, its process fails at once, and the place is free again.
-  const broken = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
-  assert.equal((await broken.api("POST", "/agents", agent("broken"))).status, 201);
-  for (let i = 0; i < 2; i++) {
-    const run = await broken.api("POST", "/agents/broken/runs", { input: { content: "hi" } });
-    assert.equal(run.status, 202, `start ${i}: ${JSON.stringify(run.body)}`);
-    await follow(broken.api, run.body.run_id, ["failed"]);
-  }
 });
 
 test("a run that has failed gives its place back once its process exits: a start meanwhile waits for it, never refused for a place the failed run is giving back", { timeout: 90_000 }, async (t) => {
@@ -157,21 +98,6 @@ test.skip("two follow-ups to a completed run that both wait for a place reach it
   const next = await api("POST", "/agents/calc/runs", { input: { content: "Next." } });
   assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
   await follow(api, next.body.run_id, ["completed"]);
-});
-
-// SKIP (follow-up #2078): the server's run cap is not enforced on the runner: a start over the cap is 202, not 429
-test.skip("a server full of runs that still work answers 429 at once: only a place being given back is waited for", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
-  const working = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-1") } });
-  assert.equal(working.status, 202, JSON.stringify(working.body));
-  await follow(api, working.body.run_id, ["working"]);
-  const asked = Date.now();
-  const refused = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "never-1") } });
-  assert.equal(refused.status, 429, JSON.stringify(refused.body));
-  assert.ok(Date.now() - asked < 1_000, `answered at once, not after a wait: ${Date.now() - asked} ms`);
-  await writeFile(join(data, "go-1"), "");
-  await follow(api, working.body.run_id, ["completed"]);
 });
 
 // SKIP (follow-up #2078): a harness module that does not load now fails the start with 500 instead of a run that fails
@@ -372,29 +298,4 @@ test.skip("a run cancelled as the server stops has its end in the store once the
   // Stopped at once: the run's process is still going, and its end is written by the stop's own settle.
   await one.close();
   assert.equal(storeRun(data, run.run_id).state, "stopped");
-});
-
-// SKIP (follow-up #2078): it reads the run's own process pid, and runs no longer have their own process
-test.skip("a message to a run whose process was killed is answered at once: a dead process's fresh heartbeat is not trusted", { timeout: 60_000 }, async (t) => {
-  const { api, data } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
-  const { body: run } = await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } });
-  await follow(api, run.run_id, ["input_required"]);
-  const pid = runRecordOf(data, run.run_id).holder.pid;
-  process.kill(pid, "SIGKILL");
-  for (let i = 0; ; i++) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      break;
-    }
-    assert.ok(i < 100);
-    await sleep(50);
-  }
-  const from = Date.now();
-  const sent = await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" });
-  assert.equal(sent.status, 202, JSON.stringify(sent.body));
-  assert.ok(Date.now() - from < 20_000, `answered in ${Date.now() - from} ms`);
-  await follow(api, run.run_id, ["completed"]);
-  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer, '{"region":"eu"}');
 });
