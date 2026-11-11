@@ -121,9 +121,10 @@ export type ToolHost = {
   /** The run's ledger, as the adapter loop hands it (spendcap-1's AdapterRun.ledger): `paid`, the claim's one-ledger
    *  booking (the kernel cap's paidCalls, paid-calls.ts PaidBooking), and `pause`, how a refusal at the cap parks the run.
    *  The browser passes `paid` to browserSpend, so its calls are held and settled there and a session's release is booked
-   *  there, never on this process's own spend. The runner installs the browser only with `paid` and the grant, on pi's
-   *  native route (adapter-run-spec.ts browserListed). */
-  ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void> };
+   *  there, never on this process's own spend; `flush`, the runner's store flush, puts a session's open record on disk
+   *  before the vendor is asked. The runner installs the browser only with `paid` and the grant, on pi's native route
+   *  (adapter-run-spec.ts browserListed). */
+  ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void>; flush: () => Promise<void> };
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
    *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
   redact?: (text: string) => string;
@@ -448,7 +449,7 @@ const browserTool: ToolEntry = {
     const price = browserPrice(providerName, host.env);
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
     // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
-    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause });
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause, flush: host.ledger?.flush });
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
     const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";

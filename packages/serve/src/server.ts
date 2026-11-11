@@ -104,7 +104,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -3267,15 +3267,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const heldReadAt = new Map<string, number>();
   const HELD_WAIT_REREAD_MS = 1_000;
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
-  /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
-   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
+  /** The wait of a run its runner left parked (or let go of), or holds in its claim, told once per ask: its marker the
+   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (a stop's when it waits on no card). */
   const tellWait = async (row: RunRow): Promise<void> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
     if (readWaits.get(row.id) === seen) return;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
-    const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
+    // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last.
+    const marker = waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
     if (!marker) return void readWaits.set(row.id, seen);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
