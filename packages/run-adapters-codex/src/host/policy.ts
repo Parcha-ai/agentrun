@@ -27,7 +27,7 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ModelProxyOptions, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -387,12 +387,12 @@ function itemsIn(value: unknown, type: string): number {
  * Responses API documents no prompt of its own that it adds on these routes (no hosted tool passes the policy but a
  * session's live web search, below), and the framing it puts around each input item and tool definition is a few tokens
  * each, fewer than the bytes of the JSON keys that item already spends in the body. An image is billed by its area, not
- * its bytes: each adds the most it can be billed as. A file input (a PDF, billed by its pages) has no stated bound, so a
+ * its bytes: each counts at the most it can be billed as, in place of the bytes its data URL takes in the body. A file input (a PDF, billed by its pages) has no stated bound, so a
  * body with one cannot be measured: this throws, and the request's input is unknown.
  */
 export function responsesServerInputOverhead(body: Record<string, unknown>): number {
   if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: itemsIn(body.input, "input_image") }) as number;
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) as number;
 }
 
 /** The text of a tool output item: a string, or the text of each of its parts. */
