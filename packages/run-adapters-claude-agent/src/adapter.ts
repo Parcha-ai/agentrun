@@ -9,14 +9,16 @@
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, sha256OfFileAsync, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
@@ -187,12 +189,30 @@ export function claudeAgentCliPins(): { sha256?: string; version: string } {
 /** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. Its sha256 is
  *  read a chunk at a time, never the whole CLI in memory, and a check that passed holds for this process while the CLI
  *  stays the same file, unchanged (the kernel's checkedOnce): a host that checks it for each model it resolves, and a
- *  run's process that makes its adapter, check it once. */
+ *  run's process that makes its adapter, check it once. A host checks it with verifyClaudeAgentCliAsync first, which keeps
+ *  its event loop free while the CLI is hashed and answers --version: this one then answers from that check. */
 export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgentCliPins()): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
-  if (!path) return new ClaudeAgentNotInstalled(`no CLI of @anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} for ${platformSuffix()} (its platform package, an optional dependency npm installs with it), and no cliPath`, CLAUDE_AGENT_SDK_INSTALL);
+  if (!path) return noCli();
   // Hashed a chunk at a time, and once per CLI in this process while it stays the same file (the kernel's pinned-binary).
   return checkedOnce(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
 }
+
+/** verifyClaudeAgentCli's answer, with the event loop handed back while the CLI is hashed and answers --version, kept on
+ *  the same record: a check that passed here makes verifyClaudeAgentCli (the adapter's own) answer at once. */
+export async function verifyClaudeAgentCliAsync(path: string | undefined, pins = claudeAgentCliPins()): Promise<{ path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled> {
+  if (!path) return noCli();
+  return checkedOnceAsync(path, JSON.stringify(pins), () => checkCliAsync(path, pins), (result) => !(result instanceof Error));
+}
+
+const noCli = () => new ClaudeAgentNotInstalled(`no CLI of @anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} for ${platformSuffix()} (its platform package, an optional dependency npm installs with it), and no cliPath`, CLAUDE_AGENT_SDK_INSTALL);
+/** How the CLI is asked its version: no environment but PATH, its auto-updater off, 15 s at most. */
+const VERSION_RUN = () => ({ env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, encoding: "utf8" as const, timeout: 15_000 });
+/** What `--version` said, against the pins: the CLI's version is its first word. */
+const versionVerdict = (path: string, pins: { version: string }, said: string | Error): { path: string } | ClaudeAgentPinMismatch => {
+  if (said instanceof Error) return new ClaudeAgentPinMismatch("cli_version", pins.version, `unreadable (${String(said.message ?? said).slice(0, 120)})`, path);
+  const version = said.trim().split(/\s/)[0] ?? "";
+  return version !== pins.version ? new ClaudeAgentPinMismatch("cli_version", pins.version, version.slice(0, 40), path) : { path };
+};
 
 /** The CLI at `path` against `pins`' sha256 and version. */
 function checkCli(path: string, pins: { sha256?: string; version: string }): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
@@ -211,14 +231,39 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
     }
     if (found !== pins.sha256) return new ClaudeAgentPinMismatch("cli_sha256", pins.sha256, found, path);
   }
-  let version: string;
+  let said: string | Error;
   try {
-    version = execFileSync(path, ["--version"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, encoding: "utf8", timeout: 15_000 }).trim().split(/\s/)[0] ?? "";
+    said = execFileSync(path, ["--version"], VERSION_RUN());
   } catch (error) {
-    return new ClaudeAgentPinMismatch("cli_version", pins.version, `unreadable (${String((error as Error)?.message ?? error).slice(0, 120)})`, path);
+    said = error instanceof Error ? error : new Error(String(error));
   }
-  if (version !== pins.version) return new ClaudeAgentPinMismatch("cli_version", pins.version, version.slice(0, 40), path);
-  return { path };
+  return versionVerdict(path, pins, said);
+}
+
+/** checkCli, its reads and its run of the CLI asynchronous. */
+async function checkCliAsync(path: string, pins: { sha256?: string; version: string }): Promise<{ path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled> {
+  try {
+    if (!(await stat(path)).isFile()) throw new Error("not a file");
+    await access(path, constants.R_OK);
+  } catch {
+    return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
+  }
+  if (pins.sha256) {
+    let found: string;
+    try {
+      found = await sha256OfFileAsync(path);
+    } catch {
+      return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
+    }
+    if (found !== pins.sha256) return new ClaudeAgentPinMismatch("cli_sha256", pins.sha256, found, path);
+  }
+  let said: string | Error;
+  try {
+    said = (await promisify(execFile)(path, ["--version"], VERSION_RUN())).stdout;
+  } catch (error) {
+    said = error instanceof Error ? error : new Error(String(error));
+  }
+  return versionVerdict(path, pins, said);
 }
 
 /** What the adapter runs with, or the typed reason it cannot: the SDK (injected or installed) and its CLI, each the

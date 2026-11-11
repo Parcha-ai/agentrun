@@ -212,7 +212,7 @@ const loadClaude = (): Promise<unknown> => import(CLAUDE_PACKAGE);
 
 /** What serve reads of the claude-agent package: the adapter, the SDK version it pins and the SDK's install line it
  *  names, and this platform's suffix for the SDK's CLI package. */
-type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
+type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
 
 /** This server's data, as `env` names it (the server sets it for itself and its runs). */
 const dataOf = (env: NodeJS.ProcessEnv): string => env[DATA_ENV] || defaultData(env);
@@ -284,6 +284,11 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   }
   let adapter: AgentAdapter;
   try {
+    // The pinned CLI checked first with this process's event loop free (hashed a chunk at a time, its --version awaited):
+    // the adapter's own check below then answers from it. Run in the adapter's construction, it held the server's every
+    // request and open store transaction for as long as hashing 240 MiB and starting the CLI took.
+    const cli = await claude.verifyClaudeAgentCliAsync(sdk.cliPath);
+    if (cli instanceof Error) throw cli;
     const native = { ...needs, model: claudeFacts.normalizeModel(needs.model) };
     // The CLI runs Anthropic's own id, which it knows the limits and betas of, and sends it as it is, OpenRouter too
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
@@ -320,7 +325,8 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     if (missing) throw new HarnessUnavailable(new HarnessNotInstalled(entry, dir, pins.version, existsSync(dir) ? `Codex in ${dir} is not whole: it lacks ${missing}` : undefined).message, "install");
     binary = codexBinaryIn(dir, pins);
     try {
-      codex.verifyCodex(binary);
+      // With the event loop free (hashed a chunk at a time, its --version awaited); the adapter's own check answers from it.
+      await codex.verifyCodexAsync(binary);
     } catch (error) {
       const line = installLine(dir, entry.lock);
       const message = (error as Error).message.split(codex.CODEX_INSTALL).join(line);
@@ -342,7 +348,8 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   const standIn = env[OPENCODE_STANDIN_ENV] ? (JSON.parse(env[OPENCODE_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   if (!standIn) {
     try {
-      opencode.verifyOpenCode();
+      // With the event loop free (hashed a chunk at a time, its --version awaited); the adapter's own check answers from it.
+      await opencode.verifyOpenCodeAsync();
     } catch (error) {
       // serve's own line, which installs the adapter with its pinned CLI, in place of the adapter's (the CLI alone).
       const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, openCodeFacts.install.npmLine);
