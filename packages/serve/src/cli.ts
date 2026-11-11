@@ -20,7 +20,11 @@ import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
 import { apiOnlyFrom } from "./api-only.js";
+import { surviveClosedPipes } from "./closed-pipes.js";
 
+// A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
+// command, the server and the runner alike.
+surviveClosedPipes();
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
@@ -295,8 +299,6 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
-// A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
-process.stdout.on("error", () => undefined);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
 let apiOnly: boolean;
 try {
@@ -359,7 +361,8 @@ if (!values["no-runner"]) {
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
+    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux).
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();

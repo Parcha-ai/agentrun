@@ -20,26 +20,22 @@ runs not yet relaunched) and one 15 seconds later (`run.working.working.*`: the 
 the faux model with no keys): the console reads a tool only as the object serve sends, and a harness's default model only
 from its `default_model`, and the first recording had bare tool names and no `default_model`.
 
-`timeline.legacy.<state>` are one pi run's timeline (`GET /v2/runs/{id}/timeline`), recorded by its timeline projector:
-a call row then its result row. `completed` is the run settled, `working` the same run live, a write still running. The run reads a missing file, reads three, searches and fetches the web, fails
+`timeline.legacy.completed` is one pi run's timeline (`GET /v2/runs/{id}/timeline`), recorded by its timeline projector:
+a call row then its result row, the run settled. The run reads a missing file, reads three, searches and fetches the web, fails
 a write outside its workspace, writes, asks a question, has a write interrupted and retried, and answers.
 
-`error.definition-stale-etag` is a definition PUT with an `If-Match` that is not the current revision (412);
-`error.definition-invalid-body` is one whose body is not `{definition, skills?, note?}` (422).
+`error.definition-stale-etag` is a definition PUT with an `If-Match` that is not the current revision (412).
 
 `write.*` are the agent writes, recorded the same way on a scratch copy of the seed: create (201), an edit with the
-current `If-Match` (200, new ETag) and one with a stale one (412), the revisions, setting an earlier revision current,
-archive and unarchive, an invalid harness (422 with its `fields`), and a run on a harness the server does not run (409
-`agent_not_runnable`).
+current `If-Match` (200, new ETag) and one with a stale one (412), an invalid harness (422 with its `fields`), and a run
+on a harness the server does not run (409 `agent_not_runnable`).
 
 `start.*` are run starts, recorded the same way:
 - an agentic run (202, `Location`);
 - the same request again with the same `Idempotency-Key` (the same run);
 - that key with another body (409 `idempotency_mismatch`);
-- a run pinned to an earlier revision;
 - a workflow run with its typed input;
 - a workflow input its schema refuses (422);
-- a start with no key;
 - a sandbox agent's run on a box the server does not have (409 `agent_not_runnable` with `details.box`), recorded from a
   server started on the faux model with no box enabled.
 
@@ -49,7 +45,6 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - setting it (201);
 - signed in, and a read signed in (200) and without the session (401);
 - setting it again (403);
-- signing out;
 - a wrong password (401), then the right one.
 
 `run.escalated.*` are one workflow run that escalated, recorded from a server with live decision models during a QA pass rather than from the dev kit: a judge found the evidence did not support the claim, and the run completed with `review` (`needs_evidence`, its node and its reason). They are its run (`GET /v2/runs/{id}`) and its graph (`GET /v2/runs/{id}/graph`), the bodies as the server answered.
