@@ -60,7 +60,7 @@ func TestMain(m *testing.M) {
 		if value := os.Getenv(egressEnv); value != "" {
 			relay.Listen, relay.Socket, _ = strings.Cut(value, "|")
 		}
-		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), lifetime.New(deadline, most), relay, log.New(os.Stderr, "computerd: ", 0)))
+		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), lifetime.New(deadline, most), relay, "", log.New(os.Stderr, "computerd: ", 0)))
 	}
 	// The drop is tested in a test binary without cgo, as computerd is built: a plain go test, with cgo on, runs these
 	// tests in one built again with CGO_ENABLED=0.

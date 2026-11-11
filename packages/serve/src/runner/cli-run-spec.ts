@@ -419,7 +419,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
       const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      const costUsd = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model").usd;
+      // Its model requests and its decisions (a learned workflow's) at what they were booked at (bookedSpend).
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      const model = bookedSpend(all, "model").usd;
+      const decisions = bookedSpend(all, "decisions").usd;
+      const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
