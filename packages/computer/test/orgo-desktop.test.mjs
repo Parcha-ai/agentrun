@@ -407,6 +407,16 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.equal((await call("files.move", { from: `${dir}\\empty`, to: `${dir}\\sub`, overwrite: true })).error.code, "exists", "a folder with entries is not replaced");
 	assert.equal((await call("files.move", { from: `${dir}\\b.txt`, to: `${dir}\\sub`, overwrite: true })).error.code, "is_dir");
 	assert.equal((await call("files.move", { from: `${dir}\\empty`, to: `${dir}\\b.txt`, overwrite: true })).error.code, "not_dir");
+	// A move that fails (its source held open by another program) leaves to as it was: what was there is set aside for the
+	// move and put back, never removed first.
+	await call("files.write", { path: `${dir}\\held.txt`, data: Buffer.from("new").toString("base64") });
+	box.held.add(`${dir}\\held.txt`);
+	const failed = await call("files.move", { from: `${dir}\\held.txt`, to: `${dir}\\b.txt`, overwrite: true });
+	assert.match(failed.error?.message ?? "", /used by another process/, JSON.stringify(failed));
+	assert.deepEqual([decode((await call("files.read", { path: `${dir}\\b.txt` })).value.data), box.files.get(`${dir}\\held.txt`)?.toString()], ["hello!", "new"]);
+	box.held.delete(`${dir}\\held.txt`);
+	assert.deepEqual((await call("files.move", { from: `${dir}\\held.txt`, to: `${dir}\\b.txt`, overwrite: true })).value, {});
+	assert.deepEqual([decode((await call("files.read", { path: `${dir}\\b.txt` })).value.data), box.files.has(`${dir}\\held.txt`)], ["new", false]);
 	assert.equal((await call("files.remove", { path: `${dir}\\sub` })).error.code, "invalid");
 	assert.deepEqual((await call("files.remove", { path: `${dir}\\sub`, recursive: true })).value, {});
 	assert.equal((await call("files.read", { path: `${dir}\\sub\\only.txt` })).error.code, "not_found");

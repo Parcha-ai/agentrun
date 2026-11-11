@@ -97,6 +97,8 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 				dirs: new Set(windows ? ["C:", "C:\\Users", WINDOWS_HOME, "C:\\ProgramData"] : ["/Users", "/Users/Shared"]),
 				// Windows links, symbolic or junction: each path's target as written, absolute or relative to its folder.
 				links: new Map(),
+				// Paths another program holds open without sharing delete: a move of one fails.
+				held: new Set(),
 				inputs: [],
 				commands: [],
 				notReady,
@@ -329,17 +331,23 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 					return no("not_found", `Cannot find path '${from}' because it does not exist.`);
 				}
 				if ((box.files.has(to) || box.dirs.has(to)) && !p.overwrite) return no("exists", `${to} is there already`);
-				// What PowerShell does with what is at `to`: the script that checks and removes it first replaces it (rename(2));
-				// one that does not leaves it, and Move-Item onto a folder moves into it.
+				// A source another program holds open without sharing delete: Move-Item of it fails, and the script's catch says it.
+				const heldWords = `The process cannot access the file because it is being used by another process.`;
+				// What PowerShell does with what is at `to`: the script that checks it and sets it aside replaces it (rename(2)),
+				// putting it back when the move fails; one that removes it first loses it when the move fails; one that does
+				// neither leaves it, and Move-Item onto a folder moves into it.
 				if (box.files.has(to) || box.dirs.has(to)) {
-					if (script.includes("Remove-Item -LiteralPath $p.to -Force")) {
+					const setsAside = script.includes("Move-Item -LiteralPath $aside -Destination $p.to");
+					if (setsAside || script.includes("Remove-Item -LiteralPath $p.to -Force")) {
 						if (box.dirs.has(to) && !box.dirs.has(from)) return no("is_dir", `${to} is a folder`);
 						if (box.dirs.has(from) && !box.dirs.has(to)) return no("not_dir", `${to} is not a folder`);
 						if (box.dirs.has(to) && children(to).length > 0) return no("exists", `${to} is a folder that is not empty`);
+						if (box.held.has(from) && setsAside) return no("invalid", heldWords);
 						box.files.delete(to);
 						box.dirs.delete(to);
 					} else if (box.dirs.has(to)) to = `${to}\\${from.slice(from.lastIndexOf("\\") + 1)}`;
 				}
+				if (box.held.has(from)) return no("invalid", heldWords);
 				relocate(from, to);
 				return say({});
 			}
