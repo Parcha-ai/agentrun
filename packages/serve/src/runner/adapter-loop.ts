@@ -1206,14 +1206,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const toolsAtOpen = sessionSpendOf(await sessions.read(TOOL_SESSION));
         if (spec.runCap && toolsAtOpen.turns.some((turn) => !toolsAtOpen.answered.has(turn))) await paidOf();
         // The cap's wrap-up (tool-budget.ts wrappingUp): what every session of the run has taken as the cap counts it, its
-        // spend and each request or paid step still out at its hold and bound, read from the run's records at each call.
+        // spend and each request or paid step still out at its hold and bound, read from the run's records at each call. A
+        // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
+        // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
         const wrapUp = async (): Promise<boolean> => {
           const capUsd = capNow();
           if (capUsd === undefined) return false;
           let taken: number | null = 0;
           for (const key of await sessions.keys()) {
-            const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
-            taken = taken === null || spent === null ? null : taken + spent;
+            const read = sessionSpendOf(await sessions.read(key));
+            const reserved = [...read.openHolds].reduce((sum, turn) => sum + (read.held.get(turn) ?? 0), 0);
+            taken = taken === null || read.spentUsd === null ? null : taken + read.spentUsd + reserved;
           }
           return wrappingUp(capUsd, taken);
         };

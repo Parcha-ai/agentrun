@@ -82,7 +82,7 @@ const deferred = () => {
 
 /** A store with run-1 queued, a runner on the adapter loop under `capUsd` (undefined: no cap), the model held at `hold`
  *  and billed at `billed` a request, its root and children answered by `fetch`. `judged`: each request the cap judged. */
-async function wrapRun(t, { capUsd, hold, billed, fetch, tools }) {
+async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-cap-wrap-up-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -96,7 +96,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools }) {
   await server.agents.create({ id: "agent-1", name: "Wrap" }, { id: "rev-1", kind: "agentic", body: {} });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const judged = [];
-  const loop = createAdapterLoop((_claim, run) => ({
+  const loop = createAdapterLoop((_claim, run) => (onLedger?.(run.ledger), {
     adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch, price: () => billed, extensions: [delegate] }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
@@ -182,6 +182,24 @@ test("children whose reservations push the run near its cap wrap up: in-flight c
   // Nothing billed past the cap: every request that reached the provider is billed once.
   const sent = Object.values(requests).reduce((sum, list) => sum + list.length, 0);
   assert.ok(sent * BILLED <= CAP, `billed $${(sent * BILLED).toFixed(2)} of a $${CAP} cap`);
+});
+
+test("a hold-only reservation still open (a browser session's reserve) counts toward the line, as the cap holds it", async (t) => {
+  // Cap $1, each request held and billed at $0.01. The first call reserves $0.80 of the cap as a hold-only paid step (what
+  // a browser session's reserve is), left open; the next call is refused though the run has spent $0.02.
+  let ledger;
+  const ran = { read: 0 };
+  const tools = {
+    reserve: { name: "reserve", replaySafe: false, run: async () => (await ledger.paid.admit({ id: "reserve-1", name: "a browser session", holdUsd: 0.8, basis: "its reserve", hold: true }), "reserved") },
+    read: { name: "read", replaySafe: true, run: async () => (ran.read++, "read") },
+  };
+  const requests = [];
+  const fetch = scriptedOrigin([{ call: "reserve" }, { call: "read" }, { say: "answered with the reserve still open" }], requests);
+  const { row, judged } = await wrapRun(t, { capUsd: 1, hold: 0.01, billed: 0.01, fetch, tools, onLedger: (given) => void (ledger = given) });
+  assert.deepEqual([row.state, row.summary], ["ended", null], JSON.stringify(row));
+  assert.deepEqual(texts(requests), ["reserved", WRAP_UP_TEXT]);
+  assert.equal(ran.read, 0);
+  assert.equal(judged.filter((answer) => answer && "refuse" in answer).length, 0, "the cap refused no request");
 });
 
 test("a run with no cap is unchanged: every child runs its whole script and every spawn is made", async (t) => {

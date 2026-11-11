@@ -2765,7 +2765,8 @@ prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no me
 the model's answer. Once per cap, across restarts; a raise re-arms it.
 
 A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
-steps still out are held at (their worst case, as the cap counts them), reaches 75% of its cap, the run's tool gate
+steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
+reaches 75% of its cap, the run's tool gate
 refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
 is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
 would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
