@@ -235,6 +235,16 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   assert.equal(computers.released(), 1, "released once");
 });
 
+// A run whose effort is above its harness's highest level (a revision's or the host's "max"; OpenCode's and Codex's
+// reasoning stops at xhigh) thinks at that highest, and its metrics name the level it ran at, never the one it asked for.
+test("a CLI run's effort above its harness's highest runs at that highest, and its metrics name the level it ran at", async (t) => {
+  const gateway = await responsesGateway(t, "Done.");
+  const env = { AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const { row } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env, launch: { effort: "max" } });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.equal(row.metrics?.effort, "xhigh", `the metrics name the level it ran at: ${JSON.stringify(row.metrics)}`);
+});
+
 // A run a trigger started: its launch names the trigger and the first input's origin (run-launch.ts, as the server writes
 // it at the firing), a schedule's with owner true (its owner wrote the words) and a webhook's with owner false. The CLI's
 // record writes that first input as the trigger's, with the launch's own owner flag, never as the person's: so its

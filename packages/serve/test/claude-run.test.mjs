@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
+import { agent, follow, runDir, serve } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -45,8 +45,6 @@ async function claudeProcess() {
   return undefined;
 }
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
 async function claudeServe(t, fake, env = {}, model = MODEL) {

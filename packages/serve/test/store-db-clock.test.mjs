@@ -43,6 +43,15 @@ test("a claim a store process makes whose clock runs behind is live to one whose
   assert.equal(await ahead.claim("run-1", "runner-b", { leaseMs: LEASE }), null, "nor by its claim of the run");
 });
 
+test("runs.heldAt answers by the database's clock: a claim a store process behind stamped is held to one ahead, at its epoch", ONLY, async (t) => {
+  const { server, runners: [behind, ahead] } = await storesSkewed(t, BEHIND, AHEAD);
+  await queued(server);
+  assert.equal(await ahead.runs.heldAt("run-1"), undefined, "queued: no claim holds it");
+  const claim = await behind.claim("run-1", "runner-a", { leaseMs: LEASE });
+  assert.equal(await ahead.runs.heldAt("run-1"), claim.epoch, "held, though on the reader's own clock its lease has run out");
+  assert.equal(await ahead.runs.heldAt("no-such-run"), undefined);
+});
+
 test("a renew by a store process whose clock runs behind stamps a lease the others read as live, by renew and by renewMany", ONLY, async (t) => {
   const { server, runners: [behind, ahead] } = await storesSkewed(t, BEHIND, AHEAD);
   await queued(server);

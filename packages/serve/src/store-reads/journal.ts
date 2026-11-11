@@ -8,7 +8,6 @@ import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/inde
 import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { wireName } from "../catalog.js";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { labelled, type Reflect } from "../reflect-range.js";
@@ -103,10 +102,8 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
 
 /** The paid tool charges a run booked, read back from its paid-tools session (the kernel cap's TOOL_SESSION) as the
  *  TOOL_COST entries the timeline renders, which the file-backed path had on the run's root (the paid-call ledger). Each
- *  paid request's runner.request names what was paid for (its model "paid:<name>": Parallel's extract, say) and the call it
- *  ran under (`call`, written by the cap so the view puts the charge under that call). The charge is named for the tool
- *  that call ran (web_fetch), as main's was, read from the call in the model's answer; by what was paid for when its call
- *  is not found (a charge made outside any call). Its runner.turn carries the cost: a charge at what it charged, $0
+ *  paid request's runner.request names its tool (its model "paid:<name>") and the call it ran under (`call`, written by the
+ *  cap so the view puts the charge under that call); its runner.turn carries the cost: a charge at what it charged, $0
  *  included, or of an unknown amount when it says none (null), as main's TOOL_COST renders it. Not metered (main's
  *  TOOL_UNMETERED) is a tool with no price set, which books no paid record on the runner, so none is read here. A hold
  *  given back unused shows nothing. Each charge is placed right after its call's result, joined by `call`, as the ledger
@@ -116,13 +113,15 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];
   // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
-  const named = new Map<number, { tool: string; call?: string; chargedBy?: string }>();
+  // Its tool: the one the request names (`tool`: a browser step's "browser", which the renderer folds into its call's row
+  // with its session `tag`, as main's browser charge), else its paid name.
+  const named = new Map<number, { tool: string; call?: string; chargedBy?: string; tag?: string }>();
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
-    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string };
-    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}) });
+    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string; tool?: string; tag?: string };
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}), ...(typeof d.tag === "string" && d.tag ? { tag: d.tag } : {}) });
   }
-  const charges: { tool: string; call?: string; chargedBy?: string; usd: number | null }[] = [];
+  const charges: { turn: number; tool: string; call?: string; chargedBy?: string; tag?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { turn?: number; usd?: number | null; givenBack?: boolean };
@@ -131,32 +130,17 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // that ran is a charge at what it charged, $0 included (main's TOOL_COST of usd 0, a Parallel 4xx); one whose charge
     // is unknown (null) is a charge of an unknown amount (main's TOOL_COST with no usd).
     if (!req || d.givenBack === true) continue;
-    charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
+    charges.push({ ...req, turn: d.turn as number, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
   }
   if (!charges.length) return [...entries];
-  // The tool each call ran, by its id, from the model's answers (a CLI run's record shaped as pi's: piShaped).
-  const toolOfCall = new Map<string, string>();
-  for (const e of entries) {
-    if (e.kind !== "pi.assistant") continue;
-    for (const message of (e.model ?? []) as { content?: unknown }[]) {
-      for (const part of Array.isArray(message.content) ? message.content : []) {
-        const call = part as { type?: unknown; id?: unknown; name?: unknown };
-        if (call.type === "toolCall" && typeof call.id === "string" && typeof call.name === "string") toolOfCall.set(call.id, call.name);
-      }
-    }
-  }
   const out = [...entries];
   for (const charge of charges) {
     // Who charged: the request's own charged_by, which the cap writes as main's charge label names it (parallel, monid, an
     // MCP server, a browser vendor).
     const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
-    // Named for its call's tool: by what was paid for where that is the tool itself (an MCP tool's catalog name, whose wire
-    // name the call carries), else by the call's tool (web_fetch, for Parallel's extract).
-    const called = charge.call !== undefined ? toolOfCall.get(charge.call) : undefined;
-    const tool = called !== undefined && wireName(charge.tool) !== called ? called : charge.tool;
-    const data = { tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
-    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
+    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.tag ? { tag: charge.tag } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}#${charge.turn}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }
   return out;
