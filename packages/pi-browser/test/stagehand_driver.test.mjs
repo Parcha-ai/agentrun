@@ -48,6 +48,9 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.deepEqual(await driver.run({ actions: [{ op: "goto", url: `${site.base}/a` }] }), { completed: 1, url: `${site.base}/a` });
       await assert.rejects(driver.run({ actions: [{ op: "goto", url: "file:///etc/hostname" }] }), /goto takes an http or https URL/);
       assert.equal(await driver.url(), `${site.base}/a`);
+      // A batch of gotos names no id: its check needs no snapshot, as the driving guard runs it on a fresh browser.
+      driver.forgetSnapshots();
+      await driver.checkActions([{ op: "goto", url: `${site.base}/a` }, { op: "goto", url: `${site.base}/a` }]);
     });
     await t.test("page() returns the page's url, title, text and html", async () => {
       const page = await driver.page();

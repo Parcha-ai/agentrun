@@ -197,7 +197,7 @@ test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap
 });
 
 test("a browser brings none of the registry's tools: the run's browser tool drives it (runner-browser-computer.test.mjs)", async () => {
-  const run = await runTools(localWorkspace(scratch()), { kind: "browser", browser: { id: "b1", provider: "local", url: async () => "ws://127.0.0.1:9/devtools/browser/b1" } }, { mode: 1, context: ctx });
+  const run = await runTools(localWorkspace(scratch()), { kind: "browser", browser: { provider: "local" } }, { mode: 1, context: ctx });
   assert.deepEqual(names(run), FILES);
   assert.deepEqual(run.kindTools, []);
   assert.equal(run.hands.browser, undefined, "no CDP port on the hands");
@@ -218,7 +218,7 @@ test("a person's hold on the computer: runTools hands a desktop's or a phone's p
   assert.ok(desktop.hands.processes, "the shell's processes never pass through the hold");
   const phone = await runTools(localWorkspace(root), { kind: "phone", computer: fakeDesktop(root), groups: PHONE_GROUPS }, { mode: 1, context: ctx, hold });
   assert.equal((await call(phone.hostTools(["phone_tap"]), "phone_tap", { x: 1, y: 1 })).isError, true);
-  await runTools(localWorkspace(root), { kind: "browser", browser: { id: "b1", provider: "local", url: async () => "ws://127.0.0.1:9/devtools/browser/b1" } }, { mode: 1, context: ctx, hold });
+  await runTools(localWorkspace(root), { kind: "browser", browser: { provider: "local" } }, { mode: 1, context: ctx, hold });
   await runTools(localWorkspace(root), { kind: "sandbox", computer: fakeComputer(root), check: { readBackOf } }, { mode: 1, context: ctx, hold });
   assert.deepEqual(seen, [["input", "screen"], ["phone"]], "a browser and a sandbox never pass through it");
 });

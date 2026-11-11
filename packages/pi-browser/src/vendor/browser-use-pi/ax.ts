@@ -5,7 +5,9 @@
 // backendDOMNodeId), kept per snapshot so an action names only an id the latest snapshot showed; a snapshot names the
 // cross-origin frames it could not read instead of skipping them silently; Pi's `type` (which replaces a field's text and
 // also picks a native select's option) is split into fill, type (appending) and select, beside hover and press; actions
-// return their one line instead of printing it; no REPL prompt, no hidden file-input listing and no file chooser. The
+// return their one line instead of printing it; no REPL prompt, no hidden file-input listing and no file chooser; type
+// appends after the field's whole text (not End, which stops at a line's end) and paces its characters by a delay; press
+// takes modifier combinations (Shift+Tab, Control+A). The
 // AX-id scheme, the POINT_JS hit-test (point), scroll then centre, press and release click, insertText plus a real last
 // key, the settle wait and the one-line change result are Pi's.
 import { setTimeout as delay } from "node:timers/promises";
@@ -54,6 +56,16 @@ const NAMED_KEYS: Record<string, { code: string; keyCode: number; text?: string 
   PageUp: { code: "PageUp", keyCode: 33 },
   PageDown: { code: "PageDown", keyCode: 34 },
 };
+/** CDP's modifier bits, by the names a press takes before its key. */
+const ALT = 1;
+const CONTROL = 2;
+const META = 4;
+const SHIFT = 8;
+const MODIFIERS: Record<string, number> = { alt: ALT, control: CONTROL, ctrl: CONTROL, meta: META, command: META, cmd: META, shift: SHIFT };
+/** A press's key: modifiers, each followed by "+", then the key itself (which may be "+"). */
+const KEY_COMBO = /^((?:(?:shift|control|ctrl|alt|meta|command|cmd)\+)*)(.+)$/i;
+/** The editing command Chrome runs for a shortcut's letter (headless Chrome binds none of them to the keys itself). */
+const EDIT_COMMANDS: Record<string, string> = { a: "selectAll", c: "copy", x: "cut", v: "paste", z: "undo" };
 
 /** A snapshot id is stale or never was: the driver turns it into the package's own words. */
 export class UnknownIdError extends Error {
@@ -504,27 +516,41 @@ export class AxHelpers {
     return this.act("fill", display, (page, id) => this.enter(page, id, text, true));
   }
 
-  /** Types at the end of a field's text, as keys would. */
-  type(display: string, text: string) {
-    return this.act("type", display, (page, id) => this.enter(page, id, text, false));
+  /** Types at the end of a field's whole text, as keys would; `delayMs` between characters, as paced typing asks. */
+  type(display: string, text: string, delayMs?: number) {
+    return this.act("type", display, (page, id) => this.enter(page, id, text, false, delayMs));
   }
 
-  /** Clicks the element, then presses a key on it: a name (Enter, Tab, Escape, ArrowDown, ...) or one character. */
+  /** Clicks the element, then presses a key on it: a name (Enter, Tab, Escape, ArrowDown, ...) or one character, each
+   *  with any of the modifiers Shift, Control (Ctrl), Alt and Meta (Command, Cmd) before it: Shift+Tab, Control+A. */
   press(display: string, key: string) {
     return this.act("press", display, async (page, id) => {
+      const combo = KEY_COMBO.exec(key);
+      const modifiers = (combo?.[1] ?? "").split("+").filter(Boolean).reduce((bits, name) => bits | MODIFIERS[name.toLowerCase()]!, 0);
+      const base = combo?.[2] ?? key;
+      const named = NAMED_KEYS[base];
+      if (!named && [...base].length !== 1) throw new Error(`press takes one character or a key name (${Object.keys(NAMED_KEYS).join(", ")}), each with any of Shift+, Control+, Alt+ and Meta+ before it, not ${JSON.stringify(key)}`);
       const p = await this.point(page, id, true);
       await page.clickAt(p.x, p.y);
-      const named = NAMED_KEYS[key];
-      if (named) await this.key(page, key, named.keyCode, named.text);
-      else if ([...key].length === 1) {
-        await page.cdp("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
-        await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", key });
-      } else throw new Error(`press takes one character or a key name (${Object.keys(NAMED_KEYS).join(", ")}), not ${JSON.stringify(key)}`);
+      if (named) await this.key(page, base, named.keyCode, modifiers & ~SHIFT ? undefined : named.text, modifiers, named.code);
+      else {
+        const upper = base.toUpperCase();
+        const letter = /^[A-Z]$/.test(upper);
+        const code = letter ? `Key${upper}` : /^[0-9]$/.test(base) ? `Digit${base}` : "";
+        // A letter is its case as Shift makes it; a shortcut (Control, Alt or Meta) types nothing, and Chrome runs its
+        // editing command (Control+A selects all).
+        const name = letter ? (modifiers & SHIFT ? upper : base.toLowerCase()) : base;
+        const command = modifiers & (CONTROL | META) ? EDIT_COMMANDS[base.toLowerCase()] : undefined;
+        const text = modifiers & ~SHIFT ? undefined : name;
+        const k = { key: name, code, windowsVirtualKeyCode: upper.charCodeAt(0), modifiers };
+        await page.cdp("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", ...k, ...(text ? { text } : {}), ...(command ? { commands: [command] } : {}) });
+        await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", ...k });
+      }
       return ` ${key}`;
     });
   }
 
-  private async enter(page: Page, id: number, text: string, replace: boolean): Promise<string> {
+  private async enter(page: Page, id: number, text: string, replace: boolean, delayMs = 0): Promise<string> {
     if (typeof text !== "string") throw new Error("the text must be a string.");
     const kind = await this.onNode<{ tag: string; type: string }>(
       page,
@@ -555,16 +581,46 @@ export class AxHelpers {
       await page.cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", ...a, commands: ["selectAll"] });
       await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", ...a });
     } else {
-      // At the end of what the field holds, as a person who clicked into it and pressed End would type.
-      await this.key(page, "End", 35);
+      // At the end of the field's whole text: a multi-line field's End stops at the end of its line, so the caret is put
+      // after the last character. A field that takes no selection (an email or number input) is one line, and End is its end.
+      const placed = await page
+        .evaluate(() => {
+          let a = document.activeElement as (HTMLElement & { value?: unknown; setSelectionRange?: (start: number, end: number) => void }) | null;
+          while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement as typeof a;
+          if (!a) return false;
+          if (typeof a.value === "string" && typeof a.setSelectionRange === "function") {
+            try {
+              a.setSelectionRange(a.value.length, a.value.length);
+              return true;
+            } catch {
+              return false;
+            }
+          }
+          if (!a.isContentEditable) return false;
+          const range = document.createRange();
+          range.selectNodeContents(a);
+          range.collapse(false);
+          const selection = getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+          return true;
+        })
+        .catch(() => false);
+      if (!placed) await this.key(page, "End", 35);
     }
     if (text === "") {
       if (replace) await this.key(page, "Backspace", 8);
     } else {
       // Datepickers and autocompletes react to key events, which insertText never sends: type the last character as a key.
+      // Paced typing (`delayMs`) sends each character apart, that long after the one before.
       const chars = [...text];
       const last = chars.pop()!;
-      if (chars.length) await page.cdp("Input.insertText", { text: chars.join("") });
+      if (delayMs > 0) {
+        for (const char of chars) {
+          await page.cdp("Input.insertText", { text: char });
+          await delay(delayMs);
+        }
+      } else if (chars.length) await page.cdp("Input.insertText", { text: chars.join("") });
       await page.cdp("Input.dispatchKeyEvent", { type: "keyDown", key: last, text: last });
       await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", key: last });
     }
@@ -580,8 +636,8 @@ export class AxHelpers {
     return ` = ${JSON.stringify(clip(text, 60))}${moved ? " (into the focused overlay input)" : ""}${actual !== undefined && (expected === undefined ? !actual.endsWith(text) : actual !== expected) ? ` (field now shows ${JSON.stringify(clip(actual, 60))})` : ""}`;
   }
 
-  private async key(page: Page, key: string, keyCode: number, text?: string) {
-    const k = { key, code: key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
+  private async key(page: Page, key: string, keyCode: number, text?: string, modifiers = 0, code = key) {
+    const k = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, ...(modifiers ? { modifiers } : {}) };
     await page.cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", ...k });
     if (text) await page.cdp("Input.dispatchKeyEvent", { type: "char", ...k, text, unmodifiedText: text });
     await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", ...k });

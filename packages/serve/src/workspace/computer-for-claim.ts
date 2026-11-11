@@ -19,7 +19,7 @@ import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
@@ -172,6 +172,48 @@ async function cdpUrlOf(provider: ComputerProvider, ref: { readonly id: string; 
   return url;
 }
 
+/** The label a browser session's computer carries its browser tool's tag in. */
+const SESSION_TAG = "agentrun.session";
+/** A label value of letters, digits and `_.:-` alone, as every provider takes one. */
+const labelValue = (value: string) => value.replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 63);
+/** A provider failure as an error with the provider's words and code. */
+const failed = (error: { readonly code: string; readonly message: string }) => Object.assign(new Error(error.message), { code: error.code });
+
+/** A browser computer's provider as the run's browser tool opens its sessions through it (ClaimBrowser): nothing is made
+ *  at the claim. A session's computer is made at the tool's call, under the run's labels (`spec`'s) and the tool's tag;
+ *  its release lets go of every one the tool left open. */
+function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { readonly browser: ClaimBrowser; release(): Promise<void> } {
+  const open = new Set<string>();
+  const release = async (id: string) => {
+    const released = await provider.release({ id, name: id }, "delete");
+    if (!released.ok) throw failed(released.error);
+    open.delete(id);
+  };
+  return {
+    browser: {
+      provider: provider.id,
+      maxLifetimeS: Math.floor(spec.lifetimeMs / 1000),
+      async open(tag, lifetimeS, signal) {
+        const lifetimeMs = Math.min(spec.lifetimeMs, Math.max(1, Math.round(lifetimeS)) * 1000);
+        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) } }, signal ? { signal } : {});
+        if (!created.ok) throw failed(created.error);
+        open.add(created.value.id);
+        return created.value.id;
+      },
+      async find(tag) {
+        const listed = await provider.list({ ...spec.labels, [SESSION_TAG]: labelValue(tag) });
+        if (!listed.ok) throw failed(listed.error);
+        return listed.value.map((one) => one.ref.id);
+      },
+      url: (id) => cdpUrlOf(provider, { id, name: id }),
+      close: release,
+    },
+    async release() {
+      for (const id of [...open]) await release(id).catch(() => undefined);
+    },
+  };
+}
+
 /** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first (the
  *  janitor's releaseOlder: one claim's computer at a time), then made with the run's labels (and the run's folder, when
  *  it mounts), connected, its groups from its hello; its read-back is the provider's own; its release deletes it. */
@@ -202,9 +244,6 @@ async function providerLaunch(
     // What the machine says it is (a phone's android or ios): its live view's input platform.
     machine: hello.kind,
     client,
-    // A browser's CDP URL (its connection carries a CDP target): each read asks the provider's connect again, so a
-    // session its vendor ended is refused in the provider's words. The URL is a secret: it goes only to the driver's dial.
-    ...(connected.value.cdp ? { cdpUrl: () => cdpUrlOf(provider, ref) } : {}),
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
       if (!attached.ok) return attached;
@@ -268,6 +307,16 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       // run of it unbuilt would be refused.
       const ready = await readyImage(provider, signal, deps.onImageWait);
       const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
+      // booked) only while the tool holds it.
+      if (kind === "browser") {
+        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
+        const older = await releaseOlder(provider, launch.runId, launch.epoch, signal ? { signal } : {});
+        if (!older.ok) throw new Error(older.error.message);
+        const opened = claimBrowser(provider, spec);
+        madeBy = entry;
+        return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
+      }
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;

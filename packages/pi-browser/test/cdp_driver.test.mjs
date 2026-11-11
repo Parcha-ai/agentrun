@@ -2,9 +2,11 @@
 // (fixtures/fake-ax-page.mjs): a snapshot's "frame-node" ids, a cross-origin frame named and not read, click (scrolled
 // into view, then pressed and released at the element's centre), fill, type, select, goto, each answered with its one
 // line of what changed; a stale id and a navigated page fail as a stale snapshot; and through pageTools' run, actions
-// work and code is refused in words.
+// work (a batch's every line, through the driving guard too) and code is refused in words; type appends after a field's
+// whole text, paced by its delay; press takes modifier combinations.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { drivingGuarded } from "../dist/core/driving-guard.js";
 import { cdpDriver, CDP_CODE_REFUSED } from "../dist/driver/cdp.js";
 import { BROWSER_TOOLS, NAVIGATED_SNAPSHOT_ERROR, pageTools } from "../dist/index.js";
 import { fakeAxPage } from "./fixtures/fake-ax-page.mjs";
@@ -63,6 +65,24 @@ test("fill replaces a field's text with insertText and a real last key; type app
   assert.match(await driver.snapshot(), /Added Bern/);
 });
 
+test("type puts the caret after the field's whole text (not End, which stops at a line's end) and paces its characters by delay; press takes modifier combinations", async (t) => {
+  const { page, driver } = await open(t);
+  await driver.snapshot();
+  page.state.nodes[10].value = "Line one\nLine two";
+  const before = page.calls.length;
+  await driver.run({ actions: [{ op: "type", id: "0-10", text: "abc", delay: 30 }] });
+  const typed = page.calls.slice(before);
+  assert.equal(page.state.caretAtEnd, 1, "the caret was put after the whole text");
+  assert.ok(!typed.some((c) => c.method === "Input.dispatchKeyEvent" && c.params.key === "End"), "no End key");
+  assert.deepEqual(typed.filter((c) => c.method === "Input.insertText").map((c) => c.params.text), ["a", "b"], "each character apart, the last as a key");
+  const at = page.calls.length;
+  await driver.run({ actions: [{ op: "press", id: "0-10", key: "Shift+Tab" }] });
+  await driver.run({ actions: [{ op: "press", id: "0-10", key: "Control+A" }] });
+  const keys = page.calls.slice(at).filter((c) => c.method === "Input.dispatchKeyEvent" && c.params.type !== "keyUp").map((c) => [c.params.type, c.params.key, c.params.modifiers ?? 0, c.params.commands ?? []]);
+  assert.deepEqual(keys, [["rawKeyDown", "Tab", 8, []], ["rawKeyDown", "a", 2, ["selectAll"]]]);
+  await assert.rejects(driver.run({ actions: [{ op: "press", id: "0-10", key: "Hyper+Q" }] }), /press takes one character or a key name/);
+});
+
 test("goto opens a web page and drops the old ids; a scheme other than http, https or about:blank is refused", async (t) => {
   const { page, driver } = await open(t);
   await driver.snapshot();
@@ -96,6 +116,11 @@ test("through pageTools' run: actions work, and code is refused in words that sa
   const acted = await tools.run({ actions: [{ op: "click", id: "0-11" }] }, port, { ...call, callId: "c2" });
   assert.notEqual(acted.isError, true, acted.content[0].text);
   assert.match(acted.content[0].text, /\[ok\] click \[0-11\] button "Add" -> page changed/);
+  // A batch through the driving guard (as the durable extension runs it), sent one action at a time: every line comes back.
+  await tools.snapshot({}, port, { ...call, callId: "c2b" });
+  const batch = await drivingGuarded(tools).run({ actions: [{ op: "fill", id: "0-10", value: "Bern" }, { op: "click", id: "0-11" }] }, port, { ...call, callId: "c2c" });
+  assert.notEqual(batch.isError, true, batch.content[0].text);
+  assert.match(batch.content[0].text, /\[ok\] fill \[0-10\] textbox "City" = "Bern" -> page changed\n\[ok\] click \[0-11\] button "Add" -> page changed/);
   const coded = await tools.run({ code: "return await page.title()" }, port, { ...call, callId: "c3" });
   assert.equal(coded.isError, true);
   const failure = JSON.parse(coded.content[0].text);

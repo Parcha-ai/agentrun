@@ -5,7 +5,7 @@
 // the one that starts one.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,9 @@ const CHROME = join(scratch, "chrome");
 writeFileSync(CHROME, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
 chmodSync(CHROME, 0o755);
 let roots = 0;
-const provider = (options = {}) => new LocalBrowserProvider({ executablePath: CHROME, root: join(scratch, `r${++roots}`), uid: 1000, ...options });
+/** This process's own user: the root it makes is its own, as the provider checks (a CI runner is not uid 1000). */
+const UID = process.getuid();
+const provider = (options = {}) => new LocalBrowserProvider({ executablePath: CHROME, root: join(scratch, `r${++roots}`), uid: UID, ...options });
 const SPEC = { image: "chromium", lifetimeMs: 60_000, network: "open", labels: { "agentrun.run": "run-1" } };
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const alive = (pid) => {
@@ -159,7 +161,7 @@ test("the deadline ends the browser though the process that made it is gone: a c
 	const root = join(scratch, "crashed");
 	// A process that makes a browser of 1.5 s and exits at once, without releasing it.
 	const maker = `import { LocalBrowserProvider } from ${JSON.stringify(new URL("../dist/local.js", import.meta.url).href)};
-const made = await new LocalBrowserProvider({ executablePath: ${JSON.stringify(CHROME)}, root: ${JSON.stringify(root)}, uid: 1000 }).create({ image: "chromium", lifetimeMs: 1500, network: "open" });
+const made = await new LocalBrowserProvider({ executablePath: ${JSON.stringify(CHROME)}, root: ${JSON.stringify(root)}, uid: ${UID} }).create({ image: "chromium", lifetimeMs: 1500, network: "open" });
 process.stdout.write(JSON.stringify(made));
 process.exit(0);`;
 	const child = spawn(process.execPath, ["--input-type=module", "-e", maker], { stdio: ["ignore", "pipe", "inherit"] });
@@ -172,6 +174,27 @@ process.exit(0);`;
 	const { pid } = json(join(dir, "state.json"));
 	assert.ok(alive(pid), "Chrome outlives the process that made it");
 	await until("the deadline ended Chrome and removed its files", () => !existsSync(dir) && !alive(pid), 10_000);
+});
+
+test("a supervisor killed while Chrome starts leaves Chrome's pid: the release ends that Chrome and removes its files", async (t) => {
+	process.env.FAKE_CHROME_MODE = "hang";
+	t.after(() => delete process.env.FAKE_CHROME_MODE);
+	const p = provider();
+	const making = p.create(SPEC);
+	let id;
+	await until("the supervisor spawned Chrome and wrote its pid", () => {
+		id = existsSync(p.root) ? readdirSync(p.root).find((name) => existsSync(join(p.root, name, "chrome.pid"))) : undefined;
+		return id !== undefined;
+	});
+	const dir = files(p, id);
+	const pid = Number(readFileSync(join(dir, "chrome.pid"), "utf8"));
+	assert.ok(alive(pid), "Chrome runs, not yet answering");
+	process.kill(Number(readFileSync(join(dir, "supervisor.pid"), "utf8")), "SIGKILL");
+	assert.ok(!existsSync(join(dir, "state.json")), "no state was written: Chrome never answered");
+	assert.deepEqual(await p.release({ id, name: id }, "delete"), { ok: true, value: undefined });
+	await until("the release ended the Chrome the supervisor left", () => !alive(pid));
+	assert.ok(!existsSync(dir), "and removed its files");
+	assert.equal((await making).ok, false, "the create that lost its supervisor fails");
 });
 
 test("a Chrome that cannot start its sandbox is refused in words that never offer to turn it off, and leaves nothing", async (t) => {

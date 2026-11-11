@@ -1,9 +1,10 @@
-// An agent whose computer is a browser, run on the runner end to end: the claim starts the browser through its provider
-// (computer-for-claim.ts providerLaunch, no launch of the server's own), and the run's browser tool (tools.ts, pi-browser's
-// durable extension on pi's native route) drives that one session with the raw-CDP driver over the CDP URL the provider's
-// connect hands over. Browserbase, Kernel and the local Chrome take this one path. The provider here is a stand-in in the
-// computer module's shape whose connect hands over a signed-looking URL of pi-browser's fake page (fixtures/fake-ax-page);
-// the model is a scripted origin. A CLI harness refuses a browser computer at its claim, in words, before anything is made.
+// An agent whose computer is a browser, run on the runner end to end: the claim gives the run's browser tool (tools.ts,
+// pi-browser's durable extension on pi's native route) the computer's provider (computer-for-claim.ts, no launch of the
+// server's own), the tool opens its session through it at its first call and releases it when it lets go, and drives it
+// with the raw-CDP driver over the CDP URL the provider's connect hands over. Browserbase, Kernel and the local Chrome
+// take this one path. The provider here is a stand-in in the computer module's shape whose connect hands over a
+// signed-looking URL of pi-browser's fake page (fixtures/fake-ax-page); the model is a scripted origin. A CLI harness
+// refuses a browser computer at its claim, in words, before anything is made.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,8 +61,10 @@ function browserProvider(url, record) {
       record.created.push(spec.labels);
       return { ok: true, value: { id: "bb-1", name: "bb-1" } };
     },
-    async connect() {
+    async connect(ref) {
       record.connects += 1;
+      // A session it released reads as gone, as a vendor's does.
+      if (record.released.some(([id]) => id === ref.id)) return { ok: false, error: { code: "gone", message: `the session ${ref.id} has ended` } };
       return { ok: true, value: { client: { close() {} }, hello: { version: "0", kind: "browser", groups: ["cdp"] }, cdp: { url }, close: async () => {} } };
     },
     attach: async () => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } }),
@@ -103,7 +106,7 @@ test("pi: an agent whose computer is a Browserbase browser runs: its snapshot an
   const record = { created: [], released: [], connects: 0 };
   const opened = await storeWith(t, { tools: ["read"], computer: BROWSER_COMPUTER }, PI_LAUNCH);
   const requests = [];
-  const script = [{ call: "snapshot" }, { call: "run", args: { actions: [{ op: "click", id: "0-11" }] } }, { say: "done" }];
+  const script = [{ call: "snapshot" }, { call: "run", args: { actions: [{ op: "click", id: "0-11" }] } }, { call: "run", args: { actions: [{ op: "fill", id: "0-10", value: "Bern" }, { op: "click", id: "0-11" }] } }, { say: "done" }];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests) };
   const deps = { env: {}, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps: computerDepsOver(`${page.url}?${SIGNED}`, record) };
   const runner = startRunner({
@@ -111,26 +114,31 @@ test("pi: an agent whose computer is a Browserbase browser runs: its snapshot an
     createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
   });
   t.after(() => runner.close().catch(() => {}));
+  let last;
   const row = await until(async () => {
-    const now = await opened.server.runs.get(RUN);
+    const now = (last = await opened.server.runs.get(RUN));
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the run is released");
+  }, "the run is released").catch((error) => {
+    throw new Error(`${error.message}: ${JSON.stringify({ row: last, requests: requests.length, created: record.created, released: record.released, cdp: page.calls.map((call) => call.method) })}`);
+  });
 
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.equal(record.created.length, 1, "the claim started one browser");
+  assert.equal(record.created.length, 1, "the browser tool opened one session through the claim's provider");
   assert.equal(record.created[0]["agentrun.run"], RUN, "under the run's labels");
+  assert.match(record.created[0]["agentrun.session"] ?? "", /\S/, "and the tool's tag");
   const offered = (requests[0]?.tools ?? []).map((tool) => tool.name);
   for (const name of ["snapshot", "run"]) assert.equal(offered.filter((one) => one === name).length, 1, `${name} is offered once, with no grant of the browser: ${JSON.stringify(offered)}`);
   const methods = page.calls.map((call) => call.method);
   assert.ok(methods.includes("Accessibility.getFullAXTree"), `the snapshot read the page's tree: ${JSON.stringify(methods)}`);
   const mouse = page.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params.type);
-  assert.deepEqual(mouse, ["mouseMoved", "mousePressed", "mouseReleased"], "the click reached the page");
+  assert.deepEqual(mouse, Array(3).fill(["mouseMoved", "mousePressed", "mouseReleased"]).flat(), "the click, the fill's click into its field and the batch's click reached the page");
   const told = JSON.stringify(requests.at(-1)?.messages ?? []);
   assert.match(told, /\[0-11\] button \\"Add\\"/, "the model read the snapshot's ids");
   assert.match(told, /\[ok\] click \[0-11\] button \\"Add\\"/, "and the click's line");
+  assert.match(told, /\[ok\] fill \[0-10\] textbox \\"City\\" = \\"Bern\\" -> page changed\\n\[ok\] click \[0-11\] button \\"Add\\"/, "and a batch's every line, through the driving guard");
   assert.ok(!JSON.stringify(requests).includes("SECRET-signed-url-token"), "the signed URL reaches no request to the model");
-  await until(() => record.released.length > 0, "the claim releases its browser");
-  assert.deepEqual(record.released, [["bb-1", "delete"]], "the claim released its browser at the run's end, once");
+  await until(() => record.released.length > 0, "the session is released");
+  assert.deepEqual(record.released, [["bb-1", "delete"]], "the session was released once, when the tool let it go at the run's end");
 });
 
 test("a CLI harness refuses a browser computer at its claim, in words, before anything is made", { timeout: 60_000 }, async (t) => {
@@ -141,7 +149,7 @@ test("a CLI harness refuses a browser computer at its claim, in words, before an
   const harness = await Harness.open(opened.store.journal(claim), { models: () => undefined, registry, onReport: () => {} }, ctx);
   t.after(() => harness.close(ctx).catch(() => {}));
   const run = { harness, registry, setModels: () => {} };
-  const deps = { env: { OPENAI_API_KEY: "not-a-secret-openai" }, data: opened.dir, journal: (c) => opened.store.journal(c), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver("ws://127.0.0.1:9/devtools/browser/none", record) };
+  const deps = { env: { OPENAI_API_KEY: "not-a-secret" }, data: opened.dir, journal: (c) => opened.store.journal(c), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver("ws://127.0.0.1:9/devtools/browser/none", record) };
   const error = await cliRunSpecFromLaunch(await opened.store.runs.launch(RUN).then((row) => row.body), run, deps, claim).then(() => undefined, (thrown) => thrown);
   assert.ok(error, "refused");
   assert.equal(error.code, "computer_unavailable");

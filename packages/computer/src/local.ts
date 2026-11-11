@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { BROWSER_IMAGE, browserClient, browserHello, carries, labelsProblem } from "./browser.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
 import type { KindCapabilities } from "./kinds.js";
-import { BROWSER_FILE, type BrowserRecord, type BrowserState, EGRESS_SOCKET_FILE, PROFILE_DIR, READY_MS, STATE_FILE, SUPERVISOR_FILE, type SupervisorLine } from "./local-supervisor.js";
+import { BROWSER_FILE, type BrowserRecord, type BrowserState, CHROME_PID_FILE, EGRESS_SOCKET_FILE, PROFILE_DIR, READY_MS, STATE_FILE, SUPERVISOR_FILE, type SupervisorLine } from "./local-supervisor.js";
 import type { MountKind } from "./mount.js";
 import type {
 	AttachedComputer,
@@ -394,11 +394,15 @@ export class LocalBrowserProvider implements ComputerProvider {
 			}
 			for (const until = Date.now() + END_MS; runsWith(supervisor, dir) && Date.now() < until; ) await sleep(50);
 		}
+		// Chrome's pid as the supervisor wrote it at the spawn (chrome.pid), and once Chrome answered (state.json): a
+		// supervisor killed before Chrome answered leaves only the first.
 		const state = await readJson<BrowserState>(join(dir, STATE_FILE));
+		const spawned = Number((await readFile(join(dir, CHROME_PID_FILE), "utf8").catch(() => "")).trim());
 		const marker = `--user-data-dir=${join(dir, PROFILE_DIR)}`;
-		if (state && runsWith(state.pid, marker)) {
-			killTree(state.pid);
-			for (const until = Date.now() + END_MS; runsWith(state.pid, marker) && alive(state.pid) && Date.now() < until; ) await sleep(50);
+		for (const pid of new Set([state?.pid, spawned].filter((one): one is number => Number.isInteger(one) && (one as number) > 0))) {
+			if (!runsWith(pid, marker)) continue;
+			killTree(pid);
+			for (const until = Date.now() + END_MS; runsWith(pid, marker) && alive(pid) && Date.now() < until; ) await sleep(50);
 		}
 		const socketDir = await singletonDir(join(dir, PROFILE_DIR));
 		if (socketDir) await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);

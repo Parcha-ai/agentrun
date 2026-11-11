@@ -118,6 +118,11 @@ export async function fakeAxPage({ url = "https://example.test/form", title = "T
         const expression = params.expression ?? "";
         if (expression.includes("__buObs")) return reply({ result: { value: { idle: 1000, ready: "complete", url: state.url, title: state.title, n: state.n, doc: state.doc } } });
         if (expression.includes("createTreeWalker")) return reply({ result: { value: visible() } });
+        // The caret put after a field's whole text before a type: counted, so a test sees it was placed.
+        if (expression.includes("setSelectionRange")) {
+          state.caretAtEnd = (state.caretAtEnd ?? 0) + 1;
+          return reply({ result: { value: true } });
+        }
         if (expression.includes('document.readyState !== "loading"')) return reply({ result: { value: true } });
         if (expression.includes("outerHTML")) return reply({ result: { value: { url: state.url, title: state.title, text: visible(), html: "<html></html>" } } });
         return reply({ result: { value: null } });

@@ -38,23 +38,36 @@ export type KindRegistry = {
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
- *  phone), the read-back of its mount (when mounted), its CDP URL (browser), and its release. */
+ *  phone), the read-back of its mount (when mounted), and its release. A browser is started by none: the claim gives
+ *  the run's browser tool its provider (`browser`), which opens each session at the tool's first call, and the release
+ *  lets go of any the tool left open. */
 export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
   readBack?(): Promise<Result<MountReadBack>>;
-  /** A browser's CDP URL as its provider's connect hands it over now (a secret: it goes only to a socket), for the run's
-   *  browser tool to drive; throws the provider's words, with its code, when the session has ended. */
-  cdpUrl?(): Promise<string>;
+  readonly browser?: ClaimBrowser;
   release(): Promise<void>;
 };
 
-/** A browser computer as the run's browser tool drives it: its id, its provider's id, and its CDP URL now. */
+/** A browser computer's provider as the run's browser tool opens its sessions through it: each session one computer of
+ *  the provider's, made under the run's labels and the tool's tag (so a create whose answer was lost is found again),
+ *  its CDP URL read through the provider's connect at each attach (a secret: it goes only to the driver), and released
+ *  when the tool lets it go. Errors carry the provider's words, and its code. So the session's time is the time the
+ *  tool holds it, which is what the run's spend books. */
 export type ClaimBrowser = {
-  readonly id: string;
+  /** The provider's id: the session's price and its name. */
   readonly provider: string;
-  url(): Promise<string>;
+  /** The longest a session lives, in seconds. */
+  readonly maxLifetimeS: number;
+  /** Makes a session for `tag`, to live at most `lifetimeS`: its computer's id. */
+  open(tag: string, lifetimeS: number, signal?: AbortSignal): Promise<string>;
+  /** The sessions made for `tag`, by id. */
+  find(tag: string, signal?: AbortSignal): Promise<string[]>;
+  /** The session's CDP URL now. */
+  url(id: string): Promise<string>;
+  /** Ends the session; one already gone is ended. */
+  close(id: string): Promise<void>;
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one
@@ -242,7 +255,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       } catch (error) {
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const computer = runComputerOf(kind, launched, mounts ? check : undefined, entry.id);
+      const computer = runComputerOf(kind, launched, mounts ? check : undefined);
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
@@ -253,10 +266,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 }
 
 /** The started computer as runTools takes it, or what it lacks, in words. */
-function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined, provider: string): RunComputer | string {
+function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
   const groups = launched.groups as readonly Group[];
-  // The run's browser tool drives a browser over its CDP URL.
-  if (kind === "browser") return launched.cdpUrl ? { kind, browser: { id: launched.id, provider, url: () => launched.cdpUrl!() } } : "it gave no CDP connection";
+  // The run's browser tool opens a browser's sessions through its provider.
+  if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
   const { client } = launched;
   if (!client) return "it gave no computer protocol client";
   if (kind === "phone") return { kind, computer: { client }, groups };

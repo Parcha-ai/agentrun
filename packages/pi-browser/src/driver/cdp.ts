@@ -101,7 +101,7 @@ export function cdpDriver(): DriverFactory<PageDriver> {
         case "fill":
           return ax.fill(action.id, action.value);
         case "type":
-          return ax.type(action.id, action.text);
+          return ax.type(action.id, action.text, action.delay);
         case "press":
           return ax.press(action.id, action.key);
         case "select":

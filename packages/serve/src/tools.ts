@@ -135,8 +135,8 @@ export type ToolHost = {
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
   workspace?: Workspace;
-  /** The agent's computer, where it is a browser the claim started (computer-for-claim.ts): the browser tool drives that
-   *  one session over its CDP URL with pi-browser's raw-CDP driver, in place of the plane's vendor. */
+  /** The agent's computer, where it is a browser (computer-for-claim.ts): the browser tool opens its sessions through the
+   *  claim's provider and drives each over its CDP URL with pi-browser's raw-CDP driver, in place of the plane's vendor. */
   browserComputer?: ClaimBrowser;
 };
 
@@ -351,8 +351,9 @@ const browserTool: ToolEntry = {
       import("./browser-live.js"),
       import("./browser-person.js"),
     ]);
-    // The agent's computer, where it is a browser the claim started, wins over the plane's pick: the run is that browser,
-    // driven over its CDP URL by the raw-CDP driver, with no vendor provider, saved sign-in or plane check of its own.
+    // The agent's computer, where it is a browser, wins over the plane's pick: the run's sessions are that provider's,
+    // opened through the claim and driven over their CDP URL by the raw-CDP driver, with no pi-browser vendor provider,
+    // saved sign-in or plane check of their own.
     const computer = host.browserComputer;
     const planeVendor = planeOf(host.env).browser ?? "browserbase";
     const vendor = computer?.provider ?? planeVendor;
@@ -367,7 +368,7 @@ const browserTool: ToolEntry = {
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = computer
-      ? { provider: await (await import("./browser-computer.js")).claimBrowserProvider(computer), driver: (await import("@parcha/pi-browser/driver/cdp")).cdpDriver() }
+      ? { provider: (await import("./browser-computer.js")).claimBrowserProvider(computer), driver: (await import("@parcha/pi-browser/driver/cdp")).cdpDriver() }
       : faux
       ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { provider: unknown; driver: unknown } }).default(host.env, vendor, kept)
       : {

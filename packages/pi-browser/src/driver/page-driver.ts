@@ -159,8 +159,10 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
     },
     run: (input) => input.actions !== undefined ? withGoto(input.actions, input.checked === true) : facade.run(input.code ?? ""),
     // As the facade's own batch checks a run's actions before it sends any (runActionsNow): the active page's snapshot,
-    // the page still at its address, and every id in it. Read from the facade's snapshots, as forgetSnapshots does.
+    // the page still at its address, and every id in it. Read from the facade's snapshots, as forgetSnapshots does. A
+    // batch of gotos alone names no id, so it needs no snapshot, as the raw-CDP driver's check holds too.
     checkActions: async (actions) => {
+      if (actions.every((action) => action.op === "goto")) return;
       const page = await active();
       const snapshot = (facade as unknown as { snapshotsByPage: Map<string, { url: string; xpathById: Record<string, string> }> }).snapshotsByPage.get(page.pageId);
       if (!snapshot) throw new Error(NO_HYDRATED_SNAPSHOT_ERROR);

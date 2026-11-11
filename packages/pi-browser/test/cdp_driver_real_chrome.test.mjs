@@ -42,7 +42,7 @@ test("a real Chrome: snapshot, type in a field, select, click a button, read the
   t.after(async () => {
     try { process.kill(-chrome.pid, "SIGKILL"); } catch { /* gone */ }
     await new Promise((resolve) => (chrome.exitCode !== null || chrome.signalCode !== null ? resolve() : chrome.once("exit", resolve)));
-  });
+  }, { timeout: 30_000 });
   let port;
   let browserPath;
   for (const end = Date.now() + 20_000; Date.now() < end && !port; await new Promise((r) => setTimeout(r, 100))) {
@@ -61,7 +61,7 @@ test("a real Chrome: snapshot, type in a field, select, click a button, read the
   setup.close();
 
   const driver = await cdpDriver()({ sdkCdpUrl: url });
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
   const shot = await driver.snapshot();
   assert.match(shot, /^\[page\] Greeter \| about:blank/);
   assert.match(shot, /## Greeter/);

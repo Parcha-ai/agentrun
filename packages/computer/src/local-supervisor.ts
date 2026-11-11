@@ -17,9 +17,9 @@ import { closeSync, createWriteStream, openSync, readFileSync, writeFileSync } f
 import { rm } from "node:fs/promises";
 import { type AddressInfo, connect, createServer, type Socket } from "node:net";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { alive, chromeFence, killTree, NO_SANDBOX, ownDebugger, answeringPath, singletonDir } from "./chrome.js";
 import { startEgressProxy } from "./docker/egress-proxy.js";
+import { isCommand } from "./entry.js";
 
 /** The browser's record, written by local.ts before the supervisor starts: the label a list finds it by. */
 export const BROWSER_FILE = "browser.json";
@@ -27,6 +27,8 @@ export const BROWSER_FILE = "browser.json";
 export const STATE_FILE = "state.json";
 /** The supervisor's own pid, written as it starts. */
 export const SUPERVISOR_FILE = "supervisor.pid";
+/** Chrome's pid, written as soon as it is spawned: a release finds a Chrome whose supervisor died before it answered. */
+export const CHROME_PID_FILE = "chrome.pid";
 /** Chrome's profile, fresh per browser. */
 export const PROFILE_DIR = "profile";
 /** The egress proxy's socket: short, since a Unix socket's path holds 107 bytes at most. */
@@ -169,6 +171,8 @@ export async function supervise(dir: string, out: (line: SupervisorLine) => void
 			stdio: ["ignore", "ignore", stderr],
 			detached: true,
 		});
+		// Before anything waits: a supervisor killed while Chrome starts leaves its pid for the release.
+		if (child.pid !== undefined) writeFileSync(join(dir, CHROME_PID_FILE), String(child.pid), { mode: 0o600 });
 	} catch (error) {
 		out({ failed: `Chrome could not be started (${(error as Error).message})` });
 		return end(1);
@@ -218,8 +222,7 @@ export async function supervise(dir: string, out: (line: SupervisorLine) => void
 }
 
 // Run as a script (`node local-supervisor.js <dir>`), not when imported.
-const entry = process.argv[1];
-if (entry !== undefined && resolve(entry) === fileURLToPath(import.meta.url)) {
+if (isCommand(import.meta)) {
 	const dir = process.argv[2];
 	const out = (line: SupervisorLine) => {
 		try {

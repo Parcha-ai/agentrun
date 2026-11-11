@@ -3,7 +3,8 @@
 // that port to the profile's DevToolsActivePort as Chrome does, and answers every CDP command with an empty result. It
 // writes the arguments it was given to argv.json in its profile, and, given a proxy, asks it for a cloud's metadata
 // address and for its own loopback port, writing each status line to probe.json, so a test reads what the fence did.
-// FAKE_CHROME_MODE: "sandbox" exits as a Chrome that cannot start its sandbox does; anything else starts.
+// FAKE_CHROME_MODE: "sandbox" exits as a Chrome that cannot start its sandbox does; "hang" runs and never opens its
+// debugging port; anything else starts.
 import { createHash, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -25,6 +26,10 @@ if (args.includes("--dump-dom")) {
 
 const profile = flag("user-data-dir");
 writeFileSync(join(profile, "argv.json"), JSON.stringify(args));
+if (mode === "hang") {
+	setInterval(() => undefined, 60_000);
+	await new Promise(() => undefined);
+}
 const path = `/devtools/browser/${randomUUID()}`;
 
 /** One text frame, unmasked, as a server sends it. */
