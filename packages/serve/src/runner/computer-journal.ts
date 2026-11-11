@@ -10,7 +10,7 @@
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import {
-  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdWords, takeEndedWords,
+  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
 } from "../computer-commands.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
@@ -98,8 +98,13 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
     void write(entries).then(() => change && signal(runId, change), () => undefined);
   });
   return {
-    /** The run's computer is up for this pass: the server shows it live, the agent driving. */
-    up: (): Promise<void> => {
+    /** The run's computer is up for this pass: the server shows it live. `prior`, the run's root entries before this
+     *  pass: a take they hold in force (a person's, from an earlier claim whose runner lost the run or died mid-take) is
+     *  carried into this hold, so the person still drives, the run's end still waits for their hand-back, and the take is
+     *  never cut by a change of runner. Else the agent drives. */
+    up: (prior: readonly { readonly kind: string; readonly data?: unknown }[] = []): Promise<void> => {
+      const before = holdIn(prior.map((entry) => ({ kind: entry.kind, data: entry.data })));
+      if (before.up && before.state !== "agent" && before.take !== undefined && hold.resume(before.take)) reached.add(before.take);
       const at = now();
       const take = hold.current();
       // A pass that starts while a take is in force (a restart within the claim) says so after the up entry.

@@ -60,6 +60,11 @@ export type ComputerHold = {
   /** The person takes it: pending while an agent call is in flight, then theirs. False (nothing changes) when a take is
    *  pending or held already, or the run is ending, or the hold is closed. `by`: the command row that asked. */
   take(options?: { readonly by?: number }): boolean;
+  /** A take the run's journal holds in force, carried into this hold (a new claim's computer, after the claim changed
+   *  hands: a lapsed lease, a runner's crash): the person drives under take `take`, as they did, and the agent's calls
+   *  are parked until the hand-back. Nothing is emitted: the claim's up entry says the take (runner/computer-journal.ts).
+   *  False (nothing changes) when a take is pending or held already, or the run is ending, or the hold is closed. */
+  resume(take: string): boolean;
   /** The run is ending (its agent is done): nothing new is taken from now, and a take in force goes on until it ends, so
    *  the run's end can wait for it and no later take is cut by the release (#2134). */
   finish(): void;
@@ -165,6 +170,15 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
         state = "pending";
         emit({ type: "state", state, take, ...(by !== undefined ? { by } : {}), at: now() });
       } else toPerson(by);
+      return true;
+    },
+    resume(given) {
+      if (closed || ending || state !== "agent") return false;
+      take = given;
+      epoch++;
+      // No call of this process is in flight: the person drives at once, their idle bound counted from now.
+      state = "person";
+      armIdle();
       return true;
     },
     finish() {
