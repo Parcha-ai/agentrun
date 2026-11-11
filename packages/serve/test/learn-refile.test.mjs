@@ -19,7 +19,7 @@ import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 const { GRADE_RUBRIC, gradedItems, gradePrompt, NOTES_FULL, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
 const { parseNoteFile, ruleOf } = await import("../dist/learn/notes.js");
 const { checkProposal } = await import("../dist/learn/check.js");
-const { keptOf, mergeChangeOf, NOTE_NAME_TAKEN, takenOnMain } = await import("../dist/runner/learning-loop.js");
+const { keptOf, mergeChangeOf, NOTE_NAME_IN_RUN, NOTE_NAME_TAKEN, takenOnMain } = await import("../dist/runner/learning-loop.js");
 const { SAME_NOTE, wordsOf } = await import("../dist/learning-words.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 const { learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
@@ -419,4 +419,19 @@ test("a skill re-filed as a note counts against the new-note cap: past it, that 
 test("a merged run's words rebuilt from its verdict never say a rule main already held", () => {
   const learning = { state: "merged", reason: null, detail: null, learned: [{ file: "retries.md", name: "Retries", supersedes: [] }], verdict: { merge: true, reason: "ok", items: [{ file: "retries.md", keep: true, why: "useful" }, { file: SKILL.file, keep: false, question: "Duplicate", why: SAME_NOTE }] } };
   assert.equal(wordsOf(learning, (text) => text), "Learned: Retries");
+});
+
+// #2256 review, P2: a resume after the commit settles a file the run's own note and a re-filed skill share as the first
+// attempt did (one file is one item's): the run's note stands, the skill is left out, and nothing is listed twice or
+// marked held by the skill's hold.
+test("a resumed merge keeps one item per file: a re-filed skill whose note file the run's own note takes is left out, and the note is not held", async (t) => {
+  const own = "---\nname: Report format\ndescription: How a report opens\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const answer = verdictOf([{ file: "report-format.md", decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", question: "Risky", why: "a rule for every report" }]);
+  const { end, learning } = await refileRun(t, { committed: [{ path: "report-format.md", text: own }], notes: [{ file: "report-format.md", text: own }], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["report-format.md"], JSON.stringify(learning));
+  assert.equal(learning.pending, undefined, "the run's own note is not held by the skill's hold");
+  const skill = learning.verdict.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([skill.keep, skill.why], [false, NOTE_NAME_IN_RUN("report-format")]);
 });
