@@ -39,6 +39,7 @@ import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../
 import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
+import { capNowOf } from "./journal-kinds.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
@@ -73,12 +74,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
-  const capUsd = launch.maxCostUsd;
   const hookFor = (runId: string) => createReflectHook({
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
-    // kept within it. A person's stop comes to the hook as its `cut`.
+    // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
+    // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
     facts: async (runId) => {
       const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
+      const capUsd = launch.maxCostUsd === undefined ? undefined : capNowOf(launch.maxCostUsd, await runEntries(deps.store, runId, BACKGROUND_CONTEXT));
       return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
     },
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),

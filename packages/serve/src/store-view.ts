@@ -46,7 +46,7 @@ import { reflects, type Reflect } from "./reflect-range.js";
 import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
-import { type EndData, KINDS } from "./runner/journal-kinds.js";
+import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
@@ -274,8 +274,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
 
   // The run's cap as it stands: its newest raise's (the agentrun.raise entries the runner's loop holds it to, adapter-loop
   // capNow), else its launch's; a raise taken shows in the run's cost.cap_usd and its budget card, never the old cap.
-  const raisedCapUsd = records.entries.findLast((entry) => entry.kind === KINDS.raise && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && (entry.data as { capUsd: number }).capUsd > 0)?.data as { capUsd: number } | undefined;
-  const capUsd = launch?.maxCostUsd === undefined ? undefined : Math.max(launch.maxCostUsd, raisedCapUsd?.capUsd ?? 0);
+  const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
   const meta: RunViewMeta = { ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.

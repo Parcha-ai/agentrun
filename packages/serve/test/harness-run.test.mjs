@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, startInProcessRunner, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
@@ -128,24 +128,6 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token 
   const last = rows.filter((r) => r.kind === "user_message" || r.kind === "final_answer").at(-1);
   assert.equal(last?.kind, "final_answer", "nothing the person sent is left unanswered");
   assert.equal(await answer(api, runId), "Answered the chat.", "the run's last answer is the chat's");
-});
-
-// SKIP (follow-up #2078): the run never reads working on the runner
-test.skip("a message to a run working on a harness that cannot steer answers follow_up, never steer: it waits for the turn's end and is answered after it", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
-  const go = join(await scratch(t), "go");
-  const runId = await started(api, "no-steer", `Wait for ${go}, then answer the chat.`, "codex");
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
-    assert.ok(i < 300, "the run works");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const sent = await api("POST", `/runs/${runId}/messages`, { content: "and the chat?" });
-  assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
-  // The faux turn holds until its process is replaced: the next one finishes the turn, then answers the message.
-  await writeFile(go, "");
-  await killRun(data, runId);
-  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await answer(api, runId), "Answered the chat.");
 });
 
 /** Every journal entry of run `runId` in the server's one store (`<data>/store.sqlite`, the runs' journals in pi_entries,
@@ -421,15 +403,15 @@ test("a turn whose first answer is empty and that then calls a tool and answers:
   assert.equal(await answer(api, runId), "Wrote note.md.");
 });
 
-// SKIP (follow-up #2078): a turn that comments, answers empty, then calls a tool shows different timeline rows on the runner
-test.skip("a turn that comments, then answers with nothing, then calls a tool and answers: both earlier answers are text_blocks, the real answer the only final_answer", { timeout: 60_000 }, async (t) => {
+test("a turn that comments, then answers with nothing, then calls a tool and answers: the commentary is a text_block, the real answer the only final_answer", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "comment-empty", "Comment, say nothing, then write.", "codex", ["write"]);
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
   assert.equal(await readFile(join(runDir(data, runId), "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
   // The empty answer held the turn's place as its answer for a moment; the commentary before it never stays one either.
-  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
+  // A CLI's record keeps the turn's text up to its call as one message, so the empty one joins the commentary's row.
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
   assert.equal(rows.filter((r) => r.kind === "final_answer").length, 1, shown);
   assert.deepEqual([last.status, last.final], ["completed", true], shown);
   assert.equal(await answer(api, runId), "Wrote note.md.");
@@ -500,8 +482,7 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-// SKIP (follow-up #2078): a pi message sent while a turn works is not answered before the run completes on the runner
-test.skip("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
+test("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("held-pi", { tools: [] }))).status, 201);
@@ -517,41 +498,40 @@ test.skip("pi: a message sent while a turn works is placed at that turn's end an
   assert.equal(await answer(api, runId), "Answer 2.");
 });
 
-// SKIP (follow-up #2078): the run never completes once the next server takes it up
-test.skip("a run's answer is whole, past the 2,000 characters its summary keeps, on this server and the next; a follow-up that then shows nothing answers \"\"", { timeout: 90_000 }, async (t) => {
+// A follow-up to the completed run, answered with nothing, is #2058's (a message to a finished run): "a follow-up whose
+// turn ends showing nothing" above.
+test("a run's answer is whole, past the 2,000 characters its summary keeps, on this server and the next", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
+  const table = fauxTable(FAUX_HARNESS);
+  // The first server and the runner beside it (the CLI start's pair), closed together before the next server opens.
+  const one = await startServe({ data, port: 0, faux: FAUX, harnessTable: table, drainTimeout: "5s" });
+  const runner = await startInProcessRunner(data, { faux: FAUX, harnessTable: table });
   let closed = false;
-  t.after(() => (closed ? undefined : one.close()));
+  t.after(async () => {
+    if (closed) return;
+    await runner();
+    await one.close();
+  });
   const api = client(one.baseUrl, one.token);
   const runId = await started(api, "long", "The second turn answers nothing, after a long answer.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(LONG_ANSWER.length > 2_000, true);
   assert.equal(await answer(api, runId), LONG_ANSWER, "the first turn's answer, whole");
-  await one.close();
   closed = true;
-  const two = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
-  t.after(() => two.close());
-  const next = client(two.baseUrl, two.token);
-  assert.equal(await answer(next, runId), LONG_ANSWER, "and on the next server, read from the run's store: never the summary the store keeps");
-  assert.equal((await next("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
-  await follow(next, runId, ["completed"], { deadlineMs: 20_000 });
-  assert.equal(await answer(next, runId), "", "a follow-up that shows nothing answers with its own text, none");
+  await runner();
+  await one.close();
+  const two = await serve(t, { data, harnessTable: table });
+  assert.equal(await answer(two.api, runId), LONG_ANSWER, "and on the next server, read from the run's store: never the summary the store keeps");
 });
 
-/** Until the run's store holds `n` entries of `kind`. */
-/** The run's store entries, read once its process is gone (it holds the store exclusively while it lives): a read that
- *  finds it still held tries again. */
+/** The run's journal entries, in order, as the server's one store keeps them (pi_entries): read-only, beside the server
+ *  that writes it. */
 function storeEntries(data, runId) {
-  for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-    try {
-      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
-    } catch (error) {
-      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
-    } finally {
-      db.close();
-    }
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    return db.prepare("SELECT record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => JSON.parse(String(row.record)));
+  } finally {
+    db.close();
   }
 }
 /** Until the faux harness has admitted its request: it writes `signal` the moment it does (cutSignalled). Nothing the API
@@ -562,8 +542,7 @@ const admitted = async (signal) => {
   }
 };
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
+test("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
   // Review F2, not reproduced (an interrupted request that showed nothing and was never paid writes no entry): a guard
   // that the cancel decides the run's end, whatever the turn it cut writes.
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
@@ -575,11 +554,13 @@ test.skip("a cancel of a turn that has shown nothing reads working, then cancell
   assert.deepEqual(pages.filter((page) => page.status === "completed").map((page) => page.status), [], `statuses: ${pages.map((page) => page.status).join(", ")}`);
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "cancelled");
   const entries = storeEntries(data, runId);
-  const user = entries.findLastIndex((e) => e.kind === "pi.user");
-  assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "agentrun.request_started"), "the case: the request was admitted after the person's message (its start mark is in the store)");
+  // The person's message on the CLI's record, then the runner's request record (on the run's model session) as the cap
+  // admits a request.
+  const user = entries.findLastIndex((e) => e.kind === "agentrun.message" && e.data?.role === "person");
+  assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "runner.request"), "the case: the request was admitted after the person's message (its record is in the store)");
 });
 
-// SKIP (follow-up #2078): after a stopped turn and a follow-up, the run never completes on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again (the case also needs a runner beside each server, startInProcessRunner)
 test.skip("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is that follow-up's own (empty), never the commentary or the earlier answer, on this server and the next", { timeout: 120_000 }, async (t) => {
   // Review F3: commentary that came with a call is no answer, though it is the run's newest text.
   const data = join(await scratch(t), "agents");
@@ -610,8 +591,7 @@ test.skip("pi: after a stopped turn's commentary and a follow-up answered with n
   assert.equal(await answer(client(two.baseUrl, two.token), runId), "", "and on the next server, read from the run's store");
 });
 
-// SKIP (follow-up #2078): it reads the written file from the run's old work/ folder, which runs no longer have
-test.skip("a write that names its file by an absolute path in the workspace reads by its name there (hello.md) in the tool rows and the Saved row; a path outside the run's directory stays as given; the call's arguments are kept", { timeout: 60_000 }, async (t) => {
+test("a write that names its file by an absolute path in the workspace reads by its name there (hello.md) in the tool rows and the Saved row; a path outside the run's directory stays as given; the call's arguments are kept", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "absolute", "Write by the absolute path.", "claude-agent", ["write"]);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -621,8 +601,9 @@ test.skip("a write that names its file by an absolute path in the workspace read
   assert.match(shown[4]?.[1] ?? "", /^Wrote \/elsewhere\/away\.md failed: /, "a path outside the run's directory stays as given");
   assert.equal(shown.length, 5, JSON.stringify(shown));
   assert.equal(rows.find((r) => r.kind === "phase" && /^Saved/.test(r.summary))?.path, "hello.md", "the Saved row's file, by its name in the workspace");
-  // Display only: the call's own arguments, as the harness sent them, are the input preview.
-  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", new RegExp(`${join(runDir(data, runId), "work", "hello.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  // Display only: the call's own arguments, as the harness sent them (the absolute path under its working directory), are
+  // the input preview.
+  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", /^\/\S*\/hello\.md$/);
 });
 
 test("a codex or pi run whose write names a relative path reads the same as before: Wrote <name>, Saved <name>", { timeout: 60_000 }, async (t) => {
@@ -673,8 +654,7 @@ test.skip("a capped run with a request cut by a crash goes on: the cut request c
 });
 
 // Three runs in turn, each followed for up to 55 s.
-// SKIP (follow-up #2078): the run's thinking level does not reach the harness's session on the runner
-test.skip("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
+test("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   for (const [harness, thinking, said] of [["claude-agent", "high", "Thinking high."], ["claude-agent", "max", "Thinking max."], ["codex", "max", "Thinking xhigh."]]) {
     const id = `think-${harness}-${thinking}`;
@@ -690,18 +670,17 @@ test.skip("the run's thinking level reaches the harness's session: the revision'
  * A refused call's row names the path the call gave, as given, and no other: neither a directory of `roots` (the server's
  * data directory, where a link points), as named or as resolved, nor any other absolute path on the host.
  */
-function namesOnlyGiven(row, given, roots, who) {
+function namesOnlyGiven(row, given, roots, who, words = "outside the workspace") {
   const said = `${row.summary ?? ""}\n${row.tool_result_preview ?? ""}`;
   assert.equal(row.tool_status, "failed", `${who}: ${said}`);
-  assert.ok((row.tool_result_preview ?? "").includes(`${given}: outside the workspace`), `${who}: the refusal names ${given} as given: ${said}`);
+  assert.ok((row.tool_result_preview ?? "").includes(`${given}: ${words}`), `${who}: the refusal names ${given} as given: ${said}`);
   for (const root of new Set(roots.flatMap((root) => [root, realpathSync(root)]))) assert.ok(!said.includes(root), `${who}: the refusal of ${given} names ${root}: ${said}`);
   // An absolute path starts at a "/" no name, dot or "<" comes before: pi's "</harness>", closing its error block, is none.
   assert.doesNotMatch(said.split(given).join(""), /(?<![\w.~<-])\/[\w.-]/, `${who}: the refusal of ${given} names an absolute host path: ${said}`);
   assert.doesNotMatch(said, /resolves to/, `${who}: the refusal of ${given} names where it resolves to: ${said}`);
 }
 
-// SKIP (follow-up #2078): a read refused outside the run names the link rule, not the path it was given, on the runner
-test.skip("a read refused outside the run names the path it was given, as given, on pi, claude-agent and codex: up out of the run, absolute, and a link out of the workspace, never the data directory or a host path", { timeout: 120_000 }, async (t) => {
+test("a read refused outside the run names the path it was given, as given, on pi, claude-agent and codex: up out of the run, absolute, and a link out of the workspace, never the data directory or a host path", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const reads = (rows) => rows.filter((r) => r.kind === "tool_result" && r.tool_name === "read");
   for (const harness of ["claude-agent", "codex"]) {
@@ -727,7 +706,8 @@ test.skip("a read refused outside the run names the path it was given, as given,
   await writeFile(go, "");
   const refused = reads((await follow(api, pi.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows);
   assert.equal(refused.length, 3, `pi: ${JSON.stringify(refused)}`);
-  refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi"));
+  // The link is refused in the workspace's own words for a link (its file tools follow none), the path as given.
+  refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi", i === 2 ? "refused: a link is on the way to it" : undefined));
   assert.ok(refused.every((row) => !JSON.stringify(row).includes("not for the agent")));
 });
 

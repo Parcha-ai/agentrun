@@ -617,14 +617,23 @@ export function startRunner(options: RunnerOptions): Runner {
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     // Set below, once held is made: the loop's end commit lands only after start(), well after.
     let ending: () => void = () => {};
+    // Set below, once held is made: the loop asks deliverNow only once its first turn has ended, well after.
+    let heldNow: Held | undefined;
     const loop = loopsOf({
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
       delivered,
+      // A delivery under way first (its rows are the loop's already), then one more read of the run's new rows.
+      deliverNow: async () => {
+        if (!heldNow) return;
+        await heldNow.inFlight?.catch(() => undefined);
+        await deliver(heldNow);
+      },
       redact,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, mib };
+    heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
       held.ending = true;

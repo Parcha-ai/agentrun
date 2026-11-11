@@ -166,6 +166,13 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
 /** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
 export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
 
+/** A path as a run's rows name it, for a harness working in `cwd`: one under `cwd` by its name there (`hello.md`), any
+ *  other as given. */
+const inWorkspace = (cwd: string) => (path: string): string => {
+  const root = cwd.replace(/\/+$/, "");
+  return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
+};
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
  *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
@@ -176,7 +183,10 @@ export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.s
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
+  // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
+  const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
 }

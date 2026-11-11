@@ -74,3 +74,22 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
   return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
 }
+
+/** A server and one runner beside it, both in this process, as the CLI's start composes them (cli.ts): the runner holds
+ *  what the server's options say (besideRunnerOptions) and sees the server's test switches (fauxEnvOf), so a --faux
+ *  server's runs reach its fakes. For a launcher that starts serve in-process (a demo, a smoke): a server alone leaves
+ *  every run queued. close() stops both. */
+export async function serveWithRunner(options: import("../server.js").ServeOptions): Promise<{ serve: import("../server.js").Serve; close(): Promise<void> }> {
+  const { fauxEnvOf, startServe } = await import("../server.js");
+  const { besideRunEnv } = await import("./main.js");
+  const { loops, drainMs } = besideRunnerOptions(options, process.env);
+  const serve = await startServe(options);
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)) }).catch(async (error: unknown) => {
+    await serve.close();
+    throw error;
+  });
+  // Once: a second call (a SIGTERM and a SIGINT both) is the first one's promise, so the runner's store is never closed
+  // under a run still finishing.
+  let closing: Promise<void> | undefined;
+  return { serve, close: () => (closing ??= Promise.all([beside.close(), serve.close()]).then(() => undefined)) };
+}
