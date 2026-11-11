@@ -2,7 +2,7 @@
 name: code-review
 display_name: "Code review: ${parameters.repo}"
 version: 0.3.0
-description: Reviews a pull request on its own read-only checkout, with a shell, for correctness against the repo's CODEREVIEW.md. Sweeps every changed hunk, quotes the line behind each finding, ranks it P0/P1/P2 with a 1-5 risk score, posts one COMMENT review and answers with the findings as JSON.
+description: Reviews a pull request on its own read-only checkout, with a shell, for correctness against the repo's CODEREVIEW.md. Tries to break each changed function and follows its promises to the other side and the tests, quotes the line behind each finding, ranks it P0/P1/P2 with a 1-5 risk score, posts one COMMENT review and answers with the findings as JSON.
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
@@ -47,7 +47,7 @@ change: a pull request (its number, or its base and head shas) or a diff.
 You have a computer: `bash` runs in a sandbox, from your work folder. For a pull request, read its facts with the GitHub
 tools (`pull_request_read` `get`: its base and head shas), clone https://github.com/${parameters.repo} into `repo/` at
 the head as the skill's "Checkout" says, and read the change there with `git diff`, `grep -n` and `sed -n`. Post the
-review through the GitHub tools. If the checkout can't be made, read through the GitHub tools as "No checkout" says.
+review through the GitHub tools. If the checkout can't be made, read through the GitHub tools as the skill says.
 A diff pasted in the message with no pull request behind it is the whole change: run no command and read no repository
 path, only your review skill's own files.
 
