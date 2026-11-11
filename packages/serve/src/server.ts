@@ -14,7 +14,7 @@ import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { type Revision, type RunOrigin } from "@parcha/pi-durable-agent";
+import type { Revision, RunOrigin } from "./agent-rows.js";
 import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
@@ -35,13 +35,13 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { MessageOrigin } from "./timeline/index.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
@@ -1239,14 +1239,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     approvers: options.accounts === true,
     ...(documents ? { documents: resolve(documents) } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
+    // Whether that is the operator's own setting, not the default: a browser is held to an operator's list alone.
+    ...(boxAllowSetIn(process.env) ? { boxAllowSet: true as const } : {}),
     modelOf,
     // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
     // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
     // (git), and the host's secrets as they are shown now to cut the notes a run is given, a loopback address kept (local),
     // as the run's .learning/ files keep it: the run's own machine, which an agent with no read tool learns of only here.
     // runs-over-store.learningStartFor pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed
-    // that cannot be read starts the run with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
-    // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
+    // that cannot be read starts the run with nothing learned (a fault never refuses it). The runner's spec builders read
+    // it back as the run's end-of-run step (runner/learning-end.ts learningEndOfRun, in adapter-run-spec.ts and
+    // cli-run-spec.ts).
     learning,
     learningBudget,
     // The model the server names to grade what a run proposes (capabilities' learning.grade_model), carried on each learning
@@ -2793,7 +2796,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (extra.length) throw invalid(extra);
         if (!isObject(body.workflow)) throw invalid([{ field: "workflow", reason: body.workflow === undefined ? "missing" : "wrong_type", message: "workflow is the workflow definition, an object" }]);
         if (body.tools !== undefined && !(Array.isArray(body.tools) && body.tools.every((t) => typeof t === "string"))) throw invalid([{ field: "tools", reason: "wrong_type", message: "tools is a list of tool names" }]);
-        const { workflowIssues } = await import("@parcha/pi-durable-agent/workflow");
+        const { workflowIssues } = await import("./workflow-run.js");
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {

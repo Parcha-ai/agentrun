@@ -59,7 +59,7 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 
 	it("passes Core, with daemon and provider of one version", () => {
 		assert.equal(report.core, "pass", formatReport(report));
-		assert.equal(report.daemon?.version, report.providerVersion);
+		assert.ok(report.daemons.length > 0 && report.daemons.every((daemon) => daemon.version === report.providerVersion), JSON.stringify(report.daemons));
 	});
 
 	it("is a linux computer with computerd as PID 1, and skips each screen, input, touch, apps and lifetime case in words", () => {

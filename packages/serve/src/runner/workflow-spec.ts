@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "../agent-rows.js";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
@@ -299,7 +299,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       onConversation: () => {},
       beforeResume: () => {},
       beforeRelease: () => {},
-      handoverInJournal: true,
     };
     const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
     // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an

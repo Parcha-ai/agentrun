@@ -5,8 +5,8 @@
 // The map from a key's name to the option it fills is serve's, and lives here: E2B_API_KEY is E2B's apiKey, the Modal
 // token pair is the Modal client's tokenId and tokenSecret, and so on. A name a provider does not declare is never passed
 // on; an empty optional key is left out; a required one not saved refuses in words naming what to save, before anything
-// is made. The provider modules themselves (each one's create()) are passed in, as the rest of the computer package is
-// until the cutover makes it serve's dependency: a provider with no module here answers that its test is not available.
+// is made. The provider modules themselves (each one's create()) are passed in (workspace/computer-providers.ts makes the
+// computer package's; a test gives stand-ins): a provider with no module here answers that its test is not available.
 // No key is ever in an answer: each value is scrubbed from the provider's words, and the words this module adds name keys
 // only by their names.
 
@@ -37,6 +37,8 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly ProviderKey[]>> = {
     { name: "BROWSERBASE_PROJECT_ID", option: "projectId", required: true },
   ],
   kernel: [{ name: "KERNEL_API_KEY", option: "apiKey", required: true }],
+  // This machine's Chrome: no key.
+  local: [],
 };
 
 /** Each provider's name in words (the registry's labels). */
@@ -49,6 +51,7 @@ const LABELS: Readonly<Record<string, string>> = {
   "phone-harness": "Phone harness",
   browserbase: "Browserbase",
   kernel: "Kernel",
+  local: "Local Chrome",
 };
 
 /** The Modal app a server's computers live in when its settings name none (serve's box app until now). */

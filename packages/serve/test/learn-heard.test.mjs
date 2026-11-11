@@ -3,7 +3,7 @@
 // origin read as the timeline reads it (a MESSAGE_ORIGIN marker before the entry, or the entry's own data.origin).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MESSAGE_ORIGIN } from "@parcha/pi-durable-agent/timeline";
+import { MESSAGE_ORIGIN } from "../dist/timeline/index.js";
 import { Hearing } from "../dist/heard.js";
 
 const fired = (source, owner) => ({ kind: "trigger", trigger_id: `tr-${source}`, source, owner });

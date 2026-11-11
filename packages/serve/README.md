@@ -256,8 +256,11 @@ runner you start yourself).
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
-it, needs a 1 GB instance for one and 2 GB for two. The runner beside the server holds at most `--max-runs` runs at
-once (below); a run past that waits `queued` until one ends, and is never refused for a place. A harness whose one run
+it, needs a 1 GB instance for one and 2 GB for two. A runner holds runs by this memory and by `--max-runs` (below): it
+claims a waiting run only while the runs it holds and that run's size fit the host's memory less the server's 128 MB,
+oldest first, so a run that does not fit yet waits `queued`, the runs behind it too, until one ends. A run is never
+refused for a place. A 2 GB host's default count is 15, as many pi runs as fit, but it holds 6 claude-agent runs at
+once, not 15. A harness whose one run
 needs more than all the memory for runs (claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable:
 capabilities say why in its `harnesses` entry. pi always has one place, however small the host.
 
@@ -790,8 +793,10 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
-own network, whatever the list says.
+Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
+vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
+only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
+`AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
 `npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers
