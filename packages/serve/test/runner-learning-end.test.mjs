@@ -167,3 +167,20 @@ test("a learned skill that served 3 earlier runs of the agent, with no learned w
   assert.ok(prompt.includes("Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
   assert.equal(prompt.split("has now served").length - 1, 1, "one line, once");
 });
+
+test("the draft ask describes each tool a call node may run, by the server's own words for what it takes and gives", async (t) => {
+  const { toolOf } = await import("../dist/tools.js");
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_fetch"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt.includes("What each tool a call node may run takes and gives:"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
+  assert.ok(prompt.includes(`- \`web_fetch\`: ${toolOf("web_fetch").summary.slice(0, 120)}`), "web_fetch in the server's own words");
+  assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
+});
