@@ -65,15 +65,18 @@ const graderAnswer = (prompt, drop = []) => {
 
 /** Consolidation run `id` of agent-1 (pairs out of step: `pairs`), claimed and run by the loop on asks that answer with
  *  `consolidator(prompt)` and the faux grader (dropping `drop`). Its end, its journal, what the folder holds, and the asks. */
-async function consolidate({ store, data, onFolder }, consolidator, { drop = [], pairs = [], id = "run-0-consolidate" } = {}) {
+async function consolidate({ store, data, onFolder }, consolidator, { drop = [], pairs = [], id = "run-0-consolidate", stopFirst = false, beforeGrade } = {}) {
   await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", pairs) });
   const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
   const asks = [];
   const ask = async ({ prompt }) => {
     asks.push(prompt);
+    if (!prompt.startsWith("You keep an agent's learned notes")) await beforeGrade?.(prompt);
     return { text: prompt.startsWith("You keep an agent's learned notes") ? consolidator(prompt) : graderAnswer(prompt, drop), usd: 0.01, tokens: { input: 10, cache_read: 0, cache_write: 0, output: 5 } };
   };
   const loop = learningLoopFactory({ refuse: async () => [], store, data, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  // A person's stop already pending when the run starts (its row written, the loop told).
+  if (stopFirst) await loop.stop({ kind: "command", commandId: (await store.command(id, { kind: "stop" })).id });
   const end = await loop.start(claim);
   const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
   const snapshot = await onFolder((ws) => readSnapshot(ws));
@@ -310,4 +313,57 @@ test("a skill and its draft put out of step are found by a later merge too: one 
   assert.deepEqual((await learn(w, "run-2", "plain.md")).end, { state: "ended" });
   const launch = (await w.store.runs.launch(consolidationRunId("run-2"))).body;
   assert.deepEqual(launch.input.consolidate.pairs, [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }]);
+});
+
+/** A learning folder with a skill and its draft committed by a run's merge (`files` more beside them). */
+const pairWorld = (t, files = []) => world(t, {}, async (onFolder) => {
+  const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: "---\nname: find-policies\ndescription: Finds a store's refund policy with quote-refunds\n---\n" }, ...files] }));
+  assert.equal(made.ok, true, JSON.stringify(made));
+});
+/** One run's merge of `files` on the folder, as another learning run's would land. */
+const mergeOn = (w, runId, files) => w.onFolder((ws) => learningCommit(ws, { kind: "merge", runId, reason: "learned more", graded: {}, files }));
+
+test("a consolidation stopped while its first request was cut ends with an unknown cost (null), never $0: the cut request may have been billed", async (t) => {
+  const w = await world(t);
+  const { end, row } = await consolidate(w, () => { throw new Error("the consolidation request was cut"); }, { stopFirst: true });
+  assert.deepEqual(end, { state: "stopped" });
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "unknown, never 0");
+});
+
+test("a draft that pairs with two skills, rewritten alone, is graded with both skills beside it, each once, and merges: companion context is no proposed write and has no write caps", async (t) => {
+  const QUOTE = "---\nname: quote-refunds\ndescription: Quote a store's refund lines; use when a case asks for them\n---\n1. Quote the refund lines whole.\n";
+  const w = await pairWorld(t, [{ path: "skills/quote-refunds/SKILL.md", text: QUOTE }]);
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines whole." } };
+  const answer = [`\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy with quote-refunds\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  const { end, entries, snapshot, asks } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }, { skill: "quote-refunds", workflow: "find-policies", changed: "skill" }] });
+  assert.deepEqual(end, { state: "ended" }, JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.problems])));
+  const grade = asks[1] ?? "";
+  const beside = grade.slice(grade.indexOf("## Beside them"), grade.indexOf("## Your verdict"));
+  for (const skill of ["find-policies", "quote-refunds"]) assert.equal(beside.split(`skills/${skill}/SKILL.md, active`).length - 1, 1, `${skill} beside, once: ${beside.slice(0, 400)}`);
+  assert.deepEqual([...snapshot.log[0].files].filter((f) => !f.startsWith(".")), ["workflows/find-policies/workflow.json"]);
+});
+
+test("which side of a pair changed last is read as the consolidation reads the files: a skill change queued it, a later merge changed the draft, so the draft is the one to follow", async (t) => {
+  const w = await pairWorld(t);
+  assert.equal((await mergeOn(w, "run-skill", [{ path: "skills/find-policies/SKILL.md", text: SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.") }])).ok, true);
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Say the store's refund policy and its window in days, from the page." } };
+  assert.equal((await mergeOn(w, "run-draft", [{ path: "workflows/find-policies/workflow.json", text: JSON.stringify(draft2) }])).ok, true);
+  // Queued when the skill changed: its launch still says the skill.
+  const { asks } = await consolidate(w, () => "", { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }] });
+  assert.match(asks[0], /A skill and its workflow draft out of step: the workflow changed last/);
+  assert.doesNotMatch(asks[0], /the skill changed last/);
+});
+
+test("a companion the grader read beside the rewrite that changes on main before the merge refuses the merge: the pair is never left out of step", async (t) => {
+  const w = await pairWorld(t);
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines." } };
+  const answer = [`\`\`\`\`skill find-policies\n${SKILL}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy with quote-refunds\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  // Another run's merge changes the skill after the grader read it beside the draft, before the merge commits.
+  const beforeGrade = async () => assert.equal((await mergeOn(w, "run-later", [{ path: "skills/find-policies/SKILL.md", text: SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines, then the window.") }])).ok, true);
+  const { end, entries, snapshot } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }], beforeGrade });
+  assert.deepEqual(end, { state: "ended" });
+  const dropped = entries.find((e) => e.kind === KINDS.learningDropped)?.data;
+  assert.equal(dropped?.reason, "checker", JSON.stringify(entries.map((e) => [e.kind, e.data?.detail])));
+  assert.ok(dropped.problems.some((p) => p.path === "skills/find-policies/SKILL.md"), JSON.stringify(dropped.problems));
+  assert.equal(snapshot.log[0].by.run, "run-later", "the draft was not written");
 });
