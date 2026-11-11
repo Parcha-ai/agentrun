@@ -336,7 +336,10 @@ const browserTool: ToolEntry = {
   summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
   // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
   needs: [],
-  nodes: true,
+  // No workflow model node takes it (#2098): the runner, where every run goes, binds the browser for an agentic run alone
+  // (its reconcile, its release and drain, its live view hang off that run's lifecycle). A node naming it is refused when
+  // its definition is saved (runnable.ts), never accepted and then failed at its run.
+  nodes: false,
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {

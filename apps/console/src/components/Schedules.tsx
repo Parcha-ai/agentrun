@@ -21,7 +21,8 @@ import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github"; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
 /** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
-type FormProps = { v2: Client; go: (hash: string) => void; minEvery?: number };
+/** `now`: the page's clock, for whether a one-time schedule's picked time is still ahead. */
+type FormProps = { v2: Client; go: (hash: string) => void; minEvery?: number; now?: () => number };
 
 const hashOf = (id: string) => `#/triggers/${encodeURIComponent(id)}`;
 /** A time the server gave, as the console says every time: in the viewer's own zone. */
@@ -33,8 +34,8 @@ const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sen
 /** `now`: the page's clock, for whether a one-time schedule's time has passed. */
 export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number; now?: () => number }) {
   if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} />;
-  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
-  if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} />;
+  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
+  if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} now={now} />;
   return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} />;
 }
 
@@ -315,7 +316,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
   );
 }
 
-function ScheduleEdit({ v2, go, id, minEvery }: FormProps & { id: string }) {
+function ScheduleEdit({ v2, go, id, minEvery, now }: FormProps & { id: string }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -323,7 +324,7 @@ function ScheduleEdit({ v2, go, id, minEvery }: FormProps & { id: string }) {
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
   // Never an editor for another kind of trigger: its save would rebuild it as a schedule that starts runs.
   if (!isScheduleTrigger(trigger)) return <NotASchedule />;
-  return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} />;
+  return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} now={now} />;
 }
 
 /** One input with its label, its hint, and the issue under it (`data-issue`: the field the server names). */
@@ -350,7 +351,7 @@ async function allAgents(v2: Client): Promise<Agent[]> {
 }
 
 /** A new schedule, or `trigger` to edit. A save the server refuses (422) says each issue under the field it names. */
-function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Schedule }) {
+function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps & { trigger?: Schedule }) {
   const [draft, setDraft] = useState<Draft>(() => (trigger ? draftOf(trigger) : emptyDraft()));
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [issues, setIssues] = useState<Record<string, string>>({});
@@ -361,6 +362,13 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   const keys = useRef(keeper()).current;
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
+  // A one-time schedule's time: a refusal on it (a time already passed) goes once the time picked is ahead of now; one
+  // still past keeps it, as the server would refuse it again.
+  const pickAt = (wall: string) => {
+    set("at")(wall);
+    const picked = instantKept(wall, draft.read?.at);
+    if (picked !== null && Date.parse(picked) > now()) setIssues(({ "source.at": _gone, ...rest }) => rest);
+  };
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
   // The picked agent's default cap per run (definition.max_cost_usd): with one, the schedule's own cap may be left empty
   // and each run takes the agent's. An edited schedule that already ran under its agent's default keeps it so too.
@@ -415,7 +423,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><Input name="cron" value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
-            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><Input name="at" type="datetime-local" step={60} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
+            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><Input name="at" type="datetime-local" step={60} value={draft.at} onChange={(e) => pickAt(e.target.value)} /></Field>}
             {draft.kind === "every" && (
               // The label names the amount; the unit beside it has its own id and its own name ("Unit").
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>

@@ -15,6 +15,7 @@ import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecuti
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
+import type { installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import type { PinnedModel, Tier } from "../model.js";
@@ -44,7 +45,7 @@ import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
-import { UNREADABLE_SIGN_IN } from "../runs.js";
+import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { claimSecrets, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
@@ -136,6 +137,9 @@ export interface AdapterSpecDeps {
    *  fetch to call it with, spread into the claim's mount. Absent, the real control plane the mount credential names. No
    *  test ever reaches the real Archil control plane. */
   readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** How a CLI run's claim waits for its harness's first-use install (harness-install.ts installSettled); a test wraps it
+   *  to see the claim reach the wait. Absent, installSettled itself. */
+  readonly installSettled?: typeof installSettled;
   /** A test runner's fake GitHub API, where the GitHub App's installation tokens are minted (runner/github-app.ts). Absent,
    *  https://api.github.com: the CLI's runner never sets it, and no environment variable, flag or setting maps onto it. */
   readonly githubApi?: string;
