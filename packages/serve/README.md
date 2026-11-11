@@ -1901,7 +1901,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
 | `POST /files`, `PUT /files/{id}`, `GET /files`, `GET` and `DELETE /files/{id}` | [Uploads](#uploads): a file sent in one call (`POST /v2/files?path=...`, its bytes the body), or reserved and then sent (`PUT /v2/files/{id}`); the server's uploads listed, read and deleted. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
-| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the learning ledger and the runs this server holds ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -2503,7 +2503,7 @@ characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
 `reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`; a run
-record or ledger line with any other reason is not counted). It is `null` for a
+record with any other reason is not counted). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
 notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Learned:
@@ -2527,17 +2527,9 @@ notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes
 `merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
 `[redacted]`. Whether a run applied a note is not measured: `given` and `read` say what it had and what it opened. Each
 note on the agent's learning view and notes page counts its runs of each, `runs: {given, read}`, over the runs the server
-knows (held ones from memory, ended ones from the learning ledger).
+knows, read from the store.
 
-Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes, given, read, answered_at, job_cost_usd, look_back_usd}` (`cost` and
-`tokens` the grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from;
-`given` and `read` the files of the notes it was given and read, each absent when there are none; once it looked back,
-`answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
-looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
-its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
-`{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
-costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+`GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from the store (each run's kept learning and its learning run's journal; `in_progress` while a proposal waits
 for its grade), never opening a run's files; the `learning` meter on `GET /usage` reads each run's grade from the same.
 
@@ -2555,13 +2547,12 @@ with the token, an archived agent's too:
 - `GET /agents/{agent_id}/learning`: `main`'s head, `MEMORY.md` as `index`, the first 50 notes (active first, then
   newest first) and the first 20 changes on `main` (newest first, each `by: {run}` from its `Run-Id` trailer or
   `{user: true}`, with its commit, time, reason and files), and how the agent's runs that tried to learn fared
-  (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the learning ledger and the
-  runs the server holds, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
+  (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the store, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
   runs that started from at least one active note against those that started before its first note (the earlier of its
   first merge and the start of its first run that started from a note, so a person's first note counts), each side's
   `runs`; `median_duration_s`, the time to the answer (the run's start to its job's end, before it looks back);
   `median_cost_usd`, the job's own cost without its look-back, over the `cost_runs` whose cost is known; and
-  `median_learning_usd`, what learning itself cost a run (its look-back and its grade). From the same rows and ledger;
+  `median_learning_usd`, what learning itself cost a run (its look-back and its grade). From the same rows;
   null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty pages and `impact: null`.
   `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
   time; a cursor reads the same commit its first page did.
