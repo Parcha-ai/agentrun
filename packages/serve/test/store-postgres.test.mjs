@@ -848,3 +848,60 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   assert.equal(error.message, `The store in the Postgres schema ${schema} is not set up yet: start the server on the Postgres schema ${schema} first, then the runner.`);
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
 });
+
+// #2333's Postgres half: a transaction's deadline from its begin counts only time this process could run. Other work that
+// holds the event loop (a binary hashed, a command run synchronously) makes its timer fire late; that time was no
+// statement's, so the write that was fine commits, as on SQLite (#2354). A lease's, counted from its call, stays the
+// wall clock's.
+test("a Postgres transaction open while other work holds the process's event loop past its deadline commits: only time the process could run counts", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  await sql(schema, `CREATE SCHEMA ${schema}`);
+  await sql(schema, `CREATE TABLE ${schema}.held (key text PRIMARY KEY)`);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  const value = await connection.transaction(async (tx) => {
+    await tx.run("INSERT INTO held (key) VALUES ($1)", "first");
+    // The process held up while the next statement is answered: the deadline's timer fires late, after that answer.
+    setImmediate(() => {
+      const until = Date.now() + 900;
+      while (Date.now() < until);
+    });
+    await tx.run("INSERT INTO held (key) VALUES ($1)", "second");
+    return "done";
+  }, { deadlineMs: 300 });
+  assert.equal(value, "done");
+  assert.deepEqual((await sql(schema, `SELECT key FROM ${schema}.held ORDER BY key`)).map((row) => row.key), ["first", "second"], "both statements are kept");
+});
+
+// PRRT_kwDOUmdVMs62FaCj: a pause past the database's idle-in-transaction timeout (the deadline plus its slack) ends the
+// session at the database's end, and its transaction with it. Nothing of it was written, so its next statement answers
+// StoreDeadline, which the server says as 409 home_busy (retryable), never an internal error. Its options in one object
+// (PRRT_kwDOUmdVMs62Gy_6): test() takes (name, options, fn), and a fourth argument left the case with no body.
+test("a pause past the database's idle-in-transaction timeout loses the session: the transaction answers StoreDeadline (home_busy), never an internal error, and nothing of it is kept", { ...ONLY, timeout: 60_000 }, async (t) => {
+  const schema = await schemaFor(t);
+  await sql(schema, `CREATE SCHEMA ${schema}`);
+  await sql(schema, `CREATE TABLE ${schema}.held (key text PRIMARY KEY)`);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  // A 1 s deadline: the database ends the session once it sits idle in its transaction for 6 s (the deadline and its
+  // 5 s slack). The process is held 7 s, which its deadline does not count (only the time it could run counts), so
+  // after it the deadline still has most of its second: the next statement meets the ended session, not the deadline.
+  let second;
+  const done = connection.transaction(async (tx) => {
+    await tx.run("INSERT INTO held (key) VALUES ($1)", "first");
+    const until = Date.now() + 7_000;
+    while (Date.now() < until);
+    // The database has ended the session meanwhile: let its word arrive before the next statement.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      await tx.run("INSERT INTO held (key) VALUES ($1)", "second");
+    } catch (error) {
+      second = error;
+      throw error;
+    }
+    return "done";
+  }, { deadlineMs: 1_000 });
+  await assert.rejects(done, (error) => error instanceof StoreDeadline, "the lost session is a deadline, retryable");
+  assert.ok(second instanceof StoreDeadline, `the next statement itself answered StoreDeadline, on the ended session: ${second}`);
+  assert.deepEqual(await sql(schema, `SELECT key FROM ${schema}.held`), [], "nothing of it is kept");
+});
