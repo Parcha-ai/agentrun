@@ -33,7 +33,7 @@ async function open(agent: Agent) {
   return { dd };
 }
 
-const EMPTY: AgentLearning = { agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
+const EMPTY: AgentLearning = { agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
 
 describe("AgentPage, the agent's tools", () => {
   it("lists each granted tool with its provider (where it has one) and its permission", async () => {

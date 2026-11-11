@@ -11,7 +11,7 @@ import type { Run, TimelinePage, TimelineRow } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = { agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } } as Agent;
-const caps = { harnesses: [{ id: "pi", available: true, steer: true }], features: { messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false } } };
+const caps = { harnesses: [{ id: "pi", available: true, steer: true }], features: { messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false } }, limits: { max_upload_bytes: 50 * 2 ** 20, max_files_per_run: 20 } };
 const row = (seq: number, kind: string, text: string): TimelineRow => ({ id: `r${seq}`, seq, kind, summary: text, text, timestamp: "2026-10-30T03:40:00Z", tool_name: null } as TimelineRow);
 
 /** A faux server: the run completes on the third timeline poll; a follow-up adds its own turn, answered at once. */
@@ -25,7 +25,7 @@ function fauxServer() {
     return out;
   };
   const done = () => polls >= 3;
-  const run = (): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+  const run = (): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
     run_id: "run1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: done() ? "completed" : "working", state: done() ? "idle" : "working",
     title: "What is six times seven?", created_at: "2026-10-30T03:40:00Z", ended_at: done() ? "2026-10-30T03:40:03Z" : null,
     result: done() ? { output: null, final_answer: turns > 1 ? "Eight times nine is 72." : "The answer is 42." } : null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,

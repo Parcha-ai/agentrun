@@ -17,7 +17,7 @@ import {
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
-  SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
+  RevisionMoved, SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
@@ -351,13 +351,15 @@ class SqliteStore implements Store {
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
-    const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number) => {
+    const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number, ifCurrent?: string | null) => {
       // The parent is the agent's current revision now (null for its first): the agent must exist, which its first revision
-      // (create) and a later one (addRevision, upgrade) both guarantee before this. Held, so two revisions added at once
-      // never both name the same parent.
+      // (create) and a later one (addRevision, upgrade) both guarantee before this. Held (a writer's row lock), so two
+      // revisions added at once, by this server or another on the same store, never both name the same parent, and
+      // `ifCurrent` is compared with what no other writer can move until this commits.
       await d.lockRow(tx, "agents", "id", agentId);
       const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
+      if (ifCurrent !== undefined && agent.current_revision !== ifCurrent) throw new RevisionMoved(agentId, agent.current_revision);
       await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         revision.id, agentId, agent.current_revision, revision.kind, json(revision.body),
         revision.skills === undefined || revision.skills === null ? null : json(revision.skills),
@@ -447,8 +449,8 @@ class SqliteStore implements Store {
           for (const t of off) await writeScopes(tx, t.id, []);
           return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
         }),
-      addRevision: async ({ agentId, ...revision }) => {
-        await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
+      addRevision: async ({ agentId, ifCurrent, ...revision }) => {
+        await db.transaction((tx) => insertRevision(tx, agentId, revision, now(), ifCurrent));
       },
       setCurrent: async (agentId, revisionId) => {
         const changed = await db.transaction((tx) => tx.runCounted(

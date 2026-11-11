@@ -257,6 +257,26 @@ describe("a new schedule", () => {
     expect(t.issue("target.max_cost_usd")).toBe("A cost cap is needed: every run a schedule starts is capped.");
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });
+  it("says a one time already passed in words on the time field, and clears it once a time ahead is picked (#2248)", async () => {
+    const message = "Pick a time in the future: 2026-11-09T09:30:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-09T09:30");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe(message);
+    expect(t.text()).not.toContain("at is in the past");
+    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays.
+    await t.set("at", "2026-11-09T23:59");
+    expect(t.issue("source.at")).toBe(message);
+    await t.set("at", "2026-11-12T09:30");
+    expect(t.issue("source.at")).toBeNull();
+    expect(t.went).toEqual([]);
+  });
+
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
     const message = "the agent flow has no current revision";
     const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
