@@ -137,10 +137,14 @@ test("R4 (guard) a capped codex run's learned node is admitted by the session's 
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
-  const { runId, rows, view } = await ran(api, data, "capped-port", "codex", { fields: { max_cost_usd: 0.103 }, ends: ["completed", "failed", "input_required"] });
+  // The cap sits between the node's least and that least plus the harness's earlier $0.001: $0.922 covers the node's
+  // $0.9216 alone, but not after the $0.001 the harness spent first ($0.921 left). So the node is refused only when the
+  // guard counts the harness's spend on the one total; a guard that ignored it would admit the node.
+  const cap = 0.922;
+  const { runId, rows, view } = await ran(api, data, "capped-port", "codex", { fields: { max_cost_usd: cap }, ends: ["completed", "failed", "input_required"] });
   assert.deepEqual(gw.requests.filter((r) => r.method === "POST"), [], "the node's request never left");
   assert.deepEqual((await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL), [], "refused before its record: the session wrote none");
-  assert.deepEqual([view.status, view.state, view.pending?.kind, view.pending?.cap_usd, view.pending?.spent_usd, view.pending?.needs_usd], ["input_required", "waiting", "budget", 0.103, 0.001, 0.9216], JSON.stringify(view));
+  assert.deepEqual([view.status, view.state, view.pending?.kind, view.pending?.cap_usd, view.pending?.spent_usd, view.pending?.needs_usd], ["input_required", "waiting", "budget", cap, 0.001, 0.9216], JSON.stringify(view));
   assert.equal(learnedResult(rows)?.tool_status, "failed", JSON.stringify(learnedResult(rows)));
   assert.deepEqual((await sideMarks(data, runId)), [], "no second meter");
 });
