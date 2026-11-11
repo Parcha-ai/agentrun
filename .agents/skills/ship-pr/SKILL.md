@@ -21,8 +21,8 @@ slot for paid runs, a model gateway) live outside the repository: in the file `S
 | Fact | Value |
 |---|---|
 | Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, ALLGREEN, up to 5 entries, squash |
-| Required checks | `verify (22.19.0)` and `verify (22.23.2)`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `transport-docker`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
-| Toolchain | Node 22.19 or later on 22, or 24.2 or later; npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
+| Required checks | `verify` and `lean`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `transport-docker`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
+| Toolchain | Node 24.22.3 or later (`.nvmrc`); npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
 | Changelog | a fragment in `changes/` per pull request with a user-visible change; no pull request edits an `Unreleased` section (`changes/README.md`) |
 | Identity | the machine identity authors, pushes, replies, resolves and arms auto-merge; only the maintainer approves |
 
@@ -93,7 +93,7 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 
   **Pass:** each command exits 0. The suites fail a file that leaves a process or a directory behind, so a teardown leak is a failure, not a warning.
 
-  A fix for a flaky test also runs that file 16 times, four at a time, on Node 22.19 and on the newest Node CI uses, plus a forced version of the race it fixes. The body gives the counts. A flake fixed only by hoping is not fixed.
+  A fix for a flaky test also runs that file 16 times, four at a time, on the Node CI uses, plus a forced version of the race it fixes. The body gives the counts. A flake fixed only by hoping is not fixed.
 - **Package contents:** `npm run verify:tarball -w @parcha/pi-browser`. **Pass:** exit 0. Then `node scripts/stranger.mjs pi-browser`, whose spec runs the README's no-key command and must print the README's block byte for byte.
 - **Provider live check,** once per provider the change can reach, with that provider's key already in the environment (`BROWSERBASE_API_KEY` for Browserbase, plus the Browserbase SDK installed; `KERNEL_API_KEY` for Kernel):
 
@@ -107,7 +107,7 @@ required, the command, the pass rule and the cost. Its lead owns that section.
   Paste the provider lines and the session check into the body. Never paste a session's connect or live-view URL: they carry tokens.
 - **Needs:**
   - Chrome for Testing at CI's pinned version. On Ubuntu 24.04, an unprivileged Chrome needs `kernel.apparmor_restrict_unprivileged_userns=0`, the runner's documented switch; the sandbox stays on.
-  - Node 22.19 or later.
+  - Node 24.22.3 or later.
   - For the live check, a Browserbase or Kernel key whose plan allows at least one concurrent session.
   - No other credential, and no secret ever goes into the repository.
 - **Cost:** the Chrome suites and the stranger spec are $0. A provider live check is one session of about a minute. At Browserbase's list price ($0.12 per session-hour, one-minute minimum) that is under $0.01; Kernel is on the same order.
@@ -144,7 +144,7 @@ end, and fails if a box is left. All three run from the repository root at the h
 - **Pass:** each command exits 0 and its Vitest summary shows `0 failed` (skipped files are fine). A non-zero exit,
   a failed test, or a run killed before its summary blocks. The suites' own last test counts the run's boxes still
   at the provider; a non-zero count fails the run. Put each summary line in the pull request body.
-- **Needs:** a Docker daemon and Node 22.19 or later; for Daytona, a key for a TEST organization (never a
+- **Needs:** a Docker daemon and Node 24.22.3 or later; for Daytona, a key for a TEST organization (never a
   production key) and its API URL and target; for Modal, a token pair and the `modal` SDK installed with `--no-save`
   (the package never depends on it). No credential enters a box, a log or the pull request.
 - **Cost:** Docker $0. Daytona under $0.05 a run (about 60 short one-vCPU boxes, seconds each). Modal sandbox and VM
