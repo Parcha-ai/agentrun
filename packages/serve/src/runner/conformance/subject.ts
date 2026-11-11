@@ -65,6 +65,7 @@ export type ConformanceCase =
   | "stalled-past-lease-process"
   | "replay-safe-rerun"
   | "steer-mid-turn"
+  | "message-mid-turn-kept"
   | "cancel-ends-for-good"
   | "cancel-parked"
   | "deny-note"
