@@ -393,15 +393,20 @@ test("claude-agent: with no setting the CLI's MCP call asks once (exactly one ap
   // The parked result ended the turn: no model request carried it back.
   assert.ok(!anthropic.requests.some((request) => Object.keys(request.results).length), "no request left after the parked result");
   const { rows } = await follow(server.api, runId, ["input_required"]);
-  // The CLI's parked result (the gate's waiting words) is not a row of its own yet (#2061); the call's row and its approval show.
-  await t.test("the parked result is on the timeline", { skip: "#2061: a CLI's parked MCP call shows no waiting result row" }, () => {
-    assert.ok(rows.some((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add"), "the parked result is on the timeline");
-  });
+  // The CLI's parked result (the gate's waiting words) is a row of its own (#2061), as pi's is: the call, its result, its
+  // approval.
+  assert.deepEqual(rows.filter((row) => row.tool_use_id === pending.call_id).map((row) => row.kind), ["tool_use", "tool_result", "tool_approval_requested"], JSON.stringify(rows.map((row) => [row.kind, row.tool_name])));
+  const waiting = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add");
+  assert.match(waiting.tool_result_preview ?? waiting.text ?? "", /waits for a person's approval/, "in the gate's waiting words");
   assert.equal(calls(fake).length, 0);
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
-  await follow(server.api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
+  const done = await follow(server.api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.match(await answerOf(server.api, runId) ?? "", /^Resumed: 5\b/);
   assert.equal(calls(fake, "add").length, 1, "run once, by the gate");
+  // Answered and run, the call's result row is its outcome: the waiting words were never its end.
+  const results = done.rows.filter((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add");
+  assert.equal(results.length, 1, `one result row for the call: ${JSON.stringify(results.map((row) => row.tool_result_preview ?? row.text))}`);
+  assert.doesNotMatch(results[0].tool_result_preview ?? results[0].text ?? "", /waits for a person's approval/, "its outcome, never the waiting words");
   await resumeRowIsAgentRuns(server.api, runId, pending.call_id, "mcp:fake/add", "claude-agent");
 });
 

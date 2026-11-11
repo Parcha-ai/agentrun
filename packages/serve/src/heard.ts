@@ -6,7 +6,7 @@
 //   - a trigger's firing whose words come from outside (a webhook body, a Slack or GitHub event): a trigger's input,
 //     with its source, never the user's;
 //   - any other message the server wrote (a raised cap's follow-up, an approval's resume): left out.
-import { type EntryLike, isUserEntry, type MessageOrigin, originMatcher } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, isUserEntry, type MessageOrigin, originMatcher } from "./timeline/index.js";
 
 /** One message as the grader reads it: its text, and `source` when a trigger sent it and not its owner. */
 export type Heard = { text: string; source?: string };
