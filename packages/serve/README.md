@@ -2762,11 +2762,14 @@ cap, due at the run's first request), the words say the budget instead, on every
 $X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
-the model's answer. Once per cap, across restarts; a raise re-arms it.
+the model's answer. Once per cap, across restarts; a raise re-arms it. The note also comes due, if it has not already,
+on the request whose tool call would be refused now (the wrap-up below: what is left no longer covers what the run keeps
+back to answer), so the note tells the model what is left no later than its tools stop.
 
-A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
-steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
-reaches 75% of its cap, the run's tool gate
+A capped run also stops calling tools before its cap stops it. It keeps back enough to answer: one typical step (its own
+answers' typical cost) and one final answer at its least, as the cap prices the main model's next request. Once what it
+has spent, plus what its requests and paid steps still out are held at (their worst case, as the cap counts them, a
+browser session's open reserve included), leaves less than that, the run's tool gate
 refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
 is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
 would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
@@ -2775,7 +2778,10 @@ model requests are judged by the cap as before, so the run's final answer still 
 request that does not fit what is left is refused as above. The figure is read from the run's booking records at each
 call, never kept in memory, so a restart or a claim moved to another runner holds the same line, and a raise moves it.
 Several requests out at once hold far more than they cost, which is why a fan-out of children used to end a small cap
-with no answer at all; the quarter left above the line is the room for each of them, and the parent, to answer.
+with no answer at all: their holds count as taken, so the run stops calling tools while each of them, and the parent,
+still has room to answer. A simple run, with nothing else out, uses its cap up to its last step and answer. The run is
+told what is left (its wrap-up note, above) no later than its first refused call. Its one known miss: a request that
+writes to its max output can still leave no room for the answer; then the run pauses for a raise rather than overspend.
 
 Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's

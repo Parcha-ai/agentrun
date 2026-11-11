@@ -77,6 +77,30 @@ test("pi: near its cap the model is told once, in the request it is sent, to fin
   assert.ok(!(await journalOf(store, runId)).some((entry) => JSON.stringify(entry.model ?? []).includes("run's budget")), "no entry of pi's transcript holds it");
 });
 
+test("pi on a large cap: the note tells the model what is left no later than its tools stop, with the first refused call, once, and it answers there", { timeout: 240_000 }, async (t) => {
+  // $2: each page is about $0.10, and the run keeps back a typical page and a least answer ($0.10 + $0.1024). Its tools
+  // stop once that no longer fits: the write after about $1.80 spent is refused, and the request that carries that
+  // refusal carries the note too, saying what is left (about $0.20). The model answers there.
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
+  const { api } = await serve(t, { faux: WRAPUP });
+  assert.equal((await api("POST", "/agents", agent("wrap-line", { instructions: "Write the pages.", tools: ["write"] }))).status, 201);
+  const runId = (await api("POST", "/agents/wrap-line/runs", { input: { content: "go" }, max_cost_usd: 2 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 200_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Wrapping up: the pages so far are the answer."], JSON.stringify(run.pending ?? run.error));
+  const rows = await rowsOf(api, runId);
+  assert.equal(rows.length, 1, `one row: ${JSON.stringify(rows.map((r) => r.summary))}`);
+  const left = Number(/^About \$(\d+\.\d\d) left of this run's budget: finish now with your answer\.$/.exec(rows[0].text)?.[1]);
+  assert.ok(left > 0.1 && left < 0.3, `told with about what it keeps back left ($0.20), well past 75% of $2: ${rows[0].text}`);
+  // Told no later than its tools stopped: the model answered on the note, so at most the one write before it was refused.
+  const timeline = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
+  const refused = timeline.filter((row) => row.kind === "tool_result" && `${row.text ?? ""} ${row.summary ?? ""}`.includes("Budget nearly spent"));
+  assert.ok(refused.length <= 1, `no write refused after the note: ${JSON.stringify(refused.map((row) => row.summary))}`);
+  const seen = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.note);
+  assert.equal(seen.length, 1, "the model saw the note in one request");
+});
+
 test("pi: the final-answer request that carries the note is the run's last: no further request is sent, live or after a restart that comes after the answer", { timeout: 240_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
