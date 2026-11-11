@@ -43,10 +43,10 @@ async function fakeDocker(t, answers) {
 }
 
 /** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not); on the real models
- *  (no --faux) unless `faux`; in Mode 2 when `archil`. */
-async function server(t, { archil, docker = false, faux = false }) {
+ *  (no --faux) unless `faux`; in Mode 2 when `archil`; with the template packages in `templates`, when given. */
+async function server(t, { archil, docker = false, faux = false, templates }) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker) }, UNSET);
-  const { api } = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true });
+  const { api } = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
   if (archil) {
     const saved = await api("PUT", "/workspace/archil", ARCHIL);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -114,7 +114,8 @@ test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's sta
 // server whose AGENTRUN_BOX_ALLOW is none, the operator's word for no network at all, its run is refused at the start in
 // words naming the setting, as the claim refuses it; under the default list (the setting unset) or the operator's own
 // list it is not, and runs open (the claim's networkOf).
-const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).";
+const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.`;
+const NO_NETWORK_PHONE = noNetwork("Phone harness phone");
 for (const boxAllow of ["none", undefined, "pypi.org"]) {
   const refused = boxAllow === "none";
   test(`a cloud phone, its key saved, is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {
@@ -129,6 +130,25 @@ for (const boxAllow of ["none", undefined, "pypi.org"]) {
     }
     assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
     assert.equal(said.refused[0][2], NO_NETWORK_PHONE);
+    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  });
+}
+
+// Local Chrome declares "open" and "allow", never "none" (public addresses from this machine, through its egress proxy):
+// under none, the operator's word for no network at all, a browser on it is refused at the start in the same words, by
+// its own name; under the default list (open) or the operator's own (that list) it is not refused for its network.
+for (const boxAllow of ["none", undefined, "pypi.org"]) {
+  const refused = boxAllow === "none";
+  test(`a Local Chrome browser is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {
+    withEnv(t, boxAllow === undefined ? {} : { AGENTRUN_BOX_ALLOW: boxAllow }, ["AGENTRUN_BOX_ALLOW"]);
+    const api = await server(t, {});
+    const said = await saveAndStart(api, `local-${boxAllow ?? "unset"}`.replace(/\./g, "-"), { computer: { kind: "browser", provider: "local" } });
+    if (!refused) {
+      assert.ok(!said.refused.some((one) => /AGENTRUN_BOX_ALLOW/.test(one[2])), `the run is not refused for its network: ${JSON.stringify(said)}`);
+      return;
+    }
+    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.equal(said.refused[0][2], noNetwork("Local Chrome browser"));
     assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
   });
 }
@@ -202,4 +222,71 @@ test("under --faux, a run's start and its claim answer alike: a faux desktop the
     const said = await saveAndStart(api, id, { computer });
     assert.deepEqual(said.refused.map((one) => one[2]), makes ? [] : [claim.refused], `the start answers as the claim does: ${JSON.stringify(said)}`);
   }
+});
+
+// Where a run on the runner has a shell (resolve-computer.ts runShellOf): in Mode 2 with no computer, bash runs on
+// Archil's serverless exec (runner-cli-spec.test.mjs binds it there), so the save check lets an agent with no computer
+// name bash, and its run's start is not refused for it; the background tools run in a box alone, so they stay refused.
+// In Mode 1 with no computer there is no shell at all: bash is refused, 422, in the words it always had.
+/** An agent with `setting` and `tools` saved: its answer, and its run's start refused for a tool, by field. */
+async function saveWithTools(api, id, setting, tools) {
+  const made = await api("POST", "/agents", { definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools, ...setting } });
+  if (made.status !== 201) return { made };
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Answer." } });
+  const onTools = (one) => one.field.startsWith("definition.tools");
+  return { made, warned: (made.body.warnings ?? []).filter(onTools), refused: (started.body?.error?.fields ?? []).filter(onTools), started };
+}
+
+for (const setting of [{ computer: { kind: "none" } }, { place: { mode: "runner" } }]) {
+  test(`Mode 2: an agent with ${JSON.stringify(setting)} and bash is saved and its run is not refused for bash: it runs on Archil's serverless exec`, async (t) => {
+    const api = await server(t, { archil: true });
+    const said = await saveWithTools(api, `exec-${Object.keys(setting)[0]}`, setting, ["read", "bash"]);
+    assert.equal(said.made.status, 201, JSON.stringify(said.made.body));
+    assert.deepEqual(said.warned, [], JSON.stringify(said.made.body));
+    assert.deepEqual(said.refused, [], JSON.stringify(said.started.body));
+    // What is left is the model key this test saves none of.
+    assert.deepEqual([said.started.status, said.started.body?.error?.code], [409, "agent_not_runnable"], JSON.stringify(said.started.body));
+    assert.doesNotMatch(said.started.body.error.message, /bash/, JSON.stringify(said.started.body));
+  });
+}
+
+test("Mode 2: a background tool on the runner is still refused, 422: Archil's serverless exec runs bash alone", async (t) => {
+  const api = await server(t, { archil: true });
+  const said = await saveWithTools(api, "exec-background", { computer: { kind: "none" } }, ["bash", "bash_background"]);
+  assert.equal(said.made.status, 422, JSON.stringify(said.made.body));
+  assert.deepEqual(said.made.body.error.fields.map((one) => [one.field, one.reason]), [["definition.tools[1]", "not_an_option"]]);
+  assert.match(said.made.body.error.fields[0].message, /^bash_background runs only in a box, and this agent's place is the runner, whose shell here runs bash alone \(bash_background needs a sandbox computer\), /);
+});
+
+test("Mode 1 with no Docker: an agent with no computer and bash is refused, 422, in the words it always had", async (t) => {
+  const api = await server(t, { archil: false, docker: false });
+  const said = await saveWithTools(api, "no-shell", { computer: { kind: "none" } }, ["read", "bash"]);
+  assert.equal(said.made.status, 422, JSON.stringify(said.made.body));
+  assert.deepEqual(said.made.body.error.fields.map((one) => [one.field, one.reason, one.fix]), [["definition.tools[1]", "not_an_option", "Remove \"bash\" from definition.tools."]]);
+  assert.equal(said.made.body.error.fields[0].message, "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.");
+});
+
+test("capabilities show bash available in Mode 2, where a run on the runner has it on Archil's serverless exec; the background tools still want a box, and in Mode 1 bash does too", async (t) => {
+  const shellTools = (tools) => tools.filter((tool) => tool.sandbox_only).map((tool) => [tool.name, tool.available, tool.reason?.startsWith("no box is set up on this server") ?? false]);
+  const background = ["bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"].map((name) => [name, false, true]);
+  const mode1 = await server(t, { archil: false });
+  assert.deepEqual(shellTools((await mode1("GET", "/capabilities")).body.tools), [["bash", false, true], ...background]);
+  const mode2 = await server(t, { archil: true });
+  assert.deepEqual(shellTools((await mode2("GET", "/capabilities")).body.tools), [["bash", true, false], ...background]);
+});
+
+test("a template that grants bash applies in Mode 2, its agent on the runner with bash on Archil's serverless exec; in Mode 1 with no Docker its apply is refused, 422", async (t) => {
+  const templates = join(await scratch(t), "templates");
+  await mkdir(join(templates, "shell-reader"), { recursive: true });
+  await writeFile(join(templates, "shell-reader", "agent.md"), "---\nname: shell-reader\nversion: 1.0.0\ndescription: Reads its folder with a shell.\ntools: [read, bash]\n---\nRead.\n");
+  const mode2 = await server(t, { archil: true, templates });
+  const applied = await mode2("POST", "/templates/shell-reader/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const made = (await mode2("GET", `/agents/${applied.body.agent_id}`)).body.definition;
+  // It names no place: it runs where a new agent does, the runner here (no Docker).
+  assert.deepEqual([made.place, made.computer, made.tools], [undefined, undefined, ["read", "bash"]], JSON.stringify(made));
+  const mode1 = await server(t, { archil: false, templates });
+  const refused = await mode1("POST", "/templates/shell-reader/apply", {});
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body.error), /bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell/);
 });
