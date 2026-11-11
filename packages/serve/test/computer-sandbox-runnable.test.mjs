@@ -223,3 +223,45 @@ test("under --faux, a run's start and its claim answer alike: a faux desktop the
     assert.deepEqual(said.refused.map((one) => one[2]), makes ? [] : [claim.refused], `the start answers as the claim does: ${JSON.stringify(said)}`);
   }
 });
+
+// Where a run on the runner has a shell (resolve-computer.ts runShellOf): in Mode 2 with no computer, bash runs on
+// Archil's serverless exec (runner-cli-spec.test.mjs binds it there), so the save check lets an agent with no computer
+// name bash, and its run's start is not refused for it; the background tools run in a box alone, so they stay refused.
+// In Mode 1 with no computer there is no shell at all: bash is refused, 422, in the words it always had.
+/** An agent with `setting` and `tools` saved: its answer, and its run's start refused for a tool, by field. */
+async function saveWithTools(api, id, setting, tools) {
+  const made = await api("POST", "/agents", { definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools, ...setting } });
+  if (made.status !== 201) return { made };
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Answer." } });
+  const onTools = (one) => one.field.startsWith("definition.tools");
+  return { made, warned: (made.body.warnings ?? []).filter(onTools), refused: (started.body?.error?.fields ?? []).filter(onTools), started };
+}
+
+for (const setting of [{ computer: { kind: "none" } }, { place: { mode: "runner" } }]) {
+  test(`Mode 2: an agent with ${JSON.stringify(setting)} and bash is saved and its run is not refused for bash: it runs on Archil's serverless exec`, async (t) => {
+    const api = await server(t, { archil: true });
+    const said = await saveWithTools(api, `exec-${Object.keys(setting)[0]}`, setting, ["read", "bash"]);
+    assert.equal(said.made.status, 201, JSON.stringify(said.made.body));
+    assert.deepEqual(said.warned, [], JSON.stringify(said.made.body));
+    assert.deepEqual(said.refused, [], JSON.stringify(said.started.body));
+    // What is left is the model key this test saves none of.
+    assert.deepEqual([said.started.status, said.started.body?.error?.code], [409, "agent_not_runnable"], JSON.stringify(said.started.body));
+    assert.doesNotMatch(said.started.body.error.message, /bash/, JSON.stringify(said.started.body));
+  });
+}
+
+test("Mode 2: a background tool on the runner is still refused, 422: Archil's serverless exec runs bash alone", async (t) => {
+  const api = await server(t, { archil: true });
+  const said = await saveWithTools(api, "exec-background", { computer: { kind: "none" } }, ["bash", "bash_background"]);
+  assert.equal(said.made.status, 422, JSON.stringify(said.made.body));
+  assert.deepEqual(said.made.body.error.fields.map((one) => [one.field, one.reason]), [["definition.tools[1]", "not_an_option"]]);
+  assert.match(said.made.body.error.fields[0].message, /^bash_background runs only in a box, and this agent's place is the runner, whose shell here runs bash alone \(bash_background needs a sandbox computer\), /);
+});
+
+test("Mode 1 with no Docker: an agent with no computer and bash is refused, 422, in the words it always had", async (t) => {
+  const api = await server(t, { archil: false, docker: false });
+  const said = await saveWithTools(api, "no-shell", { computer: { kind: "none" } }, ["read", "bash"]);
+  assert.equal(said.made.status, 422, JSON.stringify(said.made.body));
+  assert.deepEqual(said.made.body.error.fields.map((one) => [one.field, one.reason, one.fix]), [["definition.tools[1]", "not_an_option", "Remove \"bash\" from definition.tools."]]);
+  assert.equal(said.made.body.error.fields[0].message, "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.");
+});
