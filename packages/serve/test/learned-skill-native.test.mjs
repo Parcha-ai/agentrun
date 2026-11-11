@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
+import { servedSkill } from "../dist/learn/skills.js";
 import { ended, git, resnap } from "./learn-support.mjs";
 import { agent, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
@@ -115,7 +116,7 @@ test("a codex run gets the skill its agent learned as Codex's own: seeded in its
   const homes = codexHomes(data);
   assert.equal(homes.length, 1, `one CODEX_HOME for the run ${runId}: ${JSON.stringify(homes)}`);
   const home = homes[0];
-  assert.equal(existsSync(join(home, "skills", NAME, "SKILL.md")) ? readFileSync(join(home, "skills", NAME, "SKILL.md"), "utf8") : null, SKILL, "Codex finds the learned skill where it lists a user's skills");
+  assert.equal(existsSync(join(home, "skills", NAME, "SKILL.md")) ? readFileSync(join(home, "skills", NAME, "SKILL.md"), "utf8") : null, servedSkill(SKILL), "Codex finds the learned skill, as servedSkill writes it, where it lists a user's skills");
   const sessions = join(home, "sessions");
   const rollouts = (await readdir(sessions, { recursive: true })).filter((path) => path.endsWith(".jsonl"));
   const lines = (await readFile(join(sessions, rollouts[0]), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
