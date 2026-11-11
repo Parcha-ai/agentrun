@@ -3,6 +3,7 @@
 // answer's note blocks, never from a file it writes there. The words and the rule are the tool gate's own
 // (tool-gate.ts NOTE_ONLY_TEXT, underLearning), kept equal by a test.
 import { posix, resolve, sep, join } from "node:path";
+import { KINDS } from "./journal-kinds.js";
 
 /** The prefix of the end-of-run turn's request id: the server's own (turns.ts REFLECT_REQUEST). */
 export const REFLECT_PREFIX = "learn-reflect-";
@@ -18,11 +19,15 @@ export const reflectRequestId = (runId: string, again = false) => `${REFLECT_PRE
 export const REFLECT_AGAIN = ":again";
 
 /** Where the end-of-run turn began in a run's journal: the entry its input placed, from the input submission under the
- *  turn's request id; undefined before it is placed, or for a run that asked none. Every entry from it on, until the
- *  run's end, is the turn's (the server's labelled: after the entry before it). */
-export function reflectFrom(submissions: readonly { readonly type?: string; readonly requestId?: string; readonly entry?: unknown }[]): number | undefined {
+ *  turn's request id; else, on a CLI harness, the turn's prompt the CLI record wrote as it asked the turn (`entries`:
+ *  adapter-loop.ts asking, an end-of-run-turn entry of the person's, written before the turn's submission, which only
+ *  its answer writes). Undefined before either, or for a run that asked none. Every entry from it on, until the run's
+ *  end, is the turn's (the server's labelled: after the entry before it). */
+export function reflectFrom(submissions: readonly { readonly type?: string; readonly requestId?: string; readonly entry?: unknown }[], entries: readonly { readonly kind?: string; readonly id?: unknown; readonly data?: unknown }[] = []): number | undefined {
   const placed = submissions.filter((record) => record.type === "input" && typeof record.requestId === "string" && record.requestId.startsWith(REFLECT_PREFIX) && record.entry !== undefined);
-  return placed.length ? Math.min(...placed.map((record) => Number(record.entry))) : undefined;
+  if (placed.length) return Math.min(...placed.map((record) => Number(record.entry)));
+  const asked = entries.find((entry) => entry.kind === KINDS.endOfRunTurn && (entry.data as { role?: unknown } | null | undefined)?.role === "person");
+  return asked === undefined ? undefined : Number(asked.id);
 }
 
 /** The refusal of the end-of-run turn's write or edit under work/.learning/: the tool gate's one text (NOTE_ONLY_TEXT), so

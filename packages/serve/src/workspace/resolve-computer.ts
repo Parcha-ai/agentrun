@@ -1,4 +1,4 @@
-// The claim's resolver: an agent's computer setting {kind, provider}, in the server's mode, read against the computer
+// The claim's resolver: an agent's computer setting {kind, provider, gpu?}, in the server's mode, read against the computer
 // module's kind registry (its setting kinds and provider entries), gives how to start the computer for the run, whether
 // it mounts the run's folder, and which of the kernel's ports it fills; or a refusal in words that name the setting
 // (Settings → Computers). The runner's harness start calls it at the claim, starts the computer, and hands it to
@@ -10,14 +10,16 @@
 // a sandbox that is not Docker's (only a bind reaches this machine), Mode 2 refuses Docker's (it cannot mount Archil). A
 // desktop, a phone and a browser are allowed in both modes: a desktop mounts only where its provider mounts the mode's
 // folder and it offers files and exec; a phone and a browser never do. A provider whose required keys are not all saved
-// is refused here, before anything starts; start hands the provider its declared keys alone.
+// is refused here, before anything starts; start hands the provider its declared keys alone. A sandbox's GPUs are held
+// to what its provider declares, with the mode's folder as their mount, in the computer package's checkGpu words (a GPU
+// with an Archil mount is refused where the provider has not proven it), and go into the computer's spec.
 //
 // Where the run's shell is follows the mount (shellPlaceOf): in the computer that mounts the folder; with none, Archil's
 // serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
-import type { CdpSession, ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import type { ComputerClient, ComputerSettingKind, Group, KindCapabilities, MountKind, MountReadBack, MountSpec, ProviderEntry, Result } from "@parcha/agentrun-computer";
+import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import { checkGpu, type ComputerClient, type ComputerSettingKind, type GpuSpec, type Group, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -26,8 +28,8 @@ import type { Workspace } from "./workspace.js";
  *  provider of the kind registry: the computer module's own types. Where a run's shell is: the kernel registry's. */
 export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace };
 
-/** An agent's computer setting. */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null };
+/** An agent's computer setting: a sandbox's may ask for GPUs. */
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly gpu?: GpuSpec };
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
@@ -38,14 +40,36 @@ export type KindRegistry = {
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
- *  phone), the read-back of its mount (when mounted), its CDP connect (browser), and its release. */
+ *  phone), the read-back of its mount (when mounted), and its release. A browser is started by none: the claim gives
+ *  the run's browser tool its provider (`browser`), which opens each session at the tool's first call, and the release
+ *  lets go of any the tool left open. */
 export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
   readBack?(): Promise<Result<MountReadBack>>;
-  connect?(): Promise<CdpSession>;
+  readonly browser?: ClaimBrowser;
   release(): Promise<void>;
+};
+
+/** A browser computer's provider as the run's browser tool opens its sessions through it: each session one computer of
+ *  the provider's, made under the run's labels and the tool's tag (so a create whose answer was lost is found again),
+ *  its CDP URL read through the provider's connect at each attach (a secret: it goes only to the driver), and released
+ *  when the tool lets it go. Errors carry the provider's words, and its code. So the session's time is the time the
+ *  tool holds it, which is what the run's spend books. */
+export type ClaimBrowser = {
+  /** The provider's id: the session's price and its name. */
+  readonly provider: string;
+  /** The longest a session lives, in seconds. */
+  readonly maxLifetimeS: number;
+  /** Makes a session for `tag`, to live at most `lifetimeS`: its computer's id. */
+  open(tag: string, lifetimeS: number, signal?: AbortSignal): Promise<string>;
+  /** The sessions made for `tag`, by id. */
+  find(tag: string, signal?: AbortSignal): Promise<string[]>;
+  /** The session's CDP URL now. */
+  url(id: string): Promise<string>;
+  /** Ends the session; one already gone is ended. */
+  close(id: string): Promise<void>;
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one
@@ -54,7 +78,7 @@ export type ClaimSide = {
   keysOf(provider: string): Promise<Readonly<Record<string, string>>>;
   /** Whether a provider that binds a folder of this machine (Docker) answers here now: the Mode 1 default asks it. */
   answers(provider: string): Promise<boolean>;
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -73,14 +97,15 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
     return keys;
   };
 
-/** Whether a provider's computers run only on the vendor's own network: the network forms it declares (its module's
- *  NETWORK, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
+/** Whether a provider's computers run only on an open network: the network forms it declares (its module's NETWORK, its
+ *  capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's (the vendor's own network) and
+ *  Local Chrome's (public addresses from this machine, through its egress proxy) are. */
 export const vendorNetworkOnly = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && network.every((one) => one === "open");
 
-/** Why a vendor-hosted computer is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the fix:
- *  the operator said no network at all, and the computer can't run without the vendor's. */
+/** Why a computer that runs only on an open network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words
+ *  that name the fix: the operator said no network at all, and the computer can't run without one. */
 export const noNetworkRefusal = (label: string, kind: string): string =>
-  `This agent's computer is a ${label} ${kind}, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).`;
+  `This agent's computer is a ${label} ${kind}, which runs only on an open network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a computer that runs only on an open network then runs open: the list doesn't narrow it).`;
 
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
@@ -221,6 +246,15 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in ${SETTINGS}.` };
   }
 
+  // Its GPUs, a sandbox's alone: in checkGpu's words, against what the configuration that serves it declares, with the
+  // mode's folder as the mount it takes (a sandbox here always mounts it).
+  const gpu = kind === "sandbox" && setting.gpu ? setting.gpu : undefined;
+  if (gpu) {
+    const offered = serving.find((one) => one.gpu !== undefined) ?? serving[0]!;
+    const [refusal] = checkGpu(gpu, offered, { kind: mode === 1 ? "bind" : "archil" });
+    if (refusal) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refusal.message}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
+  }
+
   // Its keys: every required one saved, before anything starts; only declared names go to the provider.
   const saved = await side.keysOf(entry.id);
   const has = (name: string) => typeof saved[name] === "string" && saved[name] !== "";
@@ -243,7 +277,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       const mount = mounts ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
-        launched = await side.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        launched = await side.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -260,7 +294,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 /** The started computer as runTools takes it, or what it lacks, in words. */
 function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
   const groups = launched.groups as readonly Group[];
-  if (kind === "browser") return launched.connect ? { kind, connect: () => launched.connect!() } : "it gave no CDP connection";
+  // The run's browser tool opens a browser's sessions through its provider.
+  if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
   const { client } = launched;
   if (!client) return "it gave no computer protocol client";
   if (kind === "phone") return { kind, computer: { client }, groups };

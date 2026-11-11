@@ -16,7 +16,7 @@ export interface DispatchDeps {
   /** The run's launch row (store.runs.launch): its body names the harness. It throws (StoreLaunchMissing) when the run
    *  was not started with one, which fails the run in words. */
   launchOf(runId: string): Promise<{ readonly body: unknown }>;
-  /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the switch may
+  /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the resolver may
    *  read the run's revision — a workflow revision runs on the workflow loop whatever its harness name), or undefined when
    *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; a built-in
    *  learning run names "learning"; the CLI harnesses name their own. May be async (the revision read). */
@@ -93,7 +93,14 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     // nobody's words are lost.
     const buffered = early.splice(0);
     void replay(claim.runId, inner, buffered, end);
-    if (earlyStop) void inner.stop(earlyStop);
+    // The buffered stop, not awaited here (start() returns the inner loop's end): an inner stop that throws is said in
+    // the log, never an unhandled rejection, which would end the runner process and every run it holds.
+    if (earlyStop) {
+      inner.stop(earlyStop).catch((error: unknown) => {
+        const text = (error as Error)?.message ?? String(error);
+        console.warn(`[runner] run ${claim.runId}: its stop failed: ${loopDeps.redact ? loopDeps.redact(text) : text}`);
+      });
+    }
     return end;
   }
 
