@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { startServe } from "../dist/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
@@ -1002,19 +1002,21 @@ const cliImport = (h, data, env) => {
   return ran;
 };
 
-// SKIP (follow-up #2078): the store now opens Postgres from AGENTRUN_STORE_URL, so the value the test plants for it as a launcher secret is refused at start
-test.skip("the CLI's import cuts every one of the server's own keys, whatever its name: each launcher secret, its own value, is nowhere in what it keeps", async (t) => {
+test("the CLI's import cuts every one of the server's own keys, whatever its name: each launcher secret, its own value, is nowhere in what it keeps", async (t) => {
   // The list holds names no key pattern matches (the seal key's among them): each one's value is cut all the same.
   assert.ok(SERVER_KEYS.includes("AGENTRUN_SEAL_KEY") && SERVER_KEYS.includes("OPENAI_API_KEY") && SERVER_KEYS.some((name) => !/(_API_KEY|_TOKEN)$|SECRET/i.test(name)), SERVER_KEYS.join(" "));
+  // Every one but the store's URL, which the import opens its store from (a value that is no store is refused at start):
+  // its password's custody is secret-custody.test.mjs's.
+  const planted = SERVER_KEYS.filter((name) => name !== "AGENTRUN_STORE_URL");
   const root = await scratch(t);
   const h = home(root);
-  const values = SERVER_KEYS.map(canaryOf);
+  const values = planted.map(canaryOf);
   appendFileSync(join(h.site, "CLAUDE.md"), `Keys: ${values.join(" ")}\n`);
   claudeSession(h.at, h.site, 14, { prompt: "Print the environment.", output: values.join(" ") });
   const data = join(root, "agents");
-  cliImport(h, data, Object.fromEntries(SERVER_KEYS.map((name) => [name, canaryOf(name)])));
+  cliImport(h, data, Object.fromEntries(planted.map((name) => [name, canaryOf(name)])));
   const kept = keptUnder(data);
-  const found = SERVER_KEYS.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
+  const found = planted.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
   assert.deepEqual(found, [], "no server key's value is in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "their places are marked");
 });

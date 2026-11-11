@@ -81,8 +81,9 @@ export function processesOf(processes: Processes): KernelProcesses {
 }
 
 /** The run's hands over `workspace`: its files, its shell with `env` for at most `maxExecS` a command, and the
- *  computer's processes when it has one (`processes`, the attached Workspace's). */
-export function handsOf(workspace: Workspace, options: { readonly maxExecS: number; readonly env: Readonly<Record<string, string>>; readonly processes?: Processes }): Hands {
+ *  computer's processes when it has one (`processes`, the attached Workspace's); `prelude`, shell text each command runs
+ *  after (a bash policy's). */
+export function handsOf(workspace: Workspace, options: { readonly maxExecS: number; readonly env: Readonly<Record<string, string>>; readonly processes?: Processes; /** Shell text run before each command (a bash policy's, bash-read-only.ts policyPrelude). */ readonly prelude?: string; /** Each command's network (a bash policy's on Archil's exec: run-tools.ts). */ readonly network?: "deny" }): Hands {
   return {
     maxExecS: options.maxExecS,
     ...(options.processes ? { processes: processesOf(options.processes) } : {}),
@@ -107,8 +108,8 @@ export function handsOf(workspace: Workspace, options: { readonly maxExecS: numb
       const emit = (stream: "stdout" | "stderr", data: string): void => {
         if (data !== "" && onOutput) onOutput({ stream, data });
       };
-      const run = (shell: string) => workspace.exec([shell, "-c", command], {
-        env: options.env, timeoutMs, maxOutput: 0, ...(signal ? { signal } : {}),
+      const run = (shell: string) => workspace.exec([shell, "-c", `${options.prelude ?? ""}${command}`], {
+        env: options.env, timeoutMs, maxOutput: 0, ...(signal ? { signal } : {}), ...(options.network ? { network: options.network } : {}),
         onOutput: ({ stream, data }) => emit(stream, decoders[stream].write(Buffer.from(data.buffer, data.byteOffset, data.byteLength))),
       });
       let ran;

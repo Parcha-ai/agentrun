@@ -22,17 +22,6 @@ async function agent(store, { kind = "agentic" } = {}) {
   await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind, body: kind === "workflow" ? { workflow: {} } : { instructions: "Answer." } });
 }
 
-/** Launches run `id` with the given body, claims it, writes the journal entries, and ends it with `patch`. */
-async function endedRun(store, { id = "run-1", launch, journal: writes = [], patch }) {
-  await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
-  const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-  if (writes.length) {
-    const journal = store.journal(claim);
-    await commitWrites(journal, writes, context);
-  }
-  await store.runs.update(claim, patch);
-}
-
 /** A user message and the model's final answer, with the request's cost on the answer. */
 async function conversation(store, claim, { ask, answer, usd }) {
   const journal = store.journal(claim);
@@ -402,9 +391,11 @@ test("the moment of a run parked at its cap reads paused with the pause words, s
   assert.equal(moment.paused, true);
   assert.equal(moment.pausedWords, "Out of budget. Raise the cap to at least $1.30 to continue.");
   assert.equal(moment.maxCostUsd, 0.5);
-  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main.
+  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main, and names the
+  // follow-up the runner sends for this pause: its budget entry's id (moment.pause).
+  assert.equal(moment.pause, String(budget.id));
   const result = await raiseCap(store, moment, 11);
-  assert.deepEqual(result, { resumed: true });
+  assert.deepEqual(result, { resumed: true, messageId: `agentrun:raise:${budget.id}` });
   // Right after the raise, before its runner takes it, the run reads as going on: never input_required on the cap it
   // was just raised past (a client's runs.wait right after the raise returned input_required again).
   const raised = await viewOverStore(store, "run-1", deps);
@@ -556,7 +547,7 @@ test("an answer longer than a timeline row holds reads whole: all 5000 of its ch
 });
 
 test("an answer one character past a timeline row's cap reads whole, and one exactly at the cap reads as it is", async (t) => {
-  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { CAPS } = await import("../dist/timeline/index.js");
   const { store } = await storeOn(t);
   await agent(store);
   for (const [runId, length] of [["past", CAPS.text + 1], ["at", CAPS.text]]) {
@@ -571,7 +562,7 @@ test("an answer one character past a timeline row's cap reads whole, and one exa
 });
 
 test("a held key straddling the old 2000-character cut of an answer is served with no piece of it, the whole answer read past the cut, on pi and on a CLI's record", async (t) => {
-  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { CAPS } = await import("../dist/timeline/index.js");
   const KEY = ["not-a-secret", "straddle-key", "0123456789abcdef"].join("-");
   const held = { ...deps, serverSecrets: () => [KEY] };
   const pieces = Array.from({ length: KEY.length - 7 }, (_, i) => KEY.slice(i, i + 8));
@@ -635,7 +626,7 @@ test("a run's view reads its whole answer once per held value set: a second view
 });
 
 test("a value handed to the run (its agent's saved sign-in), straddling the old 2000-character cut of its answer, is served with no piece of it, the answer whole around it", async (t) => {
-  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { CAPS } = await import("../dist/timeline/index.js");
   const { createHash, randomBytes } = await import("node:crypto");
   const { raw } = await import("./store-target.mjs");
   const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");

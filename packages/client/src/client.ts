@@ -145,6 +145,7 @@ export class AgentRun {
       streamed: op.answer === "bytes" && options?.stream === true,
     });
     const answer = await readAnswer(op, route, response, options?.stream === true, secretOp ? scrubberOf(secrets) : undefined);
+    if (answer instanceof Response) return guarded(answer, this.baseUrl, options?.signal);
     return op.tagged ? { body: answer, etag: response.headers.get("etag") } : answer;
   }
 
@@ -249,6 +250,29 @@ async function refusal(x: Exchange, response: Response, apiKey: string, late: ()
 }
 
 const badAnswer = (route: string, status: number, what: string) => new AgentRunRefused(route, status, "bad_answer", undefined, `The server's answer to ${route} is not ${what}.`);
+
+/** A download's Response, asked to stream, with its body guarded: a read that fails (the call's timeout passes before
+ *  the body ends, the body is cut before its length) rejects with AgentRunUnreachable and the failure's code, or with the
+ *  caller's own reason once its signal aborted, never the platform's error. It is a Response of the client's own, the
+ *  server's status and headers on it (its `url` is empty); nothing is tried again, since what was read is the caller's. */
+function guarded(response: Response, baseUrl: string, signal: AbortSignal | undefined): Response {
+  const source = response.body;
+  if (source === null) return response;
+  const reader = source.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (error) {
+        controller.error(signal?.aborted ? signal.reason : new AgentRunUnreachable(baseUrl, causeOf(error)));
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
 
 /** A success's body as the operation answers: JSON parsed (a secret body's values cut from it), text as a string, a
  *  file's bytes as they came, or the Response itself for a download asked to stream. */

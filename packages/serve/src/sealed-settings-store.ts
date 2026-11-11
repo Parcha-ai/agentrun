@@ -4,8 +4,8 @@
 // the clear (the server always has its seal key: seal-key.ts). The server awaits load() once: get()/values() are
 // synchronous off a snapshot the server (the one writer) loads once and keeps in step with every write; set/mint/remove
 // are durable before they resolve.
-import { seal, unseal } from "@parcha/pi-durable-agent";
-import { ApiError, invalid } from "./errors.js";
+import { seal, unseal } from "./sealing.js";
+import { invalid } from "./errors.js";
 import { keyBytes, MIN_KEY_BYTES, mintSecret, SECRET_PREFIX } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import type { TriggerSettings } from "./store/index.js";

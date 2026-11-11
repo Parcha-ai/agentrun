@@ -11,21 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "../dist/timeline/index.js";
 import { spentIn } from "../dist/cap.js";
-
-
-/** A model at $1 per million output tokens with a ceiling of 1,000: a request's worst case is $0.001. */
-const outputOnly = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, maxTokens: 1_000, contextWindow: 128_000 };
-const context = { messages: [{ role: "user", content: "What is six times seven?", timestamp: 0 }] };
-const settle = () => new Promise((resolve) => setImmediate(resolve));
-/** Until `check` holds, or a second passes: a request reaches the model once its start mark is written. */
-const until = async (check) => {
-  for (let i = 0; !check() && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 5));
-};
-/** `promise`'s value, or undefined when it has not settled in `ms`: a request the old code sends waits on a model that
- *  never ends it, and the test fails on that instead of hanging. */
-const settled = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(undefined), ms))]);
 const NOT_WRITTEN = "the model request was not sent: its mark could not be written";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -37,41 +24,6 @@ const message = (total, stopReason = "stop", errorMessage) => ({
 });
 /** pi-ai's message for a request refused before any event (a 429): nothing streamed, no usage. */
 const refusedAtHttp = { role: "assistant", content: [], api: "fake", provider: "fake", model: "m", stopReason: "error", errorMessage: "429 rate_limit_error", timestamp: 0, usage: ZERO };
-
-/** Models whose requests end as the test says (`end`), counted as they are sent: with some text streamed first (`began`),
- *  or with the end the only event, as a request refused at the HTTP level ends. */
-function streaming(began = true) {
-  const sent = [];
-  const send = () => {
-    const events = createAssistantMessageEventStream();
-    if (began) events.push({ type: "text_delta", contentIndex: 0, delta: "Six times seven is", partial: message(0) });
-    const end = (answer) => {
-      events.push(answer.stopReason === "stop" ? { type: "done", reason: "stop", message: answer } : { type: "error", reason: answer.stopReason, error: answer });
-      events.end(answer);
-    };
-    sent.push({ end });
-    return events;
-  };
-  return { models: { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result() }, sent };
-}
-
-/** A run whose store takes each mark (into `marks`), or refuses every one with `refuse`. */
-const runOf = (marks, refuse) => ({ harness: { commit: async (change) => (refuse ? Promise.reject(refuse) : change({ appendEntry: async (_conversation, entry) => void marks.push(entry) })) } });
-
-
-/** A model stream that throws while it is read, after a start event (`began`) or before any. */
-const throwing = (began, counter) => ({
-  stream: () => ({ [Symbol.asyncIterator]: async function* () {} }),
-  streamSimple: () => (counter.calls++, {
-    async *[Symbol.asyncIterator]() {
-      if (began) yield { type: "start", partial: { role: "assistant", content: [] } };
-      throw new Error(began ? "socket hang up" : "reset before headers");
-    },
-    result: () => new Promise(() => {}),
-  }),
-  complete: async () => message(0),
-  completeSimple: async () => message(0),
-});
 
 /** A run store holding `entries`, in order, as pi-durable keeps them; removed after the test. */
 function storeOf(t, entries) {

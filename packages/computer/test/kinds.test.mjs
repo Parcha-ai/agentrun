@@ -1,17 +1,24 @@
 // The kind registry, to the agreed shape (SHAPE.md): the setting kind an agent is given (none, sandbox, desktop, phone,
 // browser) as its machine kinds and capability groups, no tool names; the protocol's machine kinds with browser; the
-// provider entries Settings reads (id, label, key names, mounts, metered) with kinds derived by serves() from each
-// provider's static capabilities; and entries for providers whose file lands later, held to it once it does.
+// provider entries Settings reads (id, label, keys and their options, mounts, metered), derived from the providers'
+// descriptors, with kinds derived by serves() from each provider's static capabilities; and the descriptor's own check.
 // No vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ModalProvider } from "../dist/modal.js";
 import {
-	DaytonaProvider,
+	CHROME_ENV,
+	configurationOf,
+	DESCRIPTORS,
+	defineProvider,
+	descriptorProblems,
+	entryOf,
 	GROUPS,
+	imagesOf,
 	KIND_SHAPES,
 	kindOf,
 	kindRefusals,
-	ModalProvider,
 	PROVIDERS,
 	providerIds,
 	providerModule,
@@ -22,6 +29,7 @@ import {
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
 import { KernelProvider } from "../dist/kernel.js";
+import { LocalBrowserProvider } from "../dist/local-chrome.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
@@ -77,28 +85,49 @@ test("serves() is the machine kind among the kind's and every required group dec
 
 test("PROVIDERS is the agreed table of ids, labels, key names, mounts and metering", () => {
 	const rows = PROVIDERS.map(({ id, label, keys, metered }) => ({ id, label, keys, metered }));
+	const key = (name, option, required = true) => ({ name, option, required });
 	assert.deepEqual(rows, [
 		{ id: "docker", label: "Docker", keys: [], metered: false },
-		{ id: "daytona", label: "Daytona", keys: [{ name: "DAYTONA_API_KEY", required: true }, { name: "DAYTONA_API_URL", required: false }, { name: "DAYTONA_TARGET", required: false }], metered: true },
-		{ id: "modal", label: "Modal", keys: [{ name: "MODAL_TOKEN_ID", required: true }, { name: "MODAL_TOKEN_SECRET", required: true }], metered: true },
-		{ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], metered: true },
-		{ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], metered: true },
-		{ id: "phone-harness", label: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }], metered: true },
-		{ id: "browserbase", label: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true }, { name: "BROWSERBASE_PROJECT_ID", required: true }], metered: true },
-		{ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], metered: true },
+		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false)], metered: true },
+		{ id: "modal", label: "Modal", keys: [key("MODAL_TOKEN_ID", "tokenId"), key("MODAL_TOKEN_SECRET", "tokenSecret")], metered: true },
+		{ id: "e2b", label: "E2B", keys: [key("E2B_API_KEY", "apiKey")], metered: true },
+		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey"), key("ORGO_WORKSPACE_ID", "workspaceId")], metered: true },
+		{ id: "phone-harness", label: "Phone harness", keys: [key("PHONE_HARNESS_API_KEY", "apiKey")], metered: true },
+		{ id: "browserbase", label: "Browserbase", keys: [key("BROWSERBASE_API_KEY", "apiKey"), key("BROWSERBASE_PROJECT_ID", "projectId")], metered: true },
+		{ id: "kernel", label: "Kernel", keys: [key("KERNEL_API_KEY", "apiKey")], metered: true },
+		{ id: "local-chrome", label: "Local Chrome", keys: [], metered: false },
 	]);
+	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
+	// the phone harness's ledger the server keeps.
+	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, local, ledger, hostEnv, parked }]));
+	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
+	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
+	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
+	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
+	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, "PATH"]);
+	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
+	// configuration.
+	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
+	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
+	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
+	for (const [id, fields] of Object.entries(extra)) {
+		if (id !== "modal") assert.equal(fields.settings, undefined, id);
+		if (id !== "docker") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (id !== "phone-harness") assert.equal(fields.ledger, undefined, id);
+		if (id !== "local-chrome") assert.equal(fields.hostEnv, undefined, id);
+		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
+	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
-	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"] });
+	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"], "local-chrome": ["browser"] });
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
 });
 
-test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its module's constant", async () => {
-	const [daytona, modal, e2b, orgo, phone, browser] = await Promise.all(
-		["daytona", "modal", "e2b", "orgo", "phone-harness", "browser"].map((name) => import(`../dist/${name}.js`)),
-	);
-	// The values serve uses when a computer setting names no image, each from the module that owns it.
+test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
+	const all = await import("../dist/descriptors/index.js");
+	const [daytona, modal, e2b, orgo, phone, browser] = [all, all, all, all, all, all];
+	// The values serve uses when a computer setting names no image, each its descriptor's.
 	const expected = {
 		docker: undefined,
 		daytona: { sandbox: daytona.DAYTONA_DEFAULT_SNAPSHOT },
@@ -108,6 +137,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		"phone-harness": { phone: phone.PHONE_IMAGE },
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
+		"local-chrome": { browser: browser.BROWSER_IMAGE },
 	};
 	assert.deepEqual(PROVIDERS.map((entry) => entry.id).sort(), Object.keys(expected).sort(), "every provider is named here");
 	for (const entry of PROVIDERS) {
@@ -131,20 +161,55 @@ test("each entry's kinds are derived by serves() from its static capabilities, n
 	}
 });
 
-test("every registry provider has an entry, and its module's static capabilities, mounts and network are the entry's", async () => {
-	for (const id of providerIds) {
-		const entry = PROVIDERS.find((one) => one.id === id);
-		assert.ok(entry, `${id} has a PROVIDERS entry`);
-		const module = await providerModule(id);
-		assert.deepEqual(module.CAPABILITIES, entry.capabilities, `${id}: its module's CAPABILITIES are its entry's`);
-		assert.deepEqual(module.MOUNT, entry.mounts, `${id}: its module's MOUNT is its entry's mounts`);
-		assert.deepEqual(module.NETWORK, entry.network, `${id}: its module's NETWORK is its entry's network`);
+test("PROVIDERS is derived from the descriptors, and each provider module's MOUNT and CAPABILITIES are its descriptor's own; a module declares no network beside it", async () => {
+	assert.deepEqual(PROVIDERS, DESCRIPTORS.map(entryOf), "every entry is its descriptor through entryOf, its network included");
+	assert.deepEqual(PROVIDERS.map((entry) => entry.id), [...providerIds], "one entry per registry provider, in the descriptors' order");
+	for (const descriptor of DESCRIPTORS) {
+		const module = await providerModule(descriptor.id);
+		assert.equal(module.CAPABILITIES, descriptor.capabilities, `${descriptor.id}: its module's CAPABILITIES are its descriptor's, not a copy`);
+		assert.equal(module.MOUNT, descriptor.mounts, `${descriptor.id}: its module's MOUNT is its descriptor's mounts, not a copy`);
+		assert.equal("NETWORK" in module, false, `${descriptor.id}: its network is its descriptor's alone`);
+		assert.equal("load" in PROVIDERS.find((entry) => entry.id === descriptor.id), false, `${descriptor.id}: an entry is data, without load()`);
 	}
 });
 
-test("an entry whose provider file has not landed is data alone; once it lands, the test above holds it to its file", () => {
-	const pending = PROVIDERS.filter((entry) => !providerIds.includes(entry.id)).map((entry) => entry.id);
-	assert.deepEqual(pending, [], "every entry's provider file has landed: none is data alone");
+test("a descriptor is checked when it is defined: its id, keys, settings and configurations, in words", () => {
+	const good = { id: "acme-cloud", label: "Acme", keys: [{ name: "ACME_KEY", option: "apiKey", required: true }], metered: true, mounts: [], network: ["none"], capabilities: [{ kind: "linux", groups: ["exec"] }], load: async () => ({}) };
+	assert.equal(defineProvider(good), good);
+	assert.deepEqual(descriptorProblems(good), []);
+	for (const [change, words] of [
+		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
+		[{ label: " " }, /label is not a name in words/],
+		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_KEY", option: "other", required: false }] }, /keys names ACME_KEY or fills other twice/],
+		[{ keys: [{ name: "ACME_KEY", option: "", required: true }] }, /each of keys has a name and the option it fills/],
+		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],
+		[{ capabilities: [] }, /capabilities is not a list of one configuration or more/],
+		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
+		[{ network: [] }, /network is not a list of the network forms/],
+		[{ network: ["vpn"] }, /network is not a list of the network forms/],
+		[{ load: "./acme.js" }, /load is not a function/],
+		[{ ledger: {} }, /ledger names the option it fills/],
+		[{ capabilities: [{ kind: "desktop", groups: [], image: " windows" }] }, /a configuration's image " windows" is not a name/],
+		[{ capabilities: [{ kind: "desktop", groups: [], image: "windows" }, { kind: "desktop", groups: ["exec"], image: "windows" }] }, /two desktop configurations have the image windows/],
+		[{ capabilities: [{ kind: "desktop", groups: [], image: "windows", options: "os=windows" }] }, /a configuration's options are an object/],
+	]) {
+		assert.throws(() => defineProvider({ ...good, ...change }), (error) => words.test(error.message), JSON.stringify(change));
+	}
+	assert.deepEqual(descriptorProblems(null), ["it is not an object"]);
+});
+
+test("a kind's images, and the configuration a setting selects: by its image; none named, the default's, else one with no image, else the first", () => {
+	const linux = { kind: "desktop", groups: [], image: "linux", options: {} };
+	const windows = { kind: "desktop", groups: [], image: "windows", options: { os: "windows" } };
+	const plain = { kind: "desktop", groups: [] };
+	assert.deepEqual(imagesOf([windows, linux], "linux"), ["linux", "windows"], "the default first");
+	assert.deepEqual(imagesOf([windows, linux], undefined), ["windows", "linux"]);
+	assert.deepEqual(imagesOf([plain], "e2b-desktop"), [], "no configuration names an image");
+	assert.equal(configurationOf([linux, windows], "windows", "linux"), windows);
+	assert.equal(configurationOf([linux, windows], "beos", "linux"), undefined);
+	assert.equal(configurationOf([windows, linux], undefined, "linux"), linux, "the default's");
+	assert.equal(configurationOf([windows, plain], undefined, "linux"), plain, "else one with no image");
+	assert.equal(configurationOf([windows], undefined, undefined), windows, "else the first");
 });
 
 /** Each provider built as the registry offers it, from the unit tests' fakes. */
@@ -155,23 +220,27 @@ const BUILT = {
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
 	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
+	"local-chrome": [() => new LocalBrowserProvider({ executablePath: "/nonexistent/chrome" })],
 	"phone-harness": [
 		() => {
 			const fake = fakePhoneHarness();
 			return new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
 		},
 	],
-	orgo: [() => createOrgo({ apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })],
+	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
-test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {
+test("a built provider's capabilities, in each configuration, are its entry's static capabilities, and its network forms its entry's", () => {
 	assert.deepEqual(Object.keys(BUILT).sort(), [...providerIds].sort(), "every registry provider is built here");
 	for (const [id, builds] of Object.entries(BUILT)) {
 		const entry = PROVIDERS.find((one) => one.id === id);
-		const seen = builds.map((build) => {
-			const { kind, groups, gpu } = build().capabilities();
-			return { kind, groups, ...(gpu === undefined ? {} : { gpu }) };
-		});
-		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind, groups and GPUs`);
+		const built = builds.map((build) => build().capabilities());
+		// Each configuration's kind, groups and GPUs are its entry's (an image and create() options are the descriptor's alone).
+		const shape = ({ kind, groups, gpu }) => ({ kind, groups, ...(gpu === undefined ? {} : { gpu }) });
+		assert.deepEqual(built.map(shape), entry.capabilities.map(shape), `${id}: each configuration's kind, groups and GPUs`);
+		// Each configuration's network is among its entry's, and together they are all of it (Orgo: Linux none, Windows open).
+		for (const { network } of built) assert.ok(network.every((form) => entry.network.includes(form)), `${id}: ${network} is among ${entry.network}`);
+		assert.deepEqual([...new Set(built.flatMap(({ network }) => network))].sort(), [...entry.network].sort(), `${id}: its configurations make every form its entry declares`);
 	}
 });

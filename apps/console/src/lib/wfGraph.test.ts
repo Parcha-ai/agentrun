@@ -54,3 +54,47 @@ describe("drawWorkflowGraph", () => {
     expect(s.textContent).toContain("<img");
   });
 });
+
+// The count a page prints beside a graph is the boxes the drawing shows: on a workflow with a fan, frames and nesting too.
+describe("drawnNodeCount", () => {
+  it("counts the boxes the drawing shows, not the root chain the steps sit on", async () => {
+    const { drawnNodeCount, nodesWord } = await import("./wfGraph");
+    const g = workflowGraph(kybWorkflow);
+    const s = svg();
+    drawWorkflowGraph(s, g);
+    expect(drawnNodeCount(g)).toBe(s.querySelectorAll("g[data-path]:not(.chain)").length);
+    expect(drawnNodeCount(g)).toBeLessThan(g.nodes.length);
+    expect([nodesWord(1), nodesWord(4), nodesWord(0)]).toEqual(["1 node", "4 nodes", "0 nodes"]);
+  });
+});
+
+// A learned workflow's MCP call node (tl-jobs' learned MCP nodes): an ordinary call node, `via: "tool"`, whose tool is an
+// MCP server's (`mcp:<server>/<tool>`). Its card reads "<tool> on <server>" with an MCP mark, never the raw key; any
+// other call node reads as it did.
+describe("drawWorkflowGraph, an MCP call node", () => {
+  const flow = {
+    v: 2, name: "file-bugs", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "issue" },
+    root: { node: "chain", steps: [
+      { node: "call", label: "file the bug", via: "tool", tool: "mcp:linear/create_issue", args: {}, out: "Out", as: "issue" },
+      { node: "call", label: "fetch the page", via: "tool", tool: "web_fetch", args: {}, out: "Out", as: "page" },
+    ] },
+  };
+  const drawn = () => {
+    const g = workflowGraph(flow);
+    const s = svg();
+    drawWorkflowGraph(s, g, { meta: Object.fromEntries(g.nodes.map((n) => [n.path, nodeMeta(flow, n.path)])) });
+    return { mcp: s.querySelector('g[data-path="/root/steps/0"]')!, web: s.querySelector('g[data-path="/root/steps/1"]')!, all: s };
+  };
+  it("reads as <tool> on <server>, with an MCP badge and its hover naming both, and never the raw mcp: key", () => {
+    const { mcp, all } = drawn();
+    expect(mcp.querySelector(".kind")?.textContent).toBe("call · create_issue on linear");
+    expect([...mcp.querySelectorAll(".badge")].map((t) => t.textContent)).toEqual(["MCP"]);
+    expect(mcp.querySelector("title")?.textContent).toContain("create_issue on linear, an MCP server's tool");
+    expect(all.textContent).not.toContain("mcp:linear/create_issue");
+  });
+  it("another call node reads as before: its tool as named, no badge", () => {
+    const { web } = drawn();
+    expect(web.querySelector(".kind")?.textContent).toBe("call · web_fetch");
+    expect(web.querySelectorAll(".badge")).toHaveLength(0);
+  });
+});

@@ -4,15 +4,11 @@
 // a setting kind is computed from its capabilities alone (serves), never kept beside them: a provider that drops a
 // group stops serving the kind. The model's tools are not here: they live in the kernel's tool registry, keyed by
 // these groups.
-// The default images are values: each from the provider module that owns it. Those modules import this one for types
-// alone, so this is no import cycle.
-import { BROWSER_IMAGE } from "./browser.js";
-import { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU } from "./daytona.js";
-import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-import { MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./modal.js";
+// The providers Settings offers (PROVIDERS) are derived from the providers' descriptors (descriptor.ts), each declared
+// once in its descriptor module: loading this loads descriptors (data) alone, never a provider module or a vendor SDK.
+import type { DescriptorKey, DescriptorSetting, ParkedConfiguration, ProviderDescriptor } from "./descriptor.js";
+import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MountKind } from "./mount.js";
-import { ORGO_BASE_IMAGE } from "./orgo.js";
-import { PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
@@ -45,8 +41,17 @@ export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec
 /** Every setting kind, in the table's order. */
 export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
 
-/** The capabilities serves() and kindOf() read, and the GPUs a configuration offers (Settings' GPU choice). */
-export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu">;
+/**
+ * The capabilities serves() and kindOf() read: one configuration a provider offers, with the GPUs it offers (Settings'
+ * GPU choice). In a descriptor, `image` is the name an agent's setting selects it by (Orgo's `windows`), the image its
+ * computer starts from, and `options` are what create() takes to build it ({ os: "windows" }), beside the keys. A
+ * configuration with no image is the one a setting that names none gets, as is the one whose image is the kind's
+ * defaultImage.
+ */
+export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu"> & {
+	readonly image?: string;
+	readonly options?: Readonly<Record<string, unknown>>;
+};
 
 /** Why capabilities do not serve a setting kind, in words; none when they do. */
 export function servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[] {
@@ -71,141 +76,68 @@ export function kindOf(capabilities: KindCapabilities): ComputerSettingKind | un
 	return SETTING_KIND_NAMES.find((kind) => serves(capabilities, kind));
 }
 
-/** One key a provider takes in Settings: its serve-side name (Settings accepts only these), and whether it is needed. */
-export interface ProviderKey {
-	name: string;
-	required: boolean;
-}
-
-/** A provider as Settings shows it. */
-export interface ProviderEntry {
-	/** Its id: a line of the provider registry (providers.ts) once its file lands. */
-	id: string;
-	label: string;
-	/** Derived: the setting kinds its capabilities serve (serves), never written by hand. */
-	kinds: readonly ComputerSettingKind[];
-	/** The serve-side key names only; never a value. */
-	keys: readonly ProviderKey[];
-	/** The mount kinds its computers take; [] cannot mount the run's folder. Its module's MOUNT, once its file lands. */
-	mounts: readonly MountKind[];
-	/**
-	 * The network forms its computers make: its module's NETWORK, which its capabilities().network returns. ["none"]: a
-	 * remote computer whose programs run in a network of their own; ["open"]: the vendor's own network, which no
-	 * allowlist of this server reaches; Docker's makes all three.
-	 */
-	network: readonly NetworkForm[];
-	/** The vendor bills by time; prices are the vendor's page, not ours. */
-	metered: boolean;
-	/**
-	 * Its static capabilities: the machine kind and groups of each configuration it offers. Its module's CAPABILITIES,
-	 * once its file lands, and each built configuration's capabilities().
-	 */
-	capabilities: readonly KindCapabilities[];
-	/**
-	 * The image a computer of each setting kind starts from when its setting names none, each the constant its provider
-	 * module owns. A kind with no entry has no default, and the caller refuses the setting in words. Docker's sandbox has
-	 * none: serve builds its image itself (DOCKER_RECIPE).
-	 */
-	defaultImage?: Partial<Record<ComputerSettingKind, string>>;
-}
-
-const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
-const LINUX_DESKTOP: KindCapabilities = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
-/** A provider's GPU capability as its configuration carries it: a deep copy of the module's own. */
-const gpuOf = (gpu: Readonly<NonNullable<KindCapabilities["gpu"]>>): NonNullable<KindCapabilities["gpu"]> => structuredClone(gpu) as NonNullable<KindCapabilities["gpu"]>;
-
-/** An entry with its kinds derived from its capabilities. */
-function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
-	return { ...fields, kinds: SETTING_KIND_NAMES.filter((kind) => fields.capabilities.some((one) => serves(one, kind))) };
+/** The images a kind's configurations offer by name (`serving`: those that serve it), the kind's default first when it is one. */
+export function imagesOf(serving: readonly Pick<KindCapabilities, "image">[], defaultImage: string | undefined): string[] {
+	const names = [...new Set(serving.flatMap((one) => (one.image === undefined ? [] : [one.image])))];
+	return defaultImage !== undefined && names.includes(defaultImage) ? [defaultImage, ...names.filter((name) => name !== defaultImage)] : names;
 }
 
 /**
- * Every provider Settings offers, each with its provider file in the registry;
- * a unit test then holds each to its module (CAPABILITIES, MOUNT, NETWORK). daytona, modal and e2b take archil mounts.
+ * The configuration a setting selects among a kind's (`serving`): the one its image names; with none named, the one
+ * whose image is the kind's default, else one with no image, else the first. Undefined when the image names none.
  */
-export const PROVIDERS: readonly ProviderEntry[] = [
-	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], network: ["none", "open", "allow"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
-	entry({
-		id: "daytona",
-		label: "Daytona",
-		keys: [
-			{ name: "DAYTONA_API_KEY", required: true },
-			{ name: "DAYTONA_API_URL", required: false },
-			{ name: "DAYTONA_TARGET", required: false },
-		],
-		mounts: ["archil"],
-		network: ["none"],
-		metered: true,
-		capabilities: [{ ...SANDBOX, gpu: gpuOf(DAYTONA_GPU) }],
-		defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
-	}),
-	entry({
-		id: "modal",
-		label: "Modal",
-		keys: [
-			{ name: "MODAL_TOKEN_ID", required: true },
-			{ name: "MODAL_TOKEN_SECRET", required: true },
-		],
-		mounts: ["archil"],
-		network: ["none"],
-		metered: true,
-		capabilities: [{ ...SANDBOX, gpu: gpuOf(MODAL_GPU) }],
-		defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
-	}),
-	entry({
-		id: "e2b",
-		label: "E2B",
-		keys: [{ name: "E2B_API_KEY", required: true }],
-		mounts: ["archil"],
-		network: ["none"],
-		metered: true,
-		capabilities: [SANDBOX, LINUX_DESKTOP],
-		defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
-	}),
-	entry({
-		id: "orgo",
-		label: "Orgo",
-		keys: [{ name: "ORGO_API_KEY", required: true }],
-		mounts: [],
-		network: ["none"],
-		metered: true,
-		capabilities: [LINUX_DESKTOP],
-		defaultImage: { desktop: ORGO_BASE_IMAGE },
-	}),
-	entry({
-		id: "phone-harness",
-		label: "Phone harness",
-		keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }],
-		mounts: [],
-		network: ["open"],
-		metered: true,
-		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
-		defaultImage: { phone: PHONE_IMAGE },
-	}),
-	entry({
-		id: "browserbase",
-		label: "Browserbase",
-		keys: [
-			{ name: "BROWSERBASE_API_KEY", required: true },
-			{ name: "BROWSERBASE_PROJECT_ID", required: true },
-		],
-		mounts: [],
-		network: ["open"],
-		metered: true,
-		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
-		defaultImage: { browser: BROWSER_IMAGE },
-	}),
-	entry({
-		id: "kernel",
-		label: "Kernel",
-		keys: [{ name: "KERNEL_API_KEY", required: true }],
-		mounts: [],
-		network: ["open"],
-		metered: true,
-		capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
-		defaultImage: { browser: BROWSER_IMAGE },
-	}),
-];
+export function configurationOf<Configuration extends Pick<KindCapabilities, "image">>(serving: readonly Configuration[], image: string | undefined, defaultImage: string | undefined): Configuration | undefined {
+	if (image !== undefined) return serving.find((one) => one.image === image);
+	return serving.find((one) => defaultImage !== undefined && one.image === defaultImage) ?? serving.find((one) => one.image === undefined) ?? serving[0];
+}
+
+/** A provider as Settings shows it: its descriptor's data, and the setting kinds it serves. */
+export interface ProviderEntry {
+	/** Its id: a line of the provider registry (providers.ts). */
+	readonly id: string;
+	readonly label: string;
+	/** Derived: the setting kinds its capabilities serve (serves), never written by hand. */
+	readonly kinds: readonly ComputerSettingKind[];
+	/** The serve-side key names and the options they fill; never a value. */
+	readonly keys: readonly DescriptorKey[];
+	/** Settings that are no key but go to its options. */
+	readonly settings?: readonly DescriptorSetting[];
+	/** The mount kinds its computers take; [] cannot mount the run's folder. */
+	readonly mounts: readonly MountKind[];
+	/**
+	 * The network forms its computers make, its descriptor's: ["none"], a remote computer whose programs run in a network
+	 * of their own; ["open"], the vendor's own network, which no allowlist of this server reaches; Docker's all three.
+	 */
+	readonly network: readonly NetworkForm[];
+	/** The vendor bills by time; prices are the vendor's page, not ours. */
+	readonly metered: boolean;
+	/** Its static capabilities: the machine kind and groups of each configuration it offers. */
+	readonly capabilities: readonly KindCapabilities[];
+	/**
+	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
+	 * default, and the caller refuses the setting in words. Docker's sandbox has none: its image is made (prepareImage).
+	 */
+	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
+	/** Its built providers make or pull their image before the first create (prepareImage()). */
+	readonly prepareImage?: boolean;
+	/** Its computers run on this machine's container engine. */
+	readonly local?: boolean;
+	/** create() takes a ledger the server keeps for it, as this option. */
+	readonly ledger?: { readonly option: string };
+	/** The server's environment variables its provider reads on this machine, passed as options.env (descriptor.ts). */
+	readonly hostEnv?: readonly string[];
+	/** Configurations it builds but does not offer yet, each with why: a setting naming one's image is refused as parked. */
+	readonly parked?: readonly ParkedConfiguration[];
+}
+
+/** A descriptor as Settings shows it: its data, and the setting kinds its capabilities serve, derived by serves(). */
+export function entryOf(descriptor: ProviderDescriptor): ProviderEntry {
+	const { load: _load, ...data } = descriptor;
+	return { ...data, kinds: SETTING_KIND_NAMES.filter((kind) => descriptor.capabilities.some((one) => serves(one, kind))) };
+}
+
+/** Every provider Settings offers: each built-in descriptor (descriptors/index.ts), as entryOf gives it. */
+export const PROVIDERS: readonly ProviderEntry[] = DESCRIPTORS.map(entryOf);
 
 /** What testConnection is given: the provider's keys by their serve-side names, and the caller's signal. */
 export interface TestConnectionOptions {

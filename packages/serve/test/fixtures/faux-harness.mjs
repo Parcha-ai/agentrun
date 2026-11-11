@@ -62,7 +62,7 @@ export function grown(k, { miss = false } = {}) {
   return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, tokens, usd };
 }
 
-export function script(spec) {
+export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
   const given = spec.tools.find((tool) => tool.name === "learned_workflow");
@@ -105,11 +105,10 @@ export function script(spec) {
   if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   // Reads outside the run: a path up out of its directory, and an absolute one elsewhere, both refused.
   if (/Read outside the run\./.test(text)) return [{ call: "read", args: { path: "../../.token" }, usd: 0.001 }, { call: "read", args: { path: "/etc/hostname" }, usd: 0.001 }, { say: "Read none.", usd: 0.001 }];
-  // As the Claude CLI sends a path: absolute, under its working directory, which is the run's work/ (the run's
-  // process runs with --dir <run dir>); then one outside the run's directory, which the tool refuses.
+  // As the Claude CLI sends a path: absolute, under its working directory (the session's cwd, which the run's file tools
+  // take as its folder); then one outside the run's directory, which the tool refuses.
   if (/Write by the absolute path\./.test(text)) {
-    const runDir = process.argv[process.argv.indexOf("--dir") + 1];
-    return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
+    return [{ call: "write", args: { path: `${session.cwd}/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
   }
   // The same two calls, each ending before its request is paid, as with Claude Code, whose cost comes in after its
   // response: each result is stored before the answer that holds its call.
@@ -265,6 +264,10 @@ export function script(spec) {
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
   const chat = /Wait for (\S+), then answer the chat\./.exec(text)?.[1];
   if (chat) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(chat) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }, { end: true, usd: 0.001 }, { say: "Answered the chat.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  // One answer whose request is admitted and held in flight until `<file>` exists, in this process (the faux adapter's
+  // `until` polls for it): the run works the while, and ends on its own once the file is there.
+  const answerOnce = /Answer once (\S+) exists\./.exec(text)?.[1];
+  if (answerOnce) return [{ say: "Answered.", usd: 0.002, until: answerOnce }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
   // A run's end read from its turn's end, not from its rows (turn-record.test.mjs).

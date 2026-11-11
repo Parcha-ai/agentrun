@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection } from "@parcha/pi-browser";
+import { BROWSER_TOOLS, browserSection } from "@parcha/pi-browser";
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -56,15 +56,11 @@ const CALLS = [
   ["browser_relaunch", { verified: true, geolocation: { country: "GB", city: "LONDON" } }, true],
   ["browser_relaunch", { geolocation: { city: "LONDON" } }, false],
   ["browser_downloads", {}, true],
-  ["web_fetch", { url: "https://example.com/filing", format: "raw" }, true],
-  ["web_fetch", { format: "markdown" }, false],
-  ["web_search", { query: "delaware file number acme", n: 5 }, true],
-  ["web_search", { n: 5 }, false],
 ];
 
 test("pi validates every tool's arguments against the contract: today's shapes reach the tool, malformed ones never do", async () => {
   const executed = [];
-  const tools = [...BROWSER_TOOLS, ...WEB_TOOLS].map((contract) => defineTool({
+  const tools = BROWSER_TOOLS.map((contract) => defineTool({
     name: contract.name, description: contract.description, parameters: contract.parameters, replay: contract.replay, executionMode: contract.executionMode,
     execute: async (args, api) => { executed.push({ callId: api.callId, tool: contract.name, args }); return { content: [{ type: "text", text: "ok" }] }; },
   }));

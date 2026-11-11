@@ -12,7 +12,12 @@
 // the folder, and no bash family at all. The longest command is 600 s, or 295 s on Archil's serverless exec; bash's
 // words follow it.
 //
-// The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. TMPDIR is .agentrun/tmp in
+// The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. Under a bash policy
+// (`bashPolicy`, the revision's tool_settings.bash.policy) it adds the policy's (bash-read-only.ts policyEnv): git's
+// config locked down, and a prelude that runs git only where git holds the whole lock-down (policyPrelude). On Archil's
+// serverless exec (Mode 2, no computer) each of its commands runs with no network (ExecOptions.network "deny"), or, where
+// the owner's Archil plan takes no network policy, with it open and a line saying so (archil.ts). Only the shell's
+// commands: the server's own execs on the folder (a checkout's fetch) keep theirs. TMPDIR is .agentrun/tmp in
 // the run's folder, and bash's full output goes to .agentrun/output/<id> there; the run's end sweeps both.
 //
 // The computer's check: `check` is the mount check attach takes (attach.ts MountCheck), which the caller builds with
@@ -22,23 +27,24 @@
 // computer only when the kind has files and exec AND its provider mounts the folder: a sandbox always, a desktop when
 // its provider mounts (the caller gives the mount check only then). Otherwise the folder stays the no-computer Workspace
 // with no computer's shell (above), and the computer adds only its kind's tools: a desktop's screen and input, a phone's
-// screen, touch and apps (computer-ports.ts, over its computerd calls, as its groups offer them), a browser's tools over
-// its CDP connect (pi-browser's definitions, BROWSER_TOOLS, and the runs the caller gives).
+// screen, touch and apps (computer-ports.ts, over its computerd calls, as its groups offer them). A browser adds none
+// here: the run's browser tool (tools.ts) drives it.
 //
 // runTools is the one call: runHands binds the run's hands and executors, the kernel's createRegistry makes the run's
 // registry over them, and bindTools gives its tools as the kernel's HostTool, through the run's gate. The run's end
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, capabilityToolDefs, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, capabilityToolDefs, createRegistry, endBackground, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, Group } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
+import { policyEnv, policyPrelude } from "../bash-read-only.js";
 import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
-import { type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
+import { type ClaimBrowser, type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
 import type { Workspace } from "./workspace.js";
 
 /**
@@ -48,14 +54,15 @@ import type { Workspace } from "./workspace.js";
  * - desktop: a screen and input; the folder is attached only when its provider mounts it (`check` given) and it offers
  *   files and exec;
  * - phone: a screen, touch and apps; never attached;
- * - browser: its CDP connect; never attached.
+ * - browser: what the run's browser tool drives it by (its CDP URL through its provider); no tools of the registry's,
+ *   never attached.
  * `groups`: what the computer offers (its hello's groups), which fill its kind's ports.
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
   | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly groups: readonly Group[]; readonly check?: MountCheck }
   | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
-  | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession> };
+  | { readonly kind: "browser"; readonly browser: ClaimBrowser };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
  *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). With them, the
@@ -71,9 +78,9 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 }
 
 /** The kind's ports, as the computer's groups offer them, the kinds whose tools the run gets (a desktop's with a screen
- *  and input, a phone's with a screen and touch, a browser's always), and the kind's tools its groups do not offer: a
+ *  and input, a phone's with a screen and touch; a browser's none), and the kind's tools its groups do not offer: a
  *  phone's tree without apps.ui_tree, its keys without input.keys (an iPhone's today). */
-function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone" | "browser">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
+function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
     const screen = computer.groups.includes("screen");
@@ -86,7 +93,6 @@ function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hand
     const keys = computer.groups.includes("input.keys");
     return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }
-  if (computer?.kind === "browser") return { ports: { browser: { connect: computer.connect } }, kinds: ["browser"], without: [] };
   return { ports: {}, kinds: [], without: [] };
 }
 
@@ -122,7 +128,7 @@ export type RunHands = {
  *  scratch folder), taken as the folder. `hold`: a person's hold on the computer (its take-over), given a desktop's or a
  *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
  *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). */
-export async function runHands(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold }): Promise<RunHands> {
+export async function runHands(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string }): Promise<RunHands> {
   // The folder's own path on this machine, Mode 1's bind. A Mode 2 folder (Archil) has none, and asking its mount would
   // mint the run's mount credential: only a computer that mounts the folder asks it (attach, below).
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
@@ -135,8 +141,13 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const names = [cwd, ...(here !== undefined && here !== cwd ? [here] : []), ...(options.aliases ?? [])];
   const maxExecS = mounted === undefined && options.mode === 2 ? ARCHIL_MAX_EXEC_S : MAX_EXEC_S;
   await attached.mkdir(TMP_DIR);
-  const env = shellEnv({ tmpdir: `${cwd}/${TMP_DIR}`, ...(mounted === undefined ? { home: cwd } : {}) });
-  const fileEnv = piEnv(attached, { cwd, aliases: names.slice(1), env, defaultTimeoutS: maxExecS });
+  // Under a bash policy (an agent's tool_settings.bash.policy), what the policy adds: git's config locked down.
+  const env = { ...shellEnv({ tmpdir: `${cwd}/${TMP_DIR}`, ...(mounted === undefined ? { home: cwd } : {}) }), ...policyEnv(options.bashPolicy) };
+  // And a prelude: git run only where it holds the whole lock-down (policyPrelude).
+  const prelude = policyPrelude(options.bashPolicy);
+  // And on Archil's serverless exec, no network for the shell's commands.
+  const network = options.bashPolicy !== undefined && mounted === undefined && options.mode === 2 ? { network: "deny" as const } : {};
+  const fileEnv = piEnv(attached, { cwd, aliases: names.slice(1), env, defaultTimeoutS: maxExecS, ...(prelude ? { prelude } : {}), ...network });
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
@@ -147,7 +158,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
     // attached. The kind's ports beside them.
-    hands: { ...handsOf(attached, { maxExecS, env, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
+    hands: { ...handsOf(attached, { maxExecS, env, ...(prelude ? { prelude } : {}), ...network, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
     shell,
     kinds,
     without,
@@ -220,6 +231,8 @@ export type RunTools = {
   /** The run's registry: the kernel's definitions, words and limits, over this run's hands and executors. */
   readonly registry: Registry;
   readonly hands: Hands;
+  /** Where the run's shell is (runHands' shell): its gate reads its defaults by it (tool-gate.ts defaultPermission). */
+  readonly shell: ShellPlace;
   /** The tools the claimed computer brings by its kind, as its groups offer them: a desktop's (desktop_screen,
    *  desktop_input, computer_request_handoff) or a phone's, by the kernel registry's own list. None with no computer, for
    *  a sandbox, or for a browser (its own binding lists its tools). An agent names its computer, never these tools
@@ -233,39 +246,24 @@ export type RunTools = {
   end(): Promise<void>;
 };
 
-/** A browser computer's tools as the run's start gives them: pi-browser's runs by tool name (over hands.browser), and
- *  what the browser offers, which lists browser_downloads, browser_upload and browser_request_handoff (pi-browser's
- *  listedFor). */
-export type RunBrowser = {
-  readonly executors: Readonly<Record<string, Executor>>;
-  readonly offers: { readonly downloads: boolean; readonly upload: boolean; readonly handoff: boolean };
-};
-
 /**
  * A run's tools on `workspace`, attached to `computer` when its kind has files and exec and its provider mounts the
  * folder (RunComputer). `computer.check` is the mount check attach runs (attach.ts MountCheck: `{ readBackOf, epoch }`),
  * which the caller builds with the claim's epoch, so a read-back under another epoch is refused. `options.mode`: 1, or 2
  * (the run's folder on Archil); `options.aliases`: other absolute names of the run's folder a tool call may give (the
- * harness's scratch folder); `options.browser`: a browser computer's runs and offers. The tools' definitions, words and
- * limits come only from the kernel's registry, and a browser's from pi-browser's BROWSER_TOOLS; this binds their
- * executors to the run.
+ * harness's scratch folder). The tools' definitions, words and limits come only from the kernel's registry; this binds
+ * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
+ * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly browser?: RunBrowser; readonly hold?: RunHold }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
-  // pi-browser's contracts, listed for what this browser offers; with no browser, all of them, so a browser tool called
-  // in another run is refused in words that name the setting.
-  const { BROWSER_TOOLS, listedFor } = await import("@parcha/pi-browser");
-  const offers = options.browser?.offers;
-  const browserTools = run.kinds.includes("browser") ? BROWSER_TOOLS.filter((contract) => listedFor(contract, offers ?? { downloads: false, upload: false, handoff: false })) : BROWSER_TOOLS;
-  const registry = createRegistry({
-    maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, browserTools, without: run.without,
-    executors: { ...run.executors, ...(options.browser ? { browser: options.browser.executors } : {}) },
-  });
-  const brought = new Set(run.kinds.filter((kind) => kind !== "browser").flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
+  const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, without: run.without, executors: run.executors });
+  const brought = new Set(run.kinds.flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
   return {
     workspace: run.workspace,
     registry,
     hands: run.hands,
+    shell: run.shell,
     kindTools: registry.list().map((def) => def.name).filter((name) => brought.has(name)),
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
     async end() {

@@ -36,7 +36,7 @@ const { seedOf } = await import("../dist/learning.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
-const { seal } = await import("@parcha/pi-durable-agent");
+const { seal } = await import("../dist/sealing.js");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
 const AGENT = "agent-1";
@@ -75,7 +75,7 @@ async function landSeed(data, { note = NOTE, more = {}, held = false } = {}) {
       const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-learned", reason: "Learned.", files: [{ path: "ask-first.md", text: PENDING }], held: ["ask-first.md"], graded: {} });
       assert.equal(merged.ok, true, JSON.stringify(merged));
       const oid = (await readSnapshot(folder.workspace)).notes.find((one) => one.file === "old-way.md").oid;
-      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED), ifMatch: oid });
+      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED, "active"), ifMatch: oid });
       assert.equal(retired.ok, true, JSON.stringify(retired));
     }
   } finally {

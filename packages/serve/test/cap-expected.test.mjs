@@ -7,7 +7,6 @@
 // Sonnet 5.5 ($2 in, $10 out, $0.20 cache read, $2.50 cache write a million), its usage reported as Anthropic's API
 // reports a growing conversation: each request reads the previous one's prompt from the cache. The clock is injected.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -21,8 +20,6 @@ const CAP = 0.5;
 /** The option a request's bound rides on to its marks (cap.ts BOUND_USD), read by its registered name. */
 const BOUND_USD = Symbol.for("agentrun.serve.bound_usd");
 const WARM_MS = 4 * 60_000;
-/** The least output a request is sent with: the answer's 1,024 tokens, at $10 a million. */
-const FLOOR_USD = 1_024 * 10 / 1e6;
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 /** A conversation of the size the tester's ran: a 80,000-character task (about 20,000 tokens), each turn a tool call and
@@ -179,19 +176,6 @@ test("the over-cap row of a run that passed its cap on a cache miss says by how 
   // A cap that is no whole number of cents is said in cents, never as a float's tail.
   assert.equal(withOverCap(rows(0.5), 0.38020940000000003)[2].summary, "Spent $0.50, $0.12 over the run's cap of $0.38");
 });
-
-/** A store holding `entries` in order, as a later process reads it. */
-function storeOf(t, entries) {
-  const dir = mkdtempSync(join(tmpdir(), "cap-expected-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, "run.sqlite");
-  const db = new DatabaseSync(file);
-  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, record TEXT NOT NULL)");
-  const put = db.prepare("INSERT INTO entries (conversation_id, record) VALUES (1, ?)");
-  for (const entry of entries) put.run(JSON.stringify(entry));
-  db.close();
-  return file;
-}
 
 test("another harness (claude-agent, codex, opencode): the guard prices a request by the previous request's usage, by the same rule: a $0.50 cap spends at least 90% of itself before it refuses", async () => {
   const guard = await capBefore(CAP, SONNET);

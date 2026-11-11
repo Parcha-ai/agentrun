@@ -5,14 +5,14 @@
 // model and faux harness: no key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import * as timeline from "@parcha/pi-durable-agent/timeline";
+import * as timeline from "../dist/timeline/index.js";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { MESSAGE_RUN, fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -48,7 +48,6 @@ function userEntries(data, runId) {
   const origins = timeline.messageOrigins(entries);
   return entries.filter((e) => e.model?.[0]?.role === "user").map((e) => ({ text: textOf(e), origin: origins.get(e) }));
 }
-const inputOf = async (data, runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).input.content;
 const { runEntries } = await import("../dist/store-reads/journal.js");
 /** On the store: each user entry the run's journal holds, with the origin messageOrigins reads for it (undefined: the
  *  person's), as userEntries reads a run's own database. */

@@ -47,6 +47,9 @@ export interface KernelHooks {
   beforeBooking?(): Promise<void>;
   /** The adapter loop waits for its session's paid requests to be booked (bookingsSettled, with one still unbooked). */
   awaitingBookings?(): void;
+  /** A message taken mid-turn was sent as a turn of its own (the adapter loop's sendAfterTurn): the session holds it, and
+   *  the commit that records it and takes its row has not run yet. */
+  afterMessageSent?(): Promise<void>;
 }
 
 export interface ConformanceSetup {
@@ -65,6 +68,8 @@ export type ConformanceCase =
   | "stalled-past-lease-process"
   | "replay-safe-rerun"
   | "steer-mid-turn"
+  | "message-mid-turn-kept"
+  | "message-resent-after-crash"
   | "cancel-ends-for-good"
   | "cancel-parked"
   | "deny-note"
@@ -73,6 +78,7 @@ export type ConformanceCase =
   | "park-on-ask"
   | "approval-names-its-call"
   | "approval-double-click"
+  | "approval-race"
   | "message-never-answers"
   | "end-of-run-answer"
   | "fault-effects-once"
