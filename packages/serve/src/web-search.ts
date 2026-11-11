@@ -23,8 +23,7 @@ import { forModel } from "./result.js";
 import { fauxFetch } from "./decisions.js";
 import { FAUX_ENV } from "./model.js";
 import { exaSearch, FAUX_EXA_ENV } from "./exa-keyless.js";
-import { hostedSearch } from "./hosted-search.js";
-import type { PortModels } from "./port-models.js";
+import { hostedSearch, type SearchModels } from "./hosted-search.js";
 import { PaidRefused } from "./paid-calls.js";
 import { planeOf, whyUnavailable } from "./tool-plane.js";
 import { type Extract, parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
@@ -110,15 +109,19 @@ export async function webSearch(args: Record<string, unknown>, parallel: Extract
   }
 }
 
-/** `{query, n?}` searched by the provider the run's plane resolves web_search to, as a Search. `models`: the run's models
- *  the hosted search sends through (on the runner, the session's port: tools.ts host.models); absent, the process's own. */
-export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal, models?: () => Promise<PortModels>): Promise<Search> {
+/** The run's models a native search goes through, asked when a search runs (the runner's: the session's port, up once
+ *  the session is open): ToolHost.search, EffectRun.search. */
+export type SearchOn = () => Promise<SearchModels | undefined>;
+
+/** `{query, n?}` searched by the provider the run's plane resolves web_search to, as a Search. `models`: the run's own
+ *  models a native search goes through (none: a native search has no model to search on). */
+export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal, models?: SearchOn): Promise<Search> {
   const plane = planeOf(env);
   if (plane.web_search === "parallel") return webSearch(args, parallelOf(env), signal);
   if (plane.web_search !== "native" && plane.web_search !== "exa-keyless") return { error: `web_search does not run here: ${plane.web_search === undefined ? "no provider was resolved for it" : whyUnavailable(plane.web_search)}` };
   const { query, n } = searchArgs(args);
   if (!query) return { error: "web_search needs a query" };
-  if (plane.web_search === "native") return models ? hostedSearch(query, n, plane.model, signal, (await models()) as never) : hostedSearch(query, n, plane.model, signal);
+  if (plane.web_search === "native") return hostedSearch(query, n, plane.model, signal, await models?.());
   // Under --faux, Exa is the faux module's or none: a test never reaches the network.
   const faux = await fauxFetch(env, FAUX_EXA_ENV);
   if (env[FAUX_ENV] && !faux) return { error: "web_search: under --faux, Exa's endpoint is a faux module's, and this server names none" };
@@ -128,8 +131,8 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
 }
 
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
- *  made, when the run opens. `models`: the run's models its hosted search sends through (searchFor). */
-export function webSearchTool(env: NodeJS.ProcessEnv, { models }: { models?: () => Promise<PortModels> } = {}): ToolRegistration<TSchema, JsonValue> {
+ *  made, when the run opens; one that resolves native searches through `models`, the run's own (ToolHost.search). */
+export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn): ToolRegistration<TSchema, JsonValue> {
   const provider = planeOf(env).web_search;
   const parallel = provider === "parallel";
   if (parallel) parallelOf(env);

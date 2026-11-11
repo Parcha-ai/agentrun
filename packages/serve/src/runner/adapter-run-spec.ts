@@ -363,7 +363,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
     // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
-    // proxy admits that search's one request (it goes through the session's port: buildToolHost's `models`) and books it
+    // proxy admits that search's one request (it goes through the session's port: buildToolHost's `search`) and books it
     // with each search it ran.
     ...(launch.plane?.web_search === "native" ? { webSearch: true } : {}),
   });
@@ -591,7 +591,8 @@ export async function learnedWorkflowHostTool(opts: {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh });
+  // A call node's native web_search goes through the session's port too, labelled web_search, as the run's own does.
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -670,16 +671,15 @@ export function buildToolHost(opts: {
     // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
     // cap parks the run (pause). browserListed reads it to fail closed.
     ledger: run.ledger,
+    // A native web_search's models: the session's port under a side key labelled web_search, so the search request goes
+    // through the run's one route (its proxy, policy, key, price and cap), this run's alone (#2458).
+    search: () => run.ledger.models(WEB_SEARCH_TOOL),
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,
-    // The run's models for a tool's own request beside the harness's (web_search's hosted search): the session's port,
-    // under a key labelled for the tool, so the request is shaped, priced and booked on the run's one ledger as the
-    // harness's own are (port-models.ts).
-    models: (label) => run.ledger.models(label),
   };
 }
 

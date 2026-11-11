@@ -14,7 +14,6 @@ import type { Revision } from "./agent-rows.js";
 import { registerTurnEnding } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
-import type { PortModels } from "./port-models.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
@@ -29,7 +28,7 @@ import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
-import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -134,13 +133,12 @@ export type ToolHost = {
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
   workspace?: Workspace;
-  /** The run's models for a tool's own request beside the harness's, labelled `label` (on the runner: the session's port,
-   *  port-models.ts, so the request is booked on the run's one ledger): web_search's hosted search sends through them.
-   *  Absent, the process's own (hosted-search.ts searchOn). */
-  models?: (label: string) => Promise<PortModels>;
   /** The agent's computer, where it is a browser (computer-for-claim.ts): the browser tool opens its sessions through the
    *  claim's provider and drives each over its CDP URL with pi-browser's raw-CDP driver, in place of the plane's vendor. */
   browserComputer?: ClaimBrowser;
+  /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
+   *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
+  search?: SearchOn;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -155,7 +153,7 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 
 /** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
  *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -588,9 +586,9 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
-    // On the runner its hosted search goes through the run's models (host.models), labelled web_search.
-    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.models ? { models: () => host.models!(WEB_SEARCH_TOOL) } : {})) as unknown as ToolRegistration),
-    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
+    // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
