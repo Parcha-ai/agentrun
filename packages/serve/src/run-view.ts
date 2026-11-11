@@ -23,6 +23,7 @@ import { MIN_SECRET } from "./learn/secrets.js";
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -701,7 +702,7 @@ export function outcomeShows(tool: string, answer: { decision: string; by?: stri
 function callSays(answer: ApprovalAnswer | undefined): string {
   if (!answer) return "Not run yet: it waits for your approval";
   if (answer.decision === "canceled") return "Not run: the run was cancelled while it waited";
-  if (answer.decision === "withdrawn") return answer.ended ? "Not run: the run ended while it waited" : "Not run: the run was stopped while it waited";
+  if (answer.decision === "withdrawn") return answer.ended ? ENDED_WHILE_WAITING : STOPPED_WHILE_WAITING;
   return "Allowed: it runs now";
 }
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
