@@ -148,10 +148,12 @@ export function imageProviderOf(model: string | undefined): "anthropic" | "opena
  *    small image), each 512 px tile 170 tokens beside a base of 85. A gpt-4o-mini model bills 2,833 and 5,667 a tile;
  *  - the patch rule, for the models it lists as billed by 32 px patches (`openaiPatchMultiplier`): its patches at the
  *    model's multiplier, when that is more.
- * At most `OPENAI_IMAGE_TOKENS_MAX`. With no model named, every rule (the patches at the largest multiplier, 2.46).
+ * At most `OPENAI_IMAGE_TOKENS_MAX`. With no model named, every rule at its dearest: gpt-4o-mini's tiles and the patches
+ * at the largest multiplier, 2.46.
  */
 export function openaiImageTokens(width: number, height: number, model?: string, detail?: string): number {
-  const mini = model !== undefined && /4o-mini/i.test(model);
+  // gpt-4o-mini's tile rates are the dearest: a model not named (a gateway's alias may be one) is held to them.
+  const mini = model === undefined || /4o-mini/i.test(model);
   let tiled: number;
   if (detail === "low") tiled = mini ? 2_833 : 85;
   else {

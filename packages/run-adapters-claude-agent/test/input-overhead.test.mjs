@@ -190,7 +190,7 @@ test("through a gateway, a screenshot counts at the routed model's provider's ru
     const sent = JSON.stringify(body);
     return inputTokensMaxOf(policy, body, sent) - (Buffer.byteLength(sent, 'utf8') - SCREEN.length) - PROMPT.autoOrNone;
   };
-  assert.deepEqual(['anthropic/claude-sonnet-5.5', 'openai/gpt-5', 'google/gemini-3-pro', 'meta-llama/llama-4'].map(counted), [1229, 1105, 1120, 2264]);
+  assert.deepEqual(['anthropic/claude-sonnet-5.5', 'openai/gpt-5', 'google/gemini-3-pro', 'meta-llama/llama-4'].map(counted), [1229, 1105, 1120, 36_835]);
 });
 
 test("an image-shaped object in a tool call's arguments is text to the provider: its bytes stay counted, never swapped for an image's allowance", () => {
