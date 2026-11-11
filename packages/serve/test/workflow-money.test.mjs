@@ -21,6 +21,8 @@ const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { viewOverStore } = await import("../dist/store-view.js");
 
 const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -149,6 +151,9 @@ async function worldWith(t, { capUsd, question, usage, providerOf, workflow = an
 /** The faux model as the cap prices it for the stop test: free input, output at $100 a million, 16,384 at most. */
 const PRICED = Object.freeze({ id: "faux-priced", api: "anthropic-messages", price: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 16_384 });
 const PER_TOKEN = 100 / 1e6;
+/** The three-step workflow's cap: a step needs at least $0.1024 of room (1,024 tokens at $100 a million), so the first
+ *  two fit ($0 and $0.01 booked before them), and once they have booked $0.02 the third does not. */
+const CAP_THREE = 0.12;
 const eight = (usd) => Math.round(usd * 1e8) / 1e8;
 
 /** An origin whose first answer streams `text`, resolves `streamed`, and holds open until the request is aborted. */
@@ -232,6 +237,20 @@ test("a workflow model node books through the session proxy under the cap: the r
   assert.equal(row.costUsd, bookOf(1000, 100), `its cost is calculateCost of the request's usage: ${row.costUsd}`);
 });
 
+test("a workflow run's served cost is its booking, never the $0 its model nodes' answers carry: its usage row and its view", async (t) => {
+  const { server, store } = await worldWith(t, { capUsd: 100, question: "What is six times seven?", usage: { input_tokens: 1000, output_tokens: 100 } });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
+  const booked = await spendFromRecords(store);
+  assert.ok(booked > 0, `the node's request is booked at a price: ${booked}`);
+  const usage = (await runTimeline(server, "run-1", BACKGROUND_CONTEXT, { settled: true, ended: true })).findLast((one) => one.kind === "usage");
+  assert.equal(eight(usage?.usage?.usd ?? 0), booked, `the usage row says the booking: ${JSON.stringify(usage)}`);
+  assert.match(String(usage.summary), /^Cost: \$0\.\d{4} over 1 model request$/, `in the renderer's words: ${usage.summary}`);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.equal(eight(view?.cost?.usd ?? 0), booked, `the view's cost is the booking: ${JSON.stringify(view?.cost)}`);
+  assert.equal(eight(row.costUsd), booked, "the row's stored cost is the same booking");
+});
+
 test("a tiered model past its threshold: the hold and the booking are the tier price, not the base price (#1861)", async (t) => {
   const input = THRESHOLD + 128_000; // past the tier; the question's bytes bound the hold's input
   const question = "A".repeat(input);
@@ -275,6 +294,27 @@ test("a step the cap holds parks the run with the cap's figures; a raise resumes
   const ended = await waitRow(server, (r) => r.state === "ended" && r.runner === null);
   assert.equal(ended.state, "ended", `the raise resumes the run to its end: ${JSON.stringify(ended)}`);
   assert.equal((await rootEntries(store, KINDS.raise)).length >= 1, true, "the resume wrote a raise entry");
+});
+
+/** Three model nodes (extract) in a chain, each submitting {answer}: three requests, one after another. */
+const threeFlow = () => {
+  const step = (n) => ({ node: "extract", label: `answer-${n}`, instructions: "Answer the question.", out: "Answer", as: `a${n}` });
+  return { ...answerFlow(), name: "three", output: { schemaId: "Answer", path: "a3" }, root: { node: "chain", steps: [step(1), step(2), step(3)] } };
+};
+
+test("a workflow under a small cap parks at it once its booked spend leaves no room for the next step: the cap holds on a workflow run", async (t) => {
+  // Each node's request costs $0.01 (100 output tokens at $100 a million), three in all, under a cap below their sum.
+  const { server, store } = await worldWith(t, { capUsd: CAP_THREE, question: "What is six times seven?", workflow: threeFlow(), providerOf: pricedProvider(submitOrigin({ input_tokens: 100, output_tokens: 100 })) });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  const { turns } = await sessionRecords(store);
+  const budgets = await rootEntries(store, KINDS.budget);
+  assert.equal(row.state, "parked", `the run parks at its cap, never runs on: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.equal(turns.length, 2, `two of its steps ran, never the third: ${JSON.stringify(turns)}`);
+  const spent = await spendFromRecords(store);
+  assert.equal(spent, 0.02, "booked at $0.01 each");
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.12 cap/, `the park names the booked spend: ${row.summary}`);
+  assert.ok(spent > 0 && spent <= CAP_THREE, `what it spent is booked at a price, within its cap: ${spent}`);
+  assert.equal(eight(budgets.at(-1)?.pending?.spent_usd ?? 0), spent, `its park says that booked spend: ${JSON.stringify(budgets.at(-1)?.pending)}`);
 });
 
 test("a person's stop while a model node streams counts what it streamed and 1,024 tokens, never the hold", async (t) => {
