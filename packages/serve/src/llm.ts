@@ -17,8 +17,10 @@ type Models = {
   completeSimple(model: never, context: never, options?: never): Promise<{ content: { type: string; text?: string }[]; usage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost?: { total: number } }; stopReason?: string; errorMessage?: string }>;
 };
 
-/** The completer over `models`, each call on `pick(tier)`'s model at `thinking`. */
-export function completer(models: Models, pick: (tier: string | undefined) => { provider: string; modelId: string } | undefined, thinking: ModelThinkingLevel): Complete {
+/** The completer over `models`, each call on `pick(tier)`'s model at `thinking`. An answer names the model as `named`
+ *  (the run's own name for it) when the pick reaches it through another provider (a runner's session proxy), else as
+ *  `<provider>/<model id>`. */
+export function completer(models: Models, pick: (tier: string | undefined) => { provider: string; modelId: string; named?: string } | undefined, thinking: ModelThinkingLevel): Complete {
   return async (args, signal) => {
     const { prompt, system, maxTokens, tier } = args;
     if (typeof prompt !== "string" || !prompt.trim()) throw new Error("llm: prompt is a non-empty string");
@@ -43,6 +45,6 @@ export function completer(models: Models, pick: (tier: string | undefined) => { 
     const cached = (message.usage?.cacheRead ?? 0) + (message.usage?.cacheWrite ?? 0);
     const usage = message.usage ? { input_tokens: message.usage.input + cached, output_tokens: message.usage.output, cached_input_tokens: cached } : null;
     const cost = priced && typeof message.usage?.cost?.total === "number" ? message.usage.cost.total : null;
-    return { text, model: `${ref.provider}/${ref.modelId}`, usage, cost_usd: cost };
+    return { text, model: ref.named ?? `${ref.provider}/${ref.modelId}`, usage, cost_usd: cost };
   };
 }
