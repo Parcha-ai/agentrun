@@ -41,6 +41,11 @@ function shaped(snapshot) {
     assert.deepEqual(extra, [], `no key SNAPSHOT.md does not name: ${JSON.stringify(value).slice(0, 200)}`);
     for (const key of required) assert.ok(key in value, `${key} is there: ${JSON.stringify(value).slice(0, 200)}`);
   };
+  // A retired item's retired_from says what its restore gives back, active or pending; any other item has none.
+  const retiredFrom = (value) => {
+    if (value.status === "retired") assert.ok(value.retired_from === undefined || ["active", "pending"].includes(value.retired_from), `retired_from is active or pending: ${JSON.stringify(value).slice(0, 200)}`);
+    else assert.equal(value.retired_from, undefined, `only a retired item says retired_from: ${JSON.stringify(value).slice(0, 200)}`);
+  };
   const history = (value) => {
     keys(value, ["at"], ["last", "retire", "person"]);
     for (const change of [value.last, value.retire, value.person].filter(Boolean)) keys(change, ["kind", "by", "at"]);
@@ -50,11 +55,14 @@ function shaped(snapshot) {
   assert.match(snapshot.main, HEX);
   keys(snapshot.index, ["oid", "bytes"]);
   for (const one of snapshot.notes) {
-    keys(one, ["file", "oid", "bytes", "name", "description", "type", "status", "origin", "supersedes", "superseded_by", "order", "history"]);
+    // retired_from: past v1, additive, on a retired note alone (the status its restore gives back).
+    keys(one, ["file", "oid", "bytes", "name", "description", "type", "status", "origin", "supersedes", "superseded_by", "order", "history"], ["retired_from"]);
+    retiredFrom(one);
     history(one.history);
   }
   for (const one of [...snapshot.skills, ...snapshot.workflows]) {
-    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links"]);
+    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links", "retired_from"]);
+    retiredFrom(one);
     for (const file of one.files) keys(file, ["path", "oid", "bytes"]);
     history(one.history);
   }

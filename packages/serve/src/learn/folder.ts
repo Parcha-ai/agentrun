@@ -62,7 +62,8 @@ export type SnapNote = {
   origin: "you" | "run";
   supersedes: string[];
   superseded_by: string | null;
-  /** On a retired note: the status its restore gives back (notes.ts LearnedNote retired_from). */
+  /** Past SNAPSHOT.md v1, additive, on a retired note alone: the status its restore gives back (notes.ts LearnedNote
+   *  retired_from). */
   retired_from?: "active" | "pending";
   order: number;
   history: SnapHistory;
@@ -71,7 +72,8 @@ export type SnapFile = { path: string; oid: string; bytes: number };
 export type SnapLearned = {
   name: string; file: string; description: string;
   status: "active" | "pending" | "retired";
-  /** On a retired skill or draft: the status its restore gives back (skills.ts retiredFrom). */
+  /** Past SNAPSHOT.md v1, additive, on a retired skill or draft alone: the status its restore gives back (skills.ts
+   *  retiredFrom). */
   retired_from?: "active" | "pending";
   run: string | null;
   files: SnapFile[];
