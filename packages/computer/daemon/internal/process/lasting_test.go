@@ -35,7 +35,7 @@ func TestLogKeepsTheFirstBytes(t *testing.T) {
 	// One pipe, so the order is the program's: stdout and stderr are two pipes otherwise, read as their bytes come.
 	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "exec 2>&1; printf 0123456789abcdef; printf XY >&2"}, Log: path})
 	wait(t, tbl, p.ID)
-	// The log holds all of the output once its stream reads to the end (exited): the process's end can come first.
+	// The log holds all of the output once the process has ended (TestTheEndComesAfterTheLastOutput).
 	if got := readAll(t, tbl, p.ID, "log"); got != "0123456789" {
 		t.Fatalf("the log stream %q", got)
 	}
@@ -77,6 +77,43 @@ func TestLogKeepsTheFirstBytes(t *testing.T) {
 	plain := start(t, tbl, process.StartParams{Argv: []string{"true"}})
 	if _, err := tbl.Read(context.Background(), process.ReadParams{ID: plain.ID, Stream: "log", Offset: off(0)}); err == nil || kindOf(t, err) != rpc.KindInvalid {
 		t.Fatalf("the log of a process with none: %v", err)
+	}
+}
+
+// A wait that returns comes after the last of what the program wrote is in its log and its rings, even when computerd
+// reads the output more slowly than the program wrote it: a pipe still holding a program's last bytes as it exits
+// never shows a short log (a stat of the file right after the wait). Each log write is slowed here so that the program
+// exits well before computerd has read its output.
+func TestTheEndComesAfterTheLastOutput(t *testing.T) {
+	restore := process.SetLogWriteAt(func(f *os.File, p []byte, off int64) (int, error) {
+		time.Sleep(5 * time.Millisecond)
+		return f.WriteAt(p, off)
+	})
+	defer restore()
+	const size = 1 << 20
+	tbl := table(t, process.Options{LogBytes: size, RingBytes: size})
+	path := filepath.Join(t.TempDir(), "output.log")
+	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "head -c 1048576 /dev/zero | tr '\\0' x"}, Log: path})
+	wait(t, tbl, p.ID)
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != size {
+		t.Fatalf("the log right after the wait: %v bytes, %v", info.Size(), err)
+	}
+	res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "stdout", Offset: off(size)})
+	if err != nil || res.Size != size || !res.Exited {
+		t.Fatalf("stdout right after the wait: %+v %v", res, err)
+	}
+	// A process left in the group that keeps its stdout open doesn't hold the end: the program's own bytes are drained,
+	// and the wait returns while the leftover still runs.
+	left := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "printf mine; sleep 30 &"}})
+	began := time.Now()
+	wait(t, tbl, left.ID)
+	if waited := time.Since(began); waited > process.DrainLimit/2 {
+		t.Fatalf("the wait with a leftover holding stdout took %v", waited)
+	}
+	res, err = tbl.Read(context.Background(), process.ReadParams{ID: left.ID, Stream: "stdout", Offset: off(0)})
+	if err != nil || string(res.Data) != "mine" {
+		t.Fatalf("the program's own output, with a leftover holding stdout: %+v %v", res, err)
 	}
 }
 
