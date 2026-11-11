@@ -1,15 +1,12 @@
-// The keys a person saves for this server's tools, over the one store (A), the store-backed replacement for tool-keys.ts's
-// tool-keys.json field store. Each field's value is a sealed row in store.sealedKeys (server-keys.ts, AAD
+// The keys a person saves for this server's tools, over the one store. Each field's value is a sealed row in store.sealedKeys (server-keys.ts, AAD
 // sealed_keys|<name>|sealed); the store holds ciphertext alone and never opens it. The per-key provider checks and the
 // seal-key fingerprints that tell "sealed under another key" from "damaged" live in one store.settings row (no secret: a
 // check is state and a time, a fingerprint is an HMAC of a fixed label, neither the key nor a hash of it). Only this
-// process opens a value, with the seal key the launcher hands it (AGENTRUN_SEAL_KEY), never in the data directory.
+// process opens a value, with the server's seal key (seal-key.ts bootSealKey: the server never starts without one).
 //
-// The surface is ToolKeys' (tool-keys.ts), byte for byte, so the switch swaps `new ToolKeys(data, env, say)` for
-// `toolKeysOverStore(store, env, say)` without touching a route: value/values/view/refused/checkServer/check are the same
-// shapes, and save/remove return a promise the handler awaits (durable before the 204, as writeDurableSync was). The reads
-// are served from an in-memory snapshot the server (the one writer of these rows) loads once at start (load()) and keeps in
-// step with every write, so a read answers without a round trip, exactly as ToolKeys read its file.
+// save/remove return a promise the handler awaits (durable before the 204). The reads are served from an in-memory
+// snapshot the server (the one writer of these rows) loads once at start (load()) and keeps in step with every write, so a
+// read answers without a round trip.
 import { createHmac } from "node:crypto";
 import { decisionsOf } from "./decisions.js";
 import { ApiError, invalid } from "./errors.js";
@@ -25,14 +22,14 @@ export const TOOL_KEY_CHECKS_KEY = "tool-key-checks";
 const MAX_VALUE_BYTES = 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
-/** Every field a person may save (the fields of every key row), the same set ToolKeys keeps. */
+/** Every field a person may save (the fields of every key row). */
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
 type Unreadable = (typeof UNREADABLE)[number];
 type Opened = { value: string } | { unreadable: Unreadable };
 
-/** The check a key kept before this server checked keys reads as: none was made. Mirrors ToolKeys' UNCHECKED. */
+/** The check a key kept before this server checked keys reads as: none was made. */
 const UNCHECKED: KeyCheck = { state: "not_checked", reason: "Saved before this server checked keys; save it again to check it" };
-/** A check as the store row keeps it, else undefined (mirrors ToolKeys' keptCheck). */
+/** A check as the store row keeps it, else undefined. */
 const keptCheck = (entry: unknown): KeyCheck | undefined =>
   !isObject(entry) ? undefined
   : entry.state === "accepted" && typeof entry.at === "string" ? { state: "accepted", at: entry.at }
@@ -57,23 +54,24 @@ type Snapshot = { fields: Map<string, Opened>; checks: Map<string, KeyCheck>; se
  *  store (`kept=store`), and what to do is to save them again in the console's Settings. */
 export const REENTER_SAID: Readonly<Record<(typeof UNREADABLE)[number], string>> = {
   seal_key_changed: "these saved keys were sealed under another seal key, so they do not open: save them again in Settings → Tool keys",
-  seal_key_missing: "no seal key opens these saved keys: start the server with its seal key, or save them again in Settings → Tool keys",
   file_unreadable: "these saved keys do not read: save them again in Settings → Tool keys",
 };
 
-/** The store-backed ToolKeys. `toolKeysOverStore` builds it; the switch awaits load() once before the first read. */
+/** The saved tool keys over the store. `toolKeysOverStore` builds it; the server awaits load() once before the first read. */
 class ToolKeysOverStore {
-  private readonly key: Buffer | undefined;
-  private readonly sealCheck: string | undefined;
+  private readonly key: Buffer;
+  private readonly sealCheck: string;
   private said = "";
   private snapshot: Snapshot = { fields: new Map(), checks: new Map(), seals: new Map(), changed: new Map() };
   /** The checks of the keys the server was started with, by key id, each once it answered (checkServer). In memory only. */
   private readonly started: Record<string, StartCheck> = {};
 
   constructor(private readonly store: ToolKeysStore, private readonly env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string>) => void) {
-    this.key = sealKeyOf(env[SEAL_KEY_ENV]);
-    this.sealCheck = this.key && fingerprint(this.key);
-    if (env[SEAL_KEY_ENV] !== undefined && !this.key) say({ condition: "seal_key_invalid", name: SEAL_KEY_ENV });
+    // There is always a seal key (seal-key.ts bootSealKey): no tool key is ever kept, or read, without one.
+    const key = sealKeyOf(env[SEAL_KEY_ENV]);
+    if (!key) throw new Error(`tool keys are kept under the server's seal key (${SEAL_KEY_ENV}), and none was handed over: the server does not start without one`);
+    this.key = key;
+    this.sealCheck = fingerprint(key);
   }
 
   /** Reads the store once into the snapshot: each sealed field opened now, the checks and the fingerprints beside them.
@@ -102,10 +100,9 @@ class ToolKeysOverStore {
     return { checks, seals };
   }
 
-  /** Opens a field's sealed bytes now, or why not: no seal key (seal_key_missing); a fingerprint that no longer matches
-   *  (seal_key_changed); else unseal, which fails as file_unreadable. */
+  /** Opens a field's sealed bytes now, or why not: a fingerprint that no longer matches (seal_key_changed); else unseal,
+   *  which fails as file_unreadable. */
   private openAt(name: string, sealed: Uint8Array, fp: string | undefined): Opened {
-    if (!this.key) return { unreadable: "seal_key_missing" };
     if (fp !== undefined && fp !== this.sealCheck) return { unreadable: "seal_key_changed" };
     try {
       return { value: unsealColumn(this.key, sealedAt.sealedKey(name), sealed).toString("utf8") };
@@ -130,7 +127,7 @@ class ToolKeysOverStore {
   }
 
   /** GET: each key's fields, whether set and where from (never a value), what it unlocks, its check, and what to enter
-   *  again, with why. The ToolKeys.view shape, over the snapshot. */
+   *  again, with why. Over the snapshot. */
   view(offers: Parameters<typeof rowUnlocks>[3] = []) {
     const again: { name: string; why: Unreadable }[] = [];
     const tools = toolsView(this.env);
@@ -159,7 +156,7 @@ class ToolKeysOverStore {
   }
 
   /** Each tool key the server is started with, checked against its provider once (key-check.ts), all at once; `answered`
-   *  as each answers unless `stop` came first. Held in memory for this start, like ToolKeys.checkServer. */
+   *  as each answers unless `stop` came first. Held in memory for this start. */
   async checkServer(fetchFor: (id: string) => Promise<typeof fetch | null>, stop: AbortSignal, answered: () => void): Promise<void> {
     await Promise.all(TOOL_KEYS.filter((row) => row.kind === "tool" && this.env[row.fields[0]]).map(async (row) => {
       const name = row.fields[0];
@@ -190,7 +187,7 @@ class ToolKeysOverStore {
   }
 
   /** A PUT's check, before save(): the key it sends checked against its provider, or 422 when the provider refuses it;
-   *  undefined when the body sends no key. The ToolKeys.check shape. */
+   *  undefined when the body sends no key. */
   async check(id: string, body: Record<string, unknown>, fetchFor: (id: string) => Promise<typeof fetch | undefined>, stop?: AbortSignal): Promise<KeyCheck | undefined> {
     const { row, values } = this.admit(id, body);
     const name = row.fields[0];
@@ -205,9 +202,9 @@ class ToolKeysOverStore {
   async save(id: string, body: Record<string, unknown>, check?: KeyCheck): Promise<void> {
     const { row, values } = this.admit(id, body);
     for (const [name, value] of Object.entries(values)) {
-      await putSealedKey(this.store, this.key!, name, value as string);
+      await putSealedKey(this.store, this.key, name, value as string);
       this.snapshot.fields.set(name, { value: value as string });
-      this.snapshot.seals.set(name, this.sealCheck!);
+      this.snapshot.seals.set(name, this.sealCheck);
     }
     // Each saved field's time is its row's, as the store wrote it (as a restart reads it back): the others' stay.
     for (const stored of await this.store.sealedKeys.all()) if (Object.hasOwn(values, stored.name)) this.snapshot.changed.set(stored.name, stored.updatedAt);
@@ -238,8 +235,8 @@ class ToolKeysOverStore {
     await this.store.settings.put(TOOL_KEY_CHECKS_KEY, { v: 1, checks: Object.fromEntries(this.snapshot.checks), seals: Object.fromEntries(this.snapshot.seals) });
   }
 
-  /** What a PUT may save: the key's row and the body's values, or 422 (the body), 409 (a field the server's, or no seal
-   *  key). No message holds a value. The ToolKeys.admit, byte for byte. */
+  /** What a PUT may save: the key's row and the body's values, or 422 (the body), 409 (a field the server's). No message
+   *  holds a value. */
   private admit(id: string, body: Record<string, unknown>) {
     const row = this.row(id);
     const issues = unknownFields(body, ["values"]);
@@ -254,7 +251,6 @@ class ToolKeysOverStore {
     }
     if (issues.length) throw invalid(issues);
     this.notServers(Object.keys(values));
-    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no tool key: it never keeps one in the clear.`);
     return { row, values };
   }
 
@@ -273,9 +269,8 @@ class ToolKeysOverStore {
 
 export type { ToolKeysOverStore };
 
-/** The ToolKeys surface over the one store: the switch swaps `new ToolKeys(data, env, say)` for this, then awaits load()
- *  once at start before the first read. `env` is what the server is started with (its own keys; never a saved one), as
- *  ToolKeys takes it. */
+/** The saved tool keys over the one store, awaited load() once at start before the first read. `env` is what the server is
+ *  started with (its own keys, and its seal key; never a saved one). */
 export function toolKeysOverStore(store: ToolKeysStore, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void): ToolKeysOverStore {
   return new ToolKeysOverStore(store, env, say);
 }

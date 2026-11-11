@@ -31,7 +31,7 @@ describe("a run a schedule started", () => {
   it("names it by its id, as a trigger, when it is not in the list (deleted since, or not read yet)", () => {
     expect(text(inNames(createElement(RunHeader, { run: run({ trigger: { id: "trg_gone", firing_key: "fir_1" } }), agentName: "Triage" })))).toContain("Trigger: trg_gone");
   });
-  it("says nothing on a run a caller started, or from an older server", () => {
+  it("says nothing on a run a caller started", () => {
     expect(text(inNames(createElement(RunHeader, { run: run(), agentName: "Triage" })))).not.toContain("Schedule:");
   });
 });
