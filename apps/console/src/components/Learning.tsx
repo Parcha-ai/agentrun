@@ -11,7 +11,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
+  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, UNREADABLE_RETIRED, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, statusFile, supersedesOf,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
@@ -541,8 +541,10 @@ function lastChangeLine(last: LastChange | undefined): string | null {
   return last && last.kind !== "learned" ? `${changeWords(last.kind, last.by)} · ${when(last.at)}` : null;
 }
 
-/** Who retired one and when, as the server names it (`retired`), else just "Retired". */
+/** Who retired one and when, as the server names it (`retired`), else just "Retired"; one whose file can't be read says
+ *  so and how to fix it, never who retired it (UNREADABLE_RETIRED). */
 function retiredLine(retired: Retired | undefined): string {
+  if (retired?.by === "host") return UNREADABLE_RETIRED;
   return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : "Retired";
 }
 

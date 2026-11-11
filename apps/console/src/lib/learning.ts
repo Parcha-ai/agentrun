@@ -48,7 +48,12 @@ export type LearnedFileRef = { file: string; name: string; pending?: true };
 export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
 /** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
  *  changes. */
-export type Retired = { at: string; by: "person" | "run" };
+/** Who retired a retired item, and when; or, for a skill or draft whose file can't be read (its front matter reads no
+ *  way), that no one did: the host could not read it (`by: "host"`, `why: "unreadable"`). */
+export type Retired = { at: string; by: "person" | "run" } | { at: string; by: "host"; why: "unreadable" };
+/** What a skill's or a draft's card says when it reads retired only because its file can't be read: never who retired
+ *  it, since no one did, and what the owner does about it. */
+export const UNREADABLE_RETIRED = "Not read: its front matter can't be read; fix the file to use it";
 /** The newest change to an item's file, as the server names it (absent when it names none). */
 export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
 const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned", superseded: "Replaced" };

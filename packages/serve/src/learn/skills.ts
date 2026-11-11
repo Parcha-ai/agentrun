@@ -318,6 +318,14 @@ export function learnedStatus(text: string): "active" | "pending" | "retired" {
   return status === "active" || status === "pending" ? status : "retired";
 }
 
+/** Whether `text` reads retired (learnedStatus) only because it can't be read: its front matter reads no way, its status
+ *  is not one plain line, or its status is none the host writes. No one retired it: a view says the host could not read
+ *  it, never that a run or a person retired it. */
+export function unclearFront(text: string): boolean {
+  const front = frontMatter(text);
+  return !front || !statusOnOneLine(text) || !["active", "pending", "retired"].includes(front.get("status") ?? "active");
+}
+
 /** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter
  *  (any status line before it dropped), so no later run is given it. Throws on a text with no front matter. */
 export function retiredLearned(text: string): string {

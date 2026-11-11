@@ -437,10 +437,20 @@ const LEARNING_NOTE_REQUIRED = closed({
   }, "This note's runs, counted over the agent's runs the server knows (held ones from memory, ended ones from the learning ledger): given it, and read it. Whether a run applied a note is not measured."),
 });
 /** When a retired note, skill or draft was retired, and by whom: on a retired one alone. */
-const RETIRED = closed({
-  at: { type: "string", format: "date-time", description: "When: the commit that retired it." },
-  by: { enum: ["person", "run"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it." },
-}, "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.");
+const RETIRED = {
+  oneOf: [
+    closed({
+      at: { type: "string", format: "date-time", description: "When: the commit that retired it." },
+      by: { enum: ["person", "run"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it." },
+    }),
+    closed({
+      at: { type: "string", format: "date-time", description: "When: the newest commit on its file." },
+      by: { const: "host", description: "No one retired it: a skill's SKILL.md or a draft's README.md whose front matter can't be read (it reads no way, or its status is none the host writes) reads retired, so no run is given it. Fix the file, then restore it." },
+      why: { const: "unreadable" },
+    }),
+  ],
+  description: "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.",
+};
 /** The newest change to a note, skill or draft, from the newest commit on its file. */
 const LAST_CHANGE = closed({
   kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned", "superseded"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), `superseded`, a note a person's approval or restore of another superseded, or `learned`, a run's merge." },

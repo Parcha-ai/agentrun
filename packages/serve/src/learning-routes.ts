@@ -38,7 +38,9 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
-type Retired = { at: string; by: "person" | "run" };
+/** Who retired a retired item, and when; or, for a skill or draft that reads retired only because its file can't be read
+ *  (its front matter reads no way: SnapLearned `unread`), that no one did: the host could not read it. */
+type Retired = { at: string; by: "person" | "run" } | { at: string; by: "host"; why: "unreadable" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
 type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
@@ -98,7 +100,7 @@ async function reading<T>(data: string, agentId: string, read: (folder: { ws: Wo
 
 /** A retired item's `retired`: its newest retire by a person; else, one a person made retired another way (an edit to
  *  status: retired, or created so), their newest change; else (retired by none of theirs) its newest change's time. */
-const retiredOf = (history: SnapHistory): Retired => (history.retire ? { at: history.retire.at, by: "person" } : history.person ? { at: history.person.at, by: "person" } : { at: history.at, by: "run" });
+const retiredOf = (history: SnapHistory, unread = false): Retired => (unread ? { at: history.at, by: "host", why: "unreadable" } : history.retire ? { at: history.retire.at, by: "person" } : history.person ? { at: history.person.at, by: "person" } : { at: history.at, by: "run" });
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows; its last
@@ -120,7 +122,7 @@ function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown
   return {
     name: shown.name(item.name), file: shown.name(file), ...(kind === "workflow" ? { readme: shown.name(item.file) } : {}), description: shown.text(item.description), status: item.status, run: item.run, bytes, etag: etagOf(item.oid),
     ...(item.history.last ? { last_change: item.history.last } : {}),
-    ...(item.status === "retired" ? { retired: retiredOf(item.history) } : {}),
+    ...(item.status === "retired" ? { retired: retiredOf(item.history, item.unread === true) } : {}),
   };
 }
 
