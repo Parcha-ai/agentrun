@@ -265,7 +265,7 @@ test("a Daytona or an E2B sandbox under the server's default box_allow asks for 
 // A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]):
 // under a list, the server's default or the operator's own, it runs open, never refused for the list (this server's
 // list can't reach it); under an explicit none, the operator's word for no network at all, it is refused in words.
-const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).";
+const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which runs only on an open network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list (a computer that runs only on an open network then runs open: the list doesn't narrow it).";
 
 test("a cloud phone under a list, the server's default or the operator's, or with no box_allow, runs on the vendor's own network, and its provider's check takes the spec", async () => {
   const spec = computerSpecOf({});
@@ -296,6 +296,16 @@ test("a cloud phone is refused in words at the claim where the run's box_allow i
     { code: "computer_unavailable", message: `Phone harness could not start a phone computer: ${NO_NETWORK_PHONE}` },
   );
   assert.deepEqual(record.created, [], "nothing is made");
+});
+
+test("Local Chrome, on an open network only (public addresses from this machine), is refused at the claim under none and runs open under a list", async () => {
+  const local = entryOf("local");
+  assert.deepEqual(local.network, ["open"], "the registry's entry declares what its module's NETWORK does");
+  const asked = { networks: local.network, maxLifetimeMs: 60_000 };
+  const words = NO_NETWORK_PHONE.replace("Phone harness phone", "Local Chrome browser");
+  assert.throws(() => computerSpecOf({})(local, "browser", { ...asked, boxAllow: "none" }), { code: "computer_unavailable", message: words });
+  assert.throws(() => computerSpecOf({ AGENTRUN_BOX_ALLOW: "none" })(local, "browser", asked), { code: "computer_unavailable", message: words });
+  for (const boxAllow of [[...DEFAULT_BOX_ALLOW], ["api.example.com"]]) assert.equal(computerSpecOf({})(local, "browser", { ...asked, boxAllow }).network, "open");
 });
 
 // The computer's spec by kind (computerSpecOf): box_allow is the computer's egress list, so a sandbox with none (or

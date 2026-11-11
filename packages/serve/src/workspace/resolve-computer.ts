@@ -95,14 +95,15 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
     return keys;
   };
 
-/** Whether a provider's computers run only on the vendor's own network: the network forms it declares (its module's
- *  NETWORK, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
+/** Whether a provider's computers run only on an open network: the network forms it declares (its module's NETWORK, its
+ *  capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's (the vendor's own network) and
+ *  Local Chrome's (public addresses from this machine, through its egress proxy) are. */
 export const vendorNetworkOnly = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && network.every((one) => one === "open");
 
-/** Why a vendor-hosted computer is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the fix:
- *  the operator said no network at all, and the computer can't run without the vendor's. */
+/** Why a computer that runs only on an open network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words
+ *  that name the fix: the operator said no network at all, and the computer can't run without one. */
 export const noNetworkRefusal = (label: string, kind: string): string =>
-  `This agent's computer is a ${label} ${kind}, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).`;
+  `This agent's computer is a ${label} ${kind}, which runs only on an open network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a computer that runs only on an open network then runs open: the list doesn't narrow it).`;
 
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
