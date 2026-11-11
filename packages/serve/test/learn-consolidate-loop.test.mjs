@@ -595,5 +595,5 @@ test("a consolidation that rewrites a draft to call an MCP tool with no declared
   assert.ok(done, JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.left ?? e.data?.problems])));
   const item = done.data.verdict.items.find(({ file }) => file === "workflows/find-policies/workflow.json");
   assert.deepEqual([item?.keep, item?.pending, item?.question], [true, true, "Unpriced"], JSON.stringify(item));
-  assert.match(item.why, /mcp:door\/lookup/, item.why);
+  assert.match(item.why, /lookup on door, which has no price/, item.why);
 });

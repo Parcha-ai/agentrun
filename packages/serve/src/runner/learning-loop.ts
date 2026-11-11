@@ -26,6 +26,7 @@ import { journalEntries } from "./journal-reader.js";
 import { changedLast, clustersOf, clustersWithin, consolidatePrompt, heldToClusters, partnersOf, rankOf } from "../learn/consolidate.js";
 import type { ConsolidationMain } from "../learn/commit.js";
 import { KINDS } from "./journal-kinds.js";
+import type { DraftTools } from "./learning-end.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
 
 /** The grader's bounds, as the server's grade had them (grade.ts): one ask, its answer cut at GRADE_MAX_TOKENS. */
@@ -129,7 +130,7 @@ export interface ConsolidationDeps {
   noteRuns(agentId: string): Promise<ReadonlyMap<string, { readonly given: number; readonly read: number }>>;
   /** The checks over a consolidation's answer, against main as `seed` (propose.ts proposeRun, as a run's end-of-run turn
    *  is checked): the proposal kept, or why nothing is. */
-  checkAnswer(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools?: readonly string[] }): Promise<CheckedAnswer>;
+  checkAnswer(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools: DraftTools }): Promise<CheckedAnswer>;
   /** After a merge of a run's learning, before its learning run (`learningRunId`) ends: whether a consolidation is due
    *  for its agent (learn/consolidate.ts consolidationDue), and queue it. A throw parks the learning run, which asks
    *  again when it wakes (its merge is on main already). */
@@ -137,7 +138,7 @@ export interface ConsolidationDeps {
 }
 
 /** A consolidation run's own facts, from its launch. */
-export type Consolidation = { readonly agentId: string; readonly instructions?: string; readonly tools?: readonly string[]; readonly pairs: readonly { readonly skill: string; readonly workflow: string; readonly changed: "skill" | "workflow" }[] };
+export type Consolidation = { readonly agentId: string; readonly instructions?: string; readonly tools: DraftTools; readonly pairs: readonly { readonly skill: string; readonly workflow: string; readonly changed: "skill" | "workflow" }[] };
 /** What the checks kept of a consolidation's answer, or why nothing. */
 export type CheckedAnswer = { readonly state: "proposed"; readonly proposal: KeptProposal; readonly left?: readonly Problem[] } | { readonly state: "dropped"; readonly reason: string; readonly detail?: string; readonly problems?: readonly Problem[] };
 /** A consolidation's journal entry (journal-kinds.ts learningConsolidation): its proposal held to its clusters, what the
@@ -709,7 +710,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             }
             asked = reply.usd;
             spend = asked;
-            const checked = await consolidating.checkAnswer(ws, { seed: reply.seed, answer: reply.text, ...(job.tools ? { tools: job.tools } : {}) });
+            const checked = await consolidating.checkAnswer(ws, { seed: reply.seed, answer: reply.text, tools: job.tools });
             if (checked.state !== "proposed") return nothing(checked.reason === "empty" ? said.empty : (checked.detail ?? said.empty), checked.problems);
             // Held to what it was asked (the code check behind the grader's question): each note supersedes only notes of
             // one cluster, and a skill or a draft is one of a pair out of step. A cluster note no kept note supersedes stays.
@@ -719,7 +720,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             });
             const held = heldToClusters(replacements, checked.proposal.files ?? [], askedClusters, askedPairs);
             const keptFiles = new Set(held.files);
-            let proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: reply.seed };
+            // A kept draft's hold for its owner's OK (an MCP tool with no declared price) goes with it.
+            const heldFor = (kept: ReadonlySet<string>) => {
+              const holds = Object.entries(checked.proposal.held ?? {}).filter(([file]) => kept.has(file));
+              return holds.length ? { held: Object.fromEntries(holds) } : {};
+            };
+            let proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), ...heldFor(keptFiles), seed: reply.seed };
             const left = [...leftOut, ...(checked.left ?? []), ...held.problems];
             if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
             // A pair the answer wrote one side of (the other given back unchanged, which the checks take out): the other
@@ -747,7 +753,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               }
             }
             if (files.length !== (proposal.files ?? []).length) {
-              proposal = { notes: proposal.notes, ...(files.length ? { files } : {}), seed: reply.seed };
+              proposal = { notes: proposal.notes, ...(files.length ? { files } : {}), ...heldFor(new Set(files.map(({ file }) => file))), seed: reply.seed };
               if (!proposal.notes.length && !files.length) return nothing(said.stale(left as never), left);
             }
             const beside = [...companions.values()];

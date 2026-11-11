@@ -159,7 +159,7 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
 /** Why each draft of `proposal` waits for its owner's OK whatever the grade: its steps calling an MCP tool with no
  *  declared price (skills.ts unpricedCalls), by its workflow.json's path, from the prices each server's row keeps
  *  (mcp-probe.ts McpPrices). A server the store can't read gives no price: held. */
-async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
+export async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
   const files = ((proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).filter((one): one is { file: string; text: string } => typeof one?.file === "string" && one.file.endsWith("/workflow.json") && typeof one.text === "string");
   const { draftMcpTools, unpricedCalls, unpricedLine } = await import("../learn/skills.js");
   const rows = new Map<string, Promise<McpServerRow | undefined>>();
@@ -270,22 +270,32 @@ export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learning
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; asked: string[] }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<DraftTools> {
   const run = await deps.store.runs.get(runId);
-  const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
+  return draftToolsOf(deps.store, run ? await deps.store.agents.revision(run.revisionId) : undefined);
+}
+
+/** The tools a learned draft may call, by an agent's revision (none for one that is not agentic): its grants (a server's
+ *  wildcard read as its server lists its tools now), less what its gates deny, `gated` saying why, and `asked` the ones
+ *  set to ask, which its learned_workflow call asks about once (tools.ts learnedDraftTools). A run's end and a
+ *  consolidation read them the same way. */
+export async function draftToolsOf(store: Pick<Store, "mcp" | "settings">, revision: { readonly kind: string; readonly body: unknown } | undefined): Promise<DraftTools> {
   if (revision?.kind !== "agentic") return { tools: [], gated: {}, asked: [] };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
   const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
   // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
-  const server = (await loadToolSettings(deps.store)).settings;
+  const server = (await loadToolSettings(store)).settings;
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
   // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-  const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
-  const { tools, gated, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
+  const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(store)) : (body.tools ?? []);
+  const { tools, gated, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(store.settings) });
   return { tools, gated, asked };
 }
+
+/** What a learned draft may call (draftToolsOf). */
+export type DraftTools = { tools: string[]; gated: Record<string, string>; asked: string[] };
 
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
  *  is read back for the hook to store with the run's end, and the directory is removed. */

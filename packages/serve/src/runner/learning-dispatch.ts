@@ -25,7 +25,7 @@ export interface GradeRouteAsk {
 export const gradeModelFor = (grade: Pick<GradeRouteAsk, "model" | "own">): string | undefined => grade.model ?? grade.own;
 
 export interface LearningDispatchDeps {
-  readonly store: Pick<Store, "runs" | "agents" | "learning">;
+  readonly store: Pick<Store, "runs" | "agents" | "learning" | "mcp" | "settings">;
   /** The server's data directory: each agent's learning folder. */
   readonly data: string;
   /** The runner's one model route (its pi runs take the same): where a grade goes, on which model, at what price; under

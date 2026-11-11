@@ -22,13 +22,14 @@ import { learningWorkspace } from "../learn/folder.js";
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { Workspace } from "../workspace/index.js";
 import { type CheckedAnswer, createLearningLoop, type GradeMain, type KeptProposal, type LearningCommitResult, type LearningLoopDeps, type Problem } from "./learning-loop.js";
+import { draftToolsOf, heldOf } from "./learning-end.js";
 import type { LoopFactory } from "./loop-contract.js";
 
 /** The harness a learning run's launch names (store/sqlite/run-patch.ts learningLaunchOf). */
 export const LEARNING_HARNESS = "learning";
 
 export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now"> {
-  readonly store: Pick<Store, "runs" | "agents" | "learning">;
+  readonly store: Pick<Store, "runs" | "agents" | "learning" | "mcp" | "settings">;
   /** The server's data directory: where each agent's learning folder is. */
   readonly data: string;
   /** Where the folder's script says what it did (learningWorkspace's log). */
@@ -77,7 +78,8 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
         const job = objectOf(objectOf(launch.input).consolidate);
         if (typeof job.agentId !== "string") return undefined;
         const run = await store.runs.get(learningRunId);
-        const body = run ? objectOf((await store.agents.revision(run.revisionId))?.body) : {};
+        const revision = run ? await store.agents.revision(run.revisionId) : undefined;
+        const body = objectOf(revision?.body);
         // Its launch is consolidationLaunchOf's, whole: a pair it would not write is refused, never read past.
         if (!Array.isArray(job.pairs)) throw new TypeError(`run ${learningRunId}: its consolidation launch names no pairs`);
         const pairs = job.pairs.map((pair) => {
@@ -88,7 +90,8 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
         return {
           agentId: job.agentId, pairs,
           ...(typeof body.instructions === "string" ? { instructions: body.instructions } : {}),
-          ...(Array.isArray(body.tools) ? { tools: body.tools.filter((tool): tool is string => typeof tool === "string") } : {}),
+          // What a rewritten draft may call, as a run's end reads it (learning-end.ts draftToolsOf).
+          tools: await draftToolsOf(store, revision),
         };
       },
       main: (ws) => consolidationMain(ws as Workspace),
@@ -100,9 +103,16 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
         const runDir = await mkdtemp(join(tmpdir(), "agentrun-consolidate-"));
         try {
           const refuse = await deps.refuse();
-          const proposed = await proposeRun({ folder: ws as Workspace, runDir, seed, turn: { answer, asked: [] } as never, refuse, outcome: "completed", ...(tools ? { tools } : {}) });
+          // #2424's card rule (learnedAskFits), as a run's end checks it: a draft whose ask-set MCP tools would not all
+          // show on its approval card is refused.
+          const { learnedAskFits } = await import("../learned-workflow.js");
+          const proposed = await proposeRun({ folder: ws as Workspace, runDir, seed, turn: { answer, asked: [] } as never, refuse, outcome: "completed", tools: tools.tools, ...(Object.keys(tools.gated).length ? { gated: tools.gated } : {}), ask: { asked: tools.asked, fits: learnedAskFits } });
           if (proposed.state !== "proposed") return { state: "dropped", reason: proposed.reason, ...("detail" in proposed && proposed.detail ? { detail: proposed.detail } : {}), ...("problems" in proposed && proposed.problems ? { problems: proposed.problems } : {}) } as CheckedAnswer;
-          const proposal = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8")) as KeptProposal;
+          const kept = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8")) as KeptProposal;
+          // Each draft calling an MCP tool with no declared price waits for its owner's OK whatever the grade, as a run's
+          // does (learning-end.ts heldOf).
+          const held = await heldOf(store, kept);
+          const proposal: KeptProposal = Object.keys(held).length ? { ...kept, held } : kept;
           return { state: "proposed", proposal, ...(proposed.left?.length ? { left: proposed.left } : {}) };
         } finally {
           await rm(runDir, { recursive: true, force: true });
