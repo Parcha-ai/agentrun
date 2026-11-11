@@ -321,7 +321,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
   // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds

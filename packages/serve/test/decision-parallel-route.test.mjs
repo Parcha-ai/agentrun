@@ -4,17 +4,15 @@
 // (@parcha/agentrun-decisions/testing/faux-system-one), and Parallel the tests' fake: no network, no real key.
 import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { decisionKeysFor, decisionsOf, providerMissing } from "../dist/decisions.js";
-import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, serve, withEnv } from "./support.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS"];
-const ROUTER_KEY = "openrouter-test-placeholder";
 
 const flow = {
   v: 2, name: "asked",
@@ -26,32 +24,6 @@ const flow = {
   output: { schemaId: "Verdict", path: "verdict" },
   root: { node: "judge", label: "ask", provider: "parallel", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
 };
-
-/** A faux OpenRouter that files each request's path, model and authorization, then answers as the faux System One. */
-async function fauxRouter(t) {
-  const dir = await scratch(t);
-  const sent = join(dir, "sent.jsonl");
-  const module = join(dir, "faux-openrouter.mjs");
-  await writeFile(module, [
-    `import { appendFileSync } from "node:fs";`,
-    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
-    `export default async (url, init = {}) => {`,
-    `  const body = init.body ? JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body)) : {};`,
-    `  appendFileSync(${JSON.stringify(sent)}, JSON.stringify({ path: new URL(String(url)).pathname, model: body.model ?? null, auth: new Headers(init.headers).get("authorization") }) + "\\n");`,
-    `  return faux(url, init);`,
-    `};`,
-  ].join("\n"));
-  return { module, sent: async () => (await readFile(sent, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line)) };
-}
-
-async function runParallel(t, api) {
-  const made = await api("POST", "/agents", flowAgent("asked", flow));
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  const started = await api("POST", "/agents/asked/runs", { input: { doc: "Certificate of incorporation of Example Widgets, Inc." } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
-  return { runId: started.body.run_id, made };
-}
 
 test("parallel's route: Parallel's own key first, else OpenRouter's parallel/decisions-fast, else unavailable naming both", () => {
   const offer = (env) => decisionsOf(env).find((p) => p.id === "parallel");
@@ -87,21 +59,3 @@ test("with neither key, a node naming parallel saves with a warning naming both,
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"] } });
 });
-
-/** A faux OpenRouter whose answer also cites hostile pages: a javascript: link, a credentialed URL, an HTML title and a
- *  1 MB passage. */
-async function hostileRouter(t) {
-  const dir = await scratch(t);
-  const module = join(dir, "faux-openrouter-hostile.mjs");
-  await writeFile(module, [
-    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
-    `const cite = (url, title, content) => ({ type: "url_citation", url_citation: { url, title, content } });`,
-    `export default async (url, init = {}) => {`,
-    `  const answered = await faux(url, init);`,
-    `  const body = await answered.json();`,
-    `  body.annotations = [...(body.annotations ?? []), cite("javascript:alert(document.cookie)", "Click", "x"), cite(["https://user", "pw@evil.example/"].join(":"), "Creds", "y"), cite("https://ok.example/html", "<img src=x onerror=alert(1)>", "e".repeat(1024 * 1024))];`,
-    `  return new Response(JSON.stringify(body), { status: answered.status, headers: { "content-type": "application/json" } });`,
-    `};`,
-  ].join("\n"));
-  return module;
-}
