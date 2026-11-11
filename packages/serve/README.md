@@ -2757,9 +2757,30 @@ so the cap stays exact. A request is refused only when what is left cannot buy i
 tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
 where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
-a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
-server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
-the proxy measures each request's body. A request in flight holds what it was admitted at until it answers, so requests
+a token of less than one byte), each image counted at what its model's provider bills it by its size in place of its
+base64's bytes, plus what the provider adds server-side (a tool-use prompt), from the same table the model proxy of
+claude-agent, codex and opencode uses; there the proxy measures each request's body. On a route straight to Anthropic
+(`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
+token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
+gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
+that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
+
+**The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
+step is sent only when the run's spend plus that step's least (its input bound at the cache-write price and a 1,024-token
+answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
+cache write $3.75 a million) through the dispatch's own system prompt and tools, five requests (four screenshots, then
+the answer), spending about $0.04 in all:
+
+| Route | First request needs | Five-step run needs |
+| --- | --- | --- |
+| Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 |
+| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 |
+
+Each further step of such a run needs about $0.013 more (what the step spends, and its grown context at the cache-write
+price). A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
+`packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).

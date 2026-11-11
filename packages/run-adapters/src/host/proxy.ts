@@ -103,6 +103,11 @@ export interface ProviderPolicy {
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
+  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens), which the proxy asks before
+   *  each of the session's answer requests (`countedInputOf`) when its upstream is exactly `origin`, the provider's own: never
+   *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
+   *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
+  countInput?: InputCounter;
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
@@ -744,6 +749,54 @@ function baseOf(base: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
+/** A provider's endpoint that counts a request's input tokens (ProviderPolicy.countInput). */
+export interface InputCounter {
+  /** The provider's own base (`https://api.anthropic.com`): counted only when the session's upstream is exactly it. */
+  readonly origin: string;
+  /** The counting endpoint's path under it (`/v1/messages/count_tokens`). */
+  readonly path: string;
+  /** The body to count, from the request's (the fields the endpoint takes). */
+  body(body: Record<string, unknown>): Record<string, unknown>;
+  /** The headers to send it, from the request's as the proxy sends them (its credential and version headers among them). */
+  headers(sent: Record<string, string>): Record<string, string>;
+  /** The input tokens its answer says, or undefined when it says none. */
+  tokensOf(answer: unknown): number | undefined;
+  /** What the provider bills beside the count, which the count may leave out (a tool-use system prompt): added to it. */
+  margin?(body: Record<string, unknown>): number;
+}
+
+/** How long a count may take before the request goes on its byte bound: a count never holds a request up for long. */
+export const COUNT_TIMEOUT_MS = 3_000;
+
+/**
+ * The exact input tokens of a request with body `body`, by its provider's own count (`policy.countInput`), plus its
+ * margin; undefined (the request keeps its byte bound) when the policy has no counter, the upstream `origin` is not
+ * the counter's own, or the count fails, times out or says no count. Never throws: a count is only ever a tighter bound.
+ */
+export async function countedInputOf(policy: ProviderPolicy, origin: string, body: Record<string, unknown>, headers: Record<string, string>, fetch: typeof globalThis.fetch, say: (message: string, detail?: Record<string, unknown>) => void = () => {}, timeoutMs = COUNT_TIMEOUT_MS): Promise<number | undefined> {
+  const counter = policy.countInput;
+  if (!counter) return undefined;
+  try {
+    if (baseOf(counter.origin) !== origin) return undefined;
+    const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound`);
+      return undefined;
+    }
+    const tokens = counter.tokensOf(await response.json());
+    const margin = counter.margin ? counter.margin(body) : 0;
+    if (!Number.isSafeInteger(tokens) || tokens! < 0 || !Number.isSafeInteger(margin) || margin < 0) {
+      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound`);
+      return undefined;
+    }
+    return tokens! + margin;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
+}
+
 /** Start a session's model proxy on the loopback interface, admitting `key`. */
 /**
  * The most input tokens a request with body `sent` (the body `apply` returned, as it is sent) can be billed for: its UTF-8
@@ -986,6 +1039,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // The turn's answer stopped and the harness was told: its client asking again is refused (no retry), never sent, never
     // admitted or booked, until the harness opens its next turn.
     if (answering && !route.free && stopTold !== undefined) return refuse(res, refusedStatus, `refused: the turn's answer was ${stopTold}, and the turn ends there`, req);
+    // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
+    // exact count when that is below its bytes, so a small cap admits a first turn its bytes would not. Each answer request
+    // is counted, not only the first: the cap prices a step by the last one's tokens plus how far its bound grew, so a
+    // counted bound beside a byte bound would read the bytes as growth. A count that fails or times out leaves the byte
+    // bound, and never holds the request up for long. A noted request is counted with its note, which bounds it without
+    // the note too (the note only adds).
+    if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
+      const counted = await countedInputOf(policy, origin, body, headers, forward, say);
+      if (counted !== undefined && counted < inputTokensMax) inputTokensMax = counted;
+      if (counted !== undefined && inputTokensMaxWithoutNote !== undefined && counted < inputTokensMaxWithoutNote) inputTokensMaxWithoutNote = counted;
+    }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
