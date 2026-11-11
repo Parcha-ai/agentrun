@@ -1227,11 +1227,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const decided = ledger.decisions.spentUsd();
           const paidSpent = ledger.paid.spentUsd();
           const rest = wrapUp.restUsd;
+          // The model session's requests in flight, at what is held for each (as the cap reads a flight); unknown gives none.
+          const inFlight = bookingNow?.heldUsd();
           const capUsd = capNow();
-          if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null) return undefined;
+          if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const note = noteFor(
             { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
-            { capUsd, spentUsd: sessionSpent + decided + paidSpent + rest, heldUsd: ledger.decisions.heldUsd() + ledger.paid.heldUsd(), costs: wrapUp.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
+            { capUsd, spentUsd: sessionSpent + decided + paidSpent + rest, heldUsd: inFlight + ledger.decisions.heldUsd() + ledger.paid.heldUsd(), costs: wrapUp.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
           );
           wrapUp.offered = note ? { ...note, capUsd } : undefined;
           return note?.words;

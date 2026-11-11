@@ -176,6 +176,10 @@ export interface ModelBooking {
   turns(): number;
   /** What they cost; null once one's price is unknown. */
   spentUsd(): number | null;
+  /** What its host holds for the requests still in flight (admitted, not yet answered): `spentUsd` counts answered ones
+   *  only, so a reader of the run's spend that a request overlapping another must see adds this. Null while one in flight
+   *  has no hold (never under a cap, which refuses a request it cannot price): unknown, never read as 0. */
+  heldUsd(): number | null;
   /** Books, once, each paid request a crash cut off (a `runner.request` with no `runner.turn`): a `runner.turn` marked
    *  `cut` at an unknown price, and a `request_end` saying so. A booked request is answered, so this is idempotent.
    *  Call it before the session sends anything. */
@@ -508,6 +512,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     models,
     turns: () => turns,
     spentUsd: () => spentUsd,
+    heldUsd: () => open.reduce<number | null>((sum, flight) => (sum === null || flight.holdUsd === undefined ? null : sum + flight.holdUsd), 0),
     bookCut() {
       cutting ??= bookCut().catch((error) => {
         cutting = undefined;
