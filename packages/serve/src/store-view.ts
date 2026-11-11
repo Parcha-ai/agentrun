@@ -51,7 +51,7 @@ import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
-import { runCutValues, runErrorWordsOf } from "./run-cut.js";
+import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
@@ -95,8 +95,8 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: string }>>();
 const SERVED_KEPT = 32;
 function servedOnce(store: Store, runId: string, input: string, values: readonly string[]): string {
-  let served = servedByStore.get(store);
-  if (!served) servedByStore.set(store, (served = new Map()));
+  let served = servedByStore.get(store.origin);
+  if (!served) servedByStore.set(store.origin, (served = new Map()));
   const key = wholeAnswerFor(values).key;
   const last = served.get(runId);
   if (last && last.key === key && last.input === input) return last.out;
@@ -204,18 +204,37 @@ function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
-/** Reads the run from the store and builds the RunView the view functions read. */
+/** Reads the run from the store and builds the RunView the view functions read. Every read of the run (its row, launch,
+ *  journal, live tick and commands) is made in one snapshot of the store (Store.snapshot), so the view is of one moment: a
+ *  runner's commit that lands while it is built is in all of it or in none. What is read through the server's own handles
+ *  (the run's cut, which reads the agent's sign-ins, and the learning statuses of its folder) is read outside the snapshot,
+ *  before and after it: neither is part of the run's moment, and neither may wait on the snapshot's connection. */
 async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<StoreRun | undefined> {
+  // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
+  // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
+  // was handed (rowShown's choke point). The snapshot renders under it, so it is read first, and read again after: the cut
+  // only grows, so one that is the same after the snapshot holds every value saved before the rows were read (underCut
+  // builds again under a cut that grew meanwhile).
+  const cutOf = async () => {
+    const known = await store.runs.get(runId);
+    return known ? runCutValues(deps, store, runId, { runRow: known, launch: await launchOf(store, runId) }) : undefined;
+  };
+  if (!(await store.runs.get(runId))) return undefined;
+  const run = await underCut(async () => (await cutOf()) ?? "unreadable", (cut) => store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut)));
+  if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd };
+  // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
+  // currentLearning); its record stays as the merge wrote it.
+  return { ...run, learningEnd: currentLearning(run.shownEnd as Learning, await deps.statuses(run.row.agent)) as RunLearning };
+}
+
+/** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
+async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: RunLearning | null }) | undefined> {
   const context = BACKGROUND_CONTEXT;
   const row = await readRun(store, runId, context);
   if (!row) return undefined;
   const runRow = await store.runs.get(runId);
   if (!runRow) return undefined;
   const launch = await launchOf(store, runId);
-  // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
-  // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
-  // was handed (rowShown's choke point).
-  const cut = await runCutValues(deps, store, runId, { runRow, launch });
   const unshown = cut === "unreadable";
   const values = cut === "unreadable" ? [] : cut.values;
   const revision = await store.agents.revision(row.revision);
@@ -257,9 +276,6 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const under = !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
   const sofar = ended ?? under;
   const shownEnd = sofar && withNotes(sofar, started, read);
-  // What it held for its owner's OK as it reads now, on its agent's folder's main (learning.ts currentLearning); its record
-  // stays as the merge wrote it.
-  const learningEnd = shownEnd && holdsForOk(shownEnd as Learning) && deps.statuses ? (currentLearning(shownEnd as Learning, await deps.statuses(row.agent)) as RunLearning) : shownEnd;
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = live && turns.open > 0;
@@ -349,7 +365,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
+  return { row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
