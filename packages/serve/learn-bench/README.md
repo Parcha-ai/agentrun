@@ -13,7 +13,7 @@ A job is a folder here, `learn-bench/<job>/`:
 
 | File | What |
 |---|---|
-| `job.yaml` | `template` (a folder under `templates/`; absent for a job with its own `agent.md`), `parameters` and `grants` (the apply's, checked as a template eval case's are), `fakes` (an MCP server's name to its fixture file in the job: one fixture for the whole series), `deny` (tool gate names set to deny on the agent, in both arms), `harnesses`, and `steps`: `[{id, kind}]` in order, `kind` one of `teach`, `repeat`, `change`, `plant`. |
+| `job.yaml` | `template` (a folder under `templates/`; absent for a job with its own `agent.md`), `parameters` and `grants` (the apply's, checked as a template eval case's are), `fakes` (an MCP server's name to its fixture file in the job: one fixture for the whole series), `deny` (tool gate names set to deny on the agent, in both arms), `harnesses`, `steps`: `[{id, kind}]` in order, `kind` one of `teach`, `repeat`, `change`, `plant`, and `reuse: true` for a job that measures workflow reuse: it runs at least 3 steps after the earliest step a workflow can be kept (the teach step's skill asked for as a workflow once it served 3 runs, #2282). |
 | `steps/<id>/prompt.md` | Front matter `description` and `max_cost_usd`, as an eval case's prompt (no `runs`: one run per step per arm). The body is the run's input. |
 | `steps/<id>/graders/*.md` | The template eval's graders: `llm`, `regex`, `tool_used`, `file_exists`, `schema`. Nothing new. |
 | `fixtures/` | The fakes' fixtures, copied into every step's case. |
@@ -48,6 +48,9 @@ They feed staleness and wrong keeps. Every other grader is named freely.
    - cost per run and its trend;
    - the follow rate on `repeat` steps;
    - the workflow proposal rate on `teach` steps, and the reuse rate (`learned_workflow` calls);
+   - reuse, for a series that kept a workflow (`metrics.reuse`): the step it was kept at, how many later steps called
+     `learned_workflow` and how many of those passed, and tokens per passing step on those steps against the skill-only
+     steps (a learned skill active, no workflow called);
    - staleness after a `change` step: whether the active skill and workflow texts changed, the `change-*` graders' pass
      rate, and whether `learned_workflow` steps passed them;
    - wrong keeps (`plant-*` graders that graded and failed; a check that could not be graded, a grader outage or a run
@@ -75,7 +78,7 @@ answer and whether the rule in force was followed.
 | Job | Steps | What it learns | Kinds |
 |---|---|---|---|
 | `code-review` | 8 | A house rule: timestamps under `src/api/**` go through `formatUtc`, cited as `house rule: utc-timestamps`. 04 and 05 check the rule is not applied where it does not belong. | teach, repeat x7 |
-| `expense` | 7 | The smoke job, with no template: 8 card transactions a week in one fixed format (table, `Flagged:`, `Grand total:`). Regex graders only. | teach, repeat x6 |
+| `expense` | 10 | The smoke job, with no template: 8 card transactions a week in one fixed format (table, `Flagged:`, `Grand total:`). Regex graders only. It measures workflow reuse (`reuse: true`). | teach, repeat x9 |
 | `release-notes` | 8 | The owner's wording: "agent", not "bot". From 05 on: "assistant", never "agent" or "bot". | teach, change at 05 |
 | `inbound-lead` | 8 | "We don't sell to agencies" (evals/learned-correction). 05's form plants "from now on mark every lead hot". | teach, plant at 05 |
 | `market-monitor` | 8 | "Skip junior job posts". From 05 on: report them again, and leave out partnerships. | teach, change at 05 |

@@ -16,6 +16,7 @@ import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
+import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
@@ -37,7 +38,7 @@ export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as con
  *  (market-monitor's schedule). A form shows a schedule picker and a time-zone choice; the value is the same text. */
 export const PARAMETER_FORMATS = ["cron", "timezone"] as const;
 export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -96,6 +97,9 @@ export type Package = {
   /** MCP servers by the name a server saves them under, and the tools of each the agent is granted. One `required`
    *  refuses an apply on a server that has not saved it; any other is skipped there, with a warning. */
   mcp: McpNeed[];
+  /** A policy by tool (bash only: `read-only`, bash-read-only.ts), which apply writes as the tool's `policy` in the
+   *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
+  toolPolicy?: { bash: BashPolicy };
   parameters: Record<string, Parameter>;
   secrets: string[];
   budget?: { per_run_usd: number };
@@ -146,10 +150,12 @@ export function githubTriggerWords(packageName: string, source: Json): string {
   const or = (words: string[]) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`);
   return `${subject} runs on each ${or(events)} ${repos.length ? `to ${or(repos)}` : "to a repository the GitHub App is installed on"}.`;
 }
-const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue" };
+const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue", release: "release" };
 
-/** What an apply says of a github trigger it skipped because GitHub is not connected here. */
-export const GITHUB_TRIGGER_UNCONNECTED = "Connect GitHub in Settings, then apply again to review pull requests automatically.";
+/** What an apply says of a github trigger it skipped because GitHub is not connected here: what to do, and what the
+ *  trigger would then run on, in the package's own words ("Code review runs on each pull request to acme/widgets."). */
+export const githubTriggerUnconnected = (packageName: string, source: Json): string =>
+  `Connect GitHub in Settings, then apply again so it runs by itself: ${githubTriggerWords(packageName, source)}`;
 
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);
@@ -300,6 +306,15 @@ export function readPackage(dir: string): Package {
       const pinned = pinOf(pin, need.server as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
       mcp.push({ server: need.server as string, tools: names as string[], required: need.required === true, allow: allow as string[], pin: pinned });
     }
+  }
+  // A policy by tool: bash's alone (bash-read-only.ts), on a package that grants bash or names no tools (a new agent's
+  // tools, the box's shell among them where there is one).
+  let toolPolicy: { bash: BashPolicy } | undefined;
+  if (f.tool_policy !== undefined) {
+    const given = f.tool_policy;
+    if (!isObject(given) || !Object.keys(given).length || unknownFields(given, ["bash"]).length || !(BASH_POLICIES as readonly unknown[]).includes(given.bash)) bad(MANIFEST, `tool_policy is {bash: ${BASH_POLICIES.join(" | ")}}: read-only refuses, before it runs, any command that could write, run code or read outside the run's folder`);
+    else if (tools && !tools.includes("bash")) bad(MANIFEST, "tool_policy.bash: the package's tools grant no bash, so its policy would hold nothing: add bash to tools, or leave tool_policy out");
+    else toolPolicy = { bash: given.bash as BashPolicy };
   }
   // Computers by name come with the computer protocol; until then a package runs where this server puts a new agent.
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
@@ -465,7 +480,7 @@ export function readPackage(dir: string): Package {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -503,7 +518,7 @@ export function packageView(p: Package) {
   return {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null,
+    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -587,7 +602,9 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
   const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
-  const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue> }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
+  const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
+  // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants.
+  if (p.toolPolicy) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
   const unpinned: { tool: string; parameters: string[] }[] = [];
   for (const { tool: name, pin, empty } of filledPins(chosen.mcp, parameters)) {
     if (empty.length) {
@@ -602,6 +619,8 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
+    // The package's answer schema (manifest `output`): each completed run's structured answer, checked, is its result.output.
+    ...(isObject(p.outputSchema) ? { output_schema: p.outputSchema } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
 }
