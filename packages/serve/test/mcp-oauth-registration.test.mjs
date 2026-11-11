@@ -21,7 +21,8 @@ async function fakes(t, options) {
 
 test("an authorization server that lets no app register itself: the start without a Client ID is 422 on client_id (registration_unavailable), the preview says registration false; with a Client ID it starts; one that does says true and starts", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const { api } = await serve(t, { runner: false });
+  const { api, baseUrl } = await serve(t, { runner: false });
+  const callback = `${new URL(baseUrl).origin}/v2/settings/mcp-servers/oauth/callback`;
   for (const [what, options, registration] of [
     ["no registration endpoint", { registration: false, clients: { "hand-made": "s3" } }, false],
     ["no metadata at all", { metadata: false, registration: false, clients: { "hand-made": "s3" } }, false],
@@ -31,7 +32,7 @@ test("an authorization server that lets no app register itself: the start withou
     const preview = await api("POST", "/settings/mcp-servers/preview", { url: mcp.url, auth: { type: "none" } });
     assert.equal(preview.status, 422, `${what}: ${JSON.stringify(preview.body)}`);
     assert.equal(preview.body.error.code, "auth_required", what);
-    assert.deepEqual([preview.body.error.details.auth, preview.body.error.details.oauth], ["oauth", { registration }], `${what}: ${JSON.stringify(preview.body.error.details)}`);
+    assert.deepEqual([preview.body.error.details.auth, preview.body.error.details.oauth], ["oauth", { registration, callback }], `${what}: ${JSON.stringify(preview.body.error.details)}`);
     const name = `signin${registration ? "dyn" : what.length}`;
     const metadataReads = () => as.log.filter((entry) => entry.path === "/.well-known/oauth-authorization-server").length;
     const before = metadataReads();
@@ -45,10 +46,22 @@ test("an authorization server that lets no app register itself: the start withou
     }
     assert.equal(started.status, 422, `${what}: ${JSON.stringify(started.body)}`);
     assert.deepEqual(started.body.error.fields.map((field) => [field.field, field.reason, field.message]), [["client_id", "registration_unavailable", `${new URL(mcp.url).host} doesn't let apps register themselves: create an OAuth app with that provider and enter its Client ID and Secret here.`]], what);
+    // The callback a hand-made app must name, as the preview's.
+    assert.deepEqual(started.body.error.details, { oauth: { registration: false, callback } }, what);
     assert.ok(!as.log.some((entry) => entry.path === "/register" || entry.path === "/token"), `${what}: no registration tried, nothing exchanged`);
     // With the Client ID entered, the sign-in starts at the authorization server's page.
     const entered = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url, client_id: "hand-made", client_secret: "s3" });
     assert.equal(entered.status, 200, `${what}: ${JSON.stringify(entered.body)}`);
     assert.match(entered.body.authorization_url, /\/authorize\?/, what);
   }
+});
+
+test("a server started with a public address names that address's callback in a preview reached at another address: the callback a hand-made OAuth app must name is the sign-in's own", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t, { runner: false, publicUrl: "https://agents.example.test" });
+  const { mcp } = await fakes(t, { registration: false, clients: { "hand-made": "s3" } });
+  // Reached at its loopback listener, not at the public address the sign-in comes back to.
+  const preview = await api("POST", "/settings/mcp-servers/preview", { url: mcp.url, auth: { type: "none" } });
+  assert.equal(preview.status, 422, JSON.stringify(preview.body));
+  assert.deepEqual(preview.body.error.details.oauth, { registration: false, callback: "https://agents.example.test/v2/settings/mcp-servers/oauth/callback" });
 });

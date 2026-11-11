@@ -32,6 +32,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 
 const PRIVATE_HOSTS = "/v2/settings/mcp-servers/oauth/private-hosts";
+/** The server's own callback (its AGENTRUN_PUBLIC_URL), on another address than the page's: the words name this one. */
+const CALLBACK = "https://agents.example.test/v2/settings/mcp-servers/oauth/callback";
 /** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. */
 function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise<Response> | undefined = () => undefined) {
   const calls: Sent[] = [];
@@ -130,8 +132,8 @@ describe("Settings → MCP servers, adding one", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=x"]);
   });
 
-  it("a preview whose OAuth lets no app register itself turns the form to OAuth with its Client ID and Secret fields, says how in words, and signs in with the client entered", async () => {
-    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(422, "auth_required", "The MCP server asks for a credential (HTTP 401).", { details: { auth: "oauth", status: 401, oauth: { registration: false } } })
+  it("a preview whose OAuth lets no app register itself turns the form to OAuth with its Client ID and Secret fields, says how in words with the server's callback, and signs in with the client entered", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(422, "auth_required", "The MCP server asks for a credential (HTTP 401).", { details: { auth: "oauth", status: 401, oauth: { registration: false, callback: CALLBACK } } })
       : c.path.endsWith("/oauth/start") ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=x" }) : undefined));
     const p = await open(s.v2);
     await p.click(/^Add server$/);
@@ -139,7 +141,9 @@ describe("Settings → MCP servers, adding one", () => {
     await p.type("mcp-url", VARS.oauth_url);
     await p.click(/^Preview$/);
     expect(p.text()).toContain("its sign-in lets no app register itself");
-    expect(p.text()).toContain(`${location.origin}/v2/settings/mcp-servers/oauth/callback as its callback URL`);
+    // The server's callback (its public address), never the page's own address.
+    expect(p.text()).toContain(`${CALLBACK} as its callback URL`);
+    expect(p.text()).not.toContain(location.origin);
     // Not a dead end: the form is on OAuth, its Client ID field shows, needed, and has the cursor.
     expect((p.host.querySelector('input[name="mcp-auth"][value="oauth"]') as HTMLInputElement).checked).toBe(true);
     expect(p.input("mcp-client-id")).toBeTruthy();
@@ -156,7 +160,7 @@ describe("Settings → MCP servers, adding one", () => {
   });
 
   it("a needs-a-Client-ID refusal goes with its address: another address typed drops its words and the field is optional again", async () => {
-    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(422, "auth_required", "The MCP server asks for a credential (HTTP 401).", { details: { auth: "oauth", status: 401, oauth: { registration: false } } }) : undefined));
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(422, "auth_required", "The MCP server asks for a credential (HTTP 401).", { details: { auth: "oauth", status: 401, oauth: { registration: false, callback: CALLBACK } } }) : undefined));
     const p = await open(s.v2);
     await p.click(/^Add server$/);
     await p.type("mcp-name", "github");
@@ -173,7 +177,7 @@ describe("Settings → MCP servers, adding one", () => {
     const words = "github.com doesn't let apps register themselves: create an OAuth App on GitHub and enter its Client ID and Secret here.";
     let starts = 0;
     const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(422, "auth_required", "The MCP server asks for a credential (HTTP 401).", { details: { auth: "oauth", status: 401 } })
-      : c.path.endsWith("/oauth/start") ? (starts++ === 0 ? refusal(422, "input_invalid", words, { fields: [{ field: "client_id", reason: "registration_unavailable", message: words }] }) : json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=y" })) : undefined));
+      : c.path.endsWith("/oauth/start") ? (starts++ === 0 ? refusal(422, "input_invalid", words, { fields: [{ field: "client_id", reason: "registration_unavailable", message: words }], details: { oauth: { registration: false, callback: CALLBACK } } }) : json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=y" })) : undefined));
     const p = await open(s.v2);
     await p.click(/^Add server$/);
     await p.type("mcp-name", "github");
@@ -182,7 +186,7 @@ describe("Settings → MCP servers, adding one", () => {
     // Discovery said nothing of registration: the plain Sign in, whose start is then refused.
     await p.click(/^Sign in$/);
     expect(p.text()).toContain(words);
-    expect(p.text()).toContain("as its callback URL");
+    expect(p.text()).toContain(`${CALLBACK} as its callback URL`);
     expect((p.host.querySelector('input[name="mcp-auth"][value="oauth"]') as HTMLInputElement).checked).toBe(true);
     expect(document.activeElement).toBe(p.input("mcp-client-id"));
     await p.type("mcp-client-id", "Iv1.handmade");
@@ -264,7 +268,7 @@ describe("Settings → MCP servers, the saved ones", () => {
   it("a saved server whose sign-in needs a Client ID offers Enter a Client ID, which opens its form with the refusal's words, the field needed and the cursor in it", async () => {
     const words = "github.com doesn't let apps register themselves: create an OAuth App on GitHub and enter its Client ID and Secret here.";
     const s = server([[saved({ name: "gh", url: VARS.oauth_url, auth: { type: "oauth" }, credential: "expired", oauth: { scopes: [], client: "dynamic" } })]],
-      (c) => (c.path.endsWith("/oauth/start") ? (c.body as { client_id?: string }).client_id ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=z" }) : refusal(422, "input_invalid", words, { fields: [{ field: "client_id", reason: "registration_unavailable", message: words }] }) : undefined));
+      (c) => (c.path.endsWith("/oauth/start") ? (c.body as { client_id?: string }).client_id ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=z" }) : refusal(422, "input_invalid", words, { fields: [{ field: "client_id", reason: "registration_unavailable", message: words }], details: { oauth: { registration: false, callback: CALLBACK } } }) : undefined));
     const p = await open(s.v2);
     await p.click(/^Sign in again$/, p.row("gh"));
     expect(p.row("gh").textContent).toContain(words);

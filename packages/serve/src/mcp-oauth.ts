@@ -8,7 +8,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
 import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens, StoredOAuthClientInformation } from "@modelcontextprotocol/client";
-import { ApiError, invalid } from "./errors.js";
+import { ApiError } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import { localAddresses, PRIVATE_HOSTS_PAGE, privateAllowed } from "./mcp-private-hosts.js";
 
@@ -259,10 +259,12 @@ export const startedHere = (cookies: string | undefined, port: number | undefine
 };
 const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : undefined);
 /** A sign-in that needs a Client ID entered by hand: its authorization server lets no app register itself. GitHub's
- *  hosted MCP is named, since its login is GitHub's. */
-function registrationUnavailable(url: URL): ApiError {
+ *  hosted MCP is named, since its login is GitHub's. `details.oauth` is a preview's (McpSignIns.registration): the
+ *  callback the hand-made app must name is this server's, never the address a browser happens to be at. */
+function registrationUnavailable(url: URL, callback: string): ApiError {
   const github = /(?:^|\.)github\.com$/.test(url.hostname) || url.hostname === "api.githubcopilot.com";
-  return invalid([{ field: "client_id", reason: "registration_unavailable", message: `${url.host} doesn't let apps register themselves: ${github ? "create an OAuth App on GitHub" : "create an OAuth app with that provider"} and enter its Client ID and Secret here.` }]);
+  const message = `${url.host} doesn't let apps register themselves: ${github ? "create an OAuth App on GitHub" : "create an OAuth app with that provider"} and enter its Client ID and Secret here.`;
+  return new ApiError("input_invalid", message, { fields: [{ field: "client_id", reason: "registration_unavailable", message }], details: { oauth: { registration: false, callback } } });
 }
 const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
@@ -291,8 +293,14 @@ export class McpSignIns {
     return !LOOPBACK.test(new URL(this.base).hostname) ? `${this.base}${OAUTH_CLIENT_DOCUMENT}` : undefined;
   }
 
+  /** Where every sign-in sends the browser back (its redirect URI): this server's address, AGENTRUN_PUBLIC_URL when set. A
+   *  hand-made OAuth app must name it as its callback URL. */
+  get callback(): string {
+    return `${this.base}${OAUTH_CALLBACK}`;
+  }
+
   clientMetadata(): OAuthClientMetadata {
-    return { client_name: "agentrun", redirect_uris: [`${this.base}${OAUTH_CALLBACK}`], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
+    return { client_name: "agentrun", redirect_uris: [this.callback], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
   }
 
   /** GET OAUTH_CLIENT_DOCUMENT: the client metadata document, its own URL as its client id. */
@@ -303,11 +311,11 @@ export class McpSignIns {
   /** Whether a sign-in at `url` can bring its own client, with no Client ID entered: its authorization server's metadata
    *  names a registration endpoint (dynamic client registration), or says it takes a client metadata document and this
    *  server can offer one. Read by the same discovery a start makes, behind the same guard; `registration: false` when it
-   *  publishes no metadata or the metadata offers neither. undefined when the discovery could not be made (refused,
-   *  unreachable, not OAuth): the start's own words say why. */
-  async registration(url: URL): Promise<{ registration: boolean } | undefined> {
+   *  publishes no metadata or the metadata offers neither; `callback`, the callback URL a hand-made app names. undefined
+   *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. */
+  async registration(url: URL): Promise<{ registration: boolean; callback: string } | undefined> {
     const found = await this.discovered(url, { own: this.own, allowed: await this.allowed() });
-    return found && { registration: found.registration };
+    return found && { registration: found.registration, callback: this.callback };
   }
 
   /** The discovery registration() reads, with what it found (`state`, as the SDK's auth() keeps a discovery), so a
@@ -338,7 +346,7 @@ export class McpSignIns {
     // With no client entered or kept, the authorization server must let this app register itself: one that doesn't (a
     // code host's login, with no metadata or no registration endpoint) is said up front, on the field that fixes it.
     const checked = options.client ? undefined : await this.discovered(url, reach);
-    if (checked?.registration === false) throw registrationUnavailable(url);
+    if (checked?.registration === false) throw registrationUnavailable(url, this.callback);
     try {
       // What that check discovered, kept as the sign-in's discovery (through saveDiscoveryState, so its addresses are
       // checked as any discovery's are): auth() then reads it, never discovering the same server twice.
@@ -379,7 +387,7 @@ export class McpSignIns {
   private provider(entry: Pending, reach: Reach, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void; seen?: Seen }): OAuthClientProvider {
     const metadataUrl = entry.kind === "pre-registered" ? undefined : this.metadataUrl;
     return {
-      redirectUrl: `${this.base}${OAUTH_CALLBACK}`,
+      redirectUrl: this.callback,
       ...(metadataUrl ? { clientMetadataUrl: metadataUrl } : {}),
       clientMetadata: this.clientMetadata(),
       state: () => hooks.state ?? "",
