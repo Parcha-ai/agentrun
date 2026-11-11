@@ -27,6 +27,7 @@ import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
+import { PORT_PROVIDER } from "./port-models.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
 import { deniedText, type SettingFrom } from "./tool-gate.js";
@@ -101,8 +102,9 @@ export type LearnedWorkflowRun = {
   models: RunModels;
   /** The run's model a model node of `tier` runs on: the tier's, else the run's own. */
   modelOf(tier: string | undefined): ModelRef | undefined;
-  /** That model as a person reads it, the id the run's route names it by: what a node's trace says it ran on (its
-   *  `model`). Absent, or answering nothing: the ref modelOf gives, as `<provider>/<modelId>`. */
+  /** The session's model as a person reads it, the id the run's route names it by: what a node's trace says it ran on
+   *  (its `model`) when modelOf answers with the session's own port (PORT_PROVIDER), whose model id names no model. A
+   *  ref of another provider (a tier's own model) is named by its model id. */
   modelName?(tier: string | undefined): string | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
@@ -246,7 +248,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (request.tools?.length) throw new Error(`${NODE_TOOLS_REFUSED}: its node "${request.label}" names ${request.tools.join(", ")}`);
     const tier = typeof request.tier === "string" ? request.tier : undefined;
     const ref = run.modelOf(tier);
-    const model = run.modelName?.(tier) ?? (ref ? `${ref.provider}/${ref.modelId}` : undefined);
+    const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
     if (model && typeof request.label === "string") ranOn.set(request.label, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
     return (await runnerFor(request.tier as string | undefined))(request);

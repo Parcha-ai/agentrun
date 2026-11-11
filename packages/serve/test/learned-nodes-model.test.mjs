@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { LEARNED_NODES } from "../dist/learned-nodes.js";
+import { PORT_PROVIDER } from "../dist/port-models.js";
 
 const MODEL = { id: "stand-in", provider: "stand-in", api: "stand-in", name: "stand-in", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000, maxTokens: 4_000 };
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -40,9 +41,11 @@ test("a learned workflow's trace names the model each model node ran on, and its
       return answered ? message([{ type: "text", text: "Done." }], "stop") : message([{ type: "toolCall", id: `submit-${requests}`, name: "submit", arguments: { value: { answer: 42 } } }], "toolUse");
     },
   };
-  // The run's model as its route names it, and the fast tier's (a host with AGENT_MODEL_FAST set).
-  const modelName = (tier) => (tier === "fast" ? "gpt-5-mini" : "gpt-5-4-mini");
-  const tool = learnedWorkflowTool({ workflows: [{ name: "two-tiers", description: "Two tiers", workflow: JSON.stringify(FLOW) }], granted: [], env: {}, work, models, modelOf: () => ({ provider: MODEL.provider, modelId: MODEL.id }), modelName, policy: () => "allow", denyFrom: () => "default" });
+  // As a run hands the tool its models: a node of no tier on the session's own port, named by the run's route (modelName);
+  // a node of the fast tier on that tier's own model, named by its id (a host with AGENT_MODEL_FAST set, #2408's routes).
+  const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-5-mini" } : { provider: PORT_PROVIDER, modelId: "session" });
+  const modelName = () => "gpt-5-4-mini";
+  const tool = learnedWorkflowTool({ workflows: [{ name: "two-tiers", description: "Two tiers", workflow: JSON.stringify(FLOW) }], granted: [], env: {}, work, models, modelOf, modelName, policy: () => "allow", denyFrom: () => "default" });
   const kept = [];
   const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
   const said = await tool.execute({ name: "two-tiers", input: { question: "six times seven" } }, api, { abortSignal: new AbortController().signal });
