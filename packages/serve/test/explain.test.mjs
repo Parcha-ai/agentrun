@@ -127,7 +127,7 @@ test("a suggested value is one the server takes: a bad id gets the documented on
   assert.equal((await api("POST", "/agents/brief/runs", { input: input.example })).status, 202);
 });
 
-// SKIP (follow-up #2078): only 3 of the 4 workflow agents are offered an input their workflow takes (red since the cutover took #2093)
+// SKIP (follow-up #2432): only 3 of the 4 workflow agents are offered an input their workflow takes
 test.skip("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("asks"))).status, 201, "its input requires question, a string");

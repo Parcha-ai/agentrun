@@ -109,7 +109,7 @@ test("--max-runs bounds the count beside the memory: on 1 GB with a cap of 1, a 
   await follow(api, second.body.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): a run a stopped server left is not taken up again by the next server
+// SKIP (follow-up #2432): a run a stopped server left is never taken up again by the next server
 test.skip("after a restart on a host whose memory never holds a run's harness: a run that would open again fails with why, and a stopped one's message is refused with why; neither starts", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const never = join(data, "never");
