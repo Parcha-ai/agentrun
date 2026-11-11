@@ -672,4 +672,62 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     nothingPending(dir);
     assert.equal(hook.got.length, 0, "nothing sent");
   });
+
+  test("a PUT to a new URL whose setting the store refuses leaves the webhook as it was: a try goes to the old URL, signed with the old secret", async (t) => {
+    const hook = await receiver(t);
+    const other = await receiver(t);
+    const dir = await scratch(t);
+    const on = await webhookOn(t, dir);
+    const webhooks = await on.open();
+    const { secret } = await webhooks.save({ url: hook.url });
+    const release = refusing(t, dir, "setting");
+    await assert.rejects(webhooks.save({ url: other.url }), /the test refuses this write/);
+    release();
+    const tried = await webhooks.test();
+    assert.equal(tried.status_code, 200, JSON.stringify(tried));
+    assert.equal(other.got.length, 0, "nothing to the URL the refused PUT named");
+    assert.equal(hook.got.length, 1);
+    new Webhook(secret).verify(hook.got[0].body, hook.got[0].headers);
+  });
+
+  test("an end a start's catch-up could not save, the store refusing it for a moment, is sent once the store takes writes again, with no restart", async (t) => {
+    const hook = await receiver(t);
+    const data = join(await scratch(t), "agents");
+    await hadWebhook(t, data, hook);
+    const writer = await askerStore(t, data);
+    const at = await endedInStore(writer, "asker", "caught-up");
+    // The store refuses the webhook's messages as the next server starts: its catch-up's notice of the end is refused.
+    const release = refusing(t, data, "outbox");
+    const log = logged();
+    await startWithRunner(t, { data, runner: false, log: log.push });
+    await log.when("condition=outbox_unwritable");
+    assert.equal(endNotice(data, "caught-up"), undefined, "not recorded: the store took none of it");
+    release();
+    await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run caught-up, once the store takes it", data);
+    await settled(data);
+    assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId("caught-up", "run.ended", at)], "once, under its id");
+  });
+
+  test("a store error on a scheduled try's first read arms the try again: the message is delivered, and the error said", async (t) => {
+    const hook = await receiver(t);
+    const log = logged();
+    let failing = 0;
+    // The store the webhook is handed: its channels' read of a message fails while `failing` counts down.
+    const wrap = (store) => new Proxy(store, {
+      get: (target, name) => {
+        if (name === "channels") return { ...target.channels, get: async (id) => (failing > 0 ? (failing--, Promise.reject(new Error("the store is busy"))) : target.channels.get(id)) };
+        const value = Reflect.get(target, name, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const on = await webhookOn(t, await scratch(t), { wrap, storeRetryMs: 50 });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    failing = 1;
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await log.when("condition=attempt_failed", "the store is busy");
+    await hook.when(1, "the run.ended after the store's error");
+    assert.equal(hook.got.length, 1);
+  });
 });

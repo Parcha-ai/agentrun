@@ -3447,8 +3447,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const startFollowing = async () => {
     changesCursor = await store.runs.changesHead();
     const rows = await store.runs.list({});
-    // An end catchUp cannot read is said there and left for each read to try (endsLeft): it is before the feed's head.
-    await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    // An end catchUp cannot read, or whose notice the store refused, is said there and left for each read to try
+    // (endsLeft): it is before the feed's head, so no change of the feed brings it back.
+    const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    for (const id of unsaved) endsLeft.add(id);
     for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
   followChanges();

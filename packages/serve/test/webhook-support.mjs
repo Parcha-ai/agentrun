@@ -307,8 +307,10 @@ export async function askerStore(t, data) {
 
 /** The outbound webhook on a store of its own (a fresh SQLite file in a scratch directory), as a server holds it: `open()`
  *  is a server's start (a new Webhooks on the same store, loaded), so two opens are a restart. `runs(...ids)` puts the runs
- *  a notice names in the store (a told row names its run); `setAt(iso)` moves when the webhook was set. */
-export async function webhookOn(t, dir, { retryMs = [], lookup, privateTargets = true } = {}) {
+ *  a notice names in the store (a told row names its run); `setAt(iso)` moves when the webhook was set. `wrap(store)`: the
+ *  store the webhook is handed, in place of the store itself (a test's store that fails a read); `storeRetryMs`: the
+ *  webhook's wait before it tries again after the store failed it. */
+export async function webhookOn(t, dir, { retryMs = [], lookup, privateTargets = true, wrap = (store) => store, storeRetryMs } = {}) {
   const { Webhooks } = await import("../dist/webhooks.js");
   const store = await openSqliteStore({ file: join(dir, "store.sqlite") });
   t.after(() => store.close());
@@ -318,7 +320,7 @@ export async function webhookOn(t, dir, { retryMs = [], lookup, privateTargets =
   return {
     store,
     open: async (say = () => undefined) => {
-      const webhooks = new Webhooks(store, key, say, { retryMs, privateTargets, ...(lookup ? { lookup } : {}) });
+      const webhooks = new Webhooks(wrap(store), key, say, { retryMs, privateTargets, ...(lookup ? { lookup } : {}), ...(storeRetryMs !== undefined ? { storeRetryMs } : {}) });
       t.after(() => webhooks.close());
       await webhooks.load();
       return webhooks;

@@ -213,7 +213,9 @@ test("a store whose only secret is the outbound webhook's signing secret (a trig
   const db = new DatabaseSync(join(data, "store.sqlite"));
   db.prepare("DELETE FROM settings WHERE key = 'seal_key'").run();
   assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no tool key in the store");
-  assert.deepEqual(db.prepare("SELECT adapter, scope, field FROM trigger_settings").all().map((row) => ({ ...row })), [{ adapter: "webhook-out", scope: "server", field: "secret" }], "the webhook's secret, sealed in the store");
+  const rows = db.prepare("SELECT adapter, scope, field FROM trigger_settings").all();
+  assert.deepEqual(rows.map((row) => [row.adapter, row.field]), [["webhook-out", "secret"]], "the webhook's secret, sealed in the store");
+  assert.match(rows[0].scope, /^server:[0-9a-f]+$/, "under the scope its setting names");
   db.close();
   assert.equal(existsSync(join(data, "webhook.json")), false, "nothing of the webhook is kept beside the store");
   await refuses(startServe({ data, port: 0 }));
@@ -250,8 +252,8 @@ test("two servers on two data directories in one process each keep their own key
   const opensUnder = (data, key) => {
     const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 10_000 });
     try {
-      const { sealed } = db.prepare("SELECT sealed FROM trigger_settings WHERE adapter = 'webhook-out' AND scope = 'server' AND field = 'secret'").get();
-      unseal(Buffer.from(key, "base64"), Buffer.from(sealed, "base64"), "trigger_settings|webhook-out|server|secret");
+      const { scope, sealed } = db.prepare("SELECT scope, sealed FROM trigger_settings WHERE adapter = 'webhook-out' AND scope LIKE 'server:%' AND field = 'secret'").get();
+      unseal(Buffer.from(key, "base64"), Buffer.from(sealed, "base64"), `trigger_settings|webhook-out|${scope}|secret`);
       return true;
     } catch {
       return false;

@@ -69,8 +69,11 @@ export function shownUrl(url: string): string {
 
 /** What the webhook takes beside its store: `retryMs`, the waits between tries; `privateTargets`, whether it may send to a
  *  private network or this machine (the operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS, never the API's); `lookup`, every
- *  address a name resolves to (the system resolver by default). */
-export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]> };
+ *  address a name resolves to (the system resolver by default); `storeRetryMs`, the wait before a try the store failed is
+ *  tried again (STORE_RETRY_MS by default). */
+export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]>; storeRetryMs?: number };
+/** How soon a try the store failed (its read or its claim threw) is tried again. */
+const STORE_RETRY_MS = 5_000;
 
 /** A told row's marker, by what it marks: an end (its time) or a wait (its ask's mark, waitMarkerOf). */
 const ENDED = "ended:";
@@ -85,8 +88,10 @@ const WAITS_KEPT = 20;
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
 /** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API. */
 export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" } };
-/** The webhook as the store keeps it, but its secret: `secret_at`, when the secret was made (a URL change keeps it). */
-type Config = { url: string; secret_at: string; updated_at: string; disabled?: { at: string; reason: string } };
+/** The webhook as the store keeps it, but its secret: `secret_at`, when the secret was made (the same URL keeps it);
+ *  `secret_scope`, the scope its secret is sealed under in trigger_settings, one of its own for each secret made, so the
+ *  setting names the one secret that signs for its URL, and the two go live in the setting's one write. */
+type Config = { url: string; secret_at: string; secret_scope: string; updated_at: string; disabled?: { at: string; reason: string } };
 /** What the ledger holds of one run: its end (its time), and the waits it was told of (each its ask's mark, waitMarkerOf;
  *  the one it stands at last), kept until the run moves past them: they go with the end that came after them, once that
  *  end is no longer due. */
@@ -149,6 +154,7 @@ export class Webhooks {
   private readonly retryMs: readonly number[];
   private readonly privateTargets: boolean;
   private readonly lookup: (host: string) => Promise<string[]>;
+  private readonly storeRetryMs: number;
 
   /** `key` is the server's seal key; `say` takes a log line's fields. */
   constructor(
@@ -159,6 +165,7 @@ export class Webhooks {
   ) {
     this.secrets = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, say);
     this.retryMs = options.retryMs ?? RETRY_MS;
+    this.storeRetryMs = options.storeRetryMs ?? STORE_RETRY_MS;
     this.privateTargets = options.privateTargets ?? false;
     this.lookup = options.lookup ?? (async (host) => (await dns.lookup(host, { all: true })).map((a) => a.address));
   }
@@ -168,7 +175,12 @@ export class Webhooks {
   async load(): Promise<void> {
     await this.secrets.load();
     const kept = await this.store.settings.get(WEBHOOK_SETTING);
-    this.config = isObject(kept) && typeof kept.url === "string" && typeof kept.updated_at === "string" ? (kept as unknown as Config) : undefined;
+    this.config = isObject(kept) && typeof kept.url === "string" && typeof kept.secret_scope === "string" && typeof kept.updated_at === "string" ? (kept as unknown as Config) : undefined;
+    // A secret no setting names (one made by a PUT whose setting never landed, or the one a later PUT replaced and could not
+    // remove) signs nothing: it goes, retired, still cut from what runs say.
+    for (const scope of this.secrets.scopes()) {
+      if (scope !== this.config?.secret_scope) await this.secrets.remove(scope).catch((error: Error) => this.say({ condition: "secret_unremoved", error: error.message }));
+    }
     for (const row of await this.store.channels.told(WEBHOOK_CHANNEL)) {
       const noticed = this.notices.get(row.runId) ?? {};
       if (row.marker.startsWith(ENDED)) noticed.ended = row.marker.slice(ENDED.length);
@@ -216,21 +228,34 @@ export class Webhooks {
     if (issues.length) throw invalid(issues);
     const was = this.config;
     const now = new Date().toISOString();
-    const rotates = !was || was.url !== url!.href;
-    // The secret is written (sealed) before the setting that names it: a stop between the two leaves no webhook without one.
-    // The one it replaces is kept retired, so a run that echoes it is still cut.
-    const secret = rotates ? await this.secrets.mint(SERVER_SCOPE, SECRET_FIELD) : undefined;
-    await this.write({ url: url!.href, secret_at: rotates ? now : was!.secret_at, updated_at: now });
+    // A new URL gets a new secret, and so does one whose secret does not open here (sealed under another key).
+    const rotates = !was || was.url !== url!.href || this.signingSecret() === undefined;
+    // A new secret is sealed under a scope of its own before the setting that names it is written: until that write lands,
+    // the webhook is the one it was, its URL with its secret, and a try signs with that.
+    const scope = rotates ? `${SERVER_SCOPE}:${randomBytes(8).toString("hex")}` : was!.secret_scope;
+    const secret = rotates ? await this.secrets.mint(scope, SECRET_FIELD) : undefined;
+    try {
+      await this.write({ url: url!.href, secret_at: rotates ? now : was!.secret_at, secret_scope: scope, updated_at: now });
+    } catch (error) {
+      // A secret made here and never shown signs nothing: removed (retired, still cut), so the next PUT that needs one makes
+      // one and shows it, and no one keeps a secret no one was given.
+      if (secret) await this.secrets.remove(scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
+      throw error;
+    }
+    // The secret it replaces goes, retired: a run that echoes it is still cut. One not removed now is removed at the next
+    // start (load).
+    if (rotates && was && was.secret_scope !== scope) await this.secrets.remove(was.secret_scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
 
   /** DELETE: the webhook gone, its secret kept retired (cut from runs still), and its queued messages with it; the log of
    *  attempts stays. */
   async remove(): Promise<void> {
-    if (!this.config) return;
+    const was = this.config;
+    if (!was) return;
     await this.store.settings.remove(WEBHOOK_SETTING);
     this.config = undefined;
-    await this.secrets.remove(SERVER_SCOPE);
+    await this.secrets.remove(was.secret_scope);
     await this.drop("the webhook was removed");
   }
 
@@ -300,10 +325,12 @@ export class Webhooks {
    *  end the webhook was off for never moved it past). Then each end the store holds that the ledger does not, and that is
    *  still due, is queued under the store's end time, so under the same webhook-id. `current` reads the run as the store
    *  holds it right before its end is queued, with its notice (null: no such run now): a run continued since the rows
-   *  were read has moved past that end, which is not queued again. */
-  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, current: (id: string) => Promise<{ state?: string; endedAt?: string; notice: RunNotice } | null>): Promise<void> {
+   *  were read has moved past that end, which is not queued again. Answers the runs whose end the store refused to queue
+   *  (`unsaved`): the caller tells each again until it is saved (server.ts endsLeft), since no feed change will. */
+  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, current: (id: string) => Promise<{ state?: string; endedAt?: string; notice: RunNotice } | null>): Promise<string[]> {
     const config = this.config;
-    if (this.closed || !config || config.disabled) return;
+    const unsaved: string[] = [];
+    if (this.closed || !config || config.disabled) return unsaved;
     const store = new Map([...rows].map((row) => [row.id, row]));
     const forget: { runId: string; marker: string }[] = [];
     for (const [id, noticed] of this.notices) {
@@ -328,8 +355,9 @@ export class Webhooks {
         this.say({ condition: "end_moved_on", run: id, ended: endedAt });
         continue;
       }
-      await this.emit("run.ended", now.notice, endedAt);
+      if ((await this.emit("run.ended", now.notice, endedAt)) === "unsaved") unsaved.push(id);
     }
+    return unsaved;
   }
 
   /** POST .../test: a `webhook.test` message tried once now, never again; its attempt. */
@@ -389,7 +417,12 @@ export class Webhooks {
   }
 
   private signing(): Signing {
-    return this.secrets.get(SERVER_SCOPE, SECRET_FIELD) !== undefined ? "sealed" : "unreadable";
+    return this.signingSecret() !== undefined ? "sealed" : "unreadable";
+  }
+
+  /** The secret the webhook's setting names, opened here; undefined when none is set, or it does not open here. */
+  private signingSecret(config: Config | undefined = this.config): string | undefined {
+    return config ? this.secrets.get(config.secret_scope, SECRET_FIELD) : undefined;
   }
 
   private body(type: MessageType, data: unknown): string {
@@ -431,11 +464,14 @@ export class Webhooks {
     clearTimeout(this.timers.get(id));
     const timer = setTimeout(() => {
       this.timers.delete(id);
-      // No try rejects unhandled, which would stop the server: one that throws is said, and its message stays as it was.
+      // No try rejects unhandled, which would stop the server: one that throws (a store that failed its read or its claim)
+      // is said, its message stays as it was, and it is tried again after STORE_RETRY_MS, as long as the message is queued:
+      // its timer was its only one. A try of a message no longer queued (sent, dropped) claims nothing, and ends there.
       this.attempt(id, { retry: true, redelivery: false }).catch((error: unknown) => {
         try {
           this.say({ condition: "attempt_failed", webhook_id: id, error: error instanceof Error ? error.message : String(error) });
         } catch {}
+        this.schedule(id, this.storeRetryMs);
       });
     }, delayMs);
     timer.unref();
@@ -465,7 +501,8 @@ export class Webhooks {
     // A message's own try claims it first (compare-and-set): a try already out, or one that settled it, holds it.
     if (!how.redelivery && !(await this.store.channels.claim(id, now, CLAIM_MS))) return attempt;
     const config = this.config;
-    const secret = this.secrets.get(SERVER_SCOPE, SECRET_FIELD);
+    // Signed with the secret this setting names: the URL and its secret, as the store holds them together.
+    const secret = this.signingSecret(config);
     let failure: string | undefined;
     if (!config) failure = "the webhook was removed";
     else if (config.disabled) failure = "the webhook is off";
