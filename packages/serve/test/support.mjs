@@ -525,6 +525,40 @@ export function storeRun(data, runId) {
   }
 }
 
+/** Run `runId`'s journal entries, in order, as the server's store keeps them (pi_entries), each its parsed record: what
+ *  a test read from a run's own database file before the one store, with its `id` and `conversationId`. Read-only,
+ *  beside the server that writes it. */
+export function journalOf(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    return db.prepare("SELECT id, conversation_id, record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => ({ ...JSON.parse(String(row.record)), id: Number(row.id), conversationId: Number(row.conversation_id) }));
+  } finally {
+    db.close();
+  }
+}
+
+/** Run `runId`'s paid tool calls as its runner books them on the run's one ledger (the paid-tools session's runner.request
+ *  and runner.turn records, run-cap.ts paidCalls), in the words main's records used: each request's hold as an
+ *  `agentrun.tool_started` mark (`tool`, `charged_by`, `call`, `heldUsd`) and its settle as an `agentrun.tool_cost` charge
+ *  (`usd`; none when unknown). A hold given back unused (nothing sent) has no charge. */
+export function paidCallsOf(data, runId) {
+  const entries = journalOf(data, runId);
+  const requests = new Map();
+  const out = [];
+  for (const entry of entries) {
+    const d = entry.data ?? {};
+    const key = `${entry.conversationId}:${d.turn}`;
+    if (entry.kind === "runner.request" && typeof d.model === "string" && d.model.startsWith("paid:")) {
+      const label = { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(d.charged_by ? { charged_by: d.charged_by } : {}), ...(d.call ? { call: d.call } : {}) };
+      requests.set(key, label);
+      out.push({ kind: "agentrun.tool_started", ...label, heldUsd: d.heldUsd });
+    } else if (entry.kind === "runner.turn" && requests.has(key) && d.givenBack !== true) {
+      out.push({ kind: "agentrun.tool_cost", ...requests.get(key), ...(typeof d.usd === "number" ? { usd: d.usd } : {}) });
+    }
+  }
+  return out;
+}
+
 /** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
  *  the epoch it ran under as `generation`), and its holder from the run's row — the runner that claimed it, whose name the
  *  runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it; `{}` when there is
@@ -770,5 +804,31 @@ export async function writtenJson(file, reaching, { ms = 55_000, read } = {}) {
     const value = await jsonIn(file, read);
     if (value !== null) return value;
     assert.ok(Date.now() < end, reaching);
+  }
+}
+
+/** The server's log from now until the test ends: every line written to this process's stderr, where a run's harness
+ *  lines go on the runner (adapters.ts harnessLog), runs having no process or process.log of their own. `text()` reads
+ *  what was written so far. */
+export function serverLog(t) {
+  const chunks = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    chunks.push(String(chunk));
+    return write.call(process.stderr, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  return { text: () => chunks.join("") };
+}
+
+/** Run `runId`'s launch body as the store keeps it (run_launch.body): what the server resolved for the run before it
+ *  existed (its first input, cap, the tools' plane, ...), the per-run serve.json of before the one store. */
+export function launchOf(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    const row = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+    return row ? JSON.parse(String(row.body)) : undefined;
+  } finally {
+    db.close();
   }
 }
