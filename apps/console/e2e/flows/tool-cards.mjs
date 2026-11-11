@@ -7,7 +7,7 @@ import { check } from "../harness.mjs";
 const LONG = "Create attachment (deprecated): Deprecated fallback for tiny files only. Accepts base64 file content, verifies SHA-256 checksum, and uploads it through the MCP worker. Prefer `prepare_attachment_upload` plus direct PUT plus `create_attachment_from_upload`. ".repeat(6);
 const UNBROKEN = "QUJD".repeat(500);
 const SERVER = {
-  name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, not_metered: ["create_attachment", "get_team", "upload_blob", "list_comments", "list_repository_collaborator_ids"],
+  name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, not_metered: ["create_attachment", "get_team", "upload_blob", "list_comments", "list_repository_collaborator_ids", "wide_example"],
   tools: [
     { name: "create_attachment", description: LONG },
     { name: "get_team", description: "Get a team by id." },
@@ -16,6 +16,8 @@ const SERVER = {
     // 32 characters, no more than a count of characters would let pass, but cut beside the checkbox and "not metered" in
     // the e2e browser's columns: the card must still say it whole.
     { name: "list_repository_collaborator_ids", description: "List collaborators." },
+    // 130 wide unbroken characters, under a count of 140, but past the card's three lines: More and a title all the same.
+    { name: "wide_example", description: "W".repeat(130) },
   ],
 };
 
@@ -56,6 +58,14 @@ export default {
     }));
     const wrong = names.filter((n) => (n.cut ? n.title !== n.text || !n.more : n.title !== null));
     check(wrong.length === 0, `names whose title or More doesn't match whether they're cut: ${JSON.stringify(wrong)}`);
+    // So with a description clamped on its three lines: whole in its title, with More; one not clamped has no title.
+    const lines = await cards.evaluateAll((all) => all.flatMap((c) => {
+      const line = c.querySelector("[data-line].line-clamp-3");
+      return line ? [{ card: c.getAttribute("data-tool-card"), cut: line.scrollHeight > line.clientHeight + 1, title: line.getAttribute("title"), text: line.textContent, more: [...c.querySelectorAll("button")].some((b) => b.textContent === "More") }] : [];
+    }));
+    const wrongLines = lines.filter((n) => (n.cut ? n.title !== n.text || !n.more : n.title !== null)).map(({ card, cut, title, more }) => ({ card, cut, titled: title !== null, more }));
+    check(wrongLines.length === 0, `descriptions whose title or More doesn't match whether they're clamped: ${JSON.stringify(wrongLines)}`);
+    check(lines.find((n) => n.card === "mcp:linear/wide_example")?.cut, "the 130-character wide description isn't clamped here: the case this checks didn't happen");
     const collaborators = names.find((n) => n.card === "mcp:linear/list_repository_collaborator_ids");
     check(collaborators?.cut, `list_repository_collaborator_ids isn't cut here (${JSON.stringify(collaborators)}): the case this checks didn't happen`);
 

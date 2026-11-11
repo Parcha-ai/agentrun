@@ -23,24 +23,17 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
   on: boolean; disabled: boolean; warn?: boolean; onToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  // Whether the collapsed name is cut, as the browser draws it (the checkbox and a note take their room, so no count of
-  // characters says it); the character count only where nothing is laid out (a test's DOM). Read while collapsed: open,
-  // the name wraps whole, and the card keeps what it read so Less stays.
-  const nameRef = useRef<HTMLSpanElement>(null);
-  const [nameCut, setNameCut] = useState<boolean | null>(null);
-  useLayoutEffect(() => {
-    const el = nameRef.current;
-    if (open || !el) return;
-    const read = () => { if (el.clientWidth > 0) setNameCut(el.scrollWidth > el.clientWidth + 1); };
-    read();
-    const watch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
-    watch?.observe(el);
-    return () => watch?.disconnect();
-  }, [name, open]);
-  // More is offered only when the card hides something: a description under a blurb or past three lines, a reason the
+  // Whether the collapsed name and description are cut, as the browser draws them (the checkbox and a note take the
+  // name's room; wide or unbroken text fills three lines sooner), so no count of characters says it. The count is only
+  // the fallback where nothing is laid out (a test's DOM).
+  const nameRef = useRef<HTMLSpanElement>(null), lineRef = useRef<HTMLSpanElement>(null);
+  const nameCut = useCut(nameRef, "width", open, name);
+  const lineCut = useCut(lineRef, "height", open, description);
+  // More is offered only when the card hides something: a description under a blurb or past its three lines, a reason the
   // short tag stands for, an alert longer than its one line, or a name cut on its.
   const longName = nameCut ?? name.length > NAME_CUT, longAlert = !!alert && alert.length > ALERT_CUT;
-  const more = (!!description && (!!blurb || description.length > CLAMPED)) || (!!why && why !== tag) || longAlert || longName;
+  const longLine = !!description && (lineCut ?? description.length > CLAMPED);
+  const more = (!!description && (!!blurb || longLine)) || (!!why && why !== tag) || longAlert || longName;
   // A hover title only says what the card cuts or hides, never what it already shows (Manuel's #20): the whole name when
   // it's cut, the whole description past its three lines, the reason a short tag stands for (or a reason too long for
   // its line), the whole alert when it's cut. An open card shows all of it, so it has none.
@@ -56,7 +49,7 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
         {note && <span className="shrink-0 font-sans text-label text-muted-foreground">{note}</span>}
       </span>
       {blurb ? <span data-line className="mt-1 truncate font-sans text-small text-muted-foreground">{blurb}</span>
-        : description && !open ? <span data-line className="mt-1 line-clamp-3 font-sans text-label text-muted-foreground [overflow-wrap:anywhere]" title={hover(description, description.length > CLAMPED)}>{description}</span> : null}
+        : description && !open ? <span ref={lineRef} data-line className="mt-1 line-clamp-3 font-sans text-label text-muted-foreground [overflow-wrap:anywhere]" title={hover(description, longLine)}>{description}</span> : null}
       {tag && <span data-tag title={hover(why, !!why && (why !== tag || why.length > TAG_CUT))} className="mt-1 max-w-full self-start truncate border px-1.5 text-micro text-muted-foreground">{tag}</span>}
       {alert && !open && <span className="mt-1 truncate font-sans text-label text-warning-text" role="alert" title={hover(alert, longAlert)}>{alert}</span>}
       {open && (
@@ -71,4 +64,23 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
       )}
     </label>
   );
+}
+
+/** Whether the collapsed element `ref` cuts its text, as drawn: past its width (a one-line `truncate`) or its height (a
+ *  `line-clamp`). Read while the card is collapsed, again on a resize; null until laid out (nothing is, in a test's DOM).
+ *  Open, the text shows whole, and the card keeps what it read, so Less stays. */
+function useCut(ref: React.RefObject<HTMLElement | null>, axis: "width" | "height", open: boolean, text: string | undefined): boolean | null {
+  const [cut, setCut] = useState<boolean | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (open || !el) return;
+    const read = () => {
+      if (axis === "width" ? el.clientWidth > 0 : el.clientHeight > 0) setCut(axis === "width" ? el.scrollWidth > el.clientWidth + 1 : el.scrollHeight > el.clientHeight + 1);
+    };
+    read();
+    const watch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
+    watch?.observe(el);
+    return () => watch?.disconnect();
+  }, [ref, axis, open, text]);
+  return cut;
 }
