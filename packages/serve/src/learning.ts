@@ -766,19 +766,23 @@ export const byRelevance: NoteSelector = (candidates, run) => {
   if (!scores.some((score) => score > 0)) return byRecency(candidates, run);
   // Best first; a tie keeps recency (the candidates' order).
   const ranked = notes.map((candidate, i) => ({ ...candidate, score: scores[i]!, at: i })).sort((a, b) => b.score - a.score || a.at - b.at);
-  // Promoted whole while the whole notes and the lines of the rest fit: each note promoted gives back its line.
-  let left = budget - ranked.reduce((sum, { lineBytes }) => sum + lineBytes, 0);
+  // The lines of the rest, as the index was read (learn/notes.ts loadedIndex): the first INDEX_LINES, within INDEX_BYTES.
+  const linesOf = (whole: ReadonlySet<LearnedNote>) => {
+    let bytes = 0;
+    return ranked.filter(({ note }) => !whole.has(note)).slice(0, INDEX_LINES).filter(({ lineBytes }) => (bytes += lineBytes) <= INDEX_BYTES);
+  };
+  const lineBytesOf = (whole: ReadonlySet<LearnedNote>) => linesOf(whole).reduce((sum, { lineBytes }) => sum + lineBytes, 0);
+  // Promoted whole, best first, while the whole notes and the lines served of the rest fit: the room kept for lines is
+  // only what is served of them (past INDEX_LINES or INDEX_BYTES a line is never served), never every note's.
   const whole = new Set<LearnedNote>();
-  for (const { note, bytes, lineBytes, score } of ranked) {
+  let wholeBytes = 0;
+  for (const { note, bytes, score } of ranked) {
     if (score <= 0) break;
-    if (bytes - lineBytes > left) continue;
     whole.add(note);
-    left -= bytes - lineBytes;
+    if (wholeBytes + bytes + lineBytesOf(whole) <= budget) wholeBytes += bytes;
+    else whole.delete(note);
   }
-  // The lines, as the index was read (learn/notes.ts loadedIndex): the first INDEX_LINES, within INDEX_BYTES.
-  let bytes = 0;
-  const lines = ranked.filter(({ note }) => !whole.has(note)).slice(0, INDEX_LINES).filter(({ lineBytes }) => (bytes += lineBytes) <= INDEX_BYTES).map(({ note }) => note);
-  return { whole: ranked.filter(({ note }) => whole.has(note)).map(({ note }) => note), index: false, lines };
+  return { whole: ranked.filter(({ note }) => whole.has(note)).map(({ note }) => note), index: false, lines: linesOf(whole).map(({ note }) => note) };
 };
 /** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
  *  that can read it. */
