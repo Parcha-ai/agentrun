@@ -3,6 +3,7 @@
 // under the id the answer names (message_id), and runs it under the new cap. A step a working run's runner has under way
 // keeps the cap it was admitted at, and the answer says so. A server started again raises a paused run's cap the same.
 import assert from "node:assert/strict";
+import { request } from "node:http";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
@@ -291,4 +292,41 @@ test("a retry of a raise once the run has paused anew under it is no raise of th
   const retry = await raise(api, runId, { max_cost_usd: 0.06 });
   assert.deepEqual([retry.status, retry.body.resumed, retry.body.message_id], [200, false, undefined], JSON.stringify(retry.body));
   assert.equal((await view(api, runId)).pending?.kind, "budget", "still paused, at its new refusal");
+});
+
+test("a raise whose body arrives after the run paused anew names the pause its runner raises: the follow-up it sends, never the first pause's", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { faux: OUTPUT_PRICED });
+  const { api, store } = server;
+  const runId = await paused(api, "overlap");
+  // The $2 raise reaches the route at the first pause, its body held back.
+  const bytes = Buffer.from(JSON.stringify({ max_cost_usd: 2 }));
+  let sendBody;
+  const late = new Promise((resolve, reject) => {
+    const req = request(`${server.baseUrl}/runs/${runId}`, { method: "PATCH", agent: false, headers: { authorization: `Bearer ${server.token}`, "content-type": "application/json", "content-length": bytes.length } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
+    });
+    req.once("error", reject);
+    req.flushHeaders();
+    sendBody = () => req.end(bytes);
+  });
+  await sleep(300);
+  // A smaller raise meanwhile resumes the run, and its follow-up's request is refused under $0.06: a pause of its own.
+  const small = await raise(api, runId, { max_cost_usd: 0.06 });
+  assert.deepEqual([small.status, small.body.resumed], [200, true], JSON.stringify(small.body));
+  for (let w = 0; ; w++) {
+    const run = await view(api, runId);
+    if (run.pending?.kind === "budget" && run.pending.cap_usd === 0.06) break;
+    assert.ok(w < 600, `paused anew under $0.06: ${JSON.stringify(run)}`);
+    await sleep(100);
+  }
+  sendBody();
+  const raised = await late;
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  // Each answer names the follow-up its runner sent: the second pause's, for the $2 raise.
+  const { submissions = [] } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  const followUps = submissions.map((submission) => submission.requestId ?? submission.value?.requestId).filter((id) => String(id).startsWith("agentrun:raise:"));
+  assert.deepEqual(followUps, [small.body.message_id, raised.body.message_id], `each answer names its own pause's follow-up: ${JSON.stringify([followUps, small.body, raised.body])}`);
+  assert.notEqual(small.body.message_id, raised.body.message_id, "two pauses, two follow-ups");
 });

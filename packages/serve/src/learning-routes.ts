@@ -26,7 +26,7 @@ import { isObject } from "./validate.js";
 import type { Workspace } from "./workspace/index.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf } from "./run-launch.js";
-import { runLearningEnd } from "./store-reads/learning.js";
+import { type LearnedUse, runLearningEnd } from "./store-reads/learning.js";
 import type { Store } from "./store/store.js";
 
 /** The agent view's first pages, and the most a page holds. */
@@ -502,7 +502,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
  *  settled: the one shape, read from the one store (store-reads/learning.ts
  *  runLearningOverStore). */
-export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean }, shown: Shown, secrets: readonly string[]) {
+export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean; readonly used?: LearnedUse }, shown: Shown, secrets: readonly string[]) {
   const { learning } = input;
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;
   return {
@@ -521,6 +521,12 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },
+    // What the job did with the learned skills and workflows it was offered (store-reads/learning.ts learnedUseOf), apart
+    // from the skills and workflows it learned (notesView's), each name cut of the host's secrets as a note's is.
+    used: {
+      skills: (input.used?.skills ?? []).map(({ name, read }) => ({ name: shown.name(name), read })),
+      workflows: (input.used?.workflows ?? []).map(({ name, calls, failed }) => ({ name: shown.name(name), calls, failed })),
+    },
   };
 }
 
