@@ -12,6 +12,8 @@ import { anthropicPolicy } from '@parcha/agentrun-harness-claude';
 import * as claudePolicy from '../dist/host/policy.js';
 
 const { startModelProxy } = host;
+const { inputTokensMaxOf } = await import('@parcha/agentrun-kernel/testing');
+const { beforeRequestOf } = await import('@parcha/agentrun-kernel/kernel/cap');
 const { applyAnthropic } = claudePolicy;
 // Read from the module, so that on a build without them each test fails by name rather than the file failing to load.
 const PROMPT = host.ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS ?? { autoOrNone: 675, anyOrTool: 804 };
@@ -116,4 +118,70 @@ test("a small request with tools whose body fits what is left, but not with the 
 
 test("a request whose body fits what is left, but not with its image's allowance (a small PNG of 2000x2000 px), is refused before it is sent", async (t) => {
   await refusedJustUnder(t, withResult([image]), PROMPT.autoOrNone + IMAGE);
+});
+
+/** A 1280x720 RGB PNG the size a desktop's screenshot is: its top `noisy` rows hold pixels that do not compress (a fixed
+ *  pseudo-random stream), the rest are black, so its base64 is about a megabyte, as a real screen's is. */
+function screenshot(width, height, noisy = 260) {
+  const row = 1 + 3 * width;
+  const raw = Buffer.alloc(row * height);
+  let x = 0x9e3779b9;
+  for (let at = 0; at < noisy * row; at += 1) {
+    if (at % row === 0) continue; // the row's filter byte: none
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    raw[at] = x & 0xff;
+  }
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const out = Buffer.alloc(8 + body.length + 4);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc32(body), 8 + data.length);
+    return out;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8); // bit depth 8, RGB, deflate, no filter, no interlace
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+}
+const SCREEN = screenshot(1280, 720);
+const screenShot = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: SCREEN } };
+/** What Claude bills a 1280x720 image as: its area at 750 pixels a token (the standard tier's rule), above its count of
+ *  28 px patches (46 x 26 = 1,196, the high-resolution tier's). */
+const SCREEN_TOKENS = Math.ceil((1280 * 720) / 750);
+/** A desktop run's request after `shots` screenshots: each a tool's result, as pi's desktop_screen returns it. */
+function desktopBody(shots) {
+  const messages = [{ role: 'user', content: 'Open a terminal, run hostname, and write what it prints to answer.md.' }];
+  for (let i = 0; i < shots; i += 1) {
+    messages.push({ role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: tool.name, input: {} }] });
+    messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: [{ type: 'text', text: 'A screenshot of the whole screen, 1280x720 pixels.' }, screenShot] }] });
+  }
+  return applyAnthropic(bodyWith({ tools: [tool], messages }), MESSAGES, options);
+}
+
+test("a 1280x720 screenshot is counted at the area Claude bills it by (within 3x, never under), never as its megabyte of base64", () => {
+  assert.ok(SCREEN.length > 900_000, `the screenshot is ${SCREEN.length} bytes of base64, as a real screen's`);
+  const body = desktopBody(1);
+  const sent = JSON.stringify(body);
+  const bound = inputTokensMaxOf(policy, body, sent);
+  // The body's bytes besides the image's data are a bound on its text; the tool-use prompt is Claude's own.
+  const rest = Buffer.byteLength(sent, 'utf8') - SCREEN.length;
+  const image = bound - rest - PROMPT.autoOrNone;
+  assert.ok(image >= SCREEN_TOKENS, `never under what Claude bills it: ${image} tokens for the image, billed ${SCREEN_TOKENS}`);
+  assert.ok(image <= 3 * SCREEN_TOKENS, `within 3x of what Claude bills it: ${image} tokens for the image (${bound} in all), billed ${SCREEN_TOKENS}`);
+});
+
+test("a desktop run on Sonnet under a $1.50 cap takes step after step of screenshots: each step's least is cents, never the dollars its base64 would read as", () => {
+  const sonnet = { id: 'claude-main', api: 'anthropic-messages', price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 };
+  const before = beforeRequestOf({ capUsd: () => 1.5, modelOf: (id) => (id === sonnet.id ? sonnet : undefined) });
+  let spent = 0;
+  for (let shots = 1; shots <= 6; shots += 1) {
+    const body = desktopBody(shots);
+    const inputTokensMax = inputTokensMaxOf(policy, body, JSON.stringify(body));
+    const verdict = before({ model: sonnet.id, turn: shots + 1, spentUsd: spent, inFlight: [], inputTokensMax, outputTokensAsked: body.max_tokens, outputTokensLeast: policy.outputLeast(body) });
+    assert.ok(!(verdict && 'refuse' in verdict), `step ${shots + 1} (${shots} screenshot(s), input bound ${inputTokensMax}) is sent under $1.50 after $${spent.toFixed(4)}: ${verdict?.refuse}`);
+    // What such a step bills: its screenshots and a little text, written to the cache, and a short answer.
+    spent += ((shots * SCREEN_TOKENS + 3_000) * 3.75 + 100 * 15) / 1e6;
+  }
 });
