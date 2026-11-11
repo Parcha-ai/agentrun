@@ -20,7 +20,7 @@ import ts from "typescript";
  */
 export const BASELINE = {
 	// S7, DEL-03: the old box stack (pi-transport's Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
-	"boxes.ts": { ids: { docker: 9, daytona: 7, modal: 1 }, why: "DEL-03 (S7): the old box stack" },
+	"boxes.ts": { ids: { docker: 6, daytona: 7, modal: 1 }, why: "DEL-03 (S7): the old box stack" },
 	"place.ts": { ids: { docker: 4, daytona: 2 }, why: "DEL-03 (S7): the old box stack's places" },
 	"box-egress-vm.ts": { ids: { kernel: 2 }, why: "a false positive: the OS's kernel (vmDocker's `kernel` option), not the provider" },
 	"box-settings.ts": { ids: { kernel: 1 }, why: "a false positive: the OS's kernel (vmDocker's `kernel` option, passed on), not the provider" },

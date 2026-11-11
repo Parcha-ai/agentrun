@@ -96,18 +96,21 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
-test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: a type Daytona gives runs, one it does not is refused (409)", async (t) => {
+test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: daytona-gpu's H100 takes no Archil mount, and a type Daytona does not give is refused (409)", async (t) => {
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
-  const given = await saveAndStart(api, "gpu-given", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
-  assert.deepEqual([given.saved, given.refused], [[], []], JSON.stringify(given));
-  const said = await saveAndStart(api, "gpu-refused", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } } });
-  const words = /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100, /;
-  assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-  assert.match(said.saved[0][2], words);
-  assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-  assert.match(said.refused[0][2], words);
-  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  for (const [name, gpu, words] of [
+    // daytona-gpu's user is not root and it has no Archil client, and Mode 2's folder is an Archil mount.
+    ["gpu-unmounted", { type: "H100", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven/],
+    ["gpu-refused", { type: "T4", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100\b/],
+  ]) {
+    const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", gpu } });
+    assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.match(said.saved[0][2], words);
+    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.match(said.refused[0][2], words);
+    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  }
 });
 
 // A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a
@@ -178,15 +181,41 @@ test("Mode 1: an agent whose computer is a Docker sandbox still runs where Docke
   assert.match(said.started[2], /^No model yet: add a model key in Settings → Model keys[^.]*\.$/, JSON.stringify(said));
 });
 
-test("Mode 1: an agent saved with place {sandbox, docker} on a host where Docker does not answer is refused at its run's start (409), in the box's own words with their fix", async (t) => {
-  // The claim has no answer of Docker's: it would only fail to launch it, later, as computer_unavailable. The start's check
-  // asks the boxes' start-time probe (in memory, no new probe) and refuses it now, with the probe's reason.
+test("Mode 1: an agent saved with place {sandbox, docker} on a host where Docker does not answer is refused at its run's start (409), in the words Settings → Computers says, and its view says Docker is not ready", async (t) => {
+  // The claim would only fail to launch it, later, as computer_unavailable. The start's check asks the server's daemon
+  // check (docker-daemon.ts: `docker version`, here the fake that fails) and refuses it now, in the one wording.
   const api = await server(t, { archil: false, docker: false });
   const said = await saveAndStart(api, "docker-down", { place: { mode: "sandbox", box: "docker" } });
-  const words = "This agent's computer is a Docker sandbox, and this server cannot run it: Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun.";
+  const words = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
   assert.deepEqual(said.saved, [["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
   assert.deepEqual(said.refused, [["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
   assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));
+  const view = await api("GET", "/computers");
+  const docker = view.body.kinds.find((kind) => kind.kind === "sandbox").providers.find((one) => one.id === "docker");
+  assert.deepEqual([docker.ready, docker.why], [false, words], JSON.stringify(docker));
+});
+
+test("Mode 1: where Docker answers, GET /v2/computers shows Docker ready for a sandbox and a desktop", async (t) => {
+  const api = await server(t, { archil: false, docker: true });
+  const view = await api("GET", "/computers");
+  for (const kind of ["sandbox", "desktop"]) {
+    const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
+    assert.deepEqual([docker.ready, docker.why], [true, undefined], `${kind}: ${JSON.stringify(docker)}`);
+  }
+});
+
+test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words, until a restart", async (t) => {
+  // The start made no Docker box, so its checks of Docker (a daemon elsewhere, this server's paths, host addresses, the
+  // box network) never ran; a daemon that answers now can't stand in for them.
+  const api = await server(t, { archil: false, docker: false });
+  const bin = process.env.PATH.split(":")[0];
+  await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
+  const view = await api("GET", "/computers");
+  for (const kind of ["sandbox", "desktop"]) {
+    const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
+    assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
+    assert.match(docker.why, /^Docker isn't running on this machine.*then restart AgentRun$/, `${kind}: ${JSON.stringify(docker)}`);
+  }
 });
 
 test("an agent with only an old place {mode: sandbox, box: docker} keeps the box check; one with a computer setting is asked the readiness instead", async () => {

@@ -16,7 +16,7 @@ import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
+import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
 /** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
 const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
@@ -131,7 +131,11 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
 test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's folder as their mount, in checkGpu's words, and handed to the launch", async () => {
   const pick = "Change the GPUs or the provider for this agent's computer in Settings → Computers.";
   assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100, H200, RTX-PRO-6000, RTX-4090, RTX-5090, MI355X. ${pick}`,
+    refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100. ${pick}`,
+  });
+  // daytona-gpu takes no mount, and Mode 2's folder is an Archil mount: refused in words, as Modal's is.
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
+    refused: `A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
   });
   assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), {
     refused: `A Modal sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
@@ -139,10 +143,11 @@ test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's fol
   assert.match((await resolve({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }, 1, scratch(), SAVED, KINDS)).refused, /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
   const root = scratch();
   const side = claim(root);
-  const resolved = await resolveComputer({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }, 2, KINDS, side);
+  // A GPU computer that takes the Archil mount (a GPU snapshot with root and the Archil client) is handed its GPU.
+  const resolved = await resolveComputer({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, GPU_ARCHIL_KINDS, side);
   assert.deepEqual(shape(resolved), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
   await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
-  assert.deepEqual(side.launched[0][1].gpu, { type: "H100", count: 2 });
+  assert.deepEqual(side.launched[0][1].gpu, { type: "H100", count: 1 });
   const plain = claim(root);
   await (await resolveComputer({ kind: "sandbox", provider: "daytona" }, 2, KINDS, plain)).start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.equal("gpu" in plain.launched[0][1], false, "no GPUs asked, none handed");
@@ -173,6 +178,15 @@ test("start: a computer that cannot be had fails as computer_unavailable, in the
   const side = { keysOf: async () => SAVED.e2b, launch: async () => { throw new Error("E2B answered 503: no capacity"); } };
   const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
   await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B answered 503: no capacity");
+});
+
+test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
+  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
+  const failing = (daemon) => ({ keysOf: async () => ({}), answers: async () => false, daemon, launch: async () => { throw new Error("cannot ask Docker its architecture (docker version): Cannot connect to the Docker daemon"); } });
+  const start = async (side) => (await resolveComputer({ kind: "sandbox", provider: "docker" }, 1, KINDS, side)).start({ workspace: localWorkspace(scratch()), check: { readBackOf } });
+  await assert.rejects(start(failing(async () => ({ up: false, absent: true, reason: "exit 1" }))), (error) => error.code === "computer_unavailable" && error.message === NO_DOCKER);
+  await assert.rejects(start(failing(async () => ({ up: true }))), (error) => error.code === "computer_unavailable" && error.message.startsWith("Docker could not start a sandbox computer: cannot ask Docker its architecture"));
+  await assert.rejects(start(failing(undefined)), (error) => error.message.startsWith("Docker could not start a sandbox computer:"), "no daemon check: the launch's words");
 });
 
 test("runShellOf, read off the setting, is the shell runHands gives the run over the computer started, for every kind in both modes; a refused setting has none", async () => {

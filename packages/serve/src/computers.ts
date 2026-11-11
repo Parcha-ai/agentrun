@@ -10,6 +10,7 @@ import { checkGpu, type GpuCapability, imagesOf } from "@parcha/agentrun-compute
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
+import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
 import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
@@ -80,6 +81,9 @@ export interface ComputerRoutesOptions {
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
   /** The server's environment: a variable named as a provider's key overrides the saved one (source "env"). */
   readonly env?: KeyEnv;
+  /** Whether a provider that binds a folder of this machine (Docker) answers here now, or why not (the server's daemon
+   *  check, docker-daemon.ts, which keeps its answer a while). Absent: taken as answering. */
+  readonly answers?: (provider: string) => Promise<DockerDaemon>;
 }
 
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
@@ -163,16 +167,25 @@ function gpuRefusal(kinds: Pick<KindRegistry, "servingRefusals">, computer: Comp
 /** The required keys `provider` has no saved value for, by name. */
 const missingKeys = (provider: ProviderEntry, saved: ReadonlySet<string>): string[] => provider.keys.filter((key) => key.required && !saved.has(key.name)).map((key) => key.name);
 
-/** Why a provider with keys missing is not ready, naming the setting to fill. */
-const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
-  `${provider.label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers (PUT /v2/computers/${provider.id}/keys)`;
+/** Why a provider with keys missing is not ready, naming the setting to fill: a person reads it (the view, the test), so
+ *  it ends at the setting. A caller's refusal (the claim's) adds the route that saves them (`route`). */
+const keysWhy = (provider: ProviderEntry, missing: readonly string[], route = false): string =>
+  `${provider.label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers${route ? ` (PUT /v2/computers/${provider.id}/keys)` : ""}`;
+
+/** Whether `provider` binds a folder of this machine, so its computers need this machine's Docker daemon. */
+const local = (provider: ProviderEntry): boolean => provider.mounts.includes("bind");
 
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {} } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {}, answers = daemonUp } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
+  /** Why a computer of `kind` on `provider` can't be had for its daemon (a provider that binds a folder of this machine,
+   *  `said` its answer, in folder `mode`): none answering is the one wording (docker-daemon.ts noDockerWords); else its
+   *  reason. */
+  const daemonWhy = (kind: ComputerKind, said: DockerDaemon, mode: FolderMode): string | undefined =>
+    said.up ? undefined : said.absent ? noDockerWords(kind, kinds.PROVIDERS, mode === "disk" ? 2 : 1) : said.reason;
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
@@ -183,13 +196,16 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const slots = kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
     const metas = new Map((await keyMetaOf(store, slots, env)).map((meta) => [meta.name, meta]));
     const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
+    // Each provider that binds a folder of this machine asked once for the view: its daemon answers, or why not.
+    const daemons = new Map(await Promise.all(kinds.PROVIDERS.filter(local).map(async (provider) => [provider.id, await answers(provider.id)] as const)));
     return {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
         const spec = kinds.SETTING_KINDS[kind];
         const serving = kinds.PROVIDERS.filter((provider) => provider.kinds.includes(kind));
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
-          const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const daemon = daemons.get(provider.id);
+          const why = modeRefusal(kind, provider, mode) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
           const images = imagesOf(provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0), provider.defaultImage?.[kind]);
           const network = networkWords(provider.network);
@@ -250,7 +266,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
 
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
    *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
-   *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), and have every required key saved. */
+   *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), have its daemon answer where it binds
+   *  a folder of this machine (Docker), and have every required key saved; a key refusal names the route that saves them. */
   async function claimRefusal(computer: ComputerSetting): Promise<string | undefined> {
     if (computer.kind === "none") return undefined;
     const provider = providerOf(computer.provider);
@@ -260,10 +277,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
     const mode = await modeNow();
-    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode);
+    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined);
     if (refused) return refused;
     const missing = missingKeys(provider, new Set([...(await sealedKeyNames(store)), ...provider.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]));
-    return missing.length ? keysWhy(provider, missing) : undefined;
+    return missing.length ? keysWhy(provider, missing, true) : undefined;
   }
 
   /** What the claim makes a run's computer with: the options its provider's create() takes, from its saved keys and the
