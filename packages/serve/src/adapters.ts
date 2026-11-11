@@ -17,7 +17,7 @@ import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
 import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
-import { servedSkill } from "./learn/skills.js";
+import { servedSkills } from "./learn/skills.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -361,11 +361,6 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
-
-/** Skills as OpenCode is handed them (opencodeOf): each SKILL.md as servedSkill writes it, its other files as they are.
- *  Its table entry's check reads this same form, so a set the check takes is never one that grew past its limit after. */
-export const servedSkills = (skills: readonly SkillFiles[]): SkillFiles[] =>
-  skills.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and
  *  the adapter's own check of the model `given` names (with none, a model of its wire's vendor: whether it runs here at

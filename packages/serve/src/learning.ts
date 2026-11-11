@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -697,23 +697,30 @@ export async function takeSkills(work: Workspace, names: Iterable<string>): Prom
 const namesIn = (files: readonly string[] | undefined): string[] => [...new Set((files ?? []).map((path) => path.split("/")[0]!))];
 
 /** Which of `seed`'s learned skills a run gets, in `work`, in the seed's order: each whole while they fit their budget,
- *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
- *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
+ *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files leave of SKILL_BYTES, sized in each form a
+ *  harness is handed them, the larger: as they are in `work` (claude-agent, codex) and as servedSkills writes them
+ *  (OpenCode, whose check reads that form). One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
  *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`) as stored or as laid, is
  *  left out. */
 export async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
-  let ownBytes = 0;
+  let stored = 0;
   const folders = new Map<string, Promise<Entry[]>>();
+  // Each skill's SKILL.md as stored, the one file servedSkills changes; every other file is served as it is.
+  const skillMds: { name: string; files: Record<string, string> }[] = [];
   for (const path of own) {
     const at = `${SKILLS_PATH}/${path}`;
     const dir = posix.dirname(at);
     if (!folders.has(dir)) folders.set(dir, work.list(dir));
     const entry = (await folders.get(dir)!).find((one) => one.name === posix.basename(at) && one.kind === "file");
     if (!entry) throw new WorkspaceError("NOT_FOUND", `the revision's skill file ${at} is not in the run's work`, { path: at });
-    ownBytes += entry.size;
+    stored += entry.size;
+    const [name, ...rest] = path.split("/");
+    if (rest.join("/") === "SKILL.md") skillMds.push({ name: name!, files: { "SKILL.md": Buffer.from(await work.read(at)).toString("utf8") } });
   }
-  let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - ownBytes));
+  const mdBytes = (skills: readonly { files: Record<string, string> }[]): number => skills.reduce((sum, skill) => sum + Buffer.byteLength(skill.files["SKILL.md"]!, "utf8"), 0);
+  const served = stored - mdBytes(skillMds) + mdBytes(servedSkills(skillMds));
+  let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - Math.max(stored, served)));
   const owned = new Set(namesIn(own));
   const there = await runSkillNames(work);
   const taken: LearnedSkill[] = [];

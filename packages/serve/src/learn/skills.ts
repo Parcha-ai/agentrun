@@ -233,6 +233,12 @@ export function servedSkill(text: string): string {
   return `---\n${lines.join("\n")}\n---\n${opened.lf.slice(opened.end + 5)}`;
 }
 
+/** Skills as a harness that loads them through servedSkill is handed them (OpenCode, adapters.ts opencodeOf): each
+ *  SKILL.md as servedSkill writes it, its other files as they are. Its table entry's check and the learned skills' room
+ *  (learning.ts chooseSkills) read this same form, so a set the check takes is never one that grew past its limit after. */
+export const servedSkills = <T extends { files: Record<string, string> }>(skills: readonly T[]): T[] =>
+  skills.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
+
 /** Why a `SKILL.md` for the skill `name`, or a draft's `README.md` for the workflow `name`, is out of shape; empty when
  *  it is not. Its front matter names the folder's name and a description. */
 export function skillProblems(text: string, name: string): string[] {
