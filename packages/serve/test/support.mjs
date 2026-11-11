@@ -819,3 +819,15 @@ export function serverLog(t) {
   t.after(() => void (process.stderr.write = write));
   return { text: () => chunks.join("") };
 }
+
+/** Run `runId`'s launch body as the store keeps it (run_launch.body): what the server resolved for the run before it
+ *  existed (its first input, cap, the tools' plane, ...), the per-run serve.json of before the one store. */
+export function launchOf(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    const row = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+    return row ? JSON.parse(String(row.body)) : undefined;
+  } finally {
+    db.close();
+  }
+}

@@ -365,7 +365,7 @@ test("two conflicting answers to one parked call at once, by the owner's session
 
 test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
-// SKIP (follow-up #2078): the run completes on the runner before the state the test waits for
+// SKIP (follow-up #2432): an ask answered after a restart while the run was parked: the run completes without parking
 test.skip("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
@@ -395,7 +395,7 @@ test.skip("an ask answered after the server restarted while the run was parked s
   assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
+// SKIP (follow-up #2432): a codex run whose process dies between the approval's commit and the parked turn's settle: the call never parks
 test.skip("a codex run whose process dies between the approval's commit and the parked turn's settle reopens with that turn settled: it is never run again, and the approval's result reaches the model once", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
   const exited = join(await scratch(t), "exited");
@@ -450,8 +450,7 @@ async function ownerAgain(server) {
   };
 }
 
-// SKIP (follow-up #2078): on claude-agent and codex the run's call is never refused here: the faux CLI harness (run-adapters'
-// fauxAdapter) runs its host tools without asking the run's gate (the real adapters' tool bridges ask it first), so it runs
+// SKIP (follow-up #2432): a deny on every harness, and a workflow call node on a denied or asked tool, are not refused as before
 test.skip("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a tool set to deny or ask refuses its run, and a catalog tool is no call node's tool", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);
@@ -559,7 +558,7 @@ test("a workflow's call node calling web_fetch set to deny: its run is refused b
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
+// SKIP (follow-up #2432): the run's graph lists no effects for a workflow's call nodes, and the gate's words are nowhere on the run
 for (const switched of ["deny", "ask"]) test.skip(`a workflow's call node reads its tool's permission as it runs: set to ${switched} while the first of two call nodes runs, the second is refused in the gate's words and never dials`, { timeout: 90_000 }, async (t) => {
   const dialled = await network(t);
   const hold = join(await scratch(t), "go");
@@ -590,7 +589,10 @@ for (const switched of ["deny", "ask"]) test.skip(`a workflow's call node reads 
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(run.status, "failed", "the second call node is refused");
   assert.match(run.error?.message ?? "", /failed at Second read/, "at its second call node");
-  const ended = (await readFile(join(runDir(server.data, started.body.run_id), "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.t === "effect.end");
+  // Each call node's call as the run's graph shows it (its effects, read from the run's journal).
+  const graph = await api("GET", `/runs/${started.body.run_id}/graph`);
+  assert.equal(graph.status, 200, JSON.stringify(graph.body));
+  const ended = graph.body.effects.filter((effect) => effect.status !== "working").map((effect) => ({ label: effect.node, status: effect.status, error: effect.error }));
   assert.deepEqual(ended.map((line) => [line.label, line.status]), [["First read", "done"], ["Second read", "failed"]]);
   assert.equal(ended[1].error, switched === "deny" ? deniedText("web_fetch") : "This web_fetch call needs a person's approval, which a workflow's call node cannot wait for; it was not run.", "in the gate's words");
   assert.deepEqual((await dialled()).filter((dial) => dial.endsWith("notes.txt")), [], "and never dials");
@@ -810,7 +812,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-// SKIP (follow-up #2078): a follow-up after a stop never runs: the run stays cancelled on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
@@ -923,7 +925,7 @@ test("a long message that declines a waiting call reaches the model whole: all 5
   assert.ok(final.endsWith(`Reason: ${long}`), `the model got ${final.length} characters, ending ${JSON.stringify(final.slice(-40))}`);
 });
 
-// SKIP (follow-up #2078): the run completes on the runner before the state the test waits for
+// SKIP (follow-up #2432): a stop or a cancel after an answer, before the run acts on it, does not win: the run completes
 test.skip("a stop or a cancel that lands after an answer, before the run's process acts on it, wins: nothing runs, nothing resumes, the row says withdrawn, and the record keeps the answer it superseded", { timeout: 240_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
