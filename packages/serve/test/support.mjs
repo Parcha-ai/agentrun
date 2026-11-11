@@ -21,6 +21,7 @@ import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
+import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
@@ -283,7 +284,8 @@ export async function triggerStore(of) {
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`, its grade cut at
  *  `gradeTimeoutMs` when given. It holds at most the server's run cap (`maxRuns`, else AGENTRUN_MAX_RUNS, else what the
- *  host's memory holds: host.ts maxRunsOf), as the CLI's runner does; a run past it waits queued. Returns a close() that
+ *  host's memory holds: host.ts maxRunsOf), and only the runs whose harnesses' sizes the host's memory holds together
+ *  (memory-claim.ts runnerMemory), as the CLI's runner does; a run past either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
 export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
@@ -294,7 +296,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   // tokens the browser writes.
   // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
-  const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
+  // A test's harness table reaches the runner with or without the faux model (fauxEnvOf hands it either way): a CLI
+  // harness's run on a gateway or a vendor's fake runs on the table's harness, never on the real CLI.
+  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }) };
   let seal;
   try {
     seal = await bootSealKey(store, data, { role: "runner" });
@@ -313,6 +317,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     runner = startRunner({
       store,
       loops: maxRunsOf(process.env, switches.maxRuns),
+      // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
+      // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
+      memory: runnerMemory(store),
       onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its

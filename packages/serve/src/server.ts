@@ -52,7 +52,7 @@ import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -1331,7 +1331,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runReadsDeps: RunReadsDeps = {
     runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
     env,
-    runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
