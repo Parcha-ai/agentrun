@@ -30,6 +30,7 @@ const VENDORS = {
 			groups: ["cdp", "stream"],
 			maxLifetimeMs: 6 * HOUR,
 			release: ["delete"],
+			browser: { timeout: "wall-clock", stealth: true, profiles: { settleMs: 5_000 }, downloads: { path: "downloads" } },
 		},
 		/** The labels as the vendor holds them, on the session it made. */
 		held: (fake, id) => fake.sessions.get(id).userMetadata,
@@ -72,6 +73,7 @@ const VENDORS = {
 			groups: ["cdp", "stream"],
 			maxLifetimeMs: 72 * HOUR,
 			release: ["delete"],
+			browser: { timeout: "inactivity", profiles: { settleMs: 0 }, headless: true },
 		},
 		held: (fake, id) => fake.browsers.get(id).tags,
 		heldLabels: { "agentrun.run": "run-1", job: "j-42" },

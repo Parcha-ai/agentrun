@@ -9,7 +9,7 @@ import { DownloadNotSettled } from "../core/downloads.js";
 import { browserFailure } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile, SavedProfile } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
-import { cdpCall } from "./cdp-call.js";
+import { cdpCall } from "../core/cdp-call.js";
 import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
 import { chromeArgs } from "./chrome-args.js";
@@ -32,7 +32,7 @@ export type CdpOptions =
     confineExtension?: boolean;
   } };
 
-const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, profiles: false, extension: "loaded-locally", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
+const CAPS: ProviderCaps = { profiles: false, settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
 const downloadsDir = (profileRoot: string, tag: string) => path.join(profileDir(profileRoot, tag) + ".downloads");
 const READY_MS = 20_000;
 /** The browser is gone and directories it used are not: a profile left behind holds the session's cookies, so a release that cannot remove

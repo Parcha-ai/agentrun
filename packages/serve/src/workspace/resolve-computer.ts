@@ -19,7 +19,7 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { checkGpu, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, checkGpu, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
@@ -64,14 +64,24 @@ export type ClaimBrowser = {
   readonly provider: string;
   /** The longest a session lives, in seconds. */
   readonly maxLifetimeS: number;
-  /** Makes a session for `tag`, to live at most `lifetimeS`: its computer's id. */
-  open(tag: string, lifetimeS: number, signal?: AbortSignal): Promise<string>;
+  /** What its sessions offer beyond the protocol (the provider's capabilities().browser), which `open` may ask for. */
+  readonly features: BrowserFeatures;
+  /** Makes a session for `tag`, to live at most `lifetimeS`, with its own options (spec.browser): its computer's id. */
+  open(tag: string, lifetimeS: number, browser?: BrowserSpec, signal?: AbortSignal): Promise<string>;
   /** The sessions made for `tag`, by id. */
   find(tag: string, signal?: AbortSignal): Promise<string[]>;
+  /** Whether the session runs: false once it has ended or its provider no longer knows it. */
+  running(id: string, signal?: AbortSignal): Promise<boolean>;
   /** The session's CDP URL now. */
   url(id: string): Promise<string>;
   /** Ends the session; one already gone is ended. */
   close(id: string): Promise<void>;
+  /** The files a session downloaded, kept by the provider: where its features declare downloads. */
+  readonly downloads?: {
+    list(id: string): Promise<BrowserFile[]>;
+    /** The file's bytes, streamed; the stream fails in words once it passes maxBytes. */
+    read(id: string, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>>;
+  };
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one

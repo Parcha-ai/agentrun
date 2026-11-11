@@ -357,7 +357,6 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const spec = sessionSpec(config, tag, overrides);
   const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
   if (unsupported) throw new BrowserFailureError(unsupported);
-  // The vault may name a context or profile for the provider; the record stored below is made from the spec WITHOUT it, so no context id reaches the store.
   const plan = await planRestore(c.vault, config.vault, provider, spec);
   const record = newSessionRecord({ plane: scope.plane, tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
   const row = rowOf(scope.cid, record);
@@ -402,8 +401,6 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const live: SessionRecord = { ...record, state: "live", resourceId: ref.id };
   try {
     const driver = await connect(c, scope, provider, ref, plan.afterAttach, plan.vaulted, plan.holdBack);
-    // A context made for this session is given to the vault now, so a restart that loses the provider's memory of it still finds it.
-    if (plan.fresh) await c.held.capture(ref.tag);
     await emit(c, scope.cid, config.label, live, "launched", provider);
     return { record: live, driver };
   } catch (error) { throw failure(error, scope, c.redact); }

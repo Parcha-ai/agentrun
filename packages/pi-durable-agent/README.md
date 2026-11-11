@@ -817,10 +817,9 @@ throws an `AggregateError` holding both.
 | `check` | A pack or an import failed a check: `checks` lists them all |
 | `key` | A host key that does not open the session vault: another key id, or the right id with other bytes |
 
-The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
-(after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of
-pi-browser's `fileProfileStore` once `@parcha/pi-browser/providers/browserbase` exports it, and from a copy of
-pi-browser's declaration until then.
+The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. pi-browser no longer
+carries a hosted vendor's profile store of its own (a hosted browser is its host's provider), so this package's
+declaration is the shape a host's store takes.
 
 ## An agent home on a disk
 

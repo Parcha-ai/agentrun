@@ -1,34 +1,240 @@
-// The agent's browser computer as the run's browser tool drives it: pi-browser's provider over the claim's browser
-// (ClaimBrowser). Custody opens each session through it at its call, under its tag, and releases it when it lets the
-// session go, so a session lives, and is booked on the run's spend, only while the tool holds it. Every attach asks
-// the computer's provider for its CDP URL again (Browserbase's or Kernel's signed URL, the local Chrome's loopback one),
-// held in memory for the driver and the live view alone, as pi-browser's own providers hold theirs. Nothing here names
-// a vendor.
-import type { BrowserProvider, ResourceStatus } from "@parcha/pi-browser";
+// The browser tool's sessions on the computer protocol: pi-browser's BrowserProvider (what its custody drives) over a
+// ClaimBrowser (workspace/resolve-computer.ts), a browser computer provider of the computer registry. One stack: the
+// claim's, where the agent's computer is a browser, else one over the tool plane's vendor (planeBrowser), the same
+// provider an agent's browser computer is, made with the run's tool keys. Every session is a browser computer made at
+// the tool's call, under its tag and the run's labels, and driven over its CDP URL by pi-browser's raw-CDP driver
+// (@parcha/pi-browser/driver/cdp), with nothing loaded into the browser. It lives in serve, the host of both, since
+// pi-browser may not import the computer package (check-direction.mjs). Nothing here names a vendor.
+//
+// What the provider declares (capabilities().browser) says what a session is opened with (spec.browser): the viewport,
+// stealth where custody asks a Verified session and the provider offers it, headless where it offers it, and the run's
+// saved sign-in (`profile`, the vendor's object the agent's sign-in points to). Its CDP URL is the provider's connect,
+// read again at each attach and held in memory for the driver and the live view alone. Where the provider keeps a
+// session's downloads, the browser is told to save into the declared folder over one CDP socket per session, held open
+// until the session is released (the setting lasts as long as that socket), and the downloads are read through the
+// provider.
+//
+// The one-saver rule: within this process one session at a time saves to a saved sign-in (the vendors keep the last
+// writer's state and none locks), and a session that saved is waited out for the provider's settle time (Browserbase
+// writes its context back after the session ends) before the next may open on it. Custody builds a provider per call,
+// so what a session holds (its socket, its saver's claim) is kept per process, by provider and session.
+//
+// Errors carry the provider's own words, which name no key, URL or pointer; a refusal (denied) carries status 403, so
+// custody ends a create it refused at once.
+import type { AttachTarget, BrowserProvider, LeaseRef, ProviderCaps, RemoteFile, ResourceStatus, SessionSpec } from "@parcha/pi-browser";
+import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@parcha/pi-browser";
+import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, providerFor, runLabels } from "@parcha/agentrun-computer";
+import { KEY_TABLE, providerOptions } from "./computer-keys.js";
+import { claimBrowser } from "./workspace/computer-for-claim.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 
-/** What a session of the claim's browser is opened with: none of a run's session settings (no proxy, Verified browser,
- *  place, region or context by id) and no saved profile, which the computer protocol does not carry. */
-const SETTINGS = { proxies: false, verified: false, geolocation: false, region: false, context: false } as const;
+/** Custody's own refusal of a second saver, in its words: no session was started. */
+const ONE_SAVER = "one session at a time may save to this agent's saved sign-in, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.";
+const STILL_ENDING = "the session that was saving to this agent's saved sign-in is still ending. Try again in a moment. No session was started.";
+const SAVER_WAIT_MS = 20_000;
 
-/** pi-browser's provider over the claim's browser `computer`. A session its provider says is gone (or not found) is gone;
- *  any other failure to read it is thrown in its words. */
-export function claimBrowserProvider(computer: ClaimBrowser): BrowserProvider {
-  return {
-    name: computer.provider,
-    caps: { timeoutModel: "wall-clock", maxLifetimeS: computer.maxLifetimeS, survivesDisconnect: true, releaseIsAsync: false, profiles: false, extension: "preinstalled", settings: SETTINGS },
-    create: async (spec, signal) => ({ id: await computer.open(spec.tag, spec.maxLifetimeS, signal), tag: spec.tag }),
-    findByTag: async (tag, signal) => (await computer.find(tag, signal)).map((id) => ({ id, tag })),
-    status: (ref): Promise<ResourceStatus> =>
-      computer.url(ref.id).then(
-        () => "running",
-        (error: unknown) => {
-          const code = (error as { code?: unknown } | null)?.code;
-          if (code === "gone" || code === "not_found") return "gone";
-          throw error;
-        },
-      ),
-    attach: async (ref) => ({ sdkCdpUrl: await computer.url(ref.id) }),
-    release: (ref) => computer.close(ref.id),
+/** What the adapter opens every session with, beside custody's spec. */
+export interface BrowserComputerOptions {
+  /** The run's saved sign-in: the vendor's object a session asking for the profile `name` opens on. */
+  readonly signIn?: { readonly name: string; readonly pointer: string };
+  /** A headless browser where the provider offers one. */
+  readonly headless?: boolean;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/** A failure custody reads: the provider's words, and a status where the code is one custody tells apart. */
+function withStatus(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  const status = code === "denied" ? 403 : code === "not_found" ? 404 : code === "limit" ? 429 : undefined;
+  return status === undefined || typeof error !== "object" || error === null ? error : Object.assign(error, { status });
+}
+const statused = async <T>(work: Promise<T>): Promise<T> => {
+  try {
+    return await work;
+  } catch (error) {
+    throw withStatus(error);
+  }
+};
+const goneCode = (error: unknown) => {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "gone" || code === "not_found";
+};
+
+/** What a session holds in this process, by provider and session id: its download-behaviour socket. */
+const sockets = new Map<string, CdpSession>();
+const opening = new Map<string, Promise<void>>();
+/** Who saves to a saved sign-in now, by provider and pointer. */
+type Saver = { tag: string; running?: () => Promise<boolean>; settle?: () => Promise<void> };
+const savers = new Map<string, Saver>();
+
+const freeSaver = (tag: string) => {
+  for (const [key, held] of savers) if (held.tag === tag) savers.delete(key);
+};
+const isSaver = (tag: string) => [...savers.values()].some((held) => held.tag === tag);
+
+/** True when `work` ends within `ms`; false at the deadline. */
+async function within(work: Promise<void>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([work.then(() => true), new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, ms)); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The one-saver rule: a holder that no longer runs is replaced once its settle time is waited out; the same tag keeps it;
+ *  any other is refused. */
+async function claimSaver(key: string, tag: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<void> {
+  for (const end = Date.now() + SAVER_WAIT_MS; ; ) {
+    const held = savers.get(key);
+    if (!held || held.tag === tag) return void savers.set(key, { tag });
+    const running = held.running ? await held.running().catch(() => true) : true;
+    if (running) throw new BrowserFailureError(browserFailure("refused", `browser profile: ${ONE_SAVER}`));
+    if (held.settle && !(await within(held.settle(), end - Date.now()))) throw new BrowserFailureError(browserFailure("refused", `browser profile: ${STILL_ENDING}`));
+    if (savers.get(key) === held) savers.delete(key);
+    signal?.throwIfAborted();
+    await sleep(0);
+  }
+}
+
+/** pi-browser's provider over `computer`, a browser computer the claim or the plane opened. */
+export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserComputerOptions = {}): BrowserProvider {
+  const features = computer.features;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const held = (id: string) => `${computer.provider}|${id}`;
+  const caps: ProviderCaps = {
+    profiles: features.profiles !== undefined && options.signIn !== undefined,
+    // What a session is created with that its record may say: Verified where the provider offers stealth; no proxy,
+    // place, region or context by id (serve's policy asks none).
+    settings: { proxies: false, verified: features.stealth === true, geolocation: false, region: false, context: false },
   };
+
+  const status = async (ref: LeaseRef, signal?: AbortSignal): Promise<ResourceStatus> => ((await statused(computer.running(ref.id, signal))) ? "running" : "gone");
+  const running = (ref: LeaseRef) => async () => (await status(ref, AbortSignal.timeout(2_000))) === "running";
+  const settle = features.profiles?.settleMs ? () => sleep(features.profiles!.settleMs) : undefined;
+  const holdSaver = (ref: LeaseRef) => {
+    for (const one of savers.values()) if (one.tag === ref.tag) Object.assign(one, { running: running(ref), ...(settle ? { settle } : {}) });
+  };
+  const endSocket = (id: string) => {
+    sockets.get(held(id))?.close();
+    sockets.delete(held(id));
+  };
+
+  const provider: BrowserProvider = {
+    name: computer.provider,
+    caps,
+
+    async create(spec: SessionSpec, signal: AbortSignal) {
+      signal?.throwIfAborted();
+      const profile = spec.profile;
+      if (profile && (!options.signIn || profile.name !== options.signIn.name || !features.profiles)) {
+        throw new BrowserFailureError(browserFailure("refused", `browser profile: this run has no saved sign-in named "${profile.name}" to open. No session was started.`));
+      }
+      const pointer = profile ? options.signIn!.pointer : undefined;
+      if (profile?.save && pointer) await claimSaver(`${computer.provider}|${pointer}`, spec.tag, signal, sleep);
+      const session: BrowserSpec = {
+        viewport: { width: spec.viewport.width, height: spec.viewport.height },
+        ...(features.stealth && spec.verified ? { stealth: true } : {}),
+        ...(features.headless && options.headless ? { headless: true } : {}),
+        ...(pointer ? { profile: { pointer, save: profile!.save } } : {}),
+      };
+      // The vendor ends a session at its lifetime from create (wall-clock) or after that long with no client
+      // (inactivity): custody's session timeout for the one, its idle release for the other.
+      const lifetimeS = features.timeout === "inactivity" ? spec.idleTimeoutS : spec.maxLifetimeS;
+      let id: string;
+      try {
+        id = await computer.open(spec.tag, lifetimeS, session, signal);
+      } catch (error) {
+        // A refusal made nothing; any other failure's computer, if it was made, was found by the provider's create label
+        // and released: either way no session saves now.
+        freeSaver(spec.tag);
+        throw withStatus(error);
+      }
+      const ref = { id, tag: spec.tag };
+      if (isSaver(spec.tag)) holdSaver(ref);
+      return ref;
+    },
+
+    async findByTag(tag, signal) {
+      const found = (await statused(computer.find(tag, signal))).map((id) => ({ id, tag }));
+      if (found.length === 0) freeSaver(tag);
+      for (const ref of found) if (isSaver(ref.tag)) holdSaver(ref);
+      return found;
+    },
+
+    status,
+
+    async attach(ref, signal): Promise<AttachTarget> {
+      signal?.throwIfAborted();
+      const url = await statused(computer.url(ref.id));
+      // A provider that keeps a session's downloads keeps only what the browser was told to save into its folder, and
+      // that lasts as long as the socket that told it: one per session, held until its release. A failure costs the
+      // files, not the session.
+      const downloads = features.downloads;
+      if (downloads && computer.downloads && !sockets.get(held(ref.id))?.open) {
+        let pending = opening.get(held(ref.id));
+        if (!pending) {
+          pending = (async () => {
+            const socket = await cdpCall(url, "Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads.path, eventsEnabled: true }).catch(() => undefined);
+            if (socket) sockets.set(held(ref.id), socket);
+          })().finally(() => opening.delete(held(ref.id)));
+          opening.set(held(ref.id), pending);
+        }
+        await pending;
+      }
+      return { sdkCdpUrl: url };
+    },
+
+    // The protocol's release takes no signal: a release is never cut short, so no session is left billing.
+    async release(ref) {
+      await opening.get(held(ref.id));
+      endSocket(ref.id);
+      try {
+        await computer.close(ref.id);
+      } catch (error) {
+        // Already gone is released.
+        if (!goneCode(error)) throw withStatus(error);
+      }
+      if (isSaver(ref.tag) && settle) await settle();
+      freeSaver(ref.tag);
+    },
+  };
+
+  const kept = computer.downloads;
+  if (kept) {
+    provider.downloads = {
+      async list(ref): Promise<RemoteFile[]> {
+        return (await statused(kept.list(ref.id))).map((file) => ({ name: file.name, sizeBytes: file.sizeBytes, modifiedAt: file.modifiedAt }));
+      },
+      read: (ref, name, maxBytes) => statused(kept.read(ref.id, name, maxBytes)),
+    };
+  }
+  return provider;
+}
+
+/** The plane's vendor as a computer provider of the registry, made with the run's tool keys by the registry's names
+ *  (computer-keys.ts providerOptions): the same provider an agent's browser computer is, on the keys the tool plane
+ *  resolved it by. */
+export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Promise<ComputerProvider> {
+  const keys = Object.fromEntries((KEY_TABLE.keys[vendor] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
+  const options = providerOptions(vendor, keys);
+  if (!options.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${options.error.message}.`));
+  return providerFor(vendor as never, options.options as never);
+}
+
+/** A run's browser over `provider`, a browser computer provider (the plane's vendor, or a test's stand-in), as the claim
+ *  opens an agent's browser computer: each session made under the run's labels (`run`, when the run holds a claim, so a
+ *  sweep finds what it left), for at most the provider's longest lifetime. A provider of another kind is refused. */
+export function planeBrowser(provider: ComputerProvider, run: { readonly runId: string; readonly epoch: number } | undefined): ClaimBrowser {
+  if (!isBrowserProvider(provider)) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: the ${provider.id} provider gives no browser.`));
+  const spec = { image: BROWSER_IMAGE, lifetimeMs: provider.capabilities().maxLifetimeMs, network: "open" as const, labels: run ? runLabels(run.runId, run.epoch) : {} };
+  return claimBrowser(provider, spec).browser;
+}
+
+/** Tests only: forgets every session's socket and saver this process holds. */
+export function resetBrowserComputerHoldings(): void {
+  for (const socket of sockets.values()) socket.close();
+  sockets.clear();
+  opening.clear();
+  savers.clear();
 }

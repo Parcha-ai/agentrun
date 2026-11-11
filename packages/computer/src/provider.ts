@@ -49,6 +49,11 @@ export interface ComputerSpec {
 	 */
 	mount?: MountSpec;
 	/**
+	 * A browser's own options, for a provider whose capabilities().browser declares what they ask; check() refuses, in
+	 * words and before any vendor call, one it does not declare.
+	 */
+	browser?: BrowserSpec;
+	/**
 	 * GPUs for the computer: a type the provider declares (capabilities().gpu.types, the vendor's own name, such as Modal's
 	 * "A100-80GB" or Daytona's "H100") and how many, 1 up to capabilities().gpu.max. check() refuses one the provider does
 	 * not declare in words before a vendor call; a provider that declares no gpu refuses any.
@@ -87,6 +92,28 @@ export interface GpuCapability {
 	 * either way; each computer's hello reads back the one it got.
 	 */
 	fence?: NetworkFence;
+}
+
+/** A browser session's options beside the protocol's. A flag set false asks for nothing, so it is never refused. */
+export interface BrowserSpec {
+	viewport?: { width: number; height: number };
+	/** A saved profile the session opens: the pointer profiles.create gave, and whether the session saves back to it. */
+	profile?: { pointer: string; save: boolean };
+	/** The vendor's anti-bot mode (Browserbase's Verified browser and its CAPTCHA solver). */
+	stealth?: boolean;
+	headless?: boolean;
+}
+
+/** What a browser provider's sessions offer beyond the protocol: each optional feature is there only when declared. */
+export interface BrowserFeatures {
+	/** "wall-clock": the vendor ends a session lifetimeMs after create; "inactivity": that long after its last connection closes. */
+	timeout: "wall-clock" | "inactivity";
+	/** settleMs: how long after a saving session ends the vendor may still be writing the profile back. */
+	profiles?: { settleMs: number };
+	stealth?: true;
+	headless?: true;
+	/** path: the directory a driver points Browser.setDownloadBehavior at, so the vendor keeps what is saved there. */
+	downloads?: { path: string };
 }
 
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
@@ -168,6 +195,8 @@ export interface ComputerCapabilities {
 	vendorAgentPorts?: number[];
 	/** The GPUs spec.gpu may ask for. Absent: none, and check() refuses any spec.gpu. */
 	gpu?: GpuCapability;
+	/** With kind browser: what its sessions offer beyond the protocol, which spec.browser asks for. */
+	browser?: BrowserFeatures;
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
