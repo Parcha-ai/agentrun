@@ -12,7 +12,7 @@ import * as archilSettings from "../dist/archil-settings.js";
 import { ARCHIL_API_KEY_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
 
 const { ARCHIL_API_KEY_ROW: SETTINGS_API_ROW, loadArchilSettings, saveArchilSettings } = archilSettings;
-import { archilControlFake } from "./archil-control-fake.mjs";
+import { agentDiskStore, archilControlFake } from "./archil-control-fake.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
@@ -30,7 +30,8 @@ async function controlOn(t, options) {
  *  agent's (run-disk.ts: no Archil call resolves it). */
 const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const DISK = "dsk-0000000000000001";
-const RUN = { agentId: "agent-1", launch: { diskId: DISK, kind: "agent" } };
+/** The agent's disk is stored on it (archil-settings.ts agentDiskOf), as its launch recorded it. */
+const RUN = { agentId: "agent-1", launch: { diskId: DISK, kind: "agent" }, store: agentDiskStore("agent-1", DISK) };
 const PINNED = `docker.io/library/debian@sha256:${"9e".repeat(32)}`;
 
 /** The sealed_keys rows as the store holds them: each sealed under `key` for its own row. */

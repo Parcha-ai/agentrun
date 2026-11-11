@@ -762,8 +762,10 @@ owner's.
   its disk included. `DELETE /v2/agents/{agent_id}/archil` deletes the agent's own disk at Archil (its runs' folders,
   its home and its learning with it) and frees a disk of the plan, once no live run of any agent is on it (a run of
   another agent may name it in `archil_disk`). The agent must be archived, unless its source manages it: an inline
-  run's agent is never archived here, and its caller decides when it is done. It never touches a disk a run's launch
-  named.
+  run's agent is never archived here, and its caller decides when it is done. The disk is marked as being removed
+  before the live runs are counted: from then a new run of the agent on it is `409 agent_not_runnable`, and a run
+  launched just before is refused at its claim, so no run starts on a disk being deleted. A refusal leaves the disk the
+  agent's. It never touches a disk a run's launch named.
 - **Before you upgrade.** In Archil mode, an agent's files from before this release stay on the old server disk at
   Archil; the agent starts on a new disk of its own. `diskId` is no longer a setting: there is no server-wide disk, and
   no agent falls back to one.

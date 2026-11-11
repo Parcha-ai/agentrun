@@ -16,7 +16,7 @@
 //                                     customer's and never touched here
 // And a launch's archil_disk is read here once before its run is made (checkLaunchDisk).
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
-import { agentDiskOf, ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings, storeAgentDisk } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
@@ -186,19 +186,28 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
   /** Agent `agentId`'s disk removed, with no live run of any agent on it (its folders, home and learning go with the
    *  disk), deleted at Archil, then forgotten: its next run makes a new one. An agent of this server must be archived
    *  first; an agent its source manages (an inline run's, which is never archived here) needs no archive, since its source
-   *  decides when it is done. A launch's disk is never stored on the agent, so it is never reached here. */
+   *  decides when it is done. A launch's disk is never stored on the agent, so it is never reached here.
+   *  The disk is marked removing before its live runs are counted: from then on no launch takes it and no claim mounts it
+   *  (server.ts launchDiskOf, run-disk.ts runDiskOf), so a run launched while the count runs is refused, never started on
+   *  a disk being deleted. A refusal, or a delete Archil does not do, leaves the disk the agent's as it was. */
   async function removeAgentDisk(agent: RemovingAgent, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
     const settings = await loadArchilSettings(store);
     const disk = settings === undefined ? undefined : await agentDiskOf(store, agent.id);
     if (settings === undefined || disk === undefined) return { ...(await agentView(agent.id)), removed: null };
     if (!agent.archived && !agent.external) throw new ApiError("precondition_failed", `the agent ${agent.id} is not archived: archive it first (POST /v2/agents/${agent.id}/archive), then remove its disk`);
-    const live = await agent.liveOn(disk.diskId);
-    if (live > 0) throw new ApiError("precondition_failed", `${live} live run${live === 1 ? " is" : "s are"} on the agent ${agent.id}'s disk ${disk.diskId}: stop ${live === 1 ? "it" : "them"} first`);
-    const key = await keyOr("unavailable", `the agent's disk ${disk.diskId} can't be removed`);
+    await storeAgentDisk(store, agent.id, { diskId: disk.diskId, removing: true });
     try {
-      await deleteDisk(control(settings, key), disk.diskId, signal ? { signal } : {});
+      const live = await agent.liveOn(disk.diskId);
+      if (live > 0) throw new ApiError("precondition_failed", `${live} live run${live === 1 ? " is" : "s are"} on the agent ${agent.id}'s disk ${disk.diskId}: stop ${live === 1 ? "it" : "them"} first`);
+      const key = await keyOr("unavailable", `the agent's disk ${disk.diskId} can't be removed`);
+      try {
+        await deleteDisk(control(settings, key), disk.diskId, signal ? { signal } : {});
+      } catch (error) {
+        throw new ApiError("upstream_failed", `Archil did not remove the agent's disk ${disk.diskId}: ${describe(error).split(key).join("[the key]")}`);
+      }
     } catch (error) {
-      throw new ApiError("upstream_failed", `Archil did not remove the agent's disk ${disk.diskId}: ${describe(error).split(key).join("[the key]")}`);
+      await storeAgentDisk(store, agent.id, { diskId: disk.diskId });
+      throw error;
     }
     await forgetAgentDisk(store, agent.id);
     return { ...(await agentView(agent.id)), removed: { disk_id: disk.diskId } };

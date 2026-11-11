@@ -288,4 +288,38 @@ test("the launch names a disk on POST /runs (inline) and POST /agents/{id}/runs:
   }
   const view = await api("GET", `/agents/${agentId}/archil`);
   assert.deepEqual([view.status, view.body], [200, { on: true, archil_disk: { disk_id: "dsk-000000000000aaaa" } }]);
+  // While the agent's disk is being removed, no run of it starts on that disk; one naming a customer's disk still does.
+  await storeAgentDisk(store, agentId, { diskId: "dsk-000000000000aaaa", removing: true });
+  const before = await runs();
+  const removing = await api("POST", `/agents/${agentId}/runs`, { input: { content: "Hi" } });
+  assert.equal(removing.status, 409, JSON.stringify(removing.body));
+  assert.equal(removing.body.error.code, "agent_not_runnable");
+  assert.match(removing.body.error.message, /disk dsk-000000000000aaaa is being removed/);
+  assert.equal(await runs(), before, "no run made");
+  const customer = await api("POST", `/agents/${agentId}/runs`, { input: { content: "Hi" }, archil_disk: { disk_id: CUSTOMER } });
+  assert.equal(customer.status, 202, JSON.stringify(customer.body));
+});
+
+test("a removal marks the disk removing before it counts the live runs, and a refusal gives the disk back; a claim never mounts an agent's disk being removed or removed", async (t) => {
+  const env = await setup(t);
+  const routes = createArchilRoutes({ store: env.store, sealKey: Buffer.alloc(32), env: { ARCHIL_API_KEY: API }, control: { baseUrl: env.control.baseUrl, fetch: env.control.fetch } });
+  const own = await claimOf(env, { agentId: "agent-a" });
+  const seen = [];
+  const counting = { ...agentOf("agent-a", { archived: true }), liveOn: async () => (seen.push(await agentDiskOf(env.store, "agent-a")), 1) };
+  await assert.rejects(archilRoute(routes, "deleteAgentArchil", { agent: counting }), (error) => error instanceof ApiError && error.code === "precondition_failed");
+  assert.deepEqual(seen, [{ diskId: own.disk, removing: true }], "marked removing while the runs are counted");
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: own.disk }, "the refusal gives it back");
+
+  // A removal under way (or one whose server stopped mid-way): a claim of a run whose launch recorded the agent's disk,
+  // or of one that recorded none, is refused.
+  await storeAgentDisk(env.store, "agent-a", { diskId: own.disk, removing: true });
+  await assert.rejects(claimOf(env, { agentId: "agent-a", runId: "run-recorded", launch: { diskId: own.disk, kind: "agent" } }), (error) => error instanceof ArchilClaimRefused && /was its agent's, and it is being removed/.test(error.message));
+  await assert.rejects(claimOf(env, { agentId: "agent-a", runId: "run-plain" }), (error) => error instanceof ArchilClaimRefused && /is being removed/.test(error.message));
+  // The removal called again finishes it. A run whose launch recorded the disk is then refused; one that recorded none
+  // makes a new disk.
+  assert.deepEqual(await archilRoute(routes, "deleteAgentArchil", { agent: agentOf("agent-a", { archived: true }) }), { on: true, archil_disk: null, removed: { disk_id: own.disk } });
+  await assert.rejects(claimOf(env, { agentId: "agent-a", runId: "run-late", launch: { diskId: own.disk, kind: "agent" } }), (error) => error instanceof ArchilClaimRefused && /has been removed/.test(error.message));
+  assert.equal(posts(env.control, `/api/disks/${own.disk}/users`).length, 0, "nothing minted on it");
+  const fresh = await claimOf(env, { agentId: "agent-a", runId: "run-new" });
+  assert.notEqual(fresh.disk, own.disk, "a new disk");
 });

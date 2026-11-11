@@ -20,6 +20,10 @@
 // mountControl { baseUrl, fetch }.
 import { createServer } from "node:http";
 
+/** A claim's run store whose agent `agentId` has `diskId` stored as its own (archil-settings.ts agentDiskOf): what a run
+ *  whose launch recorded that disk as its agent's (kind "agent") is checked against at its claim. */
+export const agentDiskStore = (agentId, diskId) => ({ settings: { get: async (key) => (key === `archil.agent.${agentId}` ? { diskId } : undefined) } });
+
 /** The fake's state and its answer to one request: { status, json }. */
 function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, existing = [], lagging = false, region = "aws-us-east-1", disks: seeded = [], limit, limitWords, strict = false } = {}) {
   const requests = [];

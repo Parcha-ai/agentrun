@@ -1218,7 +1218,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
     // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
     // A disk the body names is read at Archil once, before the run is made (archil-routes.ts checkLaunchDisk): one that is
-    // not there or not in the key's region is a 422 here, and Mode 1 is too.
+    // not there or not in the key's region is a 422 here, and Mode 1 is too. An agent whose disk is being removed
+    // (archil-routes.ts removeAgentDisk) starts no run on it: 409 until the removal is done.
     launchDiskOf: async (agentId, named) => {
       if (named !== undefined) {
         await archil.checkLaunchDisk(named);
@@ -1226,6 +1227,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       if (!(await inArchilMode(store))) return undefined;
       const own = await agentDiskOf(store, agentId);
+      if (own?.removing) throw new ApiError("agent_not_runnable", `The agent ${agentId}'s Archil disk ${own.diskId} is being removed (DELETE /v2/agents/${agentId}/archil): start the run once that is done, and it gets a new disk.`);
       return own ? { diskId: own.diskId, kind: "agent" } : undefined;
     },
     workflowTitle,

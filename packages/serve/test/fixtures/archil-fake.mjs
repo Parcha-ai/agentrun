@@ -92,7 +92,7 @@ class StampedMap extends Map {
 }
 
 export class FakeArchilDisk {
-  id = "dsk-00000000000fake0";
+  id = "dsk-00000000000fa4e0";
   /** key -> bytes, each with its last set's time (`files.times`) */
   files = new StampedMap();
   /** directory keys (no trailing "/") */

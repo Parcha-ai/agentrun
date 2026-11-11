@@ -59,9 +59,11 @@ export async function inArchilMode(store: { settings: Pick<Settings, "get"> }): 
 /** An Archil disk id as Archil's API returns and addresses them: dsk-<16 hex digits>. */
 export const ARCHIL_DISK_ID = /^dsk-[0-9a-f]{16}$/;
 
-/** The disk agentrun made for an agent, stored on the agent (never its revision: a rollback moves no files). */
+/** The disk agentrun made for an agent, stored on the agent (never its revision: a rollback moves no files). `removing`:
+ *  DELETE /v2/agents/{id}/archil has begun removing it, so no launch takes it and no claim mounts it. */
 export interface AgentDisk {
   readonly diskId: string;
+  readonly removing?: true;
 }
 
 /** The settings key agent `agentId`'s disk is stored under. */
@@ -70,13 +72,14 @@ export const agentDiskKey = (agentId: string): string => `${ARCHIL_SETTINGS_KEY}
 /** The disk stored on agent `agentId`, or undefined when it has none yet (made on its first run that uses it). */
 export async function agentDiskOf(store: { settings: Pick<Settings, "get"> }, agentId: string): Promise<AgentDisk | undefined> {
   const read = await store.settings.get(agentDiskKey(agentId));
-  const diskId = typeof read === "object" && read !== null ? (read as Record<string, unknown>).diskId : undefined;
-  return typeof diskId === "string" && ARCHIL_DISK_ID.test(diskId) ? { diskId } : undefined;
+  const row = typeof read === "object" && read !== null ? (read as Record<string, unknown>) : {};
+  if (typeof row.diskId !== "string" || !ARCHIL_DISK_ID.test(row.diskId)) return undefined;
+  return { diskId: row.diskId, ...(row.removing === true ? { removing: true as const } : {}) };
 }
 
-/** Stores `disk` on agent `agentId`. */
+/** Stores `disk` on agent `agentId`, as removing when it says so. */
 export async function storeAgentDisk(store: { settings: Pick<Settings, "put"> }, agentId: string, disk: AgentDisk): Promise<void> {
-  await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId });
+  await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, ...(disk.removing ? { removing: true } : {}) });
 }
 
 /** Forgets agent `agentId`'s disk: its next run that uses it makes a new one. */

@@ -140,8 +140,8 @@ registerPlant({
 
 /** The Archil settings the Archil plant saves beside its key: its region and S3 URL, neither a secret. */
 export const PLANTED_ARCHIL_SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
-/** The disk a planted run's claim keeps its folder on. */
-export const PLANTED_ARCHIL_DISK = "dsk-00000000000plant";
+/** The disk a planted run's claim keeps its folder on: an Archil disk id (dsk-<16 hex>), as an agent's stored disk is. */
+export const PLANTED_ARCHIL_DISK = "dsk-0000000000a1a470";
 
 registerPlant({
   // The harness's server runs --faux: its computer providers are --faux's, and faux-sandbox's one key is FAUX_SANDBOX_KEY.

@@ -60,8 +60,14 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     if (problem !== undefined) throw new ArchilClaimRefused(problem);
     return { diskId: launch.diskId, kind: "launch" };
   }
-  if (launch?.kind === "agent") return { diskId: launch.diskId, kind: "agent" };
   const stored = await agentDiskOf(options.store, options.agentId);
+  // The agent's disk as its launch recorded it is mounted only while it is still the agent's and not being removed: a
+  // run launched while DELETE /v2/agents/{id}/archil ran is refused, never started on a disk being deleted.
+  if (launch?.kind === "agent") {
+    if (stored?.diskId !== launch.diskId || stored.removing) throw new ArchilClaimRefused(`This run's Archil disk ${launch.diskId} was its agent's, and it ${stored?.diskId === launch.diskId ? "is being" : "has been"} removed: start a new run, and it gets the agent's new disk.`);
+    return { diskId: launch.diskId, kind: "agent" };
+  }
+  if (stored?.removing) throw new ArchilClaimRefused(`This agent's Archil disk ${stored.diskId} is being removed: start a new run once that is done, and it gets a new disk.`);
   if (stored !== undefined) return { diskId: stored.diskId, kind: "agent" };
   const name = diskNameOf(await serverIdOf(options.store), options.agentId);
   let id: string;
