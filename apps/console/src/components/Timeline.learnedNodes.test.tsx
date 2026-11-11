@@ -23,6 +23,7 @@ const call = (nodes?: LearnedNode[], tool = "learned_workflow") => [
   row("c1", 1, { kind: "tool_use", tool_name: tool, tool_use_id: "t1", summary: "learned_workflow check-refunds", tool_input_preview: '{"name":"check-refunds"}' }),
   row("r1", 3, { kind: "tool_result", tool_name: tool, tool_use_id: "t1", tool_status: "failed", summary: "learned_workflow check-refunds failed", tool_result_preview: "the workflow failed", ...(nodes ? { learned_nodes: nodes } : {}) }),
 ];
+const statusOf = (li: Element) => li.querySelector("[data-status]")?.getAttribute("data-status");
 function show(rows: TimelineRow[]) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -51,8 +52,8 @@ describe("Timeline, a learned workflow's call", () => {
     expect(items[1]!.textContent).toContain("read the refund window");
     expect(items[1]!.textContent).toContain("2.3 s");
     // Each status in its own colour: ok in success, failed in the error colour, escalated in warning.
-    const chip = (li: Element) => li.querySelector("[data-status]")!;
-    expect(chip(items[0]!).getAttribute("data-status")).toBe("ok");
+    const chip = (li: Element) => li.querySelector("[data-status] > span")!;
+    expect(statusOf(items[0]!)).toBe("ok");
     expect(chip(items[0]!).className).toContain("text-success-text");
     expect(chip(items[1]!).className).toContain("text-destructive-text");
     expect(chip(items[2]!).className).toContain("text-warning-text");
@@ -62,12 +63,16 @@ describe("Timeline, a learned workflow's call", () => {
   it("an MCP harness's learned_workflow call shows its nodes the same way", () => {
     expect(show(call(NODES, "mcp__hands__learned_workflow")).toggle()).not.toBeNull();
   });
-  it("without learned_nodes, or with none, has no nodes toggle: it reads as it did", () => {
+  it("only a call with learned_nodes gets the toggle: one without them, or with none, beside it reads as it did", () => {
     for (const nodes of [undefined, []]) {
-      const t = show(call(nodes));
-      expect(t.toggle()).toBeNull();
-      expect(t.list()).toBeNull();
-      expect(t.host.textContent).not.toMatch(/\bnodes?\b/);
+      const other = call(nodes).map((r) => ({ ...r, id: `${r.id}b`, seq: r.seq + 10, tool_use_id: "t2", timestamp: `2026-11-11T10:00:${r.seq + 10}Z` }));
+      const t = show([...call(NODES), ...other]);
+      const steps = [...t.host.querySelectorAll("ol:not([aria-label]) > li")];
+      expect(steps).toHaveLength(2);
+      expect(steps[0]!.querySelector('button[aria-label^="Show the workflow"]')).not.toBeNull();
+      expect(steps[1]!.querySelector('button[aria-label^="Show the workflow"]')).toBeNull();
+      expect(steps[1]!.textContent).not.toMatch(/\bnodes?\b/);
+      expect(t.host.querySelectorAll('button[aria-label^="Show the workflow"]')).toHaveLength(1);
       act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
     }
   });

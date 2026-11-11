@@ -223,7 +223,7 @@ describe("the before and after", () => {
     expect(t.host.querySelector('section[aria-label^="Since it learned"]')).toBeNull();
   });
   it("until there is one, one quiet line says when it will show", async () => {
-    const LINE = "After two runs on each side of its first note, this shows what learning changed.";
+    const LINE = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
     const t = await open(agent(true), { learning: async () => view({ impact: null }) });
     expect(t.text()).toContain(LINE);
     expect(t.host.querySelectorAll("p").length).toBeGreaterThan(0);
@@ -1245,7 +1245,7 @@ describe("the Learning tab's learned workflow, drawn", () => {
       const t = await open(agent(true), { learning: async () => learned(), read: async () => ({ note: text, etag: '"wf-v1"' }) });
       await t.click(/^Show the workflow check-refunds$/);
       const flow = t.card("check-refunds")!;
-      expect(flow.querySelector("svg")).toBeNull();
+      expect(flow.querySelector('svg[role="img"]')).toBeNull();
       expect(flow.querySelector("pre")!.textContent).toBe(text);
       act(() => root?.unmount()); document.body.innerHTML = "";
     }

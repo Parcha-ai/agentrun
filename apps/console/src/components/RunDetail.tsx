@@ -10,6 +10,7 @@ import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
+import { RunUsed, useRunUsed } from "@/components/RunUsed";
 import { Timeline, Working } from "@/components/Timeline";
 import { Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
@@ -18,7 +19,7 @@ import { BY_THE_MINUTE } from "@/lib/computers";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { latest, pendingQuestion } from "@/lib/viewing";
-import type { ComputerHoldAnswer, Computers, HandBackOutcome, Run, RunComputer, RunFile, TimelineRow } from "@/lib/v2";
+import type { ComputerHoldAnswer, Computers, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -46,6 +47,9 @@ export type RunDetailProps = {
   /** Reads what the run's learning changed (GET /v2/runs/{id}/learning/diff): "What it changed", read only for a run
    *  that kept a note. */
   readLearningDiff?: () => Promise<LearningDiff>;
+  /** Reads the run's learning (GET /v2/runs/{id}/learning) for what it used of what its agent learned (`used`): read only
+   *  for a run that learns. */
+  readLearning?: () => Promise<RunLearningRead>;
   /** Reads the run's screen (GET /v2/runs/{id}/computer): a Screen tab while it has one, its live view when one is up. */
   readComputer?: () => Promise<RunComputer>;
   /** How often the screen is read again while the run is live, in ms (tests read it faster). */
@@ -94,7 +98,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
@@ -135,6 +139,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
+  // The learned skills and workflows it used: read once, and again when it ends; shown beside what it changed.
+  const used = useRunUsed(run, view.final, readLearning);
   // The run's screen, one tab for every kind of computer: while GET /computer has one (not `off`), or the run read names
   // the run's computer (a sandbox's too, or one the live view has no answer for yet).
   // The run can still open its computer while it is queued or working, waits on its question with its process held, or is
@@ -221,6 +227,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
             <p className="font-mono text-body text-muted-foreground">This run gave no answer.</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} />}
+          {(tab === "report" || tab === "timeline") && <RunUsed used={used} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered}
