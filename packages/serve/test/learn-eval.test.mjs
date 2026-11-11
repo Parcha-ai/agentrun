@@ -12,7 +12,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkProposal, parseNoteFile, parseReflection, secretShapes } from "../dist/learn/index.js";
+import { checkProposal, parseNoteFile, parseReflection } from "../dist/learn/index.js";
+import { learnedSecretShapes } from "../dist/learn/secrets.js";
 import { answerWith } from "./fixtures/faux-learn.mjs";
 import fauxEval from "./fixtures/faux-eval.mjs";
 import { gradeOnFaux } from "./learn-support.mjs";
@@ -77,9 +78,9 @@ for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]
     assert.ok("verdict" in judged, `${c.id}: ${JSON.stringify(judged)}`);
     outcome[c.id] = !judged.verdict.merge ? "grader" : judged.verdict.items.some((item) => item.pending) ? "pending" : "merged";
   }
-  // What the pipeline decides of each case: a shaped secret never reaches the grader, nothing to keep is empty, and the
+  // What the pipeline decides of each case: a shaped secret (learning's shapes: an account number among them) never reaches the grader, nothing to keep is empty, and the
   // grader's verdict is the label's.
-  assert.deepEqual(outcome, Object.fromEntries(all.map((c) => [c.id, c.kind === "empty" ? "empty" : secretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : c.label === "pending" ? "pending" : "grader"])));
+  assert.deepEqual(outcome, Object.fromEntries(all.map((c) => [c.id, c.kind === "empty" ? "empty" : learnedSecretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : c.label === "pending" ? "pending" : "grader"])));
   if (all === cases) assert.ok(Object.values(outcome).includes("checker:secret_shape"), "the checker refuses a password in a URL before any grader");
   const graded = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(graded.length, all.filter((c) => !outcome[c.id].startsWith("checker") && outcome[c.id] !== "empty").length, "one grade a case that passed the checks");
