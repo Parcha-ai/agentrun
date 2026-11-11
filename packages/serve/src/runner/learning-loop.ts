@@ -39,6 +39,8 @@ export interface KeptProposal {
   /** Each kept draft's dry run, by its workflow.json's path (learn/skills.ts draftDryRun), which the grader is told. */
   readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
   readonly asked?: readonly string[];
+  /** Why each draft waits for its owner's OK whatever the grade (the learning end's: skills.ts unpricedCalls). */
+  readonly held?: Readonly<Record<string, readonly string[]>>;
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
   readonly seed?: string;
@@ -176,6 +178,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
   return (deps) => {
     let stopped: StopReason | null = null;
     const now = learning.now ?? Date.now;
+    /** Aborted by a person's stop (a stop row): the grade's request is cut at once, never left running past it, while the
+     *  claim's signal stays whole so the stopped end is still written. */
+    const stopAsk = new AbortController();
 
     return {
       async command(_command: Command): Promise<CommandOutcome> {
@@ -183,6 +188,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
       },
       async stop(reason: StopReason): Promise<void> {
         stopped = reason;
+        if (reason.kind === "command") stopAsk.abort(new Error("the run was stopped"));
       },
       async start(claim: Claim): Promise<LoopEnd> {
         const context: Context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
@@ -253,7 +259,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(proposal.notes as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
@@ -261,10 +267,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
             // `again`: what the grade is told after its last answer, below the same prompt.
             const ask = async (again?: string) => {
+              // Stopped before this ask: nothing is sent, so nothing of it is spent (what it spent stays as it was).
+              if (stopAsk.signal.aborted) throw stopAsk.signal.reason;
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
                 usd = null;
                 tokens = null;
@@ -277,14 +285,14 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             };
             let verdict: Verdict;
             try {
-              verdict = parseVerdict(await ask(), items);
+              verdict = parseVerdict(await ask(), items, proposal.held);
               // An answer the host cannot read is asked once more, as the server's grade did.
-              if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
+              if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items, proposal.held);
               // One that kept every item and said no merge contradicts itself: asked once more, the contradiction named. A
               // second contradiction stands as no merge, said in the host's words as twice (learning-words.ts notKept); a
               // contradiction after an unreadable answer is one, and is said so.
               else if (verdict.reason === CONTRADICTED_REASON) {
-                const again = parseVerdict(await ask(CONTRADICTION_ASK), items);
+                const again = parseVerdict(await ask(CONTRADICTION_ASK), items, proposal.held);
                 verdict = again.reason === CONTRADICTED_REASON ? { ...again, reason: CONTRADICTED_TWICE_REASON } : again;
               }
             } catch (error) {
