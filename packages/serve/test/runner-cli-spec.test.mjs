@@ -235,6 +235,29 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   assert.equal(computers.released(), 1, "released once");
 });
 
+// A CLI's files on this machine (its working directory, its private folder) are the claim's own: swept when the claim
+// ends (#2166). A follow-up that reopens the run is claimed again on the same runner, which lays the folder again: the
+// harness's session comes back from the run's journal, so the new turn reads the first one, and its folder goes too.
+test("a CLI run's scratch folder is swept at its claim's end; a follow-up on the same runner lays it again, the session back from the journal, and sweeps it too", async (t) => {
+  const gateway = await responsesGateway(t, "Hello from OpenCode.");
+  const env = { AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const { row, dir, server } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const scratch = scratchFolder(dir, "agent-1", RUN);
+  await until(() => !existsSync(scratch), `the scratch folder swept at the claim's end: ${scratch}`, 10_000);
+  await server.runs.reopen(RUN, { kind: "steer", body: { text: "And once more?" } });
+  await server.flush?.();
+  const again = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.epoch > row.epoch && ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the follow-up's end");
+  assert.equal(again.state, "ended", `the follow-up ended: ${JSON.stringify(again)}`);
+  assert.equal(gateway.seen.length, 2, "one model request for each turn");
+  const sent = JSON.stringify(gateway.seen[1].body.input);
+  for (const said of ["Say hello.", "Hello from OpenCode.", "And once more?"]) assert.ok(sent.includes(said), `the follow-up's request carries the session, ${said}: ${sent.slice(0, 600)}`);
+  await until(() => !existsSync(scratch), `the scratch folder swept at the follow-up claim's end: ${scratch}`, 10_000);
+});
+
 // A run a trigger started: its launch names the trigger and the first input's origin (run-launch.ts, as the server writes
 // it at the firing), a schedule's with owner true (its owner wrote the words) and a webhook's with owner false. The CLI's
 // record writes that first input as the trigger's, with the launch's own owner flag, never as the person's: so its
