@@ -266,25 +266,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       models.setProvider(sessionProvider(provider.api, proxy, provider.modelId, { provider: providerId(tier), keyName: "AGENTRUN_SESSION_KEY", ...(provider.like ? { like: provider.like } : {}), reasoning: false }));
     }
 
-    // Each tier's model as this claim resolves it (the model id its route names), kept on the run's root (KINDS.nodeModel)
-    // the first time a node asks for it: what the run's graph says each model node ran on. Written once the Harness is open
-    // (harnessReady); one asked before is written then. The end waits for them (endPatch).
-    const shownModels = new Map<string, string>();
-    let recordOn: { harness: Harness; context: Context } | undefined;
-    const recording: Promise<unknown>[] = [];
-    const recordModel = (tier: string, model: string) => {
-      if (!recordOn) return;
-      const { harness, context } = recordOn;
-      recording.push(harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.nodeModel, data: { tier, model } as never })), context).catch(() => undefined));
-    };
     const modelOf = (tier: string | undefined): { provider: string; modelId: string; named?: string } => {
       const resolved = (tier as Tier | undefined) ?? "default";
       const provider = providers.get(resolved) ?? providers.get("default");
       if (!provider) throw new Error(`the workflow names tier ${String(tier)}, which this run has no model for`);
-      if (!shownModels.has(resolved)) {
-        shownModels.set(resolved, provider.modelId);
-        recordModel(resolved, provider.modelId);
-      }
       return { provider: providerId(providers.has(resolved) ? resolved : "default"), modelId: provider.modelId, ...(provider.named ? { named: provider.named } : {}) };
     };
     const capModelOf = (id: string): CapModel | undefined => {
@@ -349,14 +334,17 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(claimed.capUsd) } : {}),
-      endPatch: async () => {
-        await Promise.all(recording);
-        return endPatchOf(booking, decisionCap, paidTools);
-      },
+      endPatch: async () => endPatchOf(booking, decisionCap, paidTools),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
           modelOf,
+          // Each model node's execution, kept on the node log (KINDS.nodeModel) before it runs: its path, the tier it asked
+          // for and the model id that tier's route sends it to, so the run's graph says what each execution ran on, and a
+          // later claim with another model of the tier never rewrites an earlier one's.
+          onModelNode: async ({ executionPath, tier }) => {
+            await nodeLog?.append([{ kind: KINDS.nodeModel, data: { path: executionPath, ...(tier ? { tier } : {}), model: modelOf(tier).modelId } as never }]);
+          },
           // The nodes' tools as the registry holds them (their booked registrations, never their bindings' own raw ones, which
           // would book beside the run's ledger), and the run's gate over them by name (main's registry.install).
           sharedExtensions: [nodeToolGate(nodeNames, nodePolicy), ...[...nodeTools.values()].flatMap((binding) => binding.extensions)],
@@ -382,9 +370,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
       },
       harnessReady: async (harness, context) => {
-        // The tiers' models asked before the Harness opened are kept now; every later one as it is asked (modelOf).
-        recordOn = { harness, context };
-        for (const [tier, model] of shownModels) recordModel(tier, model);
         // The raise this claim took (takeRaises wrote it before the workflow ran) moves the cap in place.
         const raised = await raisedCapOf(harness, context);
         if (raised !== undefined && (effectiveCapUsd === undefined || raised > effectiveCapUsd)) effectiveCapUsd = raised;

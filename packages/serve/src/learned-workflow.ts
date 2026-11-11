@@ -317,15 +317,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     runners.set(tier ?? "default", runner);
     return runner;
   };
-  // Each model node's model and tier by its label, as it runs: its node.end puts them on its trace. A map's items share a
-  // label and a tier, so one entry holds for each of them. Only a model node runs here: a call node never has one.
+  // Each model node's model and tier by its execution path, as it runs: its node.end (the same path) puts them on its
+  // trace. Never by its label, which a workflow may repeat. Only a model node runs here: a call node never has one.
   const ranOn = new Map<string, { model: string; tier?: string }>();
   const runNode = async (request: Parameters<NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>[0]) => {
     if (request.tools?.length) throw new Error(`${NODE_TOOLS_REFUSED}: its node "${request.label}" names ${request.tools.join(", ")}`);
     const tier = typeof request.tier === "string" ? request.tier : undefined;
     const ref = run.modelOf(tier);
     const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
-    if (model && typeof request.label === "string") ranOn.set(request.label, { model, ...(tier ? { tier } : {}) });
+    if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
     return (await runnerFor(request.tier as string | undefined))(request);
   };
@@ -368,10 +368,11 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
-  const onEvent = (event: { type: string; label: string; detail?: unknown }) => {
+  const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ranOn.get(String(event.label)) });
+    const ran = typeof event.executionPath === "string" ? ranOn.get(event.executionPath) : undefined;
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);

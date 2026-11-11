@@ -57,3 +57,37 @@ test("a learned workflow's trace names the model each model node ran on, and its
   ], JSON.stringify(trace));
   assert.equal("tier" in trace[1], false, "a node of no tier has no tier key");
 });
+
+// Review on #2513: a learned workflow may repeat a label. Each node's model is kept by its own execution (its execution
+// path), never by its label: two parallel model nodes of one label and different tiers each keep their own.
+test("two model nodes with one label each keep the model they ran on", { timeout: 60_000 }, async (t) => {
+  const work = mkdtempSync(join(tmpdir(), "learned-model-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  let requests = 0;
+  const models = {
+    getModel: () => MODEL,
+    getModels: () => [MODEL],
+    completeSimple: async (_model, context) => {
+      requests += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const answered = (context?.messages ?? []).some((m) => m.role === "toolResult");
+      return answered ? message([{ type: "text", text: "Done." }], "stop") : message([{ type: "toolCall", id: `submit-${requests}`, name: "submit", arguments: { value: { answer: 42 } } }], "toolUse");
+    },
+  };
+  const flow = { ...FLOW, name: "same-label", root: { node: "chain", steps: [
+    { node: "parallel", label: "both", branches: [
+      { node: "extract", label: "check", tier: "fast", instructions: "Answer the question.", out: "Answer", as: "a" },
+      { node: "extract", label: "check", instructions: "Answer it again.", out: "Answer", as: "b" },
+    ] },
+    { node: "extract", label: "final answer", instructions: "Answer it.", out: "Answer", as: "answer" },
+  ] } };
+  const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-5-mini" } : { provider: PORT_PROVIDER, modelId: "session" });
+  const tool = learnedWorkflowTool({ workflows: [{ name: "same-label", description: "Same label", workflow: JSON.stringify(flow) }], granted: [], env: {}, work, models, modelOf, modelName: () => "gpt-5-4-mini", policy: () => "allow", denyFrom: () => "default" });
+  const kept = [];
+  const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
+  const said = await tool.execute({ name: "same-label", input: { question: "six times seven" } }, api, { abortSignal: new AbortController().signal });
+  assert.equal(said.isError, false, JSON.stringify(said));
+  const trace = kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.nodes ?? [];
+  const checks = trace.filter((n) => n.label === "check").map(({ model, tier }) => `${tier ?? "-"}:${model}`).sort();
+  assert.deepEqual(checks, ["-:gpt-5-4-mini", "fast:gpt-5-mini"], JSON.stringify(trace));
+});
