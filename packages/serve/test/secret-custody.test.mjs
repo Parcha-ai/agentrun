@@ -241,10 +241,16 @@ test("started by its launcher, no process of its user holds a secret in its envi
   // The launcher counts bytes in the C locale, for its own shell only: the server gets the caller's locale back.
   assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
   assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201);
-  const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
-  await follow(api, run.run_id, ["completed"]);
+  // Read while the run's turn is held open (the faux model holds "Hold." until it is stopped): a process that held a
+  // secret only during a turn is still there to read.
+  const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Hold." } });
+  await follow(api, run.run_id, ["working"]);
   const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.length >= 1, `the server (with its runner) is found: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status < 300, true, "the held run is cancelled");
+  await follow(api, run.run_id, ["cancelled", "stopped", "failed", "completed"]);
+  // And once it ended: nothing it started left a secret behind.
+  noSecretAnywhere(root, canary);
 });
 
 // The store URL holds a database password: it reaches the server over the launcher's pipe, so no process of the user holds it in
