@@ -722,7 +722,12 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
-refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
+daemon on this server: where none answers `docker version` (Render and most hosted services run none), Docker is not
+ready and says to use a vendor's computer. The server asks again every 30 s, so a daemon that stops is seen. A daemon
+started after the server is taken at the next restart, since the start's checks of Docker (its host, this server's
+paths and addresses) ran without it.
+`GET /v2/computers` lists each kind,
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
@@ -1579,12 +1584,12 @@ A run's end and its `run.ended` are one durable step. The server chooses the end
 store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
 store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
 store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
-stores it. The outbox (`DIR/webhook-outbox.json`) keeps, in the same write as each message, which end and which wait of
+stores it. The outbox, in the store with the runs, keeps, in the same write as each message, which end and which wait of
 each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
 not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
 queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
 `webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
-`run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
+`run.ended` is in the outbox (`503` meanwhile), so a continued run's next end is its own, under its own id.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
@@ -1607,14 +1612,15 @@ with any of its libraries: `webhook-id` (the same on every try of a message, so 
 the secret's bytes. A receiver checks the signature against the raw body and refuses a timestamp more than 5 minutes
 from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
 and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
-sealed under `AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600). A new secret is a `DELETE` and a `PUT`.
+sealed under `AGENTRUN_SEAL_KEY`, in the store (SQLite or Postgres) with the webhook itself. A new secret is a `DELETE` and a
+`PUT`; a secret that no longer opens under the server's key (sealed under another) is replaced, and shown once, by the next `PUT`.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
 spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
 (`event=webhook condition=delivery_failed`). Each message goes on its own tries, so two queued close together can
 arrive in either order: a receiver orders them by `webhook-timestamp`, or reads the run (`GET /v2/runs/{id}`). A
-`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outbox.json`, so the next server goes on with
-them after a restart; a message can then come twice, under the same `webhook-id`. An outbox file of another version
+`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in the store's outbox, so the next server goes on with
+them after a restart; a message can then come twice, under the same `webhook-id`. An outbox of another version
 is not read: the server starts with none, and the log says so (`condition=outbox_not_read`). `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
@@ -1946,7 +1952,7 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -2231,15 +2237,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
-comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
-the rest of the store page's data), for a
-script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
+comes through `/v2`. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
 token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
 `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
-`/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
+`/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 
