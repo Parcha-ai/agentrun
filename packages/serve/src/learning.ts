@@ -250,27 +250,29 @@ export const LEARNED_WORKFLOWS_FILE = "learned-workflows.json";
 /** The most bytes the `learned_workflow` tool's description gives its workflows, each one's line (workflowLine)
  *  together: every harness sends the description with each request, so it never grows with what an agent learned. */
 export const LEARNED_WORKFLOWS_BUDGET = 8 * 1024;
-/** A learned workflow's line in the `learned_workflow` tool's description: its name, and what its README says it does. */
-export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string =>
-  [`- ${name}: ${description || "(no description)"}`, ...inputLine(workflow)].join("\n");
+/** A learned workflow's line in the `learned_workflow` tool's description: its name, its input's fields (inputFields;
+ *  none for a workflow whose input names no schema) and what its README says it does. One line: the tool's own line says
+ *  once that `*` marks a required field. */
+export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string => {
+  const fields = inputFields(workflow);
+  return `- ${name}${fields ? ` ${fields}` : ""}: ${description || "(no description)"}`;
+};
 
 /** The most of a field's description a workflow's input line carries. */
 const FIELD_DESCRIPTION = 60;
 
-/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (inputSchema), on
- *  a line of its own, so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
-function inputLine(workflow: string | undefined): string[] {
+/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (compactSchema),
+ *  so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
+function inputFields(workflow: string | undefined): string | undefined {
   let doc: { schemas?: Record<string, unknown>; input?: { schemaId?: unknown } } | undefined;
   try {
     doc = workflow ? JSON.parse(workflow) : undefined;
   } catch {
-    return [];
+    return undefined;
   }
   const id = doc?.input?.schemaId;
   const schema = typeof id === "string" ? doc?.schemas?.[id] : undefined;
-  if (!schema) return [];
-  const shown = compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema));
-  return [`  input: ${shown}${shown.includes("*") ? " (* required)" : ""}`];
+  return schema ? compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema)) : undefined;
 }
 
 /** A schema's own inline definitions (`definitions`, `$defs`), which its `#/definitions/` references read first. */
