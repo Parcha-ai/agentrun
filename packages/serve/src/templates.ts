@@ -20,7 +20,7 @@ import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
-import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
+import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MAX_TOOL_CALLS, MODEL_REF, unknownFields } from "./validate.js";
 import { APPROVALS, type Approvals } from "./approvals.js";
 
 /** The packages this server ships. */
@@ -102,7 +102,9 @@ export type Package = {
   toolPolicy?: { bash: BashPolicy };
   parameters: Record<string, Parameter>;
   secrets: string[];
-  budget?: { per_run_usd: number };
+  /** Each run's limits: its spend cap (the agent's max_cost_usd) and the tool calls each of its conversations may make
+   *  (the agent's max_tool_calls, tool-budget.ts). */
+  budget?: { per_run_usd?: number; tool_calls?: number };
   learning?: boolean;
   /** Whether the agent asks its person before a tool runs (`ask`) or runs unattended (`never`): the package's default,
    *  shown to the owner at apply. A template whose job runs on triggers says never. Deny and pins hold either way. */
@@ -345,7 +347,11 @@ export function readPackage(dir: string): Package {
   }
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
-  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && typeof f.budget.per_run_usd === "number" && Number.isFinite(f.budget.per_run_usd) && f.budget.per_run_usd > 0)) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
+  // Each run's limits: its spend cap (per_run_usd, the agent's max_cost_usd) and its tool-call budget (tool_calls, the
+  // agent's max_tool_calls: each conversation's calls), one of them at least.
+  const perRun = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0;
+  const toolCalls = (value: unknown) => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_TOOL_CALLS;
+  if (f.budget !== undefined && !(isObject(f.budget) && Object.keys(f.budget).length && !unknownFields(f.budget, ["per_run_usd", "tool_calls"]).length && (f.budget.per_run_usd === undefined || perRun(f.budget.per_run_usd)) && (f.budget.tool_calls === undefined || toolCalls(f.budget.tool_calls)))) bad(MANIFEST, `budget is {per_run_usd?: a number above 0, tool_calls?: a whole number from 1 to ${MAX_TOOL_CALLS}}, one of them at least`);
   if (f.learning !== undefined && typeof f.learning !== "boolean") bad(MANIFEST, "learning is true or false");
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
   const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
@@ -360,7 +366,7 @@ export function readPackage(dir: string): Package {
     triggerNames.add(name);
     if (!isObject(target) || target.kind !== "start_run" || target.agent_id !== undefined) bad(MANIFEST, `triggers[${i}].target is a start_run with no agent_id: the agent is the one the package makes`);
   });
-  if (triggers.length && f.budget === undefined) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
+  if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
   let schemaBounded = true;
   if (f.output !== undefined) {
@@ -480,7 +486,7 @@ export function readPackage(dir: string): Package {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -616,7 +622,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
-    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
+    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.tool_calls ? { max_tool_calls: p.budget.tool_calls } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
     // The package's answer schema (manifest `output`): each completed run's structured answer, checked, is its result.output.

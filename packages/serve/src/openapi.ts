@@ -26,7 +26,7 @@ import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
-import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF, NOT_KEPT } from "./validate.js";
+import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT } from "./validate.js";
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
@@ -661,7 +661,7 @@ const ARCHIL_VIEW = closedWith({
   diskId: { type: "string" },
   region: { type: "string" },
   s3Url: { type: "string", format: "uri" },
-  image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, Archil's default." },
+  image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
@@ -803,7 +803,7 @@ const TEMPLATE = closed({
   },
   parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
   secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
-  budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's spend cap, the agent's max_cost_usd. Required of a package with triggers." },
+  budget: { type: ["object", "null"], additionalProperties: false, minProperties: 1, properties: { per_run_usd: { type: "number" }, tool_calls: { type: "integer", minimum: 1 } }, description: "Each run's limits: per_run_usd, its spend cap (the agent's max_cost_usd), required of a package with triggers; tool_calls, the tool calls each of its conversations may make (the agent's max_tool_calls)." },
   learning: { type: "boolean" },
   approvals_default: { enum: ["ask", "never"], description: "What the package recommends for the agent's approvals: `ask`, the agent asks its person before a tool runs; `never`, it runs unattended (a template whose job runs on triggers). Deny settings and pins hold either way: a pinned write can only go where its pin says." },
   triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
@@ -960,6 +960,16 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/workflows/{name}/promote": {
+    post: {
+      operationId: "promoteLearnedWorkflow", tags: ["agents"], summary: "Make a learned workflow an agent of its own: a workflow agent that runs with no agent loop",
+      description: "Makes a new agent, as POST /agents makes one, whose revision is a workflow revision of the learned workflow's `workflow.json`: its runs run the workflow's nodes alone, with no agentic turn around them, and its output is the workflow's. Only an active workflow is made an agent: one that waits for its owner's OK, or that a person retired, is 409 `learned_not_active`, and nothing is made. Its files are checked again as a restore checks them (a secret's shape, the host's own values as they are now, a hidden character), and its workflow as the learning checker checks a run's draft against the agent's tools and its gate (the DSL's validation with no code run, no code node, no shell or executor call, no call node on a tool the agent does not have or that is set to ask or deny): any of those is 400 `bad_request` with `problems`, and nothing is made. Then the checks every workflow revision's save makes (422 by field, or 409 `agent_not_runnable`). The new agent's tools are the ones its call nodes call, and it keeps the source agent's policy as it is now (its own `tool_settings`, its `approvals`, its default cap `max_cost_usd` and `cap_mode`), never more. Its name is `name`, else the workflow's own; its id is the workflow's name, with `-2`, `-3` and on past an agent's id or name already here. The learned workflow stays in the folder, unchanged. With Idempotency-Key, a retry answers the agent the first request made. Only the owner, signed in with their password, makes one: the console's password session alone, from this server's own origin with a JSON body, as an approval; every token is 403 `forbidden`. " + SIGN_IN_WITHHELD,
+      security: [{ ownerSession: [] }],
+      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { name: { type: "string", minLength: 1, maxLength: 200, description: "The new agent's name; absent, the workflow's own." } } } } } },
+      responses: { "201": { description: "The new agent, with what this host still lacks for it to run (`warnings`).", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Agent") } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500) }, ...MARK,
     },
   },
   "/runs/{run_id}/learning": {
@@ -2031,6 +2041,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+    max_tool_calls: { type: "integer", minimum: 0, maximum: MAX_TOOL_CALLS, description: "An agentic revision's tool-call budget, on pi: the tool calls each conversation of its runs may make (the run's own, and each one a tool opens, counted apart). Past it, every call is refused before it runs with words that tell the model to answer now from what it has; that refusal is not counted, and the run is never ended by it. Counted from the conversation's journal, so a restart or a moved claim keeps the count. Above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's. On another harness it is refused: 422 `definition.max_tool_calls` at the save. A template's `budget.tool_calls` sets it at apply.", "x-agentrun-serve": "toolbudget/1" },
     cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition's or a workflow's alike.` },
   },
   AgentCreate: {
@@ -2604,8 +2615,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     timelineKind.enum = [...timelineKind.enum, APPROVAL_ROW];
     fields.push(`TimelineKind.${APPROVAL_ROW}`);
   }
-  // A run's learning row (runs.ts) beside the contract's row kinds, and GET /usage's `learning` meter (usage.ts): what a
-  // run's grade spends on this server, outside any run.
+  // A run's learning row beside the contract's row kinds, and GET /usage's `learning` meter: what a run's grade spends
+  // on this server, outside any run.
   for (const [name, value] of [["TimelineKind", "learning"], ["Meter", "learning"]] as const) {
     const schema = schemas[name] as Json & { enum?: string[] };
     if (!Array.isArray(schema.enum) || schema.enum.includes(value)) continue;
