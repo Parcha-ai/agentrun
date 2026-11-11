@@ -604,7 +604,8 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
   let seq = 0;
   /** The held ends this process made, by the outcome the driver completed each effect with, and the cap's refusal. */
   const heldHere = new WeakMap<object, CapRefused>();
-  const failed = (label: string, words: string) => ({ [TOOL_FAILED]: `call node "${label}": ${words}` });
+  // A returned failure (`ok: false`): a continuation never answers a call from it.
+  const failed = (label: string, words: string) => ({ ok: false, [TOOL_FAILED]: `call node "${label}": ${words}` });
   return {
     ...cap,
     effect: <F>(fn: F): F => {
@@ -748,7 +749,7 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
     } catch (error) {
       const message = String((error as Error)?.message ?? error);
       if (signal.aborted || (error as Error)?.name === "AbortError") throw error;
-      return { [TOOL_FAILED]: `call node "${node.label}": ${node.tool} failed: ${message.slice(0, 500)}` };
+      return { ok: false, [TOOL_FAILED]: `call node "${node.label}": ${node.tool} failed: ${message.slice(0, 500)}` };
     }
   }) as never;
 }
@@ -812,8 +813,9 @@ function decisionJudging(deps: { getCap: () => RunDecisions | undefined; provide
           const refusal = refused.get(params);
           if (!refusal) throw error;
           // The cap refused the admitted request: the driver ended it failed, unsent; that commit lands before the run
-          // parks, so the next claim asks it again rather than finding it asked and never answered.
-          await driver?.flush().catch(() => undefined);
+          // parks, so the next claim asks it again rather than finding it asked and never answered. A commit the store
+          // refused is thrown, never a park: parked with the request still asked, the next claim would refuse to ask it.
+          await driver?.flush();
           deps.park({ message: refusal.message, forGood: refusal.forGood, ...(refusal.figures ? { figures: refusal.figures } : {}) });
           throw refusal;
         } finally {
