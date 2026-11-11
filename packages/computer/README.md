@@ -2566,6 +2566,7 @@ export const FLY = defineProvider({
 	keys: [{ name: "FLY_API_TOKEN", option: "apiToken", required: true }], // each key and the create() option it fills
 	metered: true,
 	mounts: [],
+	network: ["none", "open"], // the network forms its computers make: none, open, allow
 	capabilities: [{ kind: "linux", groups: ["exec", "files", "processes"] }], // one per configuration
 	load: () => import("../fly.js"),
 });
@@ -2575,7 +2576,8 @@ A descriptor is data and a lazy `load()`: it imports `../descriptor.js` and othe
 registry, the kind registry or the package root loads no provider and no vendor SDK. `defineProvider` checks it when
 it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `keys` (each key's name, the option it
 fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
-`metered`, `mounts`, `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
+`metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
+`capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
 `prepareImage` (a provider that builds or pulls its image before a run), `local` (a computer on this host), and
 `ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
