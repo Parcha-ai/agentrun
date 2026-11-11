@@ -204,30 +204,3 @@ test("once the run is ending (finish), nothing new is taken, and a take in force
   assert.equal(hold.state(), "agent");
   assert.equal(computerHold().finishing(), false, "a hold is not ending until finish");
 });
-
-test("a take an earlier claim left in force is resumed by a new claim's hold: the person drives under that take, nothing is said, its idle bound runs, the agent's look waits, and a hand-back ends it given; a hold already taken, ending or closed resumes nothing", async () => {
-  const time = fakeTime();
-  const hold = computerHold({ timers: time.timers, now: time.now });
-  const events = [];
-  hold.on((event) => events.push(event));
-  assert.equal(hold.resume("c7"), true);
-  assert.deepEqual([hold.state(), hold.current()], ["person", "c7"]);
-  assert.deepEqual(events, [], "the claim's up entry says the take: the hold emits nothing");
-  const { desktop } = ports();
-  const look = heldHands(desktop, hold).screen.shot();
-  assert.equal(await settled(look), false, "the agent's look waits for the hand-back");
-  assert.equal(hold.resume("c8"), false, "a take in force is not replaced");
-  assert.equal(hold.give(), true);
-  await look;
-  assert.deepEqual(statesOf(events), [["agent", "given"]]);
-  assert.equal(events[0].take, "c7", "the take that ends is the resumed one");
-  assert.equal(hold.resume("c9"), true, "resumed again after it ended");
-  time.advance(HOLD_IDLE_MS);
-  assert.deepEqual(statesOf(events).at(-1), ["agent", "idle"], "its idle bound counts from the resume");
-  const ending = computerHold();
-  ending.finish();
-  assert.equal(ending.resume("c1"), false, "a run already ending resumes no take");
-  const closed = computerHold();
-  closed.close();
-  assert.equal(closed.resume("c1"), false, "a closed hold resumes no take");
-});

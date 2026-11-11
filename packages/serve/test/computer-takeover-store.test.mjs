@@ -499,26 +499,40 @@ test("a take-over after the hand-back, while the run's end-of-run step runs, is 
   assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }], "released once, with the agent driving: no take was cut");
 });
 
-test("a person's take outlives the runner that held the run: another runner that claims the run after a lapse keeps the person driving, the run waiting for their hand-back, and only then ends it (#2134)", async (t) => {
-  const world = await setup(t);
-  // Both runners on a long lease: the lapse is forced below, never waited for, and no stall of this process loses a claim.
-  const lease = { leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 200 };
-  const run = await world.startPerClaim(lease);
+/** The person's take while the agent answers, then the run's claim lost by its runner (`how`: "crash", the runner
+ *  killed, nothing of it released or written; "lapse", its lease run out while it lives, so it finds the claim gone
+ *  and lets its computer go) and taken by another runner, whose start lets the earlier claim's computer go. */
+async function takeThenLoseClaim(world, how) {
+  // Both runners on a long lease: the lapse is forced through the store, never waited for, and no stall of this
+  // process loses a claim on its own.
+  const run = await world.startPerClaim({ leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 200 });
   await heldWhileAnswering(world, run);
   const words = holdWords("desktop");
   const seen = await world.runningUntil(async () => (await world.rows()).includes(words.ending), "the run says it waits for the hand-back");
   assert.ok(seen.running, `the run waits for the hand-back: ${seen.over?.state}`);
-  // The first runner goes as a crash goes (nothing of it is released or written), and its lease runs out at once: the
-  // run's claimed_until set in the past, as the store reads a lease that lapsed. Another runner then takes the run over.
-  run.first.kill();
+  const take = (await runEntries(world.server(), "run-1", ctx)).findLast((entry) => entry.kind === "computer.hold" && entry.data?.state === "person")?.data.take;
+  if (how === "crash") run.first.kill();
   await world.lapse();
   await run.second({ name: "runner-b" });
-  const kept = await world.runningUntil(async () => run.holds.length === 2 && run.holds[1].state() === "person" && (await world.hold()) === "person", "the second claim's computer comes up with the person driving");
-  assert.ok(kept.running, `the run still waits for the person's hand-back on the second claim: ${kept.over?.state}; second claim's hold ${run.holds[1]?.state()}`);
-  assert.equal(kept.running.runner, "runner-b", "the second runner holds the run");
-  assert.deepEqual(run.releases, [], "nothing let the desktop go under the person's hand");
-  await world.route("handBackRunComputer");
-  const row = await world.ended();
-  assert.equal(row.state, "ended");
-  assert.deepEqual(run.releases, [{ claim: 2, state: "agent", ends: ["given"] }], "the second claim let the desktop go once, after the hand-back");
-});
+  return { run, take, words };
+}
+
+for (const how of ["crash", "lapse"]) {
+  test(`a ${how} of the runner that held the run during a take: the next claim's computer is a new one, so the take ends released, once, and the person reads why on the Timeline; the run goes on with the agent and ends, and a hand-back of that take is refused in words (#2134)`, async (t) => {
+    const world = await setup(t);
+    const { run, take, words } = await takeThenLoseClaim(world, how);
+    const row = await world.ended();
+    assert.equal(row.state, "ended", "the run went on with the agent, and its answer ended it");
+    const ends = (await runEntries(world.server(), "run-1", ctx)).filter((entry) => entry.kind === "computer.hold" && entry.data?.ended);
+    assert.deepEqual(ends.map((entry) => [entry.data.take, entry.data.ended]), [[take, "released"]], "the take ended released, once");
+    const said = await world.rows();
+    assert.equal(said.filter((summary) => summary === words.ended.released).length, 1, `the Timeline says why, once:\n${said.join("\n")}`);
+    assert.ok(said.indexOf(words.ended.released) > said.indexOf(words.taken), "after the take");
+    assert.equal(await world.hold(), "agent");
+    assert.equal(run.holds[1].state(), "agent", "the new computer is the agent's");
+    const second = run.releases.filter((release) => release.claim === 2);
+    assert.deepEqual(second, [{ claim: 2, state: "agent", ends: [] }], "the second claim lets its own computer go at the run's end, with nothing taken on it");
+    const handBack = await world.answer("handBackRunComputer");
+    assert.equal(handBack.status, 409, JSON.stringify(handBack));
+  });
+}

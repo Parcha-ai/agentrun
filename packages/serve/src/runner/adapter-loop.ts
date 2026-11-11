@@ -1137,7 +1137,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           computerNow = journalHold(claim.runId, spec.computer, (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context), now);
-          // The run's journal so far: a person's take an earlier claim left in force is theirs still (computer-journal.ts).
+          // The run's journal so far: a take an earlier claim's computer left in force ends released here (computer-journal.ts).
           await computerNow.up(await entriesOf(gate.journal, root.id, context));
         }
         // The cap a raise left the run at, from its root (the newest raise entry), before any request of this claim: a
