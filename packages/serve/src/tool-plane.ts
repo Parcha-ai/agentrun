@@ -39,7 +39,6 @@ import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
  * never does), and a catalog's tools (`monid.*`, `mcp:<server>/<tool>`: catalog tools, which their catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
-export type Capability = (typeof CAPABILITIES)[number];
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
  *  where there is one (never on claude-agent, where Claude's own search is picked as `native`), else Parallel where the
  *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
