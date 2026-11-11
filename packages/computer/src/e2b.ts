@@ -50,6 +50,7 @@ import {
 	type CreatedComputer,
 	checkGpu,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -303,6 +304,8 @@ const DEFAULTS: E2BTimeouts = {
 
 /** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = ["archil"];
+/** The network an E2B computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 
@@ -644,7 +647,7 @@ export class E2BProvider implements ComputerProvider {
 		return {
 			kind: this.#kind,
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...NETWORK],
 			networkReadBack: true,
 			isolation: "microvm",
 			os: "linux",

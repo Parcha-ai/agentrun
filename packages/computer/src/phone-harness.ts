@@ -44,6 +44,7 @@ import {
 	type CreatedComputer,
 	checkGpu,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -58,6 +59,8 @@ export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
 export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
 /** A phone mounts no folder. */
 export const MOUNT: readonly MountKind[] = [];
+/** The network a cloud phone runs on: the vendor's own, open; it cannot be closed or narrowed. */
+export const NETWORK: readonly NetworkForm[] = ["open"];
 /** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
 /** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
@@ -394,7 +397,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			os: "android",
 			daemon: "none",
 			lifetime: "vendor",
-			network: ["open"],
+			network: [...NETWORK],
 			isolation: "vm",
 			groups: [...PHONE_GROUPS],
 			maxLifetimeMs: this.#maxLifetimeMs,
