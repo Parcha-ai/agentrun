@@ -4,7 +4,7 @@
 // file; this reads the one store through its read-only journal, no claim held. E3 wires graph-view's ended path to it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { readWorkflowRun, type WorkflowBody, type WorkflowRunView } from "@parcha/pi-durable-agent/workflow";
+import { readWorkflowRun, type WorkflowBody, type WorkflowRunView } from "../workflow-run.js";
 import type { Store } from "../store/store.js";
 
 /** The workflow run `runId`'s view from A: its graph's node status, and, once it ended, its outcome, the node it escalated

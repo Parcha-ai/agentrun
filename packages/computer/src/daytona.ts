@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./child.js";
+import { childCommands, type DaemonExpected, daemonDrift, installerOf, shellCommand } from "./child.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
@@ -40,7 +40,11 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
+	type GpuCapability,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -142,6 +146,8 @@ interface Sandbox {
 	kvm?: boolean;
 	cpu?: number;
 	gpu?: number;
+	/** The GPU type Daytona assigned (its GpuType enum), when the sandbox has GPUs. */
+	gpuType?: string;
 	memory?: number;
 	disk?: number;
 	autoStopInterval?: number;
@@ -173,9 +179,54 @@ interface CallInit {
  * the toolbox, from a snapshot of box/Dockerfile, with the daemon user agentrun-tool (daemonUser "2510:2510").
  */
 export const MOUNT: readonly MountKind[] = ["archil"];
+/** The network a Daytona computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 
-/** The machine kind and groups of its one configuration: a linux computer. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+/** The one region Daytona runs a GPU sandbox in, whatever the provider's target. */
+export const DAYTONA_GPU_REGION = "earth";
+/**
+ * The snapshot every GPU sandbox is made from: Daytona's general GPU snapshot, its default sandbox image (user daytona,
+ * passwordless sudo) with the CUDA toolkit, as Daytona's dashboard makes one (GET /snapshots/daytona-gpu, 11-11). A GPU
+ * spec names it, or "default"; no other snapshot is proven to give a GPU computer, so check() refuses one.
+ */
+export const DAYTONA_GPU_SNAPSHOT = "daytona-gpu";
+/**
+ * The GPU a snapshot gives every sandbox made from it. A Daytona snapshot carries its own resources, GPUs among them: a
+ * create that names a snapshot sends none (Daytona answers 400 "Cannot specify Sandbox resources when using a
+ * snapshot", live 11-11), so a GPU computer's type and count are its snapshot's, and the read-back is held to them.
+ */
+export interface DaytonaSnapshotGpu {
+	type: string;
+	count: number;
+}
+/** daytona-gpu's GPU, as GET /snapshots/daytona-gpu declares it (gpu 1, gpuType H100; 11-11). */
+export const DAYTONA_GPU_SNAPSHOT_GPU: Readonly<DaytonaSnapshotGpu> = Object.freeze({ type: "H100", count: 1 });
+/**
+ * The GPUs Daytona offers, as capabilities().gpu and CAPABILITIES declare them: the GPU of its GPU snapshot, daytona-gpu,
+ * alone (another type needs a snapshot of its own), with its limits on a GPU sandbox: its stop deletes it (no pause, no
+ * snapshot: nothing is kept), it runs in region earth, it has the snapshot's 16 vCPUs, 100 GiB of memory and 400 GiB of
+ * disk, it may be preempted (daytona.io/pricing lists its GPUs as "Preemptible GPU prices", 11-10), and it takes no
+ * mount: daytona-gpu's user is daytona, not root, and it has no Archil client, so an Archil mount is refused in words.
+ */
+export const DAYTONA_GPU: Readonly<GpuCapability> = Object.freeze({
+	types: [DAYTONA_GPU_SNAPSHOT_GPU.type],
+	max: DAYTONA_GPU_SNAPSHOT_GPU.count,
+	preemptible: true,
+	stopDeletes: true,
+	region: DAYTONA_GPU_REGION,
+	perGpu: { cpus: 16, memoryMb: 100 * 1024, diskMb: 400 * 1024 },
+	mounts: [],
+});
+/** A copy of DAYTONA_GPU, so no caller can change the provider's own. */
+const daytonaGpuCapability = (): GpuCapability => ({
+	...DAYTONA_GPU,
+	types: [...DAYTONA_GPU.types],
+	perGpu: { ...(DAYTONA_GPU.perGpu as NonNullable<GpuCapability["perGpu"]>) },
+	mounts: [],
+});
+
+/** The machine kind, groups and GPUs of its one configuration: a linux computer, with GPUs when asked. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"], gpu: daytonaGpuCapability() }];
 
 /** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
 export type DaytonaCreateOptions = Omit<DaytonaProviderOptions, "daemonPath"> & { daemonPath?: string };
@@ -239,7 +290,7 @@ const MAX_CIDRS = 10;
 const TOOLBOX_PORT = 2280;
 const INIT_SESSION = "agentrun-computerd";
 const STAGING = "/tmp/agentrun-computerd-";
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu"]);
 /** The provider's root channel: argv run as root in a session of its own; the image's user is root, never sudo. */
 const ROOT_RUN = [
 	"# agentrun-computer: root",
@@ -520,8 +571,11 @@ interface SandboxExpected {
 function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected): string[] {
 	const found: string[] = [];
 	const mismatch = (field: string, declared: unknown, actual: unknown) => found.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
-	// Daytona's default snapshot is whichever it names: a computer made from it is not held to a name.
-	if (spec.image !== DAYTONA_DEFAULT_SNAPSHOT && sb.snapshot !== spec.image) mismatch("snapshot", spec.image, sb.snapshot);
+	// A GPU computer is made from daytona-gpu, whatever image named it. Daytona's default snapshot is whichever it names: a
+	// computer made from it is not held to a name.
+	if (spec.gpu !== undefined) {
+		if (sb.snapshot !== DAYTONA_GPU_SNAPSHOT) mismatch("snapshot", DAYTONA_GPU_SNAPSHOT, sb.snapshot);
+	} else if (spec.image !== DAYTONA_DEFAULT_SNAPSHOT && sb.snapshot !== spec.image) mismatch("snapshot", spec.image, sb.snapshot);
 	const network = networkOf(sb);
 	if (!samePolicy(network, spec.network)) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
 	const labels = sb.labels ?? {};
@@ -537,7 +591,10 @@ function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected
 	if (sb.sandboxClass !== expected.sandboxClass) mismatch("sandboxClass", expected.sandboxClass, sb.sandboxClass);
 	if (sb.public !== false) mismatch("public", false, sb.public);
 	if (sb.kvm === true) mismatch("kvm", false, sb.kvm);
-	if (sb.gpu !== undefined && sb.gpu !== 0) mismatch("gpu", 0, sb.gpu);
+	// The GPUs read back, held to the snapshot's own (a create sends none): daytona-gpu's for a GPU computer, none else.
+	const gpus = spec.gpu === undefined ? 0 : DAYTONA_GPU_SNAPSHOT_GPU.count;
+	if ((sb.gpu ?? 0) !== gpus) mismatch("gpu", gpus, sb.gpu);
+	if (spec.gpu !== undefined && sb.gpuType !== DAYTONA_GPU_SNAPSHOT_GPU.type) mismatch("gpuType", DAYTONA_GPU_SNAPSHOT_GPU.type, sb.gpuType);
 	if (Array.isArray(sb.volumes) ? sb.volumes.length > 0 : sb.volumes !== undefined && sb.volumes !== null) mismatch("volumes", [], sb.volumes);
 	if (typeof sb.linkedSandboxId === "string" && sb.linkedSandboxId !== "") mismatch("linkedSandboxId", "none", sb.linkedSandboxId);
 	return found;
@@ -688,7 +745,7 @@ export class DaytonaProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...NETWORK],
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
 			daemon: "child",
@@ -699,6 +756,8 @@ export class DaytonaProvider implements ComputerProvider {
 			stopDeletes: this.#autoDelete === 0,
 			mount: [...MOUNT],
 			vendorAgentPorts: [TOOLBOX_PORT],
+			// A GPU sandbox's limits are stated in gpu: its stop deletes it, it runs in region earth, its size is per GPU.
+			gpu: daytonaGpuCapability(),
 		};
 	}
 
@@ -726,6 +785,13 @@ export class DaytonaProvider implements ComputerProvider {
 				refuse("mount", `an Archil mount's tools run as agentrun-tool, ${tool}:${tool}, and this provider's daemon user is ${this.#uid}:${this.#gid}: give it daemonUser "${tool}:${tool}"`);
 			}
 		}
+		// The GPU is the snapshot's (a create sends none): daytona-gpu's type and count alone, and no mount (DAYTONA_GPU).
+		const gpuRefused = checkGpu(given.gpu, this.capabilities(), given.mount);
+		refusals.push(...gpuRefused);
+		// A GPU computer is made from daytona-gpu: a spec names it, or Daytona's default, never another snapshot.
+		if (given.gpu !== undefined && gpuRefused.length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== DAYTONA_GPU_SNAPSHOT) {
+			refuse("image", `a Daytona GPU computer is made from Daytona's GPU snapshot ${DAYTONA_GPU_SNAPSHOT} alone, not ${JSON.stringify(image)}: give "${DAYTONA_GPU_SNAPSHOT}" or "${DAYTONA_DEFAULT_SNAPSHOT}"; no other snapshot is proven to give a GPU computer`);
+		}
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (SIZE_FIELDS.has(field)) refuse(field, `a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`);
@@ -736,7 +802,7 @@ export class DaytonaProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<ComputerRef>> {
+	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		let daemon: Buffer;
@@ -752,19 +818,26 @@ export class DaytonaProvider implements ComputerProvider {
 		const archil = archilOf(spec);
 		const body = {
 			name,
-			// "default" sends no snapshot, and Daytona makes the sandbox from its default snapshot.
-			...(spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
+			// A GPU sandbox is made from daytona-gpu (check() took "default" or that name). Otherwise "default" sends no
+			// snapshot, and Daytona makes the sandbox from its default snapshot.
+			...(spec.gpu !== undefined ? { snapshot: DAYTONA_GPU_SNAPSHOT } : spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
 			// An Archil computer carries its mount as a label: kind and source, never the token.
 			labels: { ...spec.labels, ...(archil ? archilLabels(archil) : {}), [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline, [IMAGE_LABEL]: spec.image },
 			env: {},
 			public: false,
-			...(this.#target === undefined ? {} : { target: this.#target }),
+			// A GPU sandbox runs in region earth alone, whatever the provider's target.
+			...(spec.gpu !== undefined ? { target: DAYTONA_GPU_REGION } : this.#target === undefined ? {} : { target: this.#target }),
 			ttlMinutes: Math.max(1, Math.ceil(spec.lifetimeMs / 60_000)),
 			autoStopInterval: this.#autoStop,
-			autoDeleteInterval: this.#autoDelete,
+			// A GPU sandbox's stop deletes it (no pause, no snapshot), so it is asked for and read back as deleted at stop:
+			// autoDeleteInterval 0 is Daytona's ephemeral (its SDK's ephemeral sets it; CreateSandbox has no ephemeral field).
+			autoDeleteInterval: this.#autoDeleteFor(spec.gpu !== undefined),
 			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
 			// holds the tools to none.
 			...(networkBody(archil ? "open" : spec.network) ?? { networkBlockAll: true }),
+			// No resource field (cpu, gpu, gpuType, memory, disk): a snapshot carries its own, and Daytona refuses a create that
+			// names a snapshot and sends any (400 "Cannot specify Sandbox resources when using a snapshot"). A GPU computer's
+			// GPU is daytona-gpu's, held in the read-back.
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: this.#timeouts.createMs }, signal);
 		const made = posted.ok ? (posted.value as Sandbox | null) : undefined;
@@ -781,7 +854,7 @@ export class DaytonaProvider implements ComputerProvider {
 		// From here the sandbox exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		const prepared = await this.#prepare(spec, ref, made, deadline, daemon, sha256, signal);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
-		if (prepared.ok) return ok(ref);
+		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
 		return this.#abandon(ref, prepared.error, signal);
 	}
 
@@ -799,13 +872,13 @@ export class DaytonaProvider implements ComputerProvider {
 	}
 
 	/** Everything between the create's answer and a computer that passed the drift check. */
-	async #prepare(spec: ComputerSpec, ref: ComputerRef, made: Sandbox, deadline: string, daemon: Buffer, sha256: string, signal?: AbortSignal): Promise<Result<void>> {
+	async #prepare(spec: ComputerSpec, ref: ComputerRef, made: Sandbox, deadline: string, daemon: Buffer, sha256: string, signal?: AbortSignal): Promise<Result<string[]>> {
 		const started = await this.#waitStarted(made, signal);
 		if (!started.ok) return started;
 		const sb = started.value;
 		const archil = archilOf(spec);
 		// An Archil computer's network at Daytona is open for root; init's own namespace holds the tools to the spec's none.
-		const vendor = sandboxDrift(archil ? { ...spec, network: "open" } : spec, sb, this.#sandboxExpected(deadline));
+		const vendor = sandboxDrift(archil ? { ...spec, network: "open" } : spec, sb, this.#sandboxExpected(deadline, spec.gpu !== undefined));
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const toolbox = await this.#toolbox(sb, signal);
 		if (!toolbox.ok) return toolbox;
@@ -823,6 +896,8 @@ export class DaytonaProvider implements ComputerProvider {
 		if (install.value.exitCode !== 0) return fail("refused", `installing the daemon failed (exit ${install.value.exitCode}): ${install.value.result.trim().slice(0, 500)}`);
 		const read = /^sha256 ([0-9a-f]{64})$/m.exec(install.value.result)?.[1];
 		if (read !== sha256) return fail("refused", `it did not match its spec: daemon: uploaded sha256 ${sha256}, the installed binary reads back ${show(read)}`);
+		// Who installed it, for the create's notes: root, or the snapshot's user through passwordless sudo (daytona-gpu's).
+		const installer = installerOf(install.value.result);
 		// The run's folder, mounted before init starts, so no tool program runs before it is there.
 		let epoch: number | undefined;
 		if (archil) {
@@ -868,7 +943,8 @@ export class DaytonaProvider implements ComputerProvider {
 				return fail("refused", `it did not match its spec: mount: declared ${show(want)}, read back ${show(mountRead.value ?? "nothing")}`);
 			}
 		}
-		return this.#waitListed(ref.id, signal);
+		const listed = await this.#waitListed(ref.id, signal);
+		return listed.ok ? ok(installer === undefined ? [] : [installer]) : listed;
 	}
 
 	/**
@@ -922,8 +998,13 @@ export class DaytonaProvider implements ComputerProvider {
 		};
 	}
 
-	#sandboxExpected(deadline: string): SandboxExpected {
-		return { deadline, sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDelete };
+	#sandboxExpected(deadline: string, gpu = false): SandboxExpected {
+		return { deadline, sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDeleteFor(gpu) };
+	}
+
+	/** The autoDeleteInterval a sandbox is made and read back with: 0 for a GPU sandbox, which a stop deletes; else the option's. */
+	#autoDeleteFor(gpu: boolean): number {
+		return gpu ? 0 : this.#autoDelete;
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -1110,7 +1191,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const opened = await this.#open(found.value, toolbox.value);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch });
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch, fence: true });
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
 		if (drifted.length === 0) return recordedMount(found.value.labels) ? ok({ ...opened.value, client: syncingClient(opened.value.client) }) : opened;
 		await opened.value.close();
@@ -1164,9 +1245,11 @@ export class DaytonaProvider implements ComputerProvider {
 		// The image create was asked for, from its label; a computer made before the label was written reports its snapshot.
 		const asked = sb.labels?.[IMAGE_LABEL];
 		const specNetwork = archilComputer || (typeof network === "object" && "other" in network) ? "none" : network;
-		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels } as ComputerSpec;
+		// The GPUs Daytona reports, held to what check() allows: a type this provider declares, a count up to its max.
+		const gpu = isWhole(sb.gpu) && sb.gpu > 0 ? { type: String(sb.gpuType), count: sb.gpu } : undefined;
+		const spec = { image: asked ?? sb.snapshot, lifetimeMs: 1, network: specNetwork, labels, ...(gpu === undefined ? {} : { gpu }) } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
-		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? ""));
+		const vendor = sandboxDrift(spec, sb, this.#sandboxExpected(sb.labels?.[DEADLINE_LABEL] ?? "", gpu !== undefined));
 		found.push(
 			...vendor.filter(
 				(line) =>
@@ -1218,6 +1301,7 @@ export class DaytonaProvider implements ComputerProvider {
 				...(workdir === undefined ? {} : { workdir }),
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
+				...(gpu === undefined ? {} : { gpu }),
 			},
 		});
 	}
@@ -1444,8 +1528,10 @@ export class DaytonaProvider implements ComputerProvider {
 			const stopped = await this.#rest.call("POST", this.#rest.sandbox(sb.id, "/stop"), {}, signal);
 			if (!stopped.ok && stopped.error.code !== "invalid" && stopped.error.code !== "not_found") return stopped;
 		}
-		// With autoDeleteInterval 0, Daytona deletes a sandbox as it stops: such a stop is done once the computer is gone.
-		return this.#settle(ref, this.#autoDelete === 0 ? "gone" : "stopped", "stop", signal);
+		// With autoDeleteInterval 0, Daytona deletes a sandbox as it stops: such a stop is done once the computer is gone. A
+		// GPU sandbox is one of those whatever the option (its stop deletes it).
+		const deletes = this.#autoDeleteFor(isWhole(sb.gpu) && sb.gpu > 0) === 0;
+		return this.#settle(ref, deletes ? "gone" : "stopped", "stop", signal);
 	}
 
 	/**

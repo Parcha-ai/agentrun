@@ -10,7 +10,8 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, markdownReport, metricsOf, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { lastJsonBlock } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -416,6 +417,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(passed.err, /case learned run 1: completed, pass/);
   const report = JSON.parse(readFileSync(join(dir, "pass.json"), "utf8"));
   assert.deepEqual([report.pass, report.cases.map((c) => c.name), report.server], [true, ["learned"], { kind: "in_process" }]);
+  // Each run keeps its metrics as its end wrote them (GET /stats over its own agent): its requests, tokens and tool calls.
+  const { metrics } = report.cases[0].runs[0];
+  assert.ok(metrics && metrics.requests > 0 && metrics.input + metrics.cache_read + metrics.cache_write > 0 && metrics.output > 0, JSON.stringify(metrics));
+  assert.equal(metrics.tool_calls, Object.values(metrics.tools).reduce((sum, t) => sum + t.calls, 0));
 
   // One failing case proves exit 1 and the report; a passing one beside it adds a real run and nothing more.
   const failed = await run([PKG, "--case", "mcp-mismatch", "--runs", "1", "--faux", FAUX, "--report", join(dir, "fail.json")]);
@@ -527,4 +532,40 @@ test("the answer's schema keeps the agent's file limits when it lives under eval
     room -= size;
   }
   assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /answer\.schema\.json: takes the agent's files over \d+ bytes together/.test(e.message), "and it counts toward the agent's bytes together");
+});
+
+test("template eval metricsOf: a run's metrics from GET /stats?agent=, null whenever the read gives none, never a throw", async () => {
+  const stats = (totals, tools = []) => async () => ({ status: 200, body: { analytics: { totals, tools } } });
+  const totals = { runs_with_metrics: 1, input: 120, cache_read: 900, cache_write: 40, output: 75, requests: 3, unmetered: 0 };
+  // The read asks for the run's own agent, with a signal that bounds it.
+  let asked;
+  const ok = await metricsOf(async (method, path, body, headers, options) => {
+    asked = { method, path, signal: options?.signal instanceof AbortSignal };
+    return stats(totals, [{ tool: "read", calls: 4, errors: 1 }, { tool: "bash", calls: 2, errors: 0 }])();
+  }, "agt_1");
+  assert.deepEqual(asked, { method: "GET", path: "/stats?agent=agt_1", signal: true });
+  assert.deepEqual(ok, { input: 120, cache_read: 900, cache_write: 40, output: 75, requests: 3, unmetered: 0, tool_calls: 6, tools: { read: { calls: 4, errors: 1 }, bash: { calls: 2, errors: 0 } } });
+
+  // None kept, a failed answer, a read that throws: null.
+  assert.equal(await metricsOf(stats({ ...totals, runs_with_metrics: 0 }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => ({ status: 500, body: { error: { message: "boom" } } }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => ({ status: 200, body: "not json" }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => { throw new Error("the server did not answer"); }, "agt_1"), null);
+
+  // A read that stalls: null once the timeout passes, or as soon as the eval stops. A stalled fake holds no socket and
+  // AbortSignal.timeout's timer is unref'd, so a referenced timer keeps the loop alive until both waits end.
+  const stalls = async (method, path, body, headers, options) => new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+  const alive = setInterval(() => {}, 1_000);
+  try {
+    let started = Date.now();
+    assert.equal(await metricsOf(stalls, "agt_1", undefined, 50), null);
+    assert.ok(Date.now() - started < 5_000);
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(new Error("stopped")), 20);
+    started = Date.now();
+    assert.equal(await metricsOf(stalls, "agt_1", stop.signal, 60_000), null);
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    clearInterval(alive);
+  }
 });

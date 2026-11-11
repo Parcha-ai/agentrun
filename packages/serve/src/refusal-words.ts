@@ -27,12 +27,10 @@ export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "s
 };
 /** A workflow model node's tool set to ask: a model node cannot wait for a person's approval (the gate parks no workflow
  *  call), so the call is refused unrun and the model reads why (tool-gate.ts RunGate, on main and on the runner). */
-export const modelNodeAskText = (tool: string): string => `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`;
+export const modelNodeAskText = (tool: string, ran: "no" | "unknown" = "no"): string =>
+  `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; ${ran === "no" ? "it was not run." : `it was not run again. ${RAN_UNKNOWN}`}`;
 /** A workflow call node's tool set to ask: a call node cannot wait for a person's approval, so it is refused unrun
  *  (main's per-run process and the runner's workflow spec, the same words). */
 export const callNodeAskText = (tool: string): string => `This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`;
-/** An asked call refused because another call of the run already waits for a person's approval (pi runs a turn's calls
- *  in parallel): one call waits at a time, and the model calls this one again once that one is answered. */
-export const alreadyWaitsText = (tool: string, other: { readonly tool: string; readonly callId: string }): string => `This ${tool} call was not run: the ${other.tool} call ${other.callId} already waits for a person's approval. Call it again once that one is answered.`;
 /** A call a person denied, with their reason when they gave one. */
 export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;

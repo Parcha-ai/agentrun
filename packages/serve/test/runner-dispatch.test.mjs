@@ -172,3 +172,27 @@ test("a buffered command whose replay throws is left for the run's next claim: n
     process.off("unhandledRejection", onRejection);
   }
 });
+
+test("a stop buffered before the inner loop is chosen, whose inner stop throws, leaves no unhandled rejection: the run still ends through its loop", async () => {
+  const inner = fakeLoop();
+  const throwingStop = (d) => {
+    const made = inner.factory(d);
+    return { ...made, stop: async () => (inner.finish(), Promise.reject(new Error("Session is closed"))) };
+  };
+  const gate = defer();
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const dispatch = createDispatchLoop({ launchOf: async () => (await gate.promise, { body: piBody }), resolve: () => throwingStop })(deps);
+    const run = dispatch.start(CLAIM);
+    const stopped = dispatch.stop({ kind: "command", commandId: 3 });
+    gate.resolve();
+    assert.deepEqual(await run, { state: "ended" });
+    await stopped;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(rejections.map(String), [], "the inner stop's throw is not left unhandled");
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+});

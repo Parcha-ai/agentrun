@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { checkLifetime, DaytonaProvider, kindRefusals } from "../dist/index.js";
+import { checkLifetime, DAYTONA_GPU_SNAPSHOT, DaytonaProvider, kindRefusals } from "../dist/index.js";
 import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION, wordsOf } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
@@ -86,6 +86,9 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		stopDeletes: false,
 		mount: ["archil"],
 		vendorAgentPorts: [2280],
+		// daytona-gpu's one H100 and its limits: its stop deletes it, it runs in region earth, its size is the snapshot's, and
+		// it takes no mount.
+		gpu: { types: ["H100"], max: 1, preemptible: true, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 102400, diskMb: 409600 }, mounts: [] },
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
@@ -131,7 +134,13 @@ test("check() refuses in words, field by field, before any request", () => {
 	assert.match(words({ ...SPEC, pids: 64 }), /size of its snapshot/);
 	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(2510:2510\)/);
 	assert.match(words({ ...SPEC, workdir: "/data" }), /works in \/work/);
-	assert.match(words({ ...SPEC, gpu: 1 }), /does not support gpu/);
+	assert.match(words({ ...SPEC, gpu: 1 }), /gpu is \{ type, count \}/);
+	assert.match(words({ ...SPEC, gpu: { type: "T4", count: 1 } }), /not one this provider offers: H100$/);
+	assert.match(words({ ...SPEC, gpu: { type: "H100", count: 2 } }), /from 1 to 1/);
+	// A GPU computer is made from daytona-gpu: a spec names it or "default", never another snapshot.
+	for (const image of ["default", "daytona-gpu"]) assert.deepEqual(provider.check({ ...SPEC, image, gpu: { type: "H100", count: 1 } }), [], image);
+	assert.deepEqual(refused({ ...SPEC, gpu: { type: "H100", count: 1 } }), ["image"]);
+	assert.match(words({ ...SPEC, gpu: { type: "H100", count: 1 } }), /^a Daytona GPU computer is made from Daytona's GPU snapshot daytona-gpu alone, not "agentrun-debian": give "daytona-gpu" or "default"/);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { team: 1 } }), ["labels"]);
 	assert.equal(fake.requests.length, 0, "check makes no request");
@@ -314,6 +323,66 @@ test("the constructor takes autoStopMinutes and autoDeleteMinutes as whole minut
 	}
 });
 
+test("create() of a GPU computer asks Daytona for daytona-gpu and no resources, ephemeral in region earth, holds the read-back to the snapshot's GPU, notes who installed the daemon, and attach reports the GPU", async () => {
+	const gpu = { type: "H100", count: 1 };
+	const GPU_SPEC = { ...SPEC, image: "default" };
+	const { provider, fake } = setup();
+	const made = await provider.create({ ...GPU_SPEC, gpu });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const [posted] = of(fake, "POST", "/api/sandbox");
+	assert.equal(DAYTONA_GPU_SNAPSHOT, "daytona-gpu", "the package exports the GPU snapshot's name");
+	assert.equal(posted.body.snapshot, DAYTONA_GPU_SNAPSHOT, "a GPU sandbox is made from Daytona's GPU snapshot, though the spec named the default");
+	for (const field of ["cpu", "gpu", "gpuType", "memory", "disk"]) assert.equal(field in posted.body, false, `no ${field}: a snapshot carries its own resources`);
+	assert.deepEqual(made.value.notes, ["the daemon was installed by daytona (uid 1001), through passwordless sudo"], "daytona-gpu's user installs through sudo, and create says so");
+	assert.equal(posted.body.target, "earth", "a GPU sandbox runs in region earth alone");
+	assert.equal(posted.body.autoDeleteInterval, 0, "ephemeral: a GPU sandbox's stop deletes it");
+	assert.equal("ephemeral" in posted.body, false, "CreateSandbox has no ephemeral field: autoDeleteInterval 0 is it");
+	// The spec's own name, daytona-gpu, sends the same.
+	const named = setup();
+	assert.equal((await named.provider.create({ ...SPEC, image: "daytona-gpu", gpu })).ok, true);
+	assert.equal(of(named.fake, "POST", "/api/sandbox")[0].body.snapshot, "daytona-gpu");
+	// Another snapshot is refused before any request.
+	const box = setup();
+	const refusedBox = await box.provider.create({ ...SPEC, gpu });
+	assert.equal(refusedBox.ok, false);
+	assert.match(refusedBox.error.message, /image: a Daytona GPU computer is made from Daytona's GPU snapshot daytona-gpu alone/);
+	assert.equal(of(box.fake, "POST", "/api/sandbox").length, 0, "nothing was asked of Daytona");
+	const attached = await provider.attach({ id: made.value.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reports the GPUs Daytona reads back");
+	// A computer with no GPU sends no resource either, and its root installs the daemon on a snapshot of box/Dockerfile.
+	const plain = setup();
+	const plainMade = await plain.provider.create(SPEC);
+	assert.equal(plainMade.ok, true);
+	const [none] = of(plain.fake, "POST", "/api/sandbox");
+	for (const field of ["cpu", "gpu", "gpuType", "memory", "disk"]) assert.equal(field in none.body, false, `no ${field}`);
+	assert.deepEqual(plainMade.value.notes, ["the daemon was installed by root (uid 0), as root"]);
+	// A type or count daytona-gpu does not give is refused before any request: the GPU is the snapshot's.
+	for (const [asked, words] of [
+		[{ type: "RTX-4090", count: 1 }, /gpu\.type "RTX-4090" is not one this provider offers: H100/],
+		[{ type: "H100", count: 2 }, /gpu\.count 2 is not a whole number from 1 to 1/],
+	]) {
+		const other = setup();
+		const refused = await other.provider.create({ ...GPU_SPEC, gpu: asked });
+		assert.equal(refused.ok, false);
+		assert.match(refused.error.message, words);
+		assert.equal(of(other.fake, "POST", "/api/sandbox").length, 0, "nothing was asked of Daytona");
+	}
+	// Daytona's read-back is the truth, held to the snapshot's GPU: another count, another type, or another snapshot is
+	// drift, and the sandbox is deleted.
+	for (const [readBack, words] of [
+		[{ gpu: 2, gpuType: "H100" }, /gpu: declared 1, read back 2/],
+		[{ gpu: 1, gpuType: "H200" }, /gpuType: declared "H100", read back "H200"/],
+		[{ snapshot: "daytonaio/sandbox:0.5.0" }, /snapshot: declared "daytona-gpu", read back "daytonaio\/sandbox:0\.5\.0"/],
+	]) {
+		const drifted = setup({ readBack: () => readBack });
+		const refused = await drifted.provider.create({ ...GPU_SPEC, gpu });
+		assert.equal(refused.ok, false, JSON.stringify(readBack));
+		assert.match(refused.error.message, words);
+		assert.equal(of(drifted.fake, "DELETE", /^\/api\/sandbox\/[^/]+$/).length > 0, true, "the drifted sandbox is deleted");
+	}
+});
+
 test("create() sends autoStopMinutes and autoDeleteMinutes as Daytona's autoStopInterval and autoDeleteInterval, and the drift check holds them", async () => {
 	const lifetimes = { autoStopMinutes: 30, autoDeleteMinutes: 0 };
 	const { provider, fake } = setup({}, lifetimes);
@@ -463,7 +532,7 @@ const DRIFT = [
 	["a volume", { readBack: () => ({ volumes: [{ volumeId: "v", mountPath: "/data" }] }) }, /volumes: declared \[\]/],
 	["a linked sandbox", { readBack: () => ({ linkedSandboxId: "other-sandbox" }) }, /linkedSandboxId/],
 	["KVM", { readBack: () => ({ kvm: true }) }, /kvm: declared false, read back true/],
-	["a GPU", { readBack: () => ({ gpu: 1 }) }, /gpu: declared 0, read back 1/],
+	["a GPU it was not asked for", { readBack: () => ({ gpu: 1 }) }, /gpu: declared 0, read back 1/],
 	["a daemon of another version", { hello: { version: "9.9.9" } }, new RegExp(`hello: the daemon reports version 9\\.9\\.9, expected ${VERSION.replaceAll(".", "\\.")}`)],
 	["a daemon of another arch", { hello: { arch: "arm64" } }, /hello: the daemon reports arch arm64, expected the host's amd64/],
 	["a daemon that lacks a group", { hello: { groups: ["exec", "files"] } }, /groups lack processes/],
@@ -588,7 +657,7 @@ test("attach() by id, by name and by labels returns the spec read back, with the
 	for (const ref of [{ id: made.value.id }, { id: made.value.name }, { labels: { team: "a" } }]) {
 		const attached = await provider.attach(ref);
 		assert.equal(attached.ok, true, `${JSON.stringify(ref)}: ${JSON.stringify(attached)}`);
-		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, snapshot: SPEC.image, user: "2510:2510", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline), kind: "linux" } });
+		assert.deepEqual(attached.value, { id: made.value.id, name: made.value.name, spec: { image: SPEC.image, snapshot: SPEC.image, user: "2510:2510", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline), kind: "linux" } });
 	}
 	const missing = await provider.attach({ id: "nothing-by-this-id" });
 	assert.equal(missing.error.code, "not_found");

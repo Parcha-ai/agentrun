@@ -17,17 +17,15 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/netstate"
 )
 
-const (
-	threadNetwork = "/proc/thread-self/ns/net"
-	siocgifflags  = 0x8913
-	siocsifflags  = 0x8914
-	ifNameSize    = 16
-)
+// ErrNoNetworkNamespace is OwnNetwork's refusal when root may not make a network namespace itself (EPERM, no
+// CAP_SYS_ADMIN): its words say so, and init makes the namespace inside a user namespace instead.
+var ErrNoNetworkNamespace = errors.New("cannot make a network namespace of its own for init and its programs: root here holds no CAP_SYS_ADMIN")
+
+const threadNetwork = "/proc/thread-self/ns/net"
 
 // OwnNetwork moves every thread of this process into a new network namespace and brings its loopback up, so this
 // process and every program it starts reach their own loopback and nothing else: no address of the computer's, no
@@ -35,7 +33,9 @@ const (
 // a bridge outside still reaches init's socket. It needs root with CAP_SYS_ADMIN (to make the namespace and move every
 // thread into it) and CAP_NET_ADMIN (to bring the loopback up), and it reads back that every thread left the namespace
 // it started in and that the new one holds the loopback alone, up. Any failure is an error in words, and init refuses to
-// start: a computer whose programs could reach the vendor's agent is never handed out.
+// start: a computer whose programs could reach the vendor's agent is never handed out. A root refused the namespace
+// itself (EPERM: no CAP_SYS_ADMIN, as on gVisor) gets an error that is ErrNoNetworkNamespace, for init to make it inside
+// a user namespace instead (daemon.InitInUserNamespace); nothing has changed then.
 func OwnNetwork() error {
 	first, err := os.Readlink(threadNetwork)
 	if err != nil {
@@ -44,7 +44,9 @@ func OwnNetwork() error {
 	// Made on one thread, which is in it from then on; every other thread joins it by its file.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
+	if err := syscall.Unshare(syscall.CLONE_NEWNET); errors.Is(err, syscall.EPERM) {
+		return fmt.Errorf("%w: %w", ErrNoNetworkNamespace, err)
+	} else if err != nil {
 		return fmt.Errorf("cannot make a network namespace of its own for init and its programs: %w; init needs root with CAP_SYS_ADMIN here, and a computer without one is refused, since its programs could reach the vendor's agent on the computer's loopback", err)
 	}
 	fd, err := syscall.Open(threadNetwork, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
@@ -62,30 +64,51 @@ func OwnNetwork() error {
 	return checkOwnNetwork(first)
 }
 
-// loopbackUp brings up the loopback of the network namespace this thread is in: a new one starts with it down.
+// KeepOwnNetwork is OwnNetwork for an init that was started in a network namespace of its own: made, with a user
+// namespace around it, by the init that started it (daemon.InitInUserNamespace), where root may make a user namespace
+// but not a network namespace (gVisor on Modal: unshare(CLONE_NEWNET) is EPERM without CAP_SYS_ADMIN). first is the
+// network namespace that init was in. It brings the loopback up, as root of the user namespace that owns the network
+// namespace, and reads back what OwnNetwork reads: no thread in first, and the loopback alone up or addressed. Any
+// failure is an error in words, and init refuses to start.
+func KeepOwnNetwork(first string) error {
+	if first == "" {
+		return fmt.Errorf("the network namespace init was started from is not named, so its own cannot be read back as another")
+	}
+	// Before anything is touched: an init still in first was not started in a namespace of its own.
+	if err := threadsLeft(first); err != nil {
+		return err
+	}
+	if err := loopbackUp(); err != nil {
+		return err
+	}
+	return checkOwnNetwork(first)
+}
+
+// loopbackUp brings up the loopback of the network namespace this process is in, over rtnetlink, and reads it back:
+// a new one starts with it down (netstate.LoopbackUp).
 func loopbackUp() error {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("cannot open a socket to bring the new network namespace's loopback up: %w", err)
-	}
-	defer syscall.Close(fd)
-	// struct ifreq: the name, then a union whose first member here is the flags, a short.
-	var req [40]byte
-	copy(req[:ifNameSize-1], "lo")
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocgifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return fmt.Errorf("cannot read the flags of the new network namespace's loopback: %w", errno)
-	}
-	*(*uint16)(unsafe.Pointer(&req[ifNameSize])) |= syscall.IFF_UP
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocsifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return fmt.Errorf("cannot bring the new network namespace's loopback up: %w; init needs CAP_NET_ADMIN here", errno)
-	}
-	return nil
+	return netstate.LoopbackUp()
 }
 
 // checkOwnNetwork reads back what OwnNetwork set: every thread in one network namespace, not first, and in that
 // namespace the loopback alone up or addressed (netstate.OwnProblem): a kernel's fallback tunnels, down with no address,
 // are there on some kernels (Modal's), and no program of init's can raise them, holding no CAP_NET_ADMIN.
 func checkOwnNetwork(first string) error {
+	if err := threadsLeft(first); err != nil {
+		return err
+	}
+	ifaces, err := netstate.Read()
+	if err != nil {
+		return fmt.Errorf("cannot read the new network namespace back: %w", err)
+	}
+	if problem := netstate.OwnProblem(ifaces); problem != "" {
+		return fmt.Errorf("init's own network does not keep to its loopback: %s", problem)
+	}
+	return nil
+}
+
+// threadsLeft reads back that no thread of this process is in the network namespace first.
+func threadsLeft(first string) error {
 	tasks, err := os.ReadDir("/proc/self/task")
 	if err != nil {
 		return fmt.Errorf("cannot list init's threads to read their network namespace back: %w", err)
@@ -99,15 +122,8 @@ func checkOwnNetwork(first string) error {
 			return fmt.Errorf("cannot read thread %s's network namespace back: %w", task.Name(), err)
 		}
 		if link == first {
-			return fmt.Errorf("thread %s is still in the network namespace init started in (%s) after every thread was moved", task.Name(), link)
+			return fmt.Errorf("thread %s is still in the network namespace init started in (%s), not in one of its own", task.Name(), link)
 		}
-	}
-	ifaces, err := netstate.Read()
-	if err != nil {
-		return fmt.Errorf("cannot read the new network namespace back: %w", err)
-	}
-	if problem := netstate.OwnProblem(ifaces); problem != "" {
-		return fmt.Errorf("init's own network does not keep to its loopback: %s", problem)
 	}
 	return nil
 }

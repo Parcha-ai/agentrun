@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
-import { TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_UNMETERED } from "./timeline/index.js";
 import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";

@@ -133,31 +133,50 @@ test("a replay-safe call its runner lost mid-call, its tool set to ask before th
   assert.equal(lastResult(requests), refusedText("web_fetch", undefined, "unknown"), "the owner's deny, saying the earlier attempt may have taken effect");
 });
 
-test("two ask calls entered at once, as pi runs a turn's calls in parallel: exactly one parks, and the other is refused in the usual words", { timeout: 120_000 }, async (t) => {
-  const { server, runners: [one] } = await stores({ runners: 1 });
+test("a rerun asked anew, approved, with a stop landing once the approval is read: the stop wins over the permission that came after it, and the rerun never starts", { timeout: 120_000 }, async (t) => {
+  const { server, runners: [one, two], clock } = await stores({ runners: 2 });
+  await saveToolSettings(server, { web_fetch: { permission: "allow" } });
   await queue(server, "run-1");
   const work = [];
   const requests = [];
-  const tools = { write: { name: "write", replaySafe: false, ask: true, run: async (args) => (work.push(args.path), `wrote ${args.path}`) } };
-  const script = [{ calls: [{ call: "write", args: { path: "a.md" } }, { call: "write", args: { path: "b.md" } }] }, { say: "done" }];
+  let release = () => {};
+  const held = new Promise((resolve) => (release = resolve));
+  const tools = { web_fetch: { name: "web_fetch", replaySafe: true, ask: false, run: async () => (work.push("started"), await held, "the page") } };
+  const script = [{ call: "web_fetch", args: { url: "https://example.com/a" } }, { sayLastResult: true }];
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
-  const gate = Object.assign(() => "ask", { askedAs: (tool) => tool });
-  const runner = startRunner({ store: one, createLoop: createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate })), name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
+  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root) }));
+  let loopStopped = false;
+  const stoppable = (loop) => (deps) => {
+    const inner = loop(deps);
+    return { ...inner, stop: (reason) => ((loopStopped = true), inner.stop(reason)) };
+  };
+  // Once the rerun's approval is committed (read and recorded inside the rerun's own call, after pi let it start), and
+  // before that call goes on: the stop is sent, and the commit's caller goes on only once the loop has been told to stop.
+  let armed = false;
+  const watchedTwo = watched(two, async (written) => {
+    if (!armed || !written.includes('"agentrun.answer"')) return;
+    armed = false;
+    await server.command("run-1", { kind: "stop" });
+    await until(() => loopStopped, "the loop is told to stop", EVENT_WAIT_MS);
+  });
+  const runners = [startRunner({ store: one, createLoop: loopOn(one), name: "runner-a", ...TIMING })];
+  t.after(async () => {
+    release();
+    await Promise.all(runners.map((runner) => runner.close()));
+  });
+  await until(() => work.length > 0, "the call runs", EVENT_WAIT_MS);
+  runners[0].kill();
+  await saveToolSettings(server, { web_fetch: { permission: "ask" } });
+  clock.skewMs = TIMING.leaseMs * 2;
+  runners.push(startRunner({ store: watchedTwo, createLoop: stoppable(loopOn(watchedTwo)), name: "runner-b", ...TIMING }));
   await settled(server, "parked");
-  const asks = (await entriesOf(server)).filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
-  assert.equal(asks.length, 1, `one request in the run's store: ${JSON.stringify(asks)}`);
-  const [first] = asks;
-  await server.command("run-1", { kind: "approve", body: { approval: first.callId } });
-  await settled(server, "ended");
-  assert.equal(work.length, 1, `only the call that parked ran: ${JSON.stringify(work)}`);
-  const results = toolResults(requests.at(-1));
-  assert.equal(results.length, 2, JSON.stringify(results));
-  const [parkedOne, refused] = results[0].id === first.callId ? results : [results[1], results[0]];
-  assert.equal(parkedOne.text, `wrote ${work[0]}`, "the first parks, and runs once allowed");
-  // Main's words, byte for byte (tool-gate.ts RunGate.enter's refusal of a second ask).
-  assert.equal(refused.text, `This write call was not run: the write call ${first.callId} already waits for a person's approval. Call it again once that one is answered.`, "the second does not: it is refused in the usual words");
-  assert.match(refused.text, new RegExp(`^This write call was not run: the write call ${first.callId} already waits for a person's approval\\.`));
+  const callId = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask").data.callId;
+  armed = true;
+  await server.command("run-1", { kind: "approve", body: { approval: callId } });
+  await settled(server, "stopped");
+  assert.equal(armed, false, "the approval's commit was held for the stop");
+  assert.deepEqual(work, ["started"], "the approved rerun never started: the stop that landed after its approval was read won");
 });
 
 test("the run's gate asked about a replayed call (one a CLI's bridge or pi reruns) refuses a deny and a pin saying whether it took effect is not known; a first attempt's refusal says nothing was sent", async () => {
@@ -174,11 +193,6 @@ test("the run's gate asked about a replayed call (one a CLI's bridge or pi rerun
     assert.ok(replayed.deny?.includes(RAN_UNKNOWN) && !replayed.deny.includes(NOT_RUN), `${call.tool}, replayed: ${JSON.stringify(replayed)}`);
   }
 });
-
-/** Each tool result in one request the model was sent: its call id and text. */
-function toolResults(body) {
-  return (body?.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part?.type === "tool_result").map((part) => ({ id: part.tool_use_id, text: Array.isArray(part.content) ? part.content.map((each) => each.text ?? "").join("") : String(part.content ?? "") }));
-}
 
 /** The text of the last tool result the model was sent. */
 function lastResult(requests) {

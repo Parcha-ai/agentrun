@@ -64,12 +64,14 @@ import {
 	type AttachedComputer,
 	type CallContext,
 	type ComputerCapabilities,
+	checkGpu,
 	checkLifetime,
 	type ComputerConnection,
 	type ComputerInfo,
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -142,6 +144,8 @@ export interface DockerProviderOptions {
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
 export const MOUNT: readonly MountKind[] = ["bind"];
+/** The networks a Docker computer takes: none, open, or an allowlist through the server's egress proxy. */
+export const NETWORK: readonly NetworkForm[] = ["none", "open", "allow"];
 
 /** The machine kind and groups of each configuration: a linux computer, and one made with the desktop option. */
 export const CAPABILITIES: readonly KindCapabilities[] = [
@@ -201,6 +205,8 @@ const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is ref
 const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
+/** The most CPUs whose quota (CPU_PERIOD_US each) is still a whole number Docker takes. */
+const MAX_CPUS = Math.floor(Number.MAX_SAFE_INTEGER / CPU_PERIOD_US);
 const HELLO_TIMEOUT_MS = 30_000;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
@@ -213,7 +219,7 @@ const LIST_FORMAT =
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
  *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be passed to docker run";
 /** What --mount's comma-separated fields cannot hold in a source path. */
 const MOUNT_UNSAFE = /[,"\r\n]/;
@@ -327,7 +333,7 @@ export class DockerProvider implements ComputerProvider {
 		return {
 			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
-			network: ["none", "open", "allow"],
+			network: [...NETWORK],
 			allow: { domains: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, cidrs: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, mixed: true },
 			networkReadBack: true,
 			isolation: "container",
@@ -391,6 +397,8 @@ export class DockerProvider implements ComputerProvider {
 			if ("problem" in allow) refuse("network", allow.problem);
 		} else if (network !== "none" && network !== "open") refuse("network", NETWORKS);
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= 0.01)) refuse("cpus", "cpus must be a number of CPUs of at least 0.01");
+		// Its CFS quota is a whole number of microseconds per period: a count too large for one is no quota Docker takes.
+		else if (cpus !== undefined && !Number.isSafeInteger(Math.round(cpus * CPU_PERIOD_US))) refuse("cpus", `cpus must be at most ${MAX_CPUS}`);
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb >= MIN_MEMORY_MB)) {
 			refuse("memoryMb", `memoryMb must be a whole number of MiB, at least ${MIN_MEMORY_MB}`);
 		}
@@ -412,6 +420,7 @@ export class DockerProvider implements ComputerProvider {
 		if (mounts.length === 0 && typeof path === "string" && MOUNT_UNSAFE.test(path)) {
 			refuse("mount", `mount.path ${JSON.stringify(path)}: a Docker mount cannot hold a comma, a double quote or a line break in its path`);
 		}
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (!SPEC_FIELDS.has(field) && value !== undefined) refuse(field, `a Docker computer does not support ${field}`);
 		}

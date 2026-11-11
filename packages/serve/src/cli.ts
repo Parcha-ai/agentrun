@@ -20,7 +20,11 @@ import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
 import { apiOnlyFrom } from "./api-only.js";
+import { surviveClosedPipes } from "./closed-pipes.js";
 
+// A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
+// command, the server and the runner alike.
+surviveClosedPipes();
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
@@ -287,8 +291,6 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
-// A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
-process.stdout.on("error", () => undefined);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
 let apiOnly: boolean;
 try {
@@ -318,6 +320,12 @@ const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").m
 try {
   serve = await startServe(serveOptions = {
     onBoxImage,
+    // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
+    // platform starts it again, rather than answer 503 for as long as it runs.
+    onStoreLost: (error) => {
+      console.error(`agentrun-serve: ${error.message}`);
+      process.exit(1);
+    },
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
@@ -345,7 +353,8 @@ if (!values["no-runner"]) {
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
+    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux).
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
