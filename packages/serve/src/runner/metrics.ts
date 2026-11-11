@@ -13,8 +13,9 @@ import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/c
 import { KINDS, WORKFLOW_SESSION } from "./journal-kinds.js";
 
 /** What a run's booking says one of its sessions spent: its requests (a hold given back unused is none), their known
- *  sum, how many have no known cost, and their tokens. */
-export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly requests: number; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+ *  sum, how many have no known cost, their tokens, and how many of the requests have no known tokens (`unmetered`: booked
+ *  with no usage, or sent and never answered), in no token sum. */
+export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly unpriced: number; readonly requests: number; readonly unmetered: number; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } };
 
 /** The conversation each of the run's sessions books in, by its key: the first `agentrun.session.key` entry naming it. */
 function sessionConversations(entries: readonly EntryLike[]): Map<string, number> {
@@ -47,12 +48,14 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   let known = 0;
   let unpriced = 0;
   let requests = 0;
+  let unmetered = 0;
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const e of entries) {
     if (!chosen(e)) continue;
     if (e.kind === RUNNER_RECORDS.request && !answered.has(turnOf(e))) {
       requests += 1;
       unpriced += 1;
+      unmetered += 1;
       continue;
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
@@ -63,9 +66,11 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     const usd = answeredUnpriced(d) ? null : typeof d.bookedUsd === "number" && Number.isFinite(d.bookedUsd) ? d.bookedUsd : typeof d.usd === "number" && Number.isFinite(d.usd) ? d.usd : null;
     if (usd === null) unpriced += 1;
     else known += usd;
+    // The booking keeps a request's usage only when it reported some (runner.ts tokensOf): one with none is unmetered.
+    if (d.usage === undefined) unmetered += 1;
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
   }
-  return { usd: unpriced ? null : known, known, unpriced, requests, tokens };
+  return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, tokens };
 }
 
 /** Whether a run's record carries no cost of its own, so its usage row and its live spend are its booking's: a CLI
@@ -111,4 +116,15 @@ export function runMetrics(
     metrics: { ...counted, ...(options.effort !== undefined ? { effort: options.effort } : {}), ...(options.model !== undefined ? { model: options.model } : {}) },
     costUsd,
   };
+}
+
+/** A CLI harness's run (its record the loop's: claude-agent, codex, opencode): its metrics from `rootEntries`, its root
+ *  conversation's record (its tools), with its tokens and model requests those of `booked`, its booking's (bookedSpend
+ *  "model", which the caller reads once for the run's cost too: what its model proxy booked each request at,
+ *  runner.turn's usage), since the harness's own record carries none; each request counted at `model`, the model its
+ *  run chose. Tokens are not a price: a request answered at no known price, with its usage, is metered all the same. */
+export function cliRunMetrics(rootEntries: readonly EntryLike[], booked: BookedSpend, options: { readonly effort?: string; readonly model: string }): RunMetricsStored {
+  const { metrics: counted } = runMetrics(rootEntries, options);
+  const { tokens } = booked;
+  return { ...counted, input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheWrite: tokens.cacheWrite, requests: booked.requests, unmetered: booked.unmetered, models: booked.requests ? { [options.model]: booked.requests } : {} };
 }
