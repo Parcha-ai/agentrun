@@ -148,6 +148,7 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
   if (results.some((row) => row.tool_status !== "success")) return false;
   const answered = new Set(results.filter((row) => !row.parent_tool_use_id).map((row) => row.tool_use_id));
   return calls.every((row) => answered.has(row.tool_use_id));
+}
 
 /** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
  *  summary): the draft ask's `describe`. */
