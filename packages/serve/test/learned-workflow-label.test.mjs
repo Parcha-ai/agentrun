@@ -38,3 +38,18 @@ test("a text output is summed up line by line, each line whole or only as its si
   assert.ok(said.length <= 125 && said.endsWith(" / …"), said);
   assert.equal(outputLine("   \n  "), undefined, "no words, no line");
 });
+
+test("a held value a text output breaks across two lines is on no row, in either half: the row's words come from the whole text as redacted, before any line is taken (#2452)", async () => {
+  const { timelineOf } = await import("../dist/timeline/index.js");
+  const { redacted } = await import("../dist/key-refusal.js");
+  const { assistant, call, result, user } = await import("./timeline-lib-support.mjs");
+  const held = ["not-a-secret", "held-workflow-key", "0123456789abcdef"].join("-");
+  const cut = 24;
+  const text = `| Category | Count | Total |\n|---|---|---|\nKey: ${held.slice(0, cut)}\n${held.slice(cut)}\nGrand total: $2.00`;
+  const rows = timelineOf([user("Run it."), assistant([call("w1", "learned_workflow", { name: "card-report", input: { text: "x" } })]), result("w1", "learned_workflow", text)], { redact: (t) => redacted(t, [held]) });
+  const row = rows.find((r) => r.kind === "tool_result" && r.tool_name === "learned_workflow");
+  assert.ok(row, JSON.stringify(rows.map((r) => r.kind)));
+  const all = JSON.stringify(rows);
+  for (let i = 0; i + 8 <= held.length; i++) assert.ok(!all.includes(held.slice(i, i + 8)), `a run of the held value at ${i}: ${row.summary}`);
+  assert.match(row.summary, /^Ran the learned workflow card-report: /, row.summary);
+});
