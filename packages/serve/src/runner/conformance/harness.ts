@@ -722,7 +722,13 @@ const CASES: readonly Case[] = [
       // Never silent: the timeline says the message went again, once, before it.
       const rows = await w.liveRows();
       const again = rows.filter((one) => one.summary === MESSAGE_SENT_AGAIN);
-      assert.deepEqual(again.map((one) => one.kind), ["phase"], `one row says it was sent again: ${JSON.stringify(rows.map((one) => [one.kind, one.summary]))}`);    },
+      const shown = JSON.stringify(rows.map((one) => [one.kind, one.summary]));
+      assert.deepEqual(again.map((one) => one.kind), ["phase"], `one row says it was sent again: ${shown}`);
+      // Just before the message it was said of: the person's row of it is the next message row.
+      const at = rows.indexOf(again[0]!);
+      const message = rows.findIndex((one, i) => i > at && one.kind === "user_message");
+      assert.ok(message > at && rows[message]!.text === text, `the notice comes right before the message it was sent again: ${shown}`);
+      assert.ok(!rows.slice(0, at).some((one) => one.kind === "user_message" && one.text === text), `no row of the message before the notice: ${shown}`);    },
   },
   {
     id: "stop-ends-turn",
