@@ -205,6 +205,10 @@ export type ServeOptions = {
    *  X-Forwarded-For names (the nearest one not itself a trusted proxy). None by default: the header is never read, and
    *  every request counts under the address it came from. */
   trustedProxies?: readonly string[];
+  /** This server is a local install, its operator says (the CLI: AGENTRUN_MCP_ALLOW_LOOPBACK=1, only on a machine they
+   *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
+   *  Never inferred; absent, loopback is refused there in words saying how to say so. */
+  mcpLoopback?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -3398,12 +3402,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
-  // A local install (listening on loopback, reached at no address off it) is the one server an MCP server's URL may be on
-  // loopback for: anywhere else, loopback is this machine's other services (mcp-oauth.ts mcpServerAt).
-  const publicHost = options.publicUrl === undefined ? null : (URL.parse(options.publicUrl)?.hostname.replace(/^\[|\]$/g, "") ?? "");
-  // And no proxy it is told to trust: a server that takes forwarded requests is reached from off this machine, whatever it
-  // listens on, so it is no local install.
-  const localInstall = isLoopback(host) && (publicHost === null || isLoopback(publicHost)) && !options.trustedProxies?.length;
+  // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
+  // other services: mcp-oauth.ts mcpServerAt), and only as its operator says (mcpLoopback), never inferred from where it
+  // listens: a hosted container listens on loopback behind its proxy too.
+  const localInstall = options.mcpLoopback === true;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the

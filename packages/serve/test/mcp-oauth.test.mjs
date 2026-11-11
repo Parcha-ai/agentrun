@@ -317,7 +317,7 @@ test("CIMD only on a public https address: the client id is this server's metada
   assert.equal(pub.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.equal(pub.searchParams.get("redirect_uri"), `https://agents.example.com${CALLBACK}`);
   assert.ok(!as.log.some((entry) => entry.path === "/register"), "no registration with a metadata document");
-  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321", true); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   const local = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.notEqual(local.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.ok(as.log.some((entry) => entry.path === "/register"), "on loopback http it registers instead");
@@ -533,7 +533,7 @@ async function registry(t, key, network) {
 /** The registry reaching the network `net`, under seal key `key`, attached at a loopback address of its own. */
 async function storeOn(t, key, net) {
   const store = await registry(t, key, net.network);
-  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321", true); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   return store;
 }
 
@@ -910,14 +910,14 @@ test("with a public address for browsers, this server's own listening port is st
     const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
     t.after(() => mcp.close());
     const store = await registry(t, key, net.network);
-    store.attach("https://agents.example.test", listening.origin);
+    store.attach("https://agents.example.test", listening.origin, true);
     await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
   }
   assert.deepEqual(listening.hits, [], "the listening port heard nothing");
   assert.deepEqual(sent, [], "nothing was sent off loopback");
   const { mcp } = await fakes(t);
   const store = await registry(t, key, net.network);
-  store.attach("https://agents.example.test", listening.origin);
+  store.attach("https://agents.example.test", listening.origin, true);
   const started = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.equal(started.searchParams.get("redirect_uri"), `https://agents.example.test${CALLBACK}`, "the browser still comes back at the public address");
 });

@@ -41,17 +41,22 @@ test("a URL whose query holds a credential-like parameter is refused at the prev
   assert.equal(routed.body.url, `${new URL(fake.url).origin}/…`);
 });
 
-test("a server on loopback that is told to trust a proxy is no local install: an MCP server on loopback is refused at the save, nothing sent; the same server with no proxy saves it", async (t) => {
+test("a server listening on loopback is no local install unless its operator says so: an MCP server on loopback is refused at the save and the preview in words naming AGENTRUN_MCP_ALLOW_LOOPBACK, nothing sent; said so, it saves", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const fake = await startFakeMcp();
   t.after(() => fake.close());
-  const proxied = await serve(t, { runner: false, trustedProxies: ["127.0.0.1"] }); // key-gate: loopback-rule a test's trusted proxy, never an endpoint
-  const refused = await proxied.api("PUT", "/settings/mcp-servers/local", { url: fake.url, auth: { type: "none" } });
-  assert.deepEqual([refused.status, refused.body.error?.code], [422, "input_invalid"], JSON.stringify(refused.body));
-  assert.deepEqual(refused.body.error.fields.map((field) => field.field), ["url"]);
+  const hosted = await serve(t, { runner: false, mcpLoopback: false });
+  const words = "127.0.0.1 is this machine; set AGENTRUN_MCP_ALLOW_LOOPBACK=1 when starting the server, only on a machine you alone use."; // key-gate: loopback-rule the refusal's own words
+  for (const [door, answer] of [
+    ["save", await hosted.api("PUT", "/settings/mcp-servers/local", { url: fake.url, auth: { type: "none" } })],
+    ["preview", await hosted.api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "none" } })],
+  ]) {
+    assert.deepEqual([answer.status, answer.body.error?.code], [422, "input_invalid"], `${door}: ${JSON.stringify(answer.body)}`);
+    assert.deepEqual(answer.body.error.fields.map((field) => [field.field, field.message]), [["url", words]], door);
+  }
   assert.equal(fake.log.length, 0, "nothing sent");
-  const direct = await serve(t, { runner: false });
-  assert.equal((await direct.api("PUT", "/settings/mcp-servers/local", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const local = await serve(t, { runner: false, mcpLoopback: true });
+  assert.equal((await local.api("PUT", "/settings/mcp-servers/local", { url: fake.url, auth: { type: "none" } })).status, 200);
 });
 
 test("a saved URL's path and query are held as a secret: every read shows its origin and \"/…\", a credential no list names included, and sending that back keeps the saved URL, which alone is called", async (t) => {

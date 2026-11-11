@@ -106,14 +106,14 @@ export class McpServersOverStore {
     this.signIns = new McpSignIns(network, pendingOverStore(store, sealKey), () => privateOAuthHosts(store));
   }
 
-  /** This server's address as a browser reaches it and where it listens (McpServers.attach). `local`: whether it is a
-   *  local install, listening on loopback alone and reached there (server.ts: its listen address on loopback and no public
-   *  address off it), the one kind of server an MCP server's URL may be on loopback for; omitted, whether `listening` is
-   *  on loopback. Never attached, it is not one. */
+  /** This server's address as a browser reaches it and where it listens (McpServers.attach). `local`: whether its
+   *  operator said this is a local install (ServeOptions.mcpLoopback, the CLI's AGENTRUN_MCP_ALLOW_LOOPBACK=1), the one kind
+   *  of server an MCP server's URL may be on loopback for. Never inferred from where it listens: a hosted container
+   *  listens on loopback behind its proxy too. Omitted, or never attached, it is not one. */
   attach(base: string, listening: string, local?: boolean): void {
     this.signIns.base = base.replace(/\/+$/, "");
     this.signIns.listening = listening.replace(/\/+$/, "");
-    this.loopback = local ?? LOOPBACK.test(URL.parse(listening)?.hostname ?? "");
+    this.loopback = local === true;
   }
 
   clientDocument() {
@@ -378,6 +378,8 @@ export class McpServersOverStore {
       if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
       return fetch;
     }
+    // A URL on loopback as written, on a server its operator never said is a local install: refused, saying how to say so.
+    if (!this.loopback && LOOPBACK.test(url.hostname)) throw invalid([{ field: "url", reason: "not_allowed", message: loopbackWords(url.hostname) }]);
     const signal = AbortSignal.any([AbortSignal.timeout(ADDRESS_CHECK_MS), this.stopped.signal, ...(stop ? [stop] : [])]);
     let at: Awaited<ReturnType<typeof mcpServerAt>>;
     try {
@@ -483,6 +485,11 @@ export class McpServersOverStore {
 /** Which save of a server this is: a PUT or a sign-in makes a new one (its updated time moves), a refresh of its tools or
  *  token does not change the url. The staleness key an OAuth sign-in carries from start to callback. */
 const saving = (row: McpServerRow) => `${row.url} ${row.updatedAt}`;
+
+/** The env that says this server is a local install (cli.ts), the one kind an MCP server may be on loopback for. */
+export const MCP_ALLOW_LOOPBACK_ENV = "AGENTRUN_MCP_ALLOW_LOOPBACK";
+/** What a URL on loopback says on a server that is not one, with how to make it one. */
+export const loopbackWords = (host: string) => `${host} is this machine; set ${MCP_ALLOW_LOOPBACK_ENV}=1 when starting the server, only on a machine you alone use.`;
 
 /** The owner's MCP registry over the one store. No load() is needed: every read goes to the store (the runner also writes
  *  the OAuth state), so a read is always current. */

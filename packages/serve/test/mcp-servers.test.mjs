@@ -53,7 +53,8 @@ async function plain(t, answer) {
 /** A server on `data` that a test closes before starting another on it, and that is closed after the test whatever
  *  happens. */
 async function started(t, data) {
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // A local install, as its operator says: its fake MCP servers are on loopback.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true });
   let closed;
   const close = () => (closed ??= server.close());
   t.after(close);

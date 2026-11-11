@@ -346,7 +346,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  // mcpLoopback: a test's server is a local install, as its operator would say (its fake MCP servers are on loopback);
+  // a case that wants the hosted rule passes mcpLoopback: false.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).

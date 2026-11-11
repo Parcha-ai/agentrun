@@ -750,7 +750,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
-    const serve = await startServe({ data: join(scratch!, "data"), port: 0, token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+    // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
+    const serve = await startServe({ mcpLoopback: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
