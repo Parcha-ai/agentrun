@@ -176,6 +176,12 @@ function replyTo(context, faux) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
   }
+  // Answers in words, then the given JSON as its last fenced json block: an agent's structured answer
+  // (agent-output-schema.test.mjs). Read off the message's first line; what a trigger appends after it is quoted back
+  // first, as "Handed: ...", so a test reads what the run was handed.
+  const [line, ...rest] = first.split("\n");
+  const structured = /^Answer with this json: (.+)$/.exec(line ?? "");
+  if (structured) return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}\n\n\`\`\`json\n${structured[1]}\n\`\`\``);
   // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
   const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
   if (linked) {

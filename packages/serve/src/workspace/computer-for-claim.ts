@@ -10,8 +10,8 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
-import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
+import type { ComputerProvider, ComputerSpec, MountReadBack, Result } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -93,6 +93,8 @@ export interface ComputerForClaimDeps {
   readonly settings?: ProviderSettings;
   /** Whether a provider that binds a folder of this machine answers here now (Docker): the Mode 1 default asks it. */
   readonly answers?: (provider: string) => Promise<boolean>;
+  /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails (ClaimSide.daemon). */
+  readonly daemon?: ClaimSide["daemon"];
   /** A launch of the server's own in place of the providers' (--faux's desktop). */
   readonly launch?: ClaimSide["launch"];
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
@@ -261,18 +263,6 @@ async function providerLaunch(
   };
 }
 
-/** The runner's start: every computer of `providers` with all of `labels` whose deadline (its agentrun.computer.deadline
- *  label) has passed is ended, once (the janitor's sweep), each provider apart. A provider whose vendor ends its own
- *  computers answers its refusal in words; nothing throws. */
-export async function sweepComputers(providers: readonly ComputerProvider[], labels: Readonly<Record<string, string>>, now: Date = new Date()): Promise<{ readonly provider: string; readonly swept: Result<Swept> }[]> {
-  const out: { provider: string; swept: Result<Swept> }[] = [];
-  for (const provider of providers) {
-    const swept = await sweep(provider, { labels: { ...labels }, now }).catch((error: unknown): Result<Swept> => ({ ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } }));
-    out.push({ provider: provider.id, swept });
-  }
-  return out;
-}
-
 /** The run's computer for this claim, started and registered; `{ computer: undefined }` for none. Throws with code
  *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
 export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
@@ -284,6 +274,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const side: ClaimSide = {
     keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
+    ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, mount, gpu, signal }) {
       if (deps.launch) {
         const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });

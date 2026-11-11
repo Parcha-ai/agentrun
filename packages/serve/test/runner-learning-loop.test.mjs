@@ -89,6 +89,47 @@ test("an answer the grader's reader can't read is asked once more; two such answ
   assert.deepEqual(await kindsOf(store, claim), [KINDS.learningGraded, KINDS.learningDropped]);
 });
 
+/** A grade that contradicts itself: every item kept, and no merge, with a reason that says it can be kept (#2407). */
+const CONTRADICTS = JSON.stringify({ merge: false, reason: "It is general, so it can be kept.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+
+test("a grade that keeps every item and says no merge is asked once more, the contradiction named; the second answer is the one that counts", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock, { answers: [CONTRADICTS, KEEP] });
+  assert.deepEqual(await loop.start(claim), { state: "ended" });
+  assert.equal(calls.ask.length, 2, "asked once more");
+  const [first, again] = calls.ask.map((call) => call.request.prompt);
+  assert.ok(again.startsWith(first) && again.length > first.length, "the same grade asked again, with more said after it");
+  assert.match(again.slice(first.length), /"merge": false/);
+  assert.match(again.slice(first.length), /kept every item/);
+  assert.equal(calls.commit.length, 1, "the consistent answer merges");
+  assert.deepEqual(await kindsOf(store, claim), [KINDS.learningGraded, KINDS.learningMerged]);
+});
+
+test("two answers that contradict themselves drop the proposal in words that say so, never the grader's 'so it can be kept'", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock, { answers: [CONTRADICTS, CONTRADICTS] });
+  assert.deepEqual(await loop.start(claim), { state: "ended" });
+  assert.equal(calls.ask.length, 2, "asked twice, no more");
+  assert.equal(calls.commit.length, 0, "nothing merged");
+  const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
+  const dropped = entries.find((entry) => entry.kind === KINDS.learningDropped).data;
+  assert.equal(dropped.reason, "grader");
+  assert.match(dropped.detail, /^Not kept: .*contradicted itself/);
+  assert.doesNotMatch(dropped.detail, /can be kept/);
+});
+
+test("an unreadable answer, then one that contradicts itself, drops it as contradicted once, never 'twice' (the retry was for the unreadable one)", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock, { answers: ["not json", CONTRADICTS] });
+  assert.deepEqual(await loop.start(claim), { state: "ended" });
+  assert.equal(calls.ask.length, 2, "asked once more, for the unreadable answer");
+  assert.equal(calls.commit.length, 0, "nothing merged");
+  const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
+  const dropped = entries.find((entry) => entry.kind === KINDS.learningDropped).data;
+  assert.match(dropped.detail, /contradicted itself: it kept them and said not to/);
+  assert.doesNotMatch(dropped.detail, /twice/);
+});
+
 test("a verdict that keeps nothing is dropped with the grader's words, and nothing is written to the folder", async (t) => {
   const { store, clock, claim } = await setUp(t);
   const { loop, calls } = loopOn(store, clock, { answers: [DROP] });

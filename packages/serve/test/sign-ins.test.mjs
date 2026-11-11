@@ -18,7 +18,7 @@ import { openapiDocument } from "../dist/openapi.js";
 import { WITHHELD_SIGN_IN } from "../dist/run-view.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { saveSignIn, signInsOverStore, vendorOf } from "../dist/sign-ins-store.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 

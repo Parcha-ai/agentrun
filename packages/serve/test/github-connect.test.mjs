@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { callback, CONNECTED, connect, connectable, deliver, failedWith, fakeGitHub, firstInput, held, install, PUBLIC, SEAL, startConnect, storeOf } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { runDir, scratch, serve, withEnv } from "./support.mjs";
+import { scratch, serve, withEnv } from "./support.mjs";
 import { firings, keyOf, made } from "./trigger-support.mjs";
 
 const target = (agentId, content = "Review it.") => ({ kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 });

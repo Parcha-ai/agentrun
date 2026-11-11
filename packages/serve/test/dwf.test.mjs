@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { completer } from "../dist/llm.js";
 import { MAX_PAGE_PX, pagesStem, pdfPages } from "../dist/pdf-pages.js";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** A fake's key: a stand-in it never checks, held in a name so no key literal sits beside a key variable. */
 const STAND_IN = "faux-test-placeholder";
