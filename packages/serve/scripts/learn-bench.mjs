@@ -383,16 +383,19 @@ function slope(points) {
   return den === 0 ? null : round(pts.reduce((s, [x, y]) => s + (x - mx) * (y - my), 0) / den);
 }
 
-/** Input + output tokens per run and per passing step, over the steps whose tokens are known, and their trend. */
+/** Input + output tokens per run and per passing step, over the steps whose tokens are fully known, and their trend. A
+ *  run with unmetered requests (requests whose tokens are unknown) would read low: it is left out, and counted apart. */
 function tokenMetrics(steps) {
-  const known = steps.filter((s) => s.tokens);
+  const whole = (s) => s.tokens && !(s.tokens.unmetered > 0);
+  const known = steps.filter(whole);
+  const unmetered = steps.filter((s) => s.tokens && s.tokens.unmetered > 0).length;
   const io = (s) => s.tokens.input + s.tokens.output;
-  if (!known.length) return { tokens_per_run: null, tokens_per_pass: null, tokens_trend_per_run: null, tokens_known_steps: 0 };
+  if (!known.length) return { tokens_per_run: null, tokens_per_pass: null, tokens_trend_per_run: null, tokens_known_steps: 0, tokens_unmetered_steps: unmetered };
   const total = known.reduce((sum, s) => sum + io(s), 0);
   const passes = known.filter((s) => s.pass).length;
   return {
     tokens_per_run: Math.round(total / known.length), tokens_per_pass: passes ? Math.round(total / passes) : null,
-    tokens_trend_per_run: slope(steps.map((s, i) => [i, s.tokens ? io(s) : null])), tokens_known_steps: known.length,
+    tokens_trend_per_run: slope(steps.map((s, i) => [i, whole(s) ? io(s) : null])), tokens_known_steps: known.length, tokens_unmetered_steps: unmetered,
   };
 }
 
