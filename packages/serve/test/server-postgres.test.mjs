@@ -154,7 +154,8 @@ for (const [name, secondEnv] of [["its own Postgres schema", (root, schema) => s
     t.after(() => dropSchema(one));
     t.after(() => dropSchema(two));
     const root = await scratch(t);
-    const args = ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"];
+    // A short drain: the second waits for the drain and its margin (31 s) before it refuses.
+    const args = ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner", "--drain-timeout", "1s"];
     const first = cli(t, args, storeEnv(root, PG_URL, one));
     const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await printed(first, /^Open /m))[1]);
     const refused = await printed(cli(t, args, secondEnv(root, two)), /^Open /m).then(() => undefined, (error) => error);
