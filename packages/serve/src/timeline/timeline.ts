@@ -628,10 +628,15 @@ function createProjector(options: TimelineOptions) {
    *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
   const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean; details?: unknown }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
+    // The words the summary shows of it, read from the whole output as redacted (`shown`), never from the output as it
+    // came: an outcome that takes the output apart (a learned workflow's lines, joined) could split a held value the
+    // whole text's redaction finds into pieces the summary's own redaction no longer would (#2452). Whether it failed
+    // is still read from the output as it came.
+    const worded = shown.text === view.text ? outcome : outcomeOf(tool.name, { ...view, text: shown.text });
     // A call refused before it ran is named refused already (refusedLabel): its row says why, never that it failed.
     const failedSummary = refused(view) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     return make("tool_result", conv, rowId, {
-      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
