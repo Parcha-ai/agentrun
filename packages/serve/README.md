@@ -752,11 +752,14 @@ this server's run folder says why there. The save checks the shape, and only a s
 and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
 computer is made with the GPUs asked.
 
-- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
-  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
-  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
-  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
-  its network allowlist, are not yet proven live.
+- **Daytona** gives one `H100`, the GPU of its GPU snapshot `daytona-gpu` (the computer package's `DAYTONA_GPU`:
+  `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
+  made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
+  deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
+  run on one can be cut short. The Daytona org needs GPU credits. It takes no mount (`mounts: []`: the snapshot's user
+  is not root and has no Archil client), so it can't hold the run's folder from Archil: in Mode 2 this server refuses a
+  Daytona sandbox with a `gpu`, and `GET /v2/computers` says why in Daytona's `gpu.why`. In Mode 1 a sandbox runs on
+  Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -766,8 +769,10 @@ computer is made with the GPUs asked.
   it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
 - **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
-  (and an exec image pinned by digest, if you want one other than Archil's default), and the account key,
-  `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
+  (and an exec image pinned by digest, if you want one other than serve's default), and the account key,
+  `ARCHIL_API_KEY`; `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by
+  digest (git 2.47), because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An
+  image you name needs git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
   mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
@@ -1806,7 +1811,7 @@ GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integra
 the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
 `manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
 callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
-(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
+(`pull_request`, `issue_comment`, `release`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
 "GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
 `AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
 App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
@@ -1913,7 +1918,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), `max_tool_calls` (agentic only, on pi): the tool calls each conversation of a run may make ([tool-call budget](#tool-call-budget)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -2673,6 +2678,17 @@ with the token, an archived agent's too:
   too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
   `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
   (`{at, by}`, the time of its retire, which an edit since moves not).
+- `POST .../learning/workflows/{name}/promote` (`{name?}`) makes an active learned workflow an agent of its own: a new
+  agent, as `POST /agents` makes one, whose revision is a workflow revision of the workflow's `workflow.json`, so its
+  runs run the workflow's nodes with no agent loop, answer the workflow's output, and can be started by a trigger or a
+  pipeline like any agent's. Only an active one: a workflow that waits for its owner's OK, or was retired, is 409
+  `learned_not_active`. Its files are checked again as a restore checks them, and its workflow as the learning checker
+  checks a run's draft against the agent's tools and gate (400 with `problems`), then as any workflow revision's save
+  (422, or 409 `agent_not_runnable`). The new agent's `tools` are the ones its call nodes call, and it keeps the source
+  agent's policy as it is now (its `tool_settings`, `approvals`, `max_cost_usd` and `cap_mode`), never more. Its id is the
+  workflow's name, with `-2`, `-3` and on past an agent's id or name already here, and its name `name` or the same. It
+  answers 201 with the agent; the learned workflow stays in the folder, unchanged. It takes the owner's password session
+  alone, as an approval does.
 - `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
@@ -2942,6 +2958,15 @@ agentic run's is, when a model one of its nodes or `llm` calls runs on has no pr
 OpenRouter Decisions model the catalog lists no price for: `409 agent_not_runnable`, each in `error.fields` with the
 node's label and its fix. A step no cap fixes all the same (a spend no one knows) ends the run `failed`,
 `spend_cap_reached`, in the cap's words, after the node's label.
+
+## Tool-call budget
+
+An agentic definition's `max_tool_calls: N` gives each conversation of its runs on pi N tool calls: the run's own, and
+each conversation a tool opens, counted apart. Past N the run's tool gate refuses every call before it runs, before
+any setting or approval is read, with one fixed text: the budget is spent, don't call another tool, answer now from
+what you have. That refusal is not counted and never ends the run, so the model's next answer is the turn's. The count
+is read from the conversation's committed journal, so a restart or a claim moved to another runner keeps it. Above 0
+sets the budget, 0 clears it, an edit that leaves it out keeps it; a workflow's, or one on another harness, is `422`.
 
 ## The faux model
 

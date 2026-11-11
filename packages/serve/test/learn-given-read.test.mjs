@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as learning from "../dist/learning.js";
-import { outcomeOf } from "../dist/usage.js";
+import { notesOf } from "../dist/usage.js";
 import { noteRuns } from "../dist/learning-run.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { note } from "./learn-format-support.mjs";
@@ -31,15 +31,15 @@ test("a run's learning shows given and read, never used: given from its start, r
   assert.deepEqual(learning.notesView(record, shown, true), { given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] });
 });
 
-test("the ledger keeps the files a run was given and read, and the agent's notes count the runs of each", () => {
-  const line = outcomeOf("r1", "a", { state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "U" }, { file: "tables.md", name: "T" }], read: [{ file: "units.md", name: "U" }] });
+test("a run's learning keeps the files it was given and read, and the agent's notes count the runs of each", () => {
+  const line = notesOf({ state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "U" }, { file: "tables.md", name: "T" }], read: [{ file: "units.md", name: "U" }] });
   assert.deepEqual([line.given, line.read], [["units.md", "tables.md"], ["units.md"]]);
   const counts = noteRuns([{ given: ["units.md", "tables.md"], read: ["units.md"] }, { given: ["units.md"], read: [] }, null]);
   assert.deepEqual(counts.get("units.md"), { given: 2, read: 1 });
   assert.deepEqual(counts.get("tables.md"), { given: 1, read: 0 });
 });
 
-test("the contract: a run's learning has given and read (no used); a note's view has its runs' counts", () => {
+test("the contract: a run's learning has given and read of its notes (whether it applied a note is not measured), and `used` of its learned skills and workflows alone; a note's view has its runs' counts", () => {
   const schemas = [];
   const walk = (node) => {
     if (!node || typeof node !== "object") return;
@@ -49,7 +49,13 @@ test("the contract: a run's learning has given and read (no used); a note's view
   walk(openapiDocument(() => undefined));
   const runLearning = schemas.filter((schema) => "learned" in schema.properties && "pending" in schema.properties);
   assert.ok(runLearning.length > 0, "a run's learning schema");
-  for (const schema of runLearning) assert.ok("given" in schema.properties && "read" in schema.properties && !("used" in schema.properties), Object.keys(schema.properties).join(","));
+  for (const schema of runLearning) {
+    assert.ok("given" in schema.properties && "read" in schema.properties, Object.keys(schema.properties).join(","));
+    // `used`, where a run's learning has it (GET /runs/{id}/learning), says what the run did with the learned skills and
+    // workflows it was offered: never a note's.
+    if ("used" in schema.properties) assert.deepEqual(Object.keys(schema.properties.used.properties ?? {}).sort(), ["skills", "workflows"], JSON.stringify(schema.properties.used));
+  }
+  assert.ok(runLearning.some((schema) => "used" in schema.properties), "GET /runs/{id}/learning has used");
   const noteViews = schemas.filter((schema) => "superseded_by" in schema.properties && "origin" in schema.properties);
   assert.ok(noteViews.length > 0, "a note's view schema");
   for (const schema of noteViews) assert.deepEqual(Object.keys(schema.properties.runs?.properties ?? {}).sort(), ["given", "read"]);
@@ -62,8 +68,8 @@ test("given: an index line a person edited to name two notes, neither of which f
   assert.deepEqual(given, ["tables.md", "units.md"], JSON.stringify(given));
 });
 
-test("the ledger reads a run's learning whose given or read holds an entry out of shape: the entries with a file count, and nothing throws", () => {
-  const line = outcomeOf("r1", "a", { state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [null, { file: "a.md", name: "a" }, { name: "no file" }, "b.md"], read: [null, { file: "a.md", name: "a" }] });
+test("a run's learning whose given or read holds an entry out of shape: the entries with a file count, and nothing throws", () => {
+  const line = notesOf({ state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [null, { file: "a.md", name: "a" }, { name: "no file" }, "b.md"], read: [null, { file: "a.md", name: "a" }] });
   assert.deepEqual([line.given, line.read], [["a.md"], ["a.md"]]);
   assert.deepEqual(noteRuns([line]).get("a.md"), { given: 1, read: 1 });
 });
