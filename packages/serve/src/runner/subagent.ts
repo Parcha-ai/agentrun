@@ -18,6 +18,7 @@ import { ASK_TOOL } from "../tools.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
 import { PI_STOP } from "./pi-stop.js";
+import { budgetOf, ConversationToolBudget } from "../tool-budget.js";
 
 export const SUBAGENT_TOOL = "subagent";
 /** The tiers a call may name for its child (its definition's model_tiers, else this server's tier); a call that names
@@ -31,6 +32,9 @@ const NEVER_GIVEN: readonly string[] = [SUBAGENT_TOOL, ASK_TOOL];
 /** A child's instructions: the call's prompt is its whole task. Nothing of the parent's prompt is carried over. */
 export const SUBAGENT_INSTRUCTIONS = "You are a subagent. The message you are given is your whole task: do it with the tools you have, then answer. Your last message is returned, as it is, to the agent that called you.";
 
+/** The thinking levels a call may give its child (`effort`); absent, the child thinks at the agent's own level. */
+export const SUBAGENT_EFFORTS = ["low", "medium", "high"] as const;
+
 /** A tier's model in this run: its ref in the run's models (adapters/pi.ts tierProvider), or why the tier has none here. */
 export type TierModel = { readonly ref: ModelRef } | { readonly why: string };
 
@@ -43,9 +47,12 @@ export type SubagentOptions = {
   readonly tier: (tier: SubagentTier) => TierModel;
   /** Words before a child's own instructions (the environment line), when the host has any. */
   readonly preamble?: string;
+  /** The agent's tool-call budget (definition.max_tool_calls, tool-budget.ts), per conversation: a call's own narrows it
+   *  for its child, never widens it. */
+  readonly toolCalls?: number;
 };
 
-type Args = { prompt: string; tools?: string[]; model?: SubagentTier };
+type Args = { prompt: string; tools?: string[]; model?: SubagentTier; max_tool_calls?: number; effort?: (typeof SUBAGENT_EFFORTS)[number] };
 
 /** One counter of free slots for the run's children (SUBAGENT_PARALLEL), handed out in call order. */
 function slots(count: number) {
@@ -118,6 +125,8 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
         prompt: { type: "string", minLength: 1, description: "The subagent's whole task, self-contained: it sees nothing else." },
         tools: { type: "array", items: { type: "string" }, uniqueItems: true, description: "The tools it may use, each one of your own tools by name. Absent or empty: none." },
         model: { enum: [...SUBAGENT_TIERS], description: "The model tier it runs on, one of this agent's own tiers. Absent: your own model." },
+        max_tool_calls: { type: "integer", minimum: 1, description: "The most tool calls it may make. It narrows your own budget for it, never widens it. Absent: your budget." },
+        effort: { enum: [...SUBAGENT_EFFORTS], description: "How hard it thinks: low, medium or high. Absent: as you do." },
       },
       required: ["prompt"],
     } as never,
@@ -134,6 +143,11 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
       if (Number(api.conversationId) !== Number(ROOT_CONVERSATION_ID)) return fail("subagent: a subagent cannot start subagents of its own. Nothing ran.");
       const model = args.model === undefined ? undefined : options.tier(args.model);
       if (model && "why" in model) return fail(`subagent: the ${args.model} tier has no model here: ${model.why} Nothing ran.`);
+      if (args.max_tool_calls !== undefined && !(Number.isSafeInteger(args.max_tool_calls) && args.max_tool_calls > 0)) return fail("subagent: max_tool_calls is a whole number above 0. Nothing ran.");
+      if (args.effort !== undefined && !SUBAGENT_EFFORTS.includes(args.effort)) return fail(`subagent: effort is one of ${SUBAGENT_EFFORTS.join(", ")}. Nothing ran.`);
+      // The child's own budget: the call's, held under the agent's (never wider); absent, the agent's holds it as it holds
+      // every conversation of the run.
+      const toolCalls = args.max_tool_calls === undefined ? undefined : budgetOf(options.toolCalls, args.max_tool_calls);
       const chosen = chosenTools(args.tools ?? [], options);
       if ("refused" in chosen) return fail(chosen.refused);
       // The registrations the parent's agent enables, by session name: exactly these are the child's.
@@ -153,14 +167,17 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
             // The tier's model, else the parent's own (its route through the session's proxy and booking).
             // The child keeps the session's extension (its gate); its tools are exactly the call's subset.
             model: model?.ref ?? parent.model,
+            // The call's effort, else the agent's own level (a task-owned conversation copies its owner's agent).
+            ...(args.effort ? { thinkingLevel: args.effort } : {}),
             tools: tools as unknown as ToolRegistration[],
             modelTools: null,
             instructions: [options.preamble, SUBAGENT_INSTRUCTIONS].filter(Boolean).join("\n\n"),
           });
+          if (toolCalls !== undefined) Object.assign(await tx.doc(ConversationToolBudget, created.id), { toolCalls });
           return created.id;
         }, context);
         // The call's details name its child: the run's timeline nests the child's rows under this call.
-        const details = { conversationId: Number(child), ...(args.model ? { model: args.model } : {}), tools: chosen.catalog };
+        const details = { conversationId: Number(child), ...(args.model ? { model: args.model } : {}), tools: chosen.catalog, ...(toolCalls !== undefined ? { max_tool_calls: toolCalls } : {}), ...(args.effort ? { effort: args.effort } : {}) };
         await api.details(details as never, context);
         const handle = await api.conversation(child, context);
         if (!handle) return { ...fail("subagent: its conversation could not be opened. Nothing ran."), details };

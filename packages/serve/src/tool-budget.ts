@@ -9,7 +9,15 @@
 // check never reads past them however long the run goes on. A call of the same round whose result has not landed yet
 // counts as made: a round's calls are counted in the order the model gave them, so a round that crosses the line runs
 // its first calls up to it and the rest are refused.
-import { AssistantEntry, type EntryRecord } from "@earendil-works/pi-durable";
+import { AssistantEntry, defineDoc, type EntryRecord } from "@earendil-works/pi-durable";
+
+/** A conversation's own budget, narrower than the run's (a subagent call's `max_tool_calls`, runner/subagent.ts): written
+ *  in the commit that makes the conversation, so a restart reads the same one, and held by the gate with the run's. */
+export const ConversationToolBudget = defineDoc<{ toolCalls?: number }>({ kind: "agentrun.tool-budget", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({}), checkpointWhen: () => false });
+
+/** The budget a conversation's calls are held to: the run's and its own, whichever is smaller (its own never widens the
+ *  run's); absent, none. */
+export const budgetOf = (run: number | undefined, own: number | undefined): number | undefined => (run === undefined ? own : own === undefined ? run : Math.min(run, own));
 
 /** What a call past the budget reads: the same words every time, never a count the model could argue with. */
 export const TOOL_BUDGET_TEXT = "Tool budget spent: this conversation has made every tool call it may. Don't call another tool: answer now, from what you have.";

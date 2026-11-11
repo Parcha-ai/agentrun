@@ -21,7 +21,7 @@ import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
-import { countCalls } from "../../tool-budget.js";
+import { ConversationToolBudget, countCalls } from "../../tool-budget.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -42,6 +42,8 @@ export interface PreIntentCall {
   /** The tool calls the call's conversation made before it, at most `upTo`, read from its committed entries (tool-budget.ts
    *  countCalls), for the gate's tool-call budget: pi's model-issued calls only, never a nested call or a CLI's. */
   readonly callsBefore?: (upTo: number) => Promise<number>;
+  /** The call's conversation's own tool-call budget (tool-budget.ts ConversationToolBudget, a subagent's), if it has one. */
+  readonly ownBudget?: () => Promise<number | undefined>;
 }
 
 /** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */
@@ -202,7 +204,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           if (!io.gate) return undefined;
           // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
           // parent's part.
-          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext) } : {};
+          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext), ownBudget: async () => (await api.snapshot(ConversationToolBudget, api.conversationId, hookContext))?.toolCalls } : {};
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...counted }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);

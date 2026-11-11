@@ -41,7 +41,7 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
-import { TOOL_BUDGET_TEXT } from "../tool-budget.js";
+import { budgetOf, TOOL_BUDGET_TEXT } from "../tool-budget.js";
 
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
@@ -1674,7 +1674,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await hooks.beforeIntent(kernelCall);
       // The tool-call budget, before the gate's settings: a call past it is refused in its fixed words, never parked or
       // asked about.
-      const budget = spec.gate?.toolCalls;
+      // A conversation's own budget (a subagent's max_tool_calls) narrows the run's, never widens it.
+      const budget = budgetOf(spec.gate?.toolCalls, call.ownBudget ? await call.ownBudget() : undefined);
       if (budget !== undefined && call.callsBefore && (await call.callsBefore(budget)) >= budget) return { deny: TOOL_BUDGET_TEXT };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;

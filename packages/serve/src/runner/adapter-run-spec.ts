@@ -573,6 +573,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         return { ref: { provider: tierProvider(tier), modelId: at.model } };
       },
       preamble: environmentLine(),
+      ...(revision.body.maxToolCalls !== undefined ? { toolCalls: revision.body.maxToolCalls } : {}),
     }));
   }
 
