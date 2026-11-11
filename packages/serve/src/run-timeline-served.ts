@@ -16,7 +16,10 @@ import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
 import { redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf } from "./run-cut.js";
-import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks } from "./run-view.js";
+import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
+import { launchOf } from "./handed-values.js";
+import { capNowOf } from "./runner/journal-kinds.js";
+import { overCapBound } from "./runner/metrics.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
@@ -56,7 +59,14 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   // is a cost unknown, never one still running.
   const options = { redact, settled: ended };
   const timeline = await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, options), options, wholeAnswerFor(values));
-  const rows = withApprovalRows(withAsks(timeline), asksOf(records.entries), answersOf(records.entries, { final }), redact);
+  // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
+  // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf), a cache miss within the bound of the
+  // requests since its spend last fit said as one (overCapBound).
+  const capNow = capNowOf((await launchOf(store, runId))?.maxCostUsd, records.entries);
+  const overCap = capNow === undefined ? timeline : withOverCap(timeline, capNow, overCapBound(records.entries as never, capNow));
+  // Each pause at its cap shown as the server's row, and the one it stands at now as its waiting row (withBudgetRows).
+  const capped = withBudgetRows(overCap, records.entries as never, { ended });
+  const rows = withApprovalRows(withAsks(capped), asksOf(records.entries), answersOf(records.entries, { final }), redact);
   // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
   // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
   const receipts = await decisionsOverStore(store, runId, context).catch(() => null);

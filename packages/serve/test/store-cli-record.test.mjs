@@ -374,8 +374,8 @@ test("a workflow whose only bookings are decisions has a graph model-node cost o
     { type: "entry", value: { id: turn, conversationId: dec, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
   ], context);
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Decided.", costUsd: 0.01, endedAt: T0 + 9 });
-  const view = { kind: "workflow", status: "completed", agent_id: "agent-w", revision: "rev-w", created_at: new Date(T0).toISOString(), ended_at: new Date(T0 + 9).toISOString() };
-  const graph = await runGraphView(store, "run-w", { env: {}, runWorkspace: async () => null, runView: async () => view, withheld: async () => false, cutValues: async () => ({ values: [] }), context });
+  const facts = { kind: "workflow", status: "completed", agentId: "agent-w", revision: "rev-w", createdAt: new Date(T0).toISOString(), endedAt: new Date(T0 + 9).toISOString(), unshown: false };
+  const graph = await runGraphView(store, "run-w", { env: {}, runWorkspace: async () => null, runFacts: async () => facts, withheld: async () => false, cutValues: async () => ({ values: [] }), context });
   // No receipt here, so the graph's total is its model-node part alone: 0, never the decisions' $0.01 again.
   assert.equal(graph.totals.cost_usd, 0, `the graph's model-node cost leaves the decisions out: ${JSON.stringify(graph.totals)}`);
 });

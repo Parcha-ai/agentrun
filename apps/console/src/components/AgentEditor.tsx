@@ -14,6 +14,7 @@ import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, de
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { SpendCapMinimum } from "@/lib/spendCap";
 import type { McpServer } from "@/lib/mcp";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
 import { placeOfComputer } from "@/lib/computers";
@@ -412,7 +413,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!starting && (
-                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <Input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
                 </Field>
               )}
