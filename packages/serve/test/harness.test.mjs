@@ -12,14 +12,13 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }
 };
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a definition that names no harness reads as pi, and naming pi stores nothing: the stored body is the same either way", async (t) => {
+test("a definition that names no harness reads as pi, and naming pi stores nothing: the stored body is the same either way", async (t) => {
   const { api, data } = await serve(t);
   const plain = await api("POST", "/agents", agent("plain"));
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
@@ -41,8 +40,7 @@ test("a harness the server does not know is a 422 on the field, and nothing is s
   assert.equal((await api("GET", "/agents")).body.agents.length, 0);
 });
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a harness this server does not run saves with a warning on the field, and a run of it is a 409 agent_not_runnable naming it: nothing starts, nothing runs on pi", async (t) => {
+test("a harness this server does not run saves with a warning on the field, and a run of it is a 409 agent_not_runnable naming it: nothing starts, nothing runs on pi", async (t) => {
   const { api, data } = await serve(t);
   for (const [id, body, harness] of [["claude", agent("claude", { harness: "claude-agent" }), "claude-agent"], ["flow", flowAgent("flow", undefined, { harness: "codex" }), "codex"]]) {
     const made = await api("POST", "/agents", body);
