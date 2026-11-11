@@ -275,6 +275,10 @@ export interface AdapterLoopOptions {
 const TURN_ERROR_MAX = 500;
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
+/** How long the cap's wrap-up note, once a request took it, waits for that request's admission before a later request
+ *  may take it: past it, the request that took it is taken to have gone (its client gone while the proxy counted its
+ *  tokens), never to be admitted. A proxy's token count and admission take well under it. */
+const WRAP_UP_OFFER_MS = 30_000;
 
 /** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
 const cutWhole = (text: string, max: number): string => {
@@ -1224,7 +1228,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
           if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
         }
-        const wrapUp: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number } } = {
+        const wrapUp: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; at: number } } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -1245,14 +1249,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const inFlight = bookingNow?.heldUsd();
           const capUsd = capNow();
           // One request at a time carries it: while one offered it waits for its admission, an overlapping request is not
-          // offered it too (its admission tells it, or a refusal or a dropped note gives it back: below).
-          if (wrapUp.offered) return undefined;
+          // offered it too (its admission tells it, or a refusal or a dropped note gives it back: below). A request that
+          // took it and never reached its admission (its client gone while the proxy counted its tokens, a body the proxy
+          // refused) says nothing back, so the offer waits WRAP_UP_OFFER_MS at most: then a later request is offered it.
+          if (wrapUp.offered && Date.now() - wrapUp.offered.at < WRAP_UP_OFFER_MS) return undefined;
           if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const note = noteFor(
             { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
             { capUsd, spentUsd: sessionSpent + decided + paidSpent + rest, heldUsd: inFlight + ledger.decisions.heldUsd() + ledger.paid.heldUsd(), costs: wrapUp.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
           );
-          wrapUp.offered = note ? { ...note, capUsd } : undefined;
+          wrapUp.offered = note ? { ...note, capUsd, at: Date.now() } : undefined;
           return note?.words;
         };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
