@@ -7,7 +7,8 @@ import { MACHINE_PATH } from './machine-path.mjs';
 const path = (...parts) => ['', ...parts].join('/');
 
 test('a home folder is a machine path: a user name under home or Users, or under a drive\'s Users folder', () => {
-  for (const text of [path('home', 'bob', 'x'), path('Users', 'alice', 'x'), `"${path('Users', 'Sharedfolks', 'x')}"`, ['C:', 'Users', 'carol', 'x'].join('\\')]) {
+  // A user name is anything but a separator, whitespace or a colon: one beyond ASCII and one with a sign are names too.
+  for (const text of [path('home', 'bob', 'x'), path('Users', 'alice', 'x'), `"${path('Users', 'Sharedfolks', 'x')}"`, ['C:', 'Users', 'carol', 'x'].join('\\'), path('Users', 'josé', 'project', ''), path('home', 'user+build', 'project', ''), ['C:', 'Users', 'renée', 'x'].join('\\')]) {
     assert.ok(MACHINE_PATH.test(text), text);
   }
 });
