@@ -11,6 +11,7 @@ import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMet
 import { answeredUnpriced, RUNNER_RECORDS, type SessionRecord, sessionSpendOf } from "@parcha/agentrun-kernel";
 import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS, WORKFLOW_SESSION } from "./journal-kinds.js";
+import { anthropicModelId } from "../provider.js";
 
 /** What a run's booking says one of its sessions spent: its requests (a hold given back unused is none), their known
  *  sum, how many have no known cost, their tokens, and how many of the requests have no known tokens (`unmetered`: booked
@@ -135,13 +136,16 @@ export function runMetrics(
  *  runner.turn's usage), since the harness's own record carries none; each request counted at `model`, the model its
  *  run chose. Tokens are not a price: a request answered at no known price, with its usage, is metered all the same. */
 /** `byModel` (a booking's requests by the model each was sent on) under the names a run's metrics use: the run's own
- *  model, which a request names by its id alone or whole, and one that names none, as `run` (its `provider/model`);
- *  any other (a learned node's tier, the hosted search's model) as its request names it. */
+ *  model, and a request that names none, as `run` (the model it chose, `provider/model`, through OpenRouter or dotted
+ *  too); any other (a learned node's tier, the hosted search's model) as its request names it. A booked name is the run's
+ *  when it is one model by the router's match: its last segment, dots as dashes (provider.ts anthropicModelId: the
+ *  booking names Anthropic's id, claude-haiku-4-5, for a run that chose openrouter/anthropic/claude-haiku-4.5). */
 function modelsOf(byModel: Readonly<Record<string, number>>, run: string): Record<string, number> {
-  const id = run.slice(run.indexOf("/") + 1);
+  const same = (name: string) => anthropicModelId({ provider: "anthropic", modelId: name.slice(name.lastIndexOf("/") + 1) });
+  const own = same(run);
   const out: Record<string, number> = {};
   for (const [model, n] of Object.entries(byModel)) {
-    const name = model === "" || model === id || model === run ? run : model;
+    const name = model === "" || same(model) === own ? run : model;
     out[name] = (out[name] ?? 0) + n;
   }
   return out;
