@@ -147,7 +147,7 @@ const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
  *  and for one that names a tool that runs only there (the browser); else this server's default_place. The editor's
  *  picker and its tool checks both read it, so they agree with the server and with each other. */
 export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
-  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) ? { mode: "runner" } : (places?.defaultPlace ?? { mode: "runner" });
+  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
  *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
@@ -158,7 +158,7 @@ export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Pla
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
   const tools = agent.definition.tools ?? [];
-  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places?.defaultPlace) return undefined;
+  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places) return undefined;
   return { place: defaultPlaceOf(workflow, tools, places), byDefault: true };
 }
 

@@ -12,10 +12,10 @@ import { type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
-import { AGENT_LAYER_PINS, pinIssues, sortedPin } from "./tool-plane.js";
+import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
@@ -560,35 +560,19 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. A tool the package pins gets its
  *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
  *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
- *  a send with no destination set never runs. While an agent's own settings keep no pin (`pins`, AGENT_LAYER_PINS by
- *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings, and the tool is
- *  set to deny unless the server's settings already pin it (`serverPinned`, by gate name): a write a template grants
- *  never runs without its pin, whatever the agent's approvals. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean; serverPinned?: ReadonlySet<string>; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
+ *  a send with no destination set never runs. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
   const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
   const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue> }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
   const unpinned: { tool: string; parameters: string[] }[] = [];
-  const unkept: { tool: string; pin: Record<string, PinValue> }[] = [];
-  for (const { server, pin } of chosen.mcp) {
-    for (const [tool, args] of Object.entries(pin)) {
-      const name = mcpToolName(server, tool);
-      const each = Object.entries(args).map(([arg, value]) => [arg, pinFilled(value, parameters)] as const);
-      const empty = [...new Set(each.flatMap(([, one]) => one.empty))];
-      if (empty.length) {
-        settings[name] = { permission: "deny" };
-        unpinned.push({ tool: name, parameters: empty });
-      } else {
-        const filledPin = Object.fromEntries(each.map(([arg, one]) => [arg, one.value]));
-        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: sortedPin(filledPin) as Record<string, PinValue> };
-        else {
-          unkept.push({ tool: name, pin: filledPin });
-          if (!chosen.serverPinned?.has(name)) settings[name] = { permission: "deny" };
-        }
-      }
-    }
+  for (const { tool: name, pin, empty } of filledPins(chosen.mcp, parameters)) {
+    if (empty.length) {
+      settings[name] = { permission: "deny" };
+      unpinned.push({ tool: name, parameters: empty });
+    } else settings[name] = { ...settings[name], pin: sortedPin(pin) as Record<string, PinValue> };
   }
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
@@ -598,5 +582,14 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
   };
-  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned, unkept };
+  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
+}
+
+/** Each pin the package's MCP servers (`mcp`) set, by the tool's gate name, its values filled from `parameters`, and the
+ *  parameters it names that were not given (`empty`, none when it fills whole). */
+export function filledPins(mcp: readonly McpNeed[], parameters: Json): { tool: string; pin: Record<string, PinValue>; empty: string[] }[] {
+  return mcp.flatMap(({ server, pin }) => Object.entries(pin).map(([tool, args]) => {
+    const each = Object.entries(args).map(([arg, value]) => [arg, pinFilled(value, parameters)] as const);
+    return { tool: mcpToolName(server, tool), pin: Object.fromEntries(each.map(([arg, one]) => [arg, one.value])), empty: [...new Set(each.flatMap(([, one]) => one.empty))] };
+  }));
 }

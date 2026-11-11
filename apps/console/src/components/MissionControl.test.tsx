@@ -7,7 +7,7 @@ import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 import { pick } from "@/test/picker";
 
-const run = (id: string, status: Run["status"], state: Run["state"], title: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (id: string, status: Run["status"], state: Run["state"], title: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status, state, title, created_at: "2026-10-30T03:00:00Z",
   ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 });

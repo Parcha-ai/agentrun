@@ -11,16 +11,14 @@ import type { ApiError, Webhook, WebhookAttempt } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 const SIGNING: Record<Exclude<Extract<Webhook, { configured: true }>["signing"], "sealed">, string> = {
-  seal_key_missing: "Its secret can't sign here: this server was started without its seal key. Restart it with its original seal key (AGENTRUN_SEAL_KEY) to send messages again. Removing the webhook drops the messages waiting, and it can't be set again without a seal key.",
   unreadable: "Its secret can't sign here: it was sealed under another key, or is damaged. Nothing is sent until the webhook is removed and set again.",
 };
 
 /** Settings → Webhook (GET, PUT and DELETE /v2/settings/webhook, a serve extension): the URL run notices are POSTed to,
  *  signed by the Standard Webhooks spec; whether its secret signs here; why it is off; the secret, shown only on the
  *  save that made it and never kept in the page after; a test send; and the last attempts (GET .../deliveries), newest
- *  first, with the receiver's answer or why each failed, and a redelivery of any (POST .../redeliver). `atRest` is
- *  capabilities' `features.webhooks.at_rest`: with no seal key, the server keeps no secret, so no webhook is set. */
-export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "unavailable" }) {
+ *  first, with the receiver's answer or why each failed, and a redelivery of any (POST .../redeliver). */
+export function WebhookPage({ v2 }: { v2: Client }) {
   const [webhook, setWebhook] = useState<Webhook | null>(null);
   const [attempts, setAttempts] = useState<WebhookAttempt[]>([]);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -54,7 +52,6 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
       setWebhook(view);
     });
   };
-  const cantStore = atRest === "unavailable";
 
   if (!webhook) return loadError
     ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}><p className="font-mono">The webhook could not be read: {loadError.code}: {loadError.message}</p></Banner>
@@ -93,11 +90,10 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
           {webhook.configured && webhook.signing !== "sealed" && (
             <p className="mt-2 flex gap-2 text-body text-warning-text"><TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />{SIGNING[webhook.signing]}</p>
           )}
-          {cantStore && !webhook.configured && <p className="mt-2 text-body text-muted-foreground" role="status">This server can't keep a webhook secret: it was started without a seal key, and never keeps one in the clear.</p>}
           <form className="mt-4 flex flex-wrap gap-2" onSubmit={save}>
             <Input name="url" type="url" required maxLength={2048} placeholder="https://..." value={url} onChange={(e) => setUrl(e.target.value)}
-              className="h-9 min-w-[280px] flex-1" aria-label="Webhook URL" disabled={cantStore && !webhook.configured} />
-            <Button type="submit" variant="solid" disabled={busy || (cantStore && !webhook.configured) || !url.trim()}>Save</Button>
+              className="h-9 min-w-[280px] flex-1" aria-label="Webhook URL" />
+            <Button type="submit" variant="solid" disabled={busy || !url.trim()}>Save</Button>
             {webhook.configured && <Button type="button" variant="outline" disabled={busy} onClick={() => act("The test was not sent", async () => setTested(await v2.testWebhook()))}>Send a test</Button>}
             {webhook.configured && !removing && <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoving(true)}>Remove</Button>}
           </form>
