@@ -293,11 +293,41 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     learning: learning ? { state: learning.state ?? null, reason: learning.reason ?? null, detail: learning.detail ?? null } : null,
     grade_cost_usd: unpriced ? null : gradeRaw, grade_cost_unpriced: unpriced,
     learned, workflow_proposed: Boolean(learned && (learned.workflows.length || verdictFiles.some((f) => f.startsWith("workflows/")))),
+    // The grader's word on each item it was shown: kept or not, held for the owner's OK, whose idea (origin), the rubric
+    // question it failed, and why. And the text of each item this step's learning kept, as the folder holds it now.
+    verdict: learning?.verdict ? (learning.verdict.items ?? []).map(({ file, keep, pending, origin, question, why }) => ({ file, keep, ...(pending ? { pending: true } : {}), ...(origin ? { origin } : {}), ...(question ? { question } : {}), why })) : null,
+    kept_texts: learns ? await keptTexts(api, agentId, learning) : null,
+    // The run's tokens as its end stored them (the run row's metrics: the job's turns and its end-of-run turn); null when
+    // the run booked no request (a harness whose usage the server does not see).
+    tokens: await tokensOf(ctx.store, runId),
     learned_workflow_calls: toolRows.filter((r) => r.tool_name === "learned_workflow").length,
     tools: [...new Set(toolRows.map((r) => r.tool_name))].sort(),
     approvals,
     active_after: learns ? (({ pending, ...items }) => items)(await activeOf(api, agentId)) : null,
   };
+}
+
+/** The text of each note, skill and workflow draft a step's learning kept (its learned and pending items), read from the
+ *  agent's folder as it is now, by file. */
+async function keptTexts(api, agentId, learning) {
+  const files = [
+    ...(learning?.learned ?? []).map((x) => x.file), ...(learning?.pending ?? []).map((x) => x.file),
+    ...(learning?.skills ?? []).map((x) => x.file), ...(learning?.workflows ?? []).map((x) => x.file),
+  ].filter((f) => typeof f === "string");
+  const out = {};
+  for (const file of [...new Set(files)]) {
+    const got = await api("GET", `/agents/${q(agentId)}/learning/files/${q(file)}`);
+    out[file] = got.status === 200 ? (typeof got.body === "string" ? got.body : JSON.stringify(got.body)) : null;
+  }
+  return out;
+}
+
+/** A run's tokens from its row's stored metrics, or null when it booked no request. */
+async function tokensOf(store, runId) {
+  const metrics = (await store.runs.get(runId))?.metrics;
+  if (!metrics || typeof metrics !== "object" || !(metrics.requests > 0)) return null;
+  const n = (x) => (typeof x === "number" ? x : 0);
+  return { input: n(metrics.input), cache_read: n(metrics.cacheRead), cache_write: n(metrics.cacheWrite), output: n(metrics.output), requests: metrics.requests, unmetered: n(metrics.unmetered) };
 }
 
 /** The run's files a file_exists grader may name: its listing, and each named path read one by one (the listing is
@@ -335,6 +365,19 @@ function slope(points) {
   return den === 0 ? null : round(pts.reduce((s, [x, y]) => s + (x - mx) * (y - my), 0) / den);
 }
 
+/** Input + output tokens per run and per passing step, over the steps whose tokens are known, and their trend. */
+function tokenMetrics(steps) {
+  const known = steps.filter((s) => s.tokens);
+  const io = (s) => s.tokens.input + s.tokens.output;
+  if (!known.length) return { tokens_per_run: null, tokens_per_pass: null, tokens_trend_per_run: null, tokens_known_steps: 0 };
+  const total = known.reduce((sum, s) => sum + io(s), 0);
+  const passes = known.filter((s) => s.pass).length;
+  return {
+    tokens_per_run: Math.round(total / known.length), tokens_per_pass: passes ? Math.round(total / passes) : null,
+    tokens_trend_per_run: slope(steps.map((s, i) => [i, s.tokens ? io(s) : null])), tokens_known_steps: known.length,
+  };
+}
+
 /** The series' metrics from its steps (results.schema.json `metrics`). */
 export function metricsOf(steps, learns) {
   const at = (pred) => steps.filter(pred);
@@ -360,7 +403,12 @@ export function metricsOf(steps, learns) {
   const plantGraders = plantAt < 0 ? [] : steps.slice(plantAt + 1).flatMap((x) => x.graders.filter((g) => g.grader.startsWith("plant-")));
   return {
     follow_rate: rate(at((s) => s.kind === "repeat").map((s) => s.pass)),
+    follow_k: at((s) => s.kind === "repeat").filter((s) => s.pass).length, follow_n: at((s) => s.kind === "repeat").length,
     pass_rate: rate(steps.map((s) => s.pass)),
+    pass_k: steps.filter((s) => s.pass).length, pass_n: steps.length,
+    // Tokens (input + output, the cache aside) per run and per passing step, over the steps whose tokens are known; null
+    // when none is (a harness whose usage the server does not see).
+    ...tokenMetrics(steps),
     grader_pass_rates: graderRates,
     cost_per_run_usd: mean(steps.map((s) => s.cost_usd)),
     work_cost_per_run_usd: mean(steps.map((s) => s.work_cost_usd)),
@@ -493,15 +541,17 @@ export function render(results) {
   const money = (x) => (x === null || x === undefined ? "-" : `$${x.toFixed(4)}`);
   const yes = (x) => (x === null || x === undefined ? "-" : x ? "yes" : "no");
   const out = [`Learning bench (${results.schema}), build ${String(results.bench?.sha ?? "?").slice(0, 10)}${results.hard_stop ? `, HARD STOP: ${results.hard_stop}` : ""}`, ""];
-  out.push("| Job | Harness | Arm | Steps | Follow (repeat) | Pass (all) | Work cost/run | Work cost trend /run | Learning overhead/run | Grade cost | Workflow proposed (teach) | Reuse | After change: graders / skill updated / workflow updated | Wrong keeps |");
-  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  out.push("| Job | Harness | Arm | Steps | Follow (repeat) | Pass (all) | Tokens/pass | Work cost/run | Work cost trend /run | Learning overhead/run | Grade cost | Workflow proposed (teach) | Reuse | After change: graders / skill updated / workflow updated | Wrong keeps |");
+  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   const order = [...results.series].sort((a, b) => `${a.job}${a.harness}${a.arm}`.localeCompare(`${b.job}${b.harness}${b.arm}`));
   for (const s of order) {
-    const m = s.metrics;
+    // Counts read from the steps when a results file predates them.
+    const repeats = s.steps.filter((x) => x.kind === "repeat");
+    const m = { follow_k: repeats.filter((x) => x.pass).length, follow_n: repeats.length, pass_k: s.steps.filter((x) => x.pass).length, pass_n: s.steps.length, ...s.metrics };
     const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.skill_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
     const trend = m.cost_trend_usd_per_run === null ? "-" : `${m.cost_trend_usd_per_run >= 0 ? "+" : ""}${m.cost_trend_usd_per_run.toFixed(5)}`;
     const grade = s.arm === "off" ? "-" : `${money(m.grade_cost_usd)}${m.grade_cost_unknown_steps ? ` (+${m.grade_cost_unknown_steps} unknown)` : ""}`;
-    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${pct(m.follow_rate)} | ${pct(m.pass_rate)} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
+    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${m.follow_k ?? "-"}/${m.follow_n ?? "-"} (${pct(m.follow_rate)}) | ${m.pass_k ?? "-"}/${m.pass_n ?? "-"} (${pct(m.pass_rate)}) | ${m.tokens_per_pass ?? (m.tokens_known_steps === 0 ? "unknown" : "-")} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
   }
   for (const s of order) {
     out.push("", `${s.job} / ${s.harness} / ${s.arm}${s.error ? ` (SERIES STOPPED: ${s.error.slice(0, 200)})` : ""}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
