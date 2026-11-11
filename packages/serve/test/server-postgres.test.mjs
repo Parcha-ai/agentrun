@@ -144,6 +144,27 @@ test("a deploy on Postgres: a second server waits for the first's owner lock ins
   assert.ok(first.err.some((line) => /another server took the store in the Postgres schema/.test(line)), "saying why");
 });
 
+// One server per data root, whatever its store: the store's owner lock holds one store, but a data root also holds what
+// the server writes beside it (its token, its seal key, uploads, harness installs, learning folders). Two servers on one
+// data root, each on a store of its own (two Postgres schemas, or SQLite and Postgres), would share those: the second is
+// refused, naming the data root's lock, once it holds its own store.
+for (const [name, secondEnv] of [["its own Postgres schema", (root, schema) => storeEnv(root, PG_URL, schema)], ["SQLite in the data root", (root) => { const { AGENTRUN_STORE_URL: _url, AGENTRUN_STORE_SCHEMA: _schema, ...env } = storeEnv(root, PG_URL, "unused"); return env; }]]) {
+  test(`a second server on a data root a server on Postgres holds, on ${name}, is refused: one server per data root, whatever its store`, { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
+    const [one, two] = [await freshSchema(), await freshSchema()];
+    t.after(() => dropSchema(one));
+    t.after(() => dropSchema(two));
+    const root = await scratch(t);
+    const args = ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"];
+    const first = cli(t, args, storeEnv(root, PG_URL, one));
+    const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await printed(first, /^Open /m))[1]);
+    const refused = await printed(cli(t, args, secondEnv(root, two)), /^Open /m).then(() => undefined, (error) => error);
+    assert.ok(refused, "the second server did not start");
+    assert.match(refused.message, /the server exited \(1\)/);
+    assert.match(refused.message, /another server holds this data root/);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "the first serves on");
+  });
+}
+
 /** `text` on the test database as `url`'s role, answered with its rows, or the error it was refused with. */
 async function asRole(url, text) {
   const c = new pg.Client({ connectionString: url });
