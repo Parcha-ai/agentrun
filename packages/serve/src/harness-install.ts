@@ -21,7 +21,7 @@
 // cut short) is never loaded, and the next install replaces it.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -443,12 +443,24 @@ const HOLD_WRITING_MS = 10_000;
  *  before npm starts. */
 const HOLD_STOP_MS = 60_000 + NPM_STOP_GRACE_MS + NPM_KILLED_WAIT_MS;
 
-type Hold = { readonly host: string; readonly pid: number; readonly identity?: string; readonly startedAt: number; readonly token: string };
+type Hold = { readonly host: string; readonly pidns?: string; readonly pid: number; readonly identity?: string; readonly startedAt: number; readonly token: string };
 
 /** Process `pid`'s identity beyond its pid, where this system shows one (Linux's /proc): the boot it runs in and its start
  *  time in clock ticks since that boot. A pid reused by another process (a restarted container's, which may well be
  *  given the same one) never reads as the one that wrote a hold. Undefined where it can't be read (no such process, or
  *  no /proc). */
+/** This process's pid namespace, where this system shows one (Linux's /proc/self/ns/pid: `pid:[<inode>]`): two
+ *  containers on one data directory may share a hostname but not their pids, so a pid is asked of this process table only
+ *  for a hold written in this namespace. Undefined where it can't be read. */
+export function pidNamespace(): string | undefined {
+  try {
+    const ns = readlinkSync("/proc/self/ns/pid");
+    return /^pid:\[\d+\]$/.test(ns) ? ns : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function processIdentity(pid: number): string | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -472,7 +484,7 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
 }
 
 /** Takes the hold on installs into `dir` for this process: its token when it holds it now, undefined while another
- *  installer does. One of this host's is held while the process that wrote it lives, whatever its age (its npm may still
+ *  installer does. One of this host's (and of this pid namespace, where it names one) is held while the process that wrote it lives, whatever its age (its npm may still
  *  be stopping): its pid alive and, where the system shows it, the same process (processIdentity), so a pid another
  *  process was given since never keeps it; where the identity can't be read, while its pid lives within INSTALL_TIMEOUT_MS
  *  and the time npm takes to stop (HOLD_STOP_MS). Another host's, whose process can't be asked, within that bound. The hold
@@ -480,13 +492,17 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
  *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
  *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
  *  file, so a hold another taker made meanwhile is never removed. */
-export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
+export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
   const at = installHoldOf(dir);
   await mkdir(dirname(at), { recursive: true });
   const token = randomUUID();
   const draft = `${at}.${token}`;
   const own = identity(process.pid);
-  await writeFile(draft, JSON.stringify({ host, pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold));
+  await writeFile(draft, JSON.stringify({ host, ...(pidns ? { pidns } : {}), pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold));
+  /** Whether a hold's pid can be asked of this process table: written on this host, in this pid namespace where both
+   *  name one. Another namespace's (another container's on the same data, with the same hostname) is judged as another
+   *  host's. */
+  const local = (held: Partial<Hold>): boolean => held.host === host && (typeof held.pidns !== "string" || pidns === undefined || held.pidns === pidns);
   /** Whether a hold of this host's is still its installer's: that process alive, by its identity where both are known. */
   const installing = (held: Partial<Hold> & { pid: number; startedAt: number }): boolean => {
     if (!isAlive(held.pid)) return false;
@@ -505,7 +521,7 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
       if (!judged) continue;
       const held = await readHold(at);
       const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
-        ? held.host === host ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
+        ? local(held) ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
         : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;
       if (live) return undefined;
       // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very
