@@ -5,13 +5,14 @@ import { DAYTONA } from "./daytona.js";
 import { DOCKER } from "./docker.js";
 import { E2B } from "./e2b.js";
 import { KERNEL } from "./kernel.js";
+import { LOCAL } from "./local.js";
 import { MODAL } from "./modal.js";
 import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";
 
-export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL] as const;
+export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL] as const;
 
-export { BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, MODAL, ORGO, PHONE_HARNESS };
+export { BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO, PHONE_HARNESS };
 export { DAYTONA_DEFAULT_SNAPSHOT } from "./daytona.js";
 export { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
 export { MODAL_DEFAULT_IMAGE } from "./modal.js";

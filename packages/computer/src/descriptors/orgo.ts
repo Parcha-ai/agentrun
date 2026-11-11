@@ -1,5 +1,6 @@
-// Orgo's descriptor: desktops on Orgo's cloud. The Linux desktop runs computerd (orgo.ts); the Windows and macOS
-// desktops are answered over Orgo's API with no daemon inside (orgo-desktop.ts), create()'s os option.
+// Orgo's descriptor: desktops on Orgo's cloud. The Linux desktop runs computerd (orgo.ts) and is the one offered. The
+// Windows and macOS desktops, answered over Orgo's API with no daemon inside (orgo-desktop.ts, create()'s os option),
+// are parked: built for the conformance suite, never selected by an agent's setting.
 import type { KindCapabilities } from "../kinds.js";
 import type { Group } from "../protocol.js";
 import { defineProvider } from "../descriptor.js";
@@ -17,23 +18,24 @@ export const WINDOWS_GROUPS: readonly Group[] = ["exec", "files", "screen", "inp
 export const MACOS_GROUPS: readonly Group[] = ["exec", "screen", "input.pointer", "input.keys"];
 
 /**
- * Orgo's configurations, each naming the image an agent's setting selects it by and the create() options that build it
- * (KindCapabilities; serve passes the options to providerFor beside the keys'): the Linux desktop with computerd, then
- * Windows over Orgo's API.
+ * Orgo's offered configuration, naming the image an agent's setting selects it by and the create() options that build
+ * it (KindCapabilities; serve passes the options to providerFor beside the keys'): the Linux desktop with computerd.
  *
- * macOS is not offered yet: a Mac has no end of Orgo's own and no daemon deadline, so only the janitor ends one, and a
- * server does not run the janitor yet (#2318). create({ os: "macos" }) still builds the provider, for the conformance
- * suite; no agent's setting can select it until the janitor runs.
+ * Windows and macOS are parked (ORGO_PARKED): create({ os }) still builds them, for the conformance suite and their
+ * tests, but no agent's setting selects one, and a setting that names one is refused in words saying so.
  */
-export const ORGO_CONFIGURATIONS = [
-	{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {} },
-	{ kind: "desktop", groups: [...WINDOWS_GROUPS], image: ORGO_WINDOWS_IMAGE, options: { os: "windows" } },
-] as const satisfies readonly KindCapabilities[];
+export const ORGO_CONFIGURATIONS = [{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {} }] as const satisfies readonly KindCapabilities[];
+
+/** Orgo's desktops not offered yet, and why, in the words a setting naming one is refused in. */
+export const ORGO_PARKED = [
+	{ image: ORGO_WINDOWS_IMAGE, why: "Orgo's Windows desktops are parked for now: Orgo offers Linux desktops" },
+	{ image: ORGO_MACOS_IMAGE, why: "Orgo's macOS desktops are parked for now: Orgo offers Linux desktops" },
+] as const;
 
 export const ORGO = defineProvider({
 	id: "orgo",
 	label: "Orgo",
-	// The workspace this server's computers live in: every Orgo provider (Linux, Windows) is built in one, and lists only it.
+	// The workspace this server's computers live in: every Orgo provider is built in one, and lists only it.
 	keys: [
 		{ name: "ORGO_API_KEY", option: "apiKey", required: true },
 		{ name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: true },
@@ -41,11 +43,10 @@ export const ORGO = defineProvider({
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.
 	mounts: [],
-	// The forms its configurations make: the Linux desktop none (computerd holds its programs to loopback), the Windows
-	// desktop open (Orgo has no egress control). Each built provider declares its own, one of these.
-	network: ["none", "open"],
-	// The Linux desktop (no os, the default), then Windows (os "windows").
+	// The Linux desktop's: none (computerd holds its programs to loopback).
+	network: ["none"],
 	capabilities: ORGO_CONFIGURATIONS,
+	parked: ORGO_PARKED,
 	defaultImage: { desktop: ORGO_BASE_IMAGE },
 	load: () => import("../orgo.js"),
 });

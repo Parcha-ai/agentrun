@@ -221,9 +221,12 @@ export interface ConformanceReport {
 	kind: ComputerKind;
 	daemonMode: DaemonMode;
 	image: string;
-	/** What the run's computer said in hello, with the fence its programs are held behind when it says one; null when no
-	 *  computer could be made. */
-	daemon: { version: string; os: string; arch: string; fence?: NetworkFence } | null;
+	/**
+	 * What each computer of the run said in its first hello, one entry per computer in the order they answered, each
+	 * naming the computer and its role, with the fence its programs are held behind when it says one; empty when no
+	 * computer answered. Computers of one run may differ: a GPU computer's fence is not the run's computer's.
+	 */
+	daemons: ComputerDaemon[];
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
 	/** When only or kind was given: the Core cases it left out, which did not run. */
@@ -248,9 +251,10 @@ export interface ConformanceReport {
 	notes?: string[];
 	/**
 	 * What create's read-back recorded of each computer the run made that does not refuse it (a probe target that
-	 * accepted and sent nothing back), one entry per note, naming the computer, in the order they came; absent when none.
+	 * accepted and sent nothing back), one entry per note, naming the computer and its role, in the order they came;
+	 * absent when none.
 	 */
-	computerNotes?: ComputerNote[];
+	computerNotes?: CreatedNote[];
 	/**
 	 * What the provider said through its onNote option during the run (a release that did not let an Archil folder go
 	 * cleanly), naming the computer, in the order it came: no failure of any case. The CLI gives the option and fills
@@ -259,10 +263,31 @@ export interface ConformanceReport {
 	providerNotes?: ComputerNote[];
 }
 
-/** One note a create returned: the computer's name and the note's words. */
+/** One note about a computer: the computer's name and the note's words. */
 export interface ComputerNote {
 	computer: string;
 	note: string;
+}
+
+/**
+ * What a computer is for in a run: "shared", the run's computer, which the cases that need no computer of their own
+ * share; else the id of the case that made it.
+ */
+export type ComputerRole = string;
+
+/** One note a create returned: the computer, its role, and the note's words. */
+export interface CreatedNote extends ComputerNote {
+	role: ComputerRole;
+}
+
+/** What one computer's first hello said: the computer, its role, and the fence when it names one. */
+export interface ComputerDaemon {
+	computer: string;
+	role: ComputerRole;
+	version: string;
+	os: string;
+	arch: string;
+	fence?: NetworkFence;
 }
 
 /** A provider built with planted secrets, and the values planted: none of them may show in anything it answers. */

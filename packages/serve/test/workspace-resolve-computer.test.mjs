@@ -40,7 +40,7 @@ function claim(root, saved = SAVED) {
     keysOf: async (id) => saved[id] ?? {},
     launch: async (entry, spec) => {
       launched.push([entry.id, spec]);
-      if (spec.kind === "browser") return { id: "b1", groups: ["cdp"], connect: async () => ({ send: async () => ({}), on: () => () => {}, close: () => {} }), release: async () => void launched.push(["released", "b1"]) };
+      if (spec.kind === "browser") return { id: "browserbase", groups: ["cdp"], browser: { provider: "browserbase", maxLifetimeS: 600, open: async () => "b1", find: async () => [], url: async () => "wss://connect.browserbase.test/b1?signingKey=SECRET", close: async () => {} }, release: async () => void launched.push(["released", "b1"]) };
       const computer = fakeComputer(root);
       const groups = entry.capabilities.find((one) => (spec.kind === "phone" ? one.kind === "android" : spec.kind === "desktop" ? one.kind === "desktop" : one.kind === "linux")).groups;
       return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, release: async () => void launched.push(["released", computer.id]) };
@@ -163,7 +163,8 @@ test("start: an unmounted desktop, a phone and a browser launch with no mount; t
   const side = claim(root);
   const browser = await (await resolveComputer({ kind: "browser", provider: "browserbase" }, 1, KIND_REGISTRY, side)).start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.equal(browser.computer.kind, "browser");
-  assert.equal(typeof (await browser.computer.connect()).send, "function");
+  assert.equal(browser.computer.browser.provider, "browserbase", "the run's browser tool opens its sessions through the claim's provider");
+  assert.equal(await browser.computer.browser.url("b1"), "wss://connect.browserbase.test/b1?signingKey=SECRET");
   const browserbase = KIND_REGISTRY.PROVIDERS.find((one) => one.id === "browserbase").capabilities[0];
   assert.deepEqual(side.launched[0], ["browserbase", { kind: "browser", keys: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" }, configuration: browserbase }]);
 });

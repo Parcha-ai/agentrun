@@ -17,20 +17,6 @@ export const TOOL_USER = "2510:2510";
 export const OWN_NETWORK_ONLY =
 	'a remote computer takes network "none" only: its programs run in a network of their own, their loopback alone, so the vendor\'s agent in it (which runs commands as root) is out of their reach; open and allowlists wait for a proxy out of that network';
 
-/** The interfaces /proc/<pid>/net/dev lists, in its order; undefined when the text is not that file. */
-export function netDevInterfaces(text: string): string[] | undefined {
-	const lines = text.split("\n");
-	if (!lines[0]?.startsWith("Inter-|") || !lines[1]?.includes("face |")) return undefined;
-	const names: string[] = [];
-	for (const line of lines.slice(2)) {
-		if (line.trim() === "") continue;
-		const at = line.indexOf(":");
-		if (at < 0) return undefined;
-		names.push(line.slice(0, at).trim());
-	}
-	return names;
-}
-
 /**
  * The drift of a computer's programs' network from their own loopback alone, in words: none when the live interfaces
  * (up or addressed) of the daemon's network namespace are `lo` alone, else what they are (or that they could not be read).

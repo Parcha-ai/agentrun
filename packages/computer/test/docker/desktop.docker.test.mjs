@@ -76,7 +76,7 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 	it("passes Core as a desktop with computerd as PID 1, daemon and provider of one version", () => {
 		assert.deepEqual([report.kind, report.daemonMode], ["desktop", "pid1"]);
 		assert.equal(report.core, "pass", formatReport(report));
-		assert.equal(report.daemon?.version, report.providerVersion);
+		assert.ok(report.daemons.length > 0 && report.daemons.every((daemon) => daemon.version === report.providerVersion), JSON.stringify(report.daemons));
 	});
 
 	it("runs every screen and input case, and skips only what X11 has no group for, in words", () => {

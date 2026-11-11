@@ -26,6 +26,12 @@ export interface DescriptorSetting {
 	readonly default?: string;
 }
 
+/** A configuration not offered yet: the image a setting would name it by, and why it is parked, in words. */
+export interface ParkedImage {
+	readonly image: string;
+	readonly why: string;
+}
+
 /**
  * A provider, declared once. Every field is data but load(), which imports the provider module only when called:
  * reading a descriptor loads no provider and no vendor SDK.
@@ -66,6 +72,17 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly local?: boolean;
 	/** create() takes a ledger the server keeps for it, as `options[ledger.option]` (the phone harness's sessions). */
 	readonly ledger?: { readonly option: string };
+	/**
+	 * The server's own environment variables its provider reads on this machine, by name (Local Chrome's, where it finds
+	 * Chrome): a server passes their values, and no other variable of its own, as `options.env`. The provider itself reads
+	 * no environment.
+	 */
+	readonly hostEnv?: readonly string[];
+	/**
+	 * Configurations its module builds but does not offer yet, by the image a setting would name (Orgo's Windows and
+	 * macOS desktops): a setting naming one is refused in these words, saying it is parked, never as an unknown image.
+	 */
+	readonly parked?: readonly ParkedImage[];
 	/** The provider module, loaded on demand: its create(), its conformance module. */
 	load(): Promise<Module>;
 }
@@ -121,5 +138,10 @@ export function descriptorProblems(value: unknown): string[] {
 	named(d.settings, "settings");
 	if (Array.isArray(d.keys) && d.keys.some((key) => typeof key?.required !== "boolean")) problems.push("each key says whether it is required");
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
+	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
+	if (d.parked !== undefined) {
+		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "")) problems.push("parked is a list of an image and why it is parked");
+		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
+	}
 	return problems;
 }

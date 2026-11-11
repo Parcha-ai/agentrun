@@ -22,9 +22,10 @@
 import type { Context } from "@earendil-works/chord";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { PROVIDERS } from "@parcha/agentrun-computer";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_COST } from "./timeline/index.js";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
 import { type PaidBooking, paidStep } from "./paid-calls.js";
 import { logLine } from "./print.js";
@@ -37,12 +38,16 @@ import { forModel } from "./result.js";
 export const BROWSER_SESSION_OPEN = "agentrun.browser_session_open";
 
 /** List prices by pi-browser provider name (`provider.name`): Browserbase's (pi-browser's LIST_PRICES), $0.12 an hour with
- *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`), free. */
+ *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`),
+ *  free. A computer provider whose descriptor bills nothing (metered false: Local Chrome's) is free too (browserPrice). */
 export const BROWSER_PRICES: Readonly<Record<string, { usdPerHour: number; minimumS: number }>> = Object.freeze({
   browserbase: { usdPerHour: 0.12, minimumS: 60 },
   kernel: { usdPerHour: 0.06, minimumS: 0 },
   cdp: { usdPerHour: 0, minimumS: 0 },
 });
+/** The free price of a computer provider whose descriptor says it bills nothing, never by its id. */
+const unmeteredPrice = (provider: string): { usdPerHour: number; minimumS: number } | undefined =>
+  PROVIDERS.some((entry) => entry.id === provider && !entry.metered) ? { usdPerHour: 0, minimumS: 0 } : undefined;
 /** An operator's price for a provider, in USD an hour: this prefix and the provider's name in capitals
  *  (AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE, _KERNEL, _CDP). */
 export const BROWSER_PRICE_ENV = "AGENTRUN_BROWSER_USD_PER_HOUR_";
@@ -58,7 +63,7 @@ export const priceEnvOf = (provider: string) => `${BROWSER_PRICE_ENV}${provider.
 /** `provider`'s session price: the operator's (a non-negative decimal), else the list's; `usdPerHour` null when neither
  *  names one or the operator's cannot be read, which is no price, never $0. */
 export function browserPrice(provider: string, env: NodeJS.ProcessEnv): { usdPerHour: number | null; minimumS: number } {
-  const listed = Object.hasOwn(BROWSER_PRICES, provider) ? BROWSER_PRICES[provider] : undefined;
+  const listed = Object.hasOwn(BROWSER_PRICES, provider) ? BROWSER_PRICES[provider] : unmeteredPrice(provider);
   const text = env[priceEnvOf(provider)]?.trim();
   const given = text ? (/^(\d+(\.\d*)?|\.\d+)$/.test(text) ? Number(text) : NaN) : undefined;
   return { usdPerHour: given === undefined ? (listed?.usdPerHour ?? null) : Number.isFinite(given) ? given : null, minimumS: listed?.minimumS ?? 0 };

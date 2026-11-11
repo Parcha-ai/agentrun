@@ -61,10 +61,11 @@ function templateFiles() {
 // Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
 // those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
 // still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
-// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
-// copy, so a reader of the tarball can check what was copied; no other package may carry it.
+// Files beyond the common allowlist, by package. The browser package ships the provenance files of what it vendors (the Stagehand facade, and
+// Browser Use Pi's snapshot and actions behind the raw-CDP driver) beside the compiled copies, so a reader of the tarball can check what was
+// copied; no other package may carry them.
 const allowedExtraFiles = {
-  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
+  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json', 'package/src/vendor/browser-use-pi/UPSTREAM.json'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
@@ -111,6 +112,11 @@ const allowedEndpoints = {
     ['dist/serve/server.d.ts', 'http://127.0.0.1:<port>/'],
     // The README's example of the address the command prints.
     ['README.md', 'http://127.0.0.1:41297/'],
+  ],
+  computer: [
+    // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
+    ['dist/chrome.js',
+      'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
   ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.

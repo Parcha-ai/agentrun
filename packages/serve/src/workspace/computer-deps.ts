@@ -210,13 +210,21 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
     return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
+  /** The server's own values of the environment variables a provider declares it reads on this machine (hostEnv: Local
+   *  Chrome's, where it finds Chrome), and no other variable of the server's. */
+  const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: the image source
-   *  for one that prepares its image, the host options for a local one. */
+   *  for one that prepares its image, the host options for a local one, the host environment it reads. */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
-    return { ...(entry?.prepareImage ? { image: preparedImage } : {}), ...(entry?.local ? await localHostOptions(boxAllow) : {}) };
+    return {
+      ...(entry?.prepareImage ? { image: preparedImage } : {}),
+      ...(entry?.local ? await localHostOptions(boxAllow) : {}),
+      ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
+    };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
+  // The claim and Settings → Computers' test alike.
   const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
   const computerDeps: ComputerDeps = {
     kinds,

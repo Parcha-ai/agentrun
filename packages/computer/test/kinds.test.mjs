@@ -8,6 +8,7 @@ import test from "node:test";
 import { DaytonaProvider } from "../dist/daytona.js";
 import { ModalProvider } from "../dist/modal.js";
 import {
+	CHROME_ENV,
 	configurationOf,
 	DESCRIPTORS,
 	defineProvider,
@@ -28,6 +29,7 @@ import {
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
 import { KernelProvider } from "../dist/kernel.js";
+import { LocalBrowserProvider } from "../dist/local.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
@@ -93,23 +95,33 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		{ id: "phone-harness", label: "Phone harness", keys: [key("PHONE_HARNESS_API_KEY", "apiKey")], metered: true },
 		{ id: "browserbase", label: "Browserbase", keys: [key("BROWSERBASE_API_KEY", "apiKey"), key("BROWSERBASE_PROJECT_ID", "projectId")], metered: true },
 		{ id: "kernel", label: "Kernel", keys: [key("KERNEL_API_KEY", "apiKey")], metered: true },
+		{ id: "local-chrome", label: "Local Chrome", keys: [], metered: false },
 	]);
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the phone harness's ledger the server keeps.
-	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, local, ledger }) => [id, { settings, prepareImage, local, ledger }]));
+	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, local, ledger, hostEnv, parked }]));
 	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
+	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
+	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, "PATH"]);
+	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
+	// configuration.
+	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
+	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
+	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
 		if (id !== "docker") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness") assert.equal(fields.ledger, undefined, id);
+		if (id !== "local-chrome") assert.equal(fields.hostEnv, undefined, id);
+		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
-	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"] });
+	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"], "local-chrome": ["browser"] });
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -125,6 +137,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		"phone-harness": { phone: phone.PHONE_IMAGE },
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
+		"local-chrome": { browser: browser.BROWSER_IMAGE },
 	};
 	assert.deepEqual(PROVIDERS.map((entry) => entry.id).sort(), Object.keys(expected).sort(), "every provider is named here");
 	for (const entry of PROVIDERS) {
@@ -207,6 +220,7 @@ const BUILT = {
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
 	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
+	"local-chrome": [() => new LocalBrowserProvider({ executablePath: "/nonexistent/chrome" })],
 	"phone-harness": [
 		() => {
 			const fake = fakePhoneHarness();

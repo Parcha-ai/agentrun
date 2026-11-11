@@ -6,7 +6,7 @@
 // these groups.
 // The providers Settings offers (PROVIDERS) are derived from the providers' descriptors (descriptor.ts), each declared
 // once in its descriptor module: loading this loads descriptors (data) alone, never a provider module or a vendor SDK.
-import type { DescriptorKey, DescriptorSetting, ProviderDescriptor } from "./descriptor.js";
+import type { DescriptorKey, DescriptorSetting, ParkedImage, ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerKind, Group } from "./protocol.js";
@@ -124,6 +124,10 @@ export interface ProviderEntry {
 	readonly local?: boolean;
 	/** create() takes a ledger the server keeps for it, as this option. */
 	readonly ledger?: { readonly option: string };
+	/** The server's environment variables its provider reads on this machine, passed as options.env (descriptor.ts). */
+	readonly hostEnv?: readonly string[];
+	/** Configurations it builds but does not offer yet, by image, and why: a setting naming one is refused as parked. */
+	readonly parked?: readonly ParkedImage[];
 }
 
 /** A descriptor as Settings shows it: its data, and the setting kinds its capabilities serve, derived by serves(). */

@@ -7,8 +7,9 @@
 // server's settings, its option and its default), and each provider's label all come from the descriptor. A name a
 // provider does not declare is never passed on; an empty optional key is left out; a required one not saved refuses in
 // words naming what to save, before anything is made. The provider modules themselves (each one's create()) are passed
-// in: a provider with no module here answers that its test is not available. No key is ever in an answer: each value is
-// scrubbed from the provider's words, and the words this module adds name keys only by their names.
+// in (workspace/computer-providers.ts makes the computer package's; a test gives stand-ins): a provider with no module
+// here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
+// words, and the words this module adds name keys only by their names.
 import { PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */

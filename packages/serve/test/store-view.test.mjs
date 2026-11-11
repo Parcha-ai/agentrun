@@ -556,7 +556,7 @@ test("an answer longer than a timeline row holds reads whole: all 5000 of its ch
 });
 
 test("an answer one character past a timeline row's cap reads whole, and one exactly at the cap reads as it is", async (t) => {
-  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { CAPS } = await import("../dist/timeline/index.js");
   const { store } = await storeOn(t);
   await agent(store);
   for (const [runId, length] of [["past", CAPS.text + 1], ["at", CAPS.text]]) {
@@ -571,7 +571,7 @@ test("an answer one character past a timeline row's cap reads whole, and one exa
 });
 
 test("a held key straddling the old 2000-character cut of an answer is served with no piece of it, the whole answer read past the cut, on pi and on a CLI's record", async (t) => {
-  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { CAPS } = await import("../dist/timeline/index.js");
   const KEY = ["not-a-secret", "straddle-key", "0123456789abcdef"].join("-");
   const held = { ...deps, serverSecrets: () => [KEY] };
   const pieces = Array.from({ length: KEY.length - 7 }, (_, i) => KEY.slice(i, i + 8));
@@ -635,7 +635,7 @@ test("a run's view reads its whole answer once per held value set: a second view
 });
 
 test("a value handed to the run (its agent's saved sign-in), straddling the old 2000-character cut of its answer, is served with no piece of it, the answer whole around it", async (t) => {
-  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { CAPS } = await import("../dist/timeline/index.js");
   const { createHash, randomBytes } = await import("node:crypto");
   const { raw } = await import("./store-target.mjs");
   const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
