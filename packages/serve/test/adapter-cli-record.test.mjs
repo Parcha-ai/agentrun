@@ -11,6 +11,7 @@ import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { callsOf, journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 /** A lease no stall of a loaded machine outlasts: no case here is about the lease. On a short one (600 ms) a stall of the
  *  box while the call ran let the claim lapse unrenewed, the runner took the run back, and the reopened session ended the
  *  cut call interrupted, never done. */
@@ -137,4 +138,87 @@ test("a pi-style run (the adapter keeps its own record) gets no call or message 
   const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
   assert.deepEqual(callsOf(records), []);
   assert.deepEqual(messagesOf(records), []);
+});
+
+/** A CLI stand-in whose one answer asks for two calls at once (both started before either ends, as Codex and Claude Code
+ *  run parallel calls), then answers once both are back. */
+function twoCallCli(tool, closes = { count: 0 }) {
+  return {
+    id: "stand-in-cli",
+    capabilities: () => ({}),
+    check: () => [],
+    async open(spec, io) {
+      let state = "new";
+      let turn;
+      return {
+        get state() { return state; },
+        async send() {
+          state = "idle";
+          turn = (async () => {
+            io.onEvent({ type: "text", delta: "Looking twice." });
+            const calls = [{ callId: "call-1", tool, args: { q: "a" } }, { callId: "call-2", tool, args: { q: "b" } }];
+            for (const call of calls) {
+              if ((io.gate ? await io.gate(call) : "allow") !== "allow") throw new Error("not allowed");
+              io.onEvent({ type: "tool_start", callId: call.callId, name: tool, args: call.args });
+            }
+            const host = spec.tools.find((each) => each.name === tool);
+            const results = await Promise.all(calls.map((call) => host.call(call.args, { callId: call.callId, signal: io.signal })));
+            calls.forEach((call, index) => io.onEvent({ type: "tool_end", callId: call.callId, name: tool, isError: false, result: results[index].text }));
+            io.onEvent({ type: "text", delta: "Both found." });
+            io.onEvent({ type: "turn_end", status: "completed" });
+            return { status: "completed" };
+          })();
+        },
+        async recover() {},
+        async settleOpenTurn() { state = "idle"; },
+        turnEnd: () => turn,
+        async interrupt() {},
+        async close() { closes.count += 1; },
+      };
+    },
+  };
+}
+
+// Ported from harness-multi-tool.test.mjs (deleted at the cutover, its read-back the run's own database): on a harness
+// other than pi, two tool calls in one answer, then the closing answer. The run completes; each call is recorded once,
+// done, never interrupted; and the timeline shows each call once, above its own result.
+test("a CLI run whose one answer asks for two calls at once: the run completes, each call is recorded and shown once, done, above its result", async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const ran = [];
+  const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async (args) => { ran.push(args.q); return { text: `found ${args.q}` }; } };
+  const closes = { count: 0 };
+  const createLoop = createAdapterLoop(() => ({
+    adapter: twoCallCli("lookup", closes),
+    session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
+    input: "Find both.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    hooks: quiet,
+    gate: () => "allow",
+  }));
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return now.state === "ended" && now.runner === null && now;
+  }, "the run ended and released", 5_000);
+  assert.deepEqual(ran.sort(), ["a", "b"], "each call ran once");
+  const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  assert.deepEqual(callsOf(records).map((call) => [call.callId, call.status]), [["call-1", "done"], ["call-2", "done"]], "each call recorded once, done");
+  const rows = await runTimeline(opened.server, "run-1", BACKGROUND_CONTEXT, { settled: true });
+  const shown = (kind) => rows.filter((r) => r.kind === kind);
+  const callRows = shown("tool_use");
+  assert.deepEqual(callRows.map((r) => r.tool_use_id).sort(), ["call-1", "call-2"], `each call shown once: ${JSON.stringify(rows.map((r) => [r.kind, r.id, r.tool_use_id]))}`);
+  const resultRows = shown("tool_result");
+  assert.deepEqual(resultRows.map((r) => r.tool_use_id).sort(), ["call-1", "call-2"], "each result shown once");
+  for (const call of callRows) {
+    const result = resultRows.find((r) => r.tool_use_id === call.tool_use_id);
+    assert.ok(rows.indexOf(call) < rows.indexOf(result), `call ${call.tool_use_id} above its result`);
+    assert.notEqual(result.tool_status, "interrupted", `call ${call.tool_use_id} not interrupted`);
+  }
+  assert.deepEqual(messagesOf(records).map((message) => [message.role, message.text]), [["person", "Find both."], ["model", "Looking twice."], ["model", "Both found."]]);
+  // Ported from harness-close.test.mjs: the harness's session is closed once its run is let go, so none of the CLI's own
+  // processes outlives the claim.
+  assert.equal(closes.count, 1, "the CLI session closed once at the run's release");
 });
