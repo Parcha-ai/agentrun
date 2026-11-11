@@ -749,6 +749,33 @@ export async function folderAt(ws: Workspace, commit: string): Promise<{ snapsho
   return snapshot ? { snapshot, blobs: parsed.blobs } : undefined;
 }
 
+/** The texts `commit` holds at `paths` (each a plain path, checkPath), each read alone with one read-only exec (the
+ *  script's show: git cat-file over each `<commit>:<path>`), never the whole tree, its blobs or its log, so the read is
+ *  bounded by what is asked, whatever the folder holds. A path the commit holds no file at is not in it. Undefined when
+ *  the folder has no such commit. */
+export async function textsAt(ws: Workspace, commit: string, paths: readonly string[]): Promise<Record<string, string> | undefined> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  if (!paths.length) return {};
+  const result = await runScript(ws, ["show", commit, ...paths.map(checkPath)]);
+  if (result.code === 1) return undefined;
+  if (result.code !== 0) throw failed("show", result);
+  // git cat-file --batch: per path, `<oid> <type> <size>\n<content>\n`, or `<name> missing\n`.
+  const out: Record<string, string> = {};
+  const bytes = result.stdout;
+  let at = 0;
+  for (const path of paths) {
+    const end = bytes.indexOf(10, at);
+    if (end < 0) throw failed("show", { code: result.code, stderr: "its answer ended early" });
+    const header = bytes.subarray(at, end).toString("utf8").split(" ");
+    at = end + 1;
+    if (header.at(-1) === "missing" || header.length !== 3) continue;
+    const size = Number(header[2]);
+    if (header[1] === "blob") out[path] = bytes.subarray(at, at + size).toString("utf8");
+    at += size + 1;
+  }
+  return out;
+}
+
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
   for (let tries = 0; tries < WRITE_TRIES; tries++) {
     const read = await runScript(ws, ["read"]);
