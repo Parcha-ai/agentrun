@@ -37,12 +37,12 @@ const DRAFT = { v: 2, name: "find-policies", schemas: { Page: { type: "object", 
 
 /** A store, a learning folder holding `notes` (file to text) as a person committed them, and an agent; `before` runs on
  *  the folder first. */
-async function world(t, notes = FILES, before, { instructions } = {}) {
+async function world(t, notes = FILES, before, { instructions, tools } = {}) {
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
   const data = mkdtempSync(join(tmpdir(), "learn-consolidate-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  if (instructions) await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions } });
+  if (instructions || tools) await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { ...(instructions ? { instructions } : {}), ...(tools ? { tools } : {}) } });
   else await agentWithRevision(store);
   await seedOf(data, "agent-1");
   const onFolder = async (fn) => {
@@ -89,13 +89,13 @@ const statusOf = (snapshot) => Object.fromEntries(snapshot.notes.map((n) => [n.f
 /** The skill as a later run's merge changed it, its draft left as it was. */
 const SKILL_NOW = SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.");
 /** A learning folder with a skill and its draft committed by a run's merge (`files` more beside them). */
-const pairWorld = (t, files = [], description = "Finds a store's refund policy") => world(t, {}, async (onFolder) => {
+const pairWorld = (t, files = [], description = "Finds a store's refund policy", options = {}) => world(t, {}, async (onFolder) => {
   const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: `---\nname: find-policies\ndescription: ${description}\n---\n` }, ...files] }));
   assert.equal(made.ok, true, JSON.stringify(made));
-});
+}, options);
 /** pairWorld put out of step as a consolidation is queued for: a later run's merge changed `skills` (by path) alone. */
-async function driftedWorld(t, files = [], description, skills = { "skills/find-policies/SKILL.md": SKILL_NOW }) {
-  const w = await pairWorld(t, files, description);
+async function driftedWorld(t, files = [], description, skills = { "skills/find-policies/SKILL.md": SKILL_NOW }, options = {}) {
+  const w = await pairWorld(t, files, description, options);
   assert.equal((await mergeOn(w, "run-skill", Object.entries(skills).map(([path, text]) => ({ path, text })))).ok, true);
   return w;
 }
@@ -580,4 +580,20 @@ test("a merge that dropped a rewritten pair whole, committed before its end was 
   const skillItem = done.data.verdict.items.find(({ file }) => file === "skills/find-policies/SKILL.md");
   assert.equal(skillItem?.keep, false, `the skill dropped with its partner stays dropped: ${JSON.stringify(skillItem)}`);
   assert.doesNotMatch(done.data.detail, /Learned the skill/, done.data.detail);
+});
+
+// Main's hold on a draft calling an MCP tool with no declared price (LS-07, learning-end heldOf) holds a consolidation's
+// draft as it holds a run's: its rewrite waits for the owner's OK whatever the grade, never merged served. Its tools are
+// the agent's as a run's end reads them (learnedDraftTools over the revision's grants and gates).
+test("a consolidation that rewrites a draft to call an MCP tool with no declared price merges it held for the owner's OK, as a run's draft is", async (t) => {
+  const w = await driftedWorld(t, [], undefined, undefined, { tools: ["mcp:door/lookup"] });
+  const draft2 = { ...DRAFT, root: { node: "call", label: "look up", via: "tool", tool: "mcp:door/lookup", args: { text: "{text}" }, out: "Policies", as: "policies", deadline_s: 30 } };
+  const answer = [`\`\`\`\`skill find-policies\n${SKILL_NOW}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  const { end, entries } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }] });
+  assert.deepEqual(end, { state: "ended" });
+  const done = entries.find((e) => e.kind === KINDS.learningMerged);
+  assert.ok(done, JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.left ?? e.data?.problems])));
+  const item = done.data.verdict.items.find(({ file }) => file === "workflows/find-policies/workflow.json");
+  assert.deepEqual([item?.keep, item?.pending, item?.question], [true, true, "Unpriced"], JSON.stringify(item));
+  assert.match(item.why, /mcp:door\/lookup/, item.why);
 });
