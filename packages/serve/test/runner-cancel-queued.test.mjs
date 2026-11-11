@@ -29,11 +29,18 @@ function holding(store, held, released) {
   });
 }
 
-for (const kind of ["cancel", "stop"]) {
-  test(`a run given a ${kind} while queued ends at its first claim: no loop starts, no input reaches the model, and it ends stopped as ${kind === "cancel" ? "cancelled" : "stopped by a person"}`, { timeout: 60_000 }, async (t) => {
+for (const [kind, lost] of [["cancel", false], ["stop", false], ["cancel", true]]) {
+  const when = lost ? "the claim after a first claim that was lost before it wrote anything (its runner gone, its lease run out)" : "its first claim";
+  test(`a run given a ${kind} while queued ends at ${when}: no loop starts, no input reaches the model, and it ends stopped as ${kind === "cancel" ? "cancelled" : "stopped by a person"}`, { timeout: 60_000 }, async (t) => {
     const opened = await stores({ runners: 1 });
     await queue(opened.server, "run-1");
     const row = await opened.server.command("run-1", { kind });
+    if (lost) {
+      // A runner claimed the run (it now reads running) and was gone before it wrote anything: its lease runs out on the
+      // store's clock, and the next claim takes the run over from running, its stop still untried.
+      await opened.runners[0].claim("run-1", "runner-gone", { leaseMs: 1_000 });
+      opened.clock.skewMs += 5_000;
+    }
     const requests = [];
     const script = [{ say: "Hello." }];
     const loop = createAdapterLoop(piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, requests) }));

@@ -313,6 +313,32 @@ test("an answer whose write lands just after a stop's is 409 withdrawn: the stop
   assert.deepEqual((await commandsOf(store, id)).map((row) => row.kind), ["stop", "approve"], "the stop is read first: its end refuses the answer");
 });
 
+test("an answer whose write lands just after a stop's, and whose run's stopped end is written before it is read back, is 409 withdrawn: the end refused it", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  // The stop is written between the answer's check and its own write, and the runner takes it (the run's stopped end,
+  // which refuses every row left untaken) right after the answer's write, before the answer reads back.
+  const racing = {
+    runs: store.runs,
+    agents: store.agents,
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+    command: async (runId, command) => {
+      if (command.kind !== "approve") return store.command(runId, command);
+      const stop = await store.command(runId, { kind: "stop", body: {} });
+      const written = await store.command(runId, command);
+      await store.runs.update(await store.claim(runId, "runner-a"), { state: "stopped", summary: "stopped by a person" }, { take: [stop.id] });
+      return written;
+    },
+  };
+  await assert.rejects(
+    () => approve(racing, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.message === "The tool call call-1 was already withdrawn when its run was stopped.",
+  );
+  const rows = await commandsOf(store, id);
+  assert.deepEqual(rows.map((row) => [row.kind, row.takenAt !== null, row.refused !== null]), [["stop", true, false], ["approve", false, true]], "the end took the stop and refused the answer");
+});
+
 test("approve of a call the run never had is 404, nothing written", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
