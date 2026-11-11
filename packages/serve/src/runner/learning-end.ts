@@ -79,7 +79,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
     },
     // A draft asked for or not never stops the turn: a count that can't be read asks for none.
-    promptFacts: async (runId, agentId) => ({ active: start.seedNotes ?? start.given.length, tools: (await draftTools(deps, runId)).tools, draftFor: await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []) }),
+    promptFacts: async (runId, agentId) => {
+      const { tools } = await draftTools(deps, runId);
+      const draftFor = await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
+      // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
+      const described = draftFor.length ? await describedOf(tools) : [];
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described };
+    },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -118,6 +124,16 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     }
     return hookFor(input.runId)(input);
   };
+}
+
+/** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
+ *  summary): the draft ask's `describe`. */
+async function describedOf(tools: readonly string[]): Promise<{ name: string; does: string }[]> {
+  const { toolOf } = await import("../tools.js");
+  return tools.flatMap((name) => {
+    const does = toolOf(name)?.summary;
+    return does ? [{ name, does }] : [];
+  });
 }
 
 /** How many of an agent's latest runs draftForOf reads at most: a skill offered to fewer than DRAFT_AFTER_RUNS of them is
