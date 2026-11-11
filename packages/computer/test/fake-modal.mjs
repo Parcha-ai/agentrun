@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
@@ -75,7 +76,7 @@ export function mountsOf(box) {
 	}
 	return `${lines.join("\n")}\n`;
 }
-export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 /** What computerd probe reports in a VM sandbox: Modal's docs show `uname -srn` there as "Linux modal 7.2.6". */
 export const VM_KERNEL = "7.2.6";
 /** What gVisor reports (guide/troubleshooting: "4.19.0-gvisor"). */

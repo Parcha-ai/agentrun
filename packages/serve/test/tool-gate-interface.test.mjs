@@ -1,8 +1,8 @@
 // The tool gate's interface (tool-gate.ts): the permission a tool's calls get, MCP's server-wide key and its
-// precedence, the owner's defaults, and enter's allow and deny. Parking and holding an ask come with the approvals PR.
+// precedence, and the owner's defaults.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultPermission, deniedText, gateOf, isCatalogTool, isMcpTool, mcpToolName, permissionKeys, permissionOf } from "../dist/tool-gate.js";
+import { defaultPermission, isCatalogTool, isMcpTool, mcpToolName, permissionKeys, permissionOf } from "../dist/tool-gate.js";
 
 test("an MCP tool's name is mcp:<server>/<tool>, a catalog tool, asked by default; a built-in tool is allowed by default", () => {
   assert.equal(mcpToolName("srv", "echo"), "mcp:srv/echo");
@@ -22,12 +22,4 @@ test("a permission is looked up most specific first: agent exact, agent server-w
   assert.equal(permissionOf(tool, { [tool]: { permission: "allow" } }, { "mcp:srv/*": { permission: "ask" }, [tool]: { permission: "deny" } }), "deny", "agent exact over all");
   assert.equal(permissionOf("mcp:other/echo", { "mcp:srv/*": { permission: "allow" } }), "ask", "another server's wildcard does not apply");
   assert.equal(permissionOf("web_fetch", { web_fetch: { permission: "deny" } }), "deny", "a built-in tool by its name");
-});
-
-test("enter: an allowed call runs (undefined), a denied one is refused in plain words; executors register by prefix", async () => {
-  const gate = gateOf((tool) => (tool === "mcp:srv/no" ? "deny" : "allow"));
-  const park = { commit: async (change) => change(undefined) };
-  assert.equal(await gate.enter("mcp:srv/yes", {}, "c1", park), undefined);
-  assert.deepEqual(await gate.enter("mcp:srv/no", {}, "c2", park), { text: deniedText("mcp:srv/no"), isError: true });
-  assert.equal(gate.executor("mcp:", async () => ({ text: "ok", isError: false })), undefined);
 });

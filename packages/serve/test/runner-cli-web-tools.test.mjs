@@ -180,10 +180,30 @@ for (const harness of Object.keys(HARNESSES)) {
     assert.deepEqual(paid.map((record) => [record.key, record.data.model]), [[TOOL_SESSION, `paid:${EXTRACT.name}`]], `booked once, on the run's paid-tools session: ${JSON.stringify(records.map((one) => [one.key, one.kind, one.data?.model ?? null]))}`);
     const booked = records.filter((record) => record.key === TOOL_SESSION && record.kind === "runner.turn" && record.data?.turn === paid[0].data.turn);
     assert.deepEqual(booked.map((record) => eight(record.data.usd)), [eight(FEE)], `booked at the extract's fee, once: ${JSON.stringify(booked)}`);
-    // The run's cost holds the fee once, beside what its end's metrics read of its record (metrics.ts runMetrics), as the
-    // pi spec's end adds its paid tool calls: on its row and on its view.
-    assert.equal(eight(row.costUsd ?? 0), eight((recorded ?? 0) + FEE), `the run row's cost holds the fee once: ${row.costUsd}, its record's ${recorded}`);
+    // The run's cost holds the fee once, beside its model requests at what the run's booking booked them at, as the pi
+    // spec's end adds its paid tool calls: on its row and on its view.
+    const model = records.filter((record) => record.key !== TOOL_SESSION && record.kind === "runner.turn").reduce((sum, record) => sum + record.data.usd, 0);
+    assert.equal(eight(row.costUsd ?? 0), eight(model + FEE), `the run row's cost holds the fee once: ${row.costUsd}, its model requests' ${model}`);
     assert.equal(eight(view?.cost?.usd ?? 0), eight(row.costUsd ?? 0), `the view's cost is the row's: ${JSON.stringify(view?.cost)}`);
+    void recorded;
+  });
+
+  test(`a ${harness} run's model requests are its cost: the booking's records, one usage row priced at them, and the run row and its view priced the same (#2275)`, { timeout: 90_000 }, async (t) => {
+    const { row, timeline, view, records } = await webRun(t, harness);
+    assert.equal(row.state, "ended", `the run ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+    // The harness's model requests, booked by the run's model proxy in its own session (never the paid-tools one).
+    const turns = records.filter((record) => record.key !== TOOL_SESSION && record.kind === "runner.turn");
+    assert.ok(turns.length > 0 && turns.every((record) => typeof record.data.usd === "number" && record.data.usd > 0), `the model requests are booked, each priced: ${JSON.stringify(turns.map((one) => one.data))}`);
+    const model = turns.reduce((sum, record) => sum + record.data.usd, 0);
+    // The timeline: one usage row, at the model requests' cost and the paid call's fee, over the requests booked.
+    const usage = timeline.filter((one) => one.kind === "usage");
+    assert.equal(usage.length, 1, `one usage row: ${JSON.stringify(timeline.map((one) => one.kind))}`);
+    assert.equal(eight(usage[0].usage.usd), eight(model + FEE), `the usage row's cost: ${JSON.stringify(usage[0])}`);
+    assert.equal(usage[0].usage.requests, turns.length, "its requests are the booked ones");
+    assert.match(usage[0].summary, new RegExp(`over ${turns.length} model requests? and 1 paid tool call$`));
+    // The run's row (what /v2/stats sums) and its view: priced the same, never $0 or unknown.
+    assert.equal(eight(row.costUsd ?? -1), eight(model + FEE), `the run row's cost: ${row.costUsd}`);
+    assert.equal(eight(view?.cost?.usd ?? -1), eight(model + FEE), `the view's cost: ${JSON.stringify(view?.cost)}`);
   });
 
   test(`a ${harness} run whose agent sets web_fetch to deny: the call is refused in main's words, and nothing is sent`, { timeout: 90_000 }, async (t) => {

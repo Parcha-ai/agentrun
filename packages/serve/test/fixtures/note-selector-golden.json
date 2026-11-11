@@ -1,0 +1,1070 @@
+{
+ "nothing learned | 8000, read": {
+  "section": null,
+  "given": []
+ },
+ "nothing learned | 8000, no read": {
+  "section": null,
+  "given": []
+ },
+ "nothing learned | 0, read": {
+  "section": null,
+  "given": []
+ },
+ "nothing learned | 2000, read": {
+  "section": null,
+  "given": []
+ },
+ "three that fit | 8000, read": {
+  "section": "What you learned in earlier runs: each note whole, newest first. Follow a note when it applies to what you are doing.\n\n## Note 2 (note-02.md)\n\nWhen note 2 applies\n\nRule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nRule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1.\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "three that fit | 8000, no read": {
+  "section": "What you learned in earlier runs: each note whole, newest first. Follow a note when it applies to what you are doing.\n\n## Note 2 (note-02.md)\n\nWhen note 2 applies\n\nRule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nRule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1.\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "three that fit | 0, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "three that fit | 2000, read": {
+  "section": "What you learned in earlier runs: each note whole, newest first. Follow a note when it applies to what you are doing.\n\n## Note 2 (note-02.md)\n\nWhen note 2 applies\n\nRule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nRule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1.\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "forty past the budget | 8000, read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n- [Note 4](note-04.md) — When note 4 applies\n- [Note 5](note-05.md) — When note 5 applies\n- [Note 6](note-06.md) — When note 6 applies\n- [Note 7](note-07.md) — When note 7 applies\n- [Note 8](note-08.md) — When note 8 applies\n- [Note 9](note-09.md) — When note 9 applies\n- [Note 10](note-10.md) — When note 10 applies\n- [Note 11](note-11.md) — When note 11 applies\n- [Note 12](note-12.md) — When note 12 applies\n- [Note 13](note-13.md) — When note 13 applies\n- [Note 14](note-14.md) — When note 14 applies\n- [Note 15](note-15.md) — When note 15 applies\n- [Note 16](note-16.md) — When note 16 applies\n- [Note 17](note-17.md) — When note 17 applies\n- [Note 18](note-18.md) — When note 18 applies\n- [Note 19](note-19.md) — When note 19 applies\n- [Note 20](note-20.md) — When note 20 applies\n- [Note 21](note-21.md) — When note 21 applies\n- [Note 22](note-22.md) — When note 22 applies\n- [Note 23](note-23.md) — When note 23 applies\n- [Note 24](note-24.md) — When note 24 applies\n- [Note 25](note-25.md) — When note 25 applies\n- [Note 26](note-26.md) — When note 26 applies\n- [Note 27](note-27.md) — When note 27 applies\n- [Note 28](note-28.md) — When note 28 applies\n- [Note 29](note-29.md) — When note 29 applies\n- [Note 30](note-30.md) — When note 30 applies\n- [Note 31](note-31.md) — When note 31 applies\n- [Note 32](note-32.md) — When note 32 applies\n- [Note 33](note-33.md) — When note 33 applies\n- [Note 34](note-34.md) — When note 34 applies\n- [Note 35](note-35.md) — When note 35 applies\n- [Note 36](note-36.md) — When note 36 applies\n- [Note 37](note-37.md) — When note 37 applies\n- [Note 38](note-38.md) — When note 38 applies\n- [Note 39](note-39.md) — When note 39 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.\n\n## Note 39 (note-39.md)\n\nWhen note 39 applies\n\nRule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 3\n\n## Note 38 (note-38.md)\n\nWhen note 38 applies\n\nRule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 3\n\n## Note 37 (note-37.md)\n\nWhen note 37 applies\n\nRule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 3\n\n## Note 36 (note-36.md)\n\nWhen note 36 applies\n\nRule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 3\n\n## Note 35 (note-35.md)\n\nWhen note 35 applies\n\nRule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 3\n\n## Note 34 (note-34.md)\n\nWhen note 34 applies\n\nRule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 3\n\n## Note 33 (note-33.md)\n\nWhen note 33 applies\n\nRule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 3\n\n## Note 32 (note-32.md)\n\nWhen note 32 applies\n\nRule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 3\n\n## Note 31 (note-31.md)\n\nWhen note 31 applies\n\nRule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 3",
+  "given": [
+   {
+    "file": "note-39.md",
+    "name": "Note 39"
+   },
+   {
+    "file": "note-38.md",
+    "name": "Note 38"
+   },
+   {
+    "file": "note-37.md",
+    "name": "Note 37"
+   },
+   {
+    "file": "note-36.md",
+    "name": "Note 36"
+   },
+   {
+    "file": "note-35.md",
+    "name": "Note 35"
+   },
+   {
+    "file": "note-34.md",
+    "name": "Note 34"
+   },
+   {
+    "file": "note-33.md",
+    "name": "Note 33"
+   },
+   {
+    "file": "note-32.md",
+    "name": "Note 32"
+   },
+   {
+    "file": "note-31.md",
+    "name": "Note 31"
+   },
+   {
+    "file": "note-30.md",
+    "name": "Note 30"
+   },
+   {
+    "file": "note-29.md",
+    "name": "Note 29"
+   },
+   {
+    "file": "note-28.md",
+    "name": "Note 28"
+   },
+   {
+    "file": "note-27.md",
+    "name": "Note 27"
+   },
+   {
+    "file": "note-26.md",
+    "name": "Note 26"
+   },
+   {
+    "file": "note-25.md",
+    "name": "Note 25"
+   },
+   {
+    "file": "note-24.md",
+    "name": "Note 24"
+   },
+   {
+    "file": "note-23.md",
+    "name": "Note 23"
+   },
+   {
+    "file": "note-22.md",
+    "name": "Note 22"
+   },
+   {
+    "file": "note-21.md",
+    "name": "Note 21"
+   },
+   {
+    "file": "note-20.md",
+    "name": "Note 20"
+   },
+   {
+    "file": "note-19.md",
+    "name": "Note 19"
+   },
+   {
+    "file": "note-18.md",
+    "name": "Note 18"
+   },
+   {
+    "file": "note-17.md",
+    "name": "Note 17"
+   },
+   {
+    "file": "note-16.md",
+    "name": "Note 16"
+   },
+   {
+    "file": "note-15.md",
+    "name": "Note 15"
+   },
+   {
+    "file": "note-14.md",
+    "name": "Note 14"
+   },
+   {
+    "file": "note-13.md",
+    "name": "Note 13"
+   },
+   {
+    "file": "note-12.md",
+    "name": "Note 12"
+   },
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-10.md",
+    "name": "Note 10"
+   },
+   {
+    "file": "note-09.md",
+    "name": "Note 9"
+   },
+   {
+    "file": "note-08.md",
+    "name": "Note 8"
+   },
+   {
+    "file": "note-07.md",
+    "name": "Note 7"
+   },
+   {
+    "file": "note-06.md",
+    "name": "Note 6"
+   },
+   {
+    "file": "note-05.md",
+    "name": "Note 5"
+   },
+   {
+    "file": "note-04.md",
+    "name": "Note 4"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "forty past the budget | 8000, no read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n- [Note 4](note-04.md) — When note 4 applies\n- [Note 5](note-05.md) — When note 5 applies\n- [Note 6](note-06.md) — When note 6 applies\n- [Note 7](note-07.md) — When note 7 applies\n- [Note 8](note-08.md) — When note 8 applies\n- [Note 9](note-09.md) — When note 9 applies\n- [Note 10](note-10.md) — When note 10 applies\n- [Note 11](note-11.md) — When note 11 applies\n- [Note 12](note-12.md) — When note 12 applies\n- [Note 13](note-13.md) — When note 13 applies\n- [Note 14](note-14.md) — When note 14 applies\n- [Note 15](note-15.md) — When note 15 applies\n- [Note 16](note-16.md) — When note 16 applies\n- [Note 17](note-17.md) — When note 17 applies\n- [Note 18](note-18.md) — When note 18 applies\n- [Note 19](note-19.md) — When note 19 applies\n- [Note 20](note-20.md) — When note 20 applies\n- [Note 21](note-21.md) — When note 21 applies\n- [Note 22](note-22.md) — When note 22 applies\n- [Note 23](note-23.md) — When note 23 applies\n- [Note 24](note-24.md) — When note 24 applies\n- [Note 25](note-25.md) — When note 25 applies\n- [Note 26](note-26.md) — When note 26 applies\n- [Note 27](note-27.md) — When note 27 applies\n- [Note 28](note-28.md) — When note 28 applies\n- [Note 29](note-29.md) — When note 29 applies\n- [Note 30](note-30.md) — When note 30 applies\n- [Note 31](note-31.md) — When note 31 applies\n- [Note 32](note-32.md) — When note 32 applies\n- [Note 33](note-33.md) — When note 33 applies\n- [Note 34](note-34.md) — When note 34 applies\n- [Note 35](note-35.md) — When note 35 applies\n- [Note 36](note-36.md) — When note 36 applies\n- [Note 37](note-37.md) — When note 37 applies\n- [Note 38](note-38.md) — When note 38 applies\n- [Note 39](note-39.md) — When note 39 applies\n\n## Note 39 (note-39.md)\n\nWhen note 39 applies\n\nRule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 39. Rule 3\n\n## Note 38 (note-38.md)\n\nWhen note 38 applies\n\nRule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 38. Rule 3\n\n## Note 37 (note-37.md)\n\nWhen note 37 applies\n\nRule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 37. Rule 3\n\n## Note 36 (note-36.md)\n\nWhen note 36 applies\n\nRule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 36. Rule 3\n\n## Note 35 (note-35.md)\n\nWhen note 35 applies\n\nRule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 35. Rule 3\n\n## Note 34 (note-34.md)\n\nWhen note 34 applies\n\nRule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 34. Rule 3\n\n## Note 33 (note-33.md)\n\nWhen note 33 applies\n\nRule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 33. Rule 3\n\n## Note 32 (note-32.md)\n\nWhen note 32 applies\n\nRule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 32. Rule 3\n\n## Note 31 (note-31.md)\n\nWhen note 31 applies\n\nRule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 31. Rule 3",
+  "given": [
+   {
+    "file": "note-39.md",
+    "name": "Note 39"
+   },
+   {
+    "file": "note-38.md",
+    "name": "Note 38"
+   },
+   {
+    "file": "note-37.md",
+    "name": "Note 37"
+   },
+   {
+    "file": "note-36.md",
+    "name": "Note 36"
+   },
+   {
+    "file": "note-35.md",
+    "name": "Note 35"
+   },
+   {
+    "file": "note-34.md",
+    "name": "Note 34"
+   },
+   {
+    "file": "note-33.md",
+    "name": "Note 33"
+   },
+   {
+    "file": "note-32.md",
+    "name": "Note 32"
+   },
+   {
+    "file": "note-31.md",
+    "name": "Note 31"
+   },
+   {
+    "file": "note-30.md",
+    "name": "Note 30"
+   },
+   {
+    "file": "note-29.md",
+    "name": "Note 29"
+   },
+   {
+    "file": "note-28.md",
+    "name": "Note 28"
+   },
+   {
+    "file": "note-27.md",
+    "name": "Note 27"
+   },
+   {
+    "file": "note-26.md",
+    "name": "Note 26"
+   },
+   {
+    "file": "note-25.md",
+    "name": "Note 25"
+   },
+   {
+    "file": "note-24.md",
+    "name": "Note 24"
+   },
+   {
+    "file": "note-23.md",
+    "name": "Note 23"
+   },
+   {
+    "file": "note-22.md",
+    "name": "Note 22"
+   },
+   {
+    "file": "note-21.md",
+    "name": "Note 21"
+   },
+   {
+    "file": "note-20.md",
+    "name": "Note 20"
+   },
+   {
+    "file": "note-19.md",
+    "name": "Note 19"
+   },
+   {
+    "file": "note-18.md",
+    "name": "Note 18"
+   },
+   {
+    "file": "note-17.md",
+    "name": "Note 17"
+   },
+   {
+    "file": "note-16.md",
+    "name": "Note 16"
+   },
+   {
+    "file": "note-15.md",
+    "name": "Note 15"
+   },
+   {
+    "file": "note-14.md",
+    "name": "Note 14"
+   },
+   {
+    "file": "note-13.md",
+    "name": "Note 13"
+   },
+   {
+    "file": "note-12.md",
+    "name": "Note 12"
+   },
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-10.md",
+    "name": "Note 10"
+   },
+   {
+    "file": "note-09.md",
+    "name": "Note 9"
+   },
+   {
+    "file": "note-08.md",
+    "name": "Note 8"
+   },
+   {
+    "file": "note-07.md",
+    "name": "Note 7"
+   },
+   {
+    "file": "note-06.md",
+    "name": "Note 6"
+   },
+   {
+    "file": "note-05.md",
+    "name": "Note 5"
+   },
+   {
+    "file": "note-04.md",
+    "name": "Note 4"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "forty past the budget | 0, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n- [Note 4](note-04.md) — When note 4 applies\n- [Note 5](note-05.md) — When note 5 applies\n- [Note 6](note-06.md) — When note 6 applies\n- [Note 7](note-07.md) — When note 7 applies\n- [Note 8](note-08.md) — When note 8 applies\n- [Note 9](note-09.md) — When note 9 applies\n- [Note 10](note-10.md) — When note 10 applies\n- [Note 11](note-11.md) — When note 11 applies\n- [Note 12](note-12.md) — When note 12 applies\n- [Note 13](note-13.md) — When note 13 applies\n- [Note 14](note-14.md) — When note 14 applies\n- [Note 15](note-15.md) — When note 15 applies\n- [Note 16](note-16.md) — When note 16 applies\n- [Note 17](note-17.md) — When note 17 applies\n- [Note 18](note-18.md) — When note 18 applies\n- [Note 19](note-19.md) — When note 19 applies\n- [Note 20](note-20.md) — When note 20 applies\n- [Note 21](note-21.md) — When note 21 applies\n- [Note 22](note-22.md) — When note 22 applies\n- [Note 23](note-23.md) — When note 23 applies\n- [Note 24](note-24.md) — When note 24 applies\n- [Note 25](note-25.md) — When note 25 applies\n- [Note 26](note-26.md) — When note 26 applies\n- [Note 27](note-27.md) — When note 27 applies\n- [Note 28](note-28.md) — When note 28 applies\n- [Note 29](note-29.md) — When note 29 applies\n- [Note 30](note-30.md) — When note 30 applies\n- [Note 31](note-31.md) — When note 31 applies\n- [Note 32](note-32.md) — When note 32 applies\n- [Note 33](note-33.md) — When note 33 applies\n- [Note 34](note-34.md) — When note 34 applies\n- [Note 35](note-35.md) — When note 35 applies\n- [Note 36](note-36.md) — When note 36 applies\n- [Note 37](note-37.md) — When note 37 applies\n- [Note 38](note-38.md) — When note 38 applies\n- [Note 39](note-39.md) — When note 39 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-39.md",
+    "name": "Note 39"
+   },
+   {
+    "file": "note-38.md",
+    "name": "Note 38"
+   },
+   {
+    "file": "note-37.md",
+    "name": "Note 37"
+   },
+   {
+    "file": "note-36.md",
+    "name": "Note 36"
+   },
+   {
+    "file": "note-35.md",
+    "name": "Note 35"
+   },
+   {
+    "file": "note-34.md",
+    "name": "Note 34"
+   },
+   {
+    "file": "note-33.md",
+    "name": "Note 33"
+   },
+   {
+    "file": "note-32.md",
+    "name": "Note 32"
+   },
+   {
+    "file": "note-31.md",
+    "name": "Note 31"
+   },
+   {
+    "file": "note-30.md",
+    "name": "Note 30"
+   },
+   {
+    "file": "note-29.md",
+    "name": "Note 29"
+   },
+   {
+    "file": "note-28.md",
+    "name": "Note 28"
+   },
+   {
+    "file": "note-27.md",
+    "name": "Note 27"
+   },
+   {
+    "file": "note-26.md",
+    "name": "Note 26"
+   },
+   {
+    "file": "note-25.md",
+    "name": "Note 25"
+   },
+   {
+    "file": "note-24.md",
+    "name": "Note 24"
+   },
+   {
+    "file": "note-23.md",
+    "name": "Note 23"
+   },
+   {
+    "file": "note-22.md",
+    "name": "Note 22"
+   },
+   {
+    "file": "note-21.md",
+    "name": "Note 21"
+   },
+   {
+    "file": "note-20.md",
+    "name": "Note 20"
+   },
+   {
+    "file": "note-19.md",
+    "name": "Note 19"
+   },
+   {
+    "file": "note-18.md",
+    "name": "Note 18"
+   },
+   {
+    "file": "note-17.md",
+    "name": "Note 17"
+   },
+   {
+    "file": "note-16.md",
+    "name": "Note 16"
+   },
+   {
+    "file": "note-15.md",
+    "name": "Note 15"
+   },
+   {
+    "file": "note-14.md",
+    "name": "Note 14"
+   },
+   {
+    "file": "note-13.md",
+    "name": "Note 13"
+   },
+   {
+    "file": "note-12.md",
+    "name": "Note 12"
+   },
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-10.md",
+    "name": "Note 10"
+   },
+   {
+    "file": "note-09.md",
+    "name": "Note 9"
+   },
+   {
+    "file": "note-08.md",
+    "name": "Note 8"
+   },
+   {
+    "file": "note-07.md",
+    "name": "Note 7"
+   },
+   {
+    "file": "note-06.md",
+    "name": "Note 6"
+   },
+   {
+    "file": "note-05.md",
+    "name": "Note 5"
+   },
+   {
+    "file": "note-04.md",
+    "name": "Note 4"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "forty past the budget | 2000, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n- [Note 4](note-04.md) — When note 4 applies\n- [Note 5](note-05.md) — When note 5 applies\n- [Note 6](note-06.md) — When note 6 applies\n- [Note 7](note-07.md) — When note 7 applies\n- [Note 8](note-08.md) — When note 8 applies\n- [Note 9](note-09.md) — When note 9 applies\n- [Note 10](note-10.md) — When note 10 applies\n- [Note 11](note-11.md) — When note 11 applies\n- [Note 12](note-12.md) — When note 12 applies\n- [Note 13](note-13.md) — When note 13 applies\n- [Note 14](note-14.md) — When note 14 applies\n- [Note 15](note-15.md) — When note 15 applies\n- [Note 16](note-16.md) — When note 16 applies\n- [Note 17](note-17.md) — When note 17 applies\n- [Note 18](note-18.md) — When note 18 applies\n- [Note 19](note-19.md) — When note 19 applies\n- [Note 20](note-20.md) — When note 20 applies\n- [Note 21](note-21.md) — When note 21 applies\n- [Note 22](note-22.md) — When note 22 applies\n- [Note 23](note-23.md) — When note 23 applies\n- [Note 24](note-24.md) — When note 24 applies\n- [Note 25](note-25.md) — When note 25 applies\n- [Note 26](note-26.md) — When note 26 applies\n- [Note 27](note-27.md) — When note 27 applies\n- [Note 28](note-28.md) — When note 28 applies\n- [Note 29](note-29.md) — When note 29 applies\n- [Note 30](note-30.md) — When note 30 applies\n- [Note 31](note-31.md) — When note 31 applies\n- [Note 32](note-32.md) — When note 32 applies\n- [Note 33](note-33.md) — When note 33 applies\n- [Note 34](note-34.md) — When note 34 applies\n- [Note 35](note-35.md) — When note 35 applies\n- [Note 36](note-36.md) — When note 36 applies\n- [Note 37](note-37.md) — When note 37 applies\n- [Note 38](note-38.md) — When note 38 applies\n- [Note 39](note-39.md) — When note 39 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-39.md",
+    "name": "Note 39"
+   },
+   {
+    "file": "note-38.md",
+    "name": "Note 38"
+   },
+   {
+    "file": "note-37.md",
+    "name": "Note 37"
+   },
+   {
+    "file": "note-36.md",
+    "name": "Note 36"
+   },
+   {
+    "file": "note-35.md",
+    "name": "Note 35"
+   },
+   {
+    "file": "note-34.md",
+    "name": "Note 34"
+   },
+   {
+    "file": "note-33.md",
+    "name": "Note 33"
+   },
+   {
+    "file": "note-32.md",
+    "name": "Note 32"
+   },
+   {
+    "file": "note-31.md",
+    "name": "Note 31"
+   },
+   {
+    "file": "note-30.md",
+    "name": "Note 30"
+   },
+   {
+    "file": "note-29.md",
+    "name": "Note 29"
+   },
+   {
+    "file": "note-28.md",
+    "name": "Note 28"
+   },
+   {
+    "file": "note-27.md",
+    "name": "Note 27"
+   },
+   {
+    "file": "note-26.md",
+    "name": "Note 26"
+   },
+   {
+    "file": "note-25.md",
+    "name": "Note 25"
+   },
+   {
+    "file": "note-24.md",
+    "name": "Note 24"
+   },
+   {
+    "file": "note-23.md",
+    "name": "Note 23"
+   },
+   {
+    "file": "note-22.md",
+    "name": "Note 22"
+   },
+   {
+    "file": "note-21.md",
+    "name": "Note 21"
+   },
+   {
+    "file": "note-20.md",
+    "name": "Note 20"
+   },
+   {
+    "file": "note-19.md",
+    "name": "Note 19"
+   },
+   {
+    "file": "note-18.md",
+    "name": "Note 18"
+   },
+   {
+    "file": "note-17.md",
+    "name": "Note 17"
+   },
+   {
+    "file": "note-16.md",
+    "name": "Note 16"
+   },
+   {
+    "file": "note-15.md",
+    "name": "Note 15"
+   },
+   {
+    "file": "note-14.md",
+    "name": "Note 14"
+   },
+   {
+    "file": "note-13.md",
+    "name": "Note 13"
+   },
+   {
+    "file": "note-12.md",
+    "name": "Note 12"
+   },
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-10.md",
+    "name": "Note 10"
+   },
+   {
+    "file": "note-09.md",
+    "name": "Note 9"
+   },
+   {
+    "file": "note-08.md",
+    "name": "Note 8"
+   },
+   {
+    "file": "note-07.md",
+    "name": "Note 7"
+   },
+   {
+    "file": "note-06.md",
+    "name": "Note 6"
+   },
+   {
+    "file": "note-05.md",
+    "name": "Note 5"
+   },
+   {
+    "file": "note-04.md",
+    "name": "Note 4"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming a note main lacks | 8000, read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Gone](gone.md) — A note main does not hold\n\n## Note 2 (note-02.md)\n\nWhen note 2 applies\n\nRule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nRule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1.\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming a note main lacks | 8000, no read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Gone](gone.md) — A note main does not hold\n\n## Note 2 (note-02.md)\n\nWhen note 2 applies\n\nRule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nRule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1.\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming a note main lacks | 0, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Gone](gone.md) — A note main does not hold\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming a note main lacks | 2000, read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Gone](gone.md) — A note main does not hold\n\n## Note 2 (note-02.md)\n\nWhen note 2 applies\n\nRule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2. Rule 2.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nRule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1. Rule 1.\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0.",
+  "given": [
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "one note larger than the budget | 8000, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "one note larger than the budget | 8000, no read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "one note larger than the budget | 0, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "one note larger than the budget | 2000, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming some notes, past the budget | 8000, read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.\n\n## Note 11 (note-11.md)\n\nWhen note 11 applies\n\nRule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11.\n\n## Note 10 (note-10.md)\n\nWhen note 10 applies\n\nRule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10.\n\n## Note 9 (note-09.md)\n\nWhen note 9 applies\n\nRule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule\n\n## Note 8 (note-08.md)\n\nWhen note 8 applies\n\nRule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule\n\n## Note 7 (note-07.md)\n\nWhen note 7 applies\n\nRule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule\n\n## Note 6 (note-06.md)\n\nWhen note 6 applies\n\nRule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule\n\n## Note 5 (note-05.md)\n\nWhen note 5 applies\n\nRule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule\n\n## Note 4 (note-04.md)\n\nWhen note 4 applies\n\nRule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule",
+  "given": [
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-10.md",
+    "name": "Note 10"
+   },
+   {
+    "file": "note-09.md",
+    "name": "Note 9"
+   },
+   {
+    "file": "note-08.md",
+    "name": "Note 8"
+   },
+   {
+    "file": "note-07.md",
+    "name": "Note 7"
+   },
+   {
+    "file": "note-06.md",
+    "name": "Note 6"
+   },
+   {
+    "file": "note-05.md",
+    "name": "Note 5"
+   },
+   {
+    "file": "note-04.md",
+    "name": "Note 4"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming some notes, past the budget | 8000, no read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n\n## Note 11 (note-11.md)\n\nWhen note 11 applies\n\nRule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11.\n\n## Note 10 (note-10.md)\n\nWhen note 10 applies\n\nRule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10. Rule 10.\n\n## Note 9 (note-09.md)\n\nWhen note 9 applies\n\nRule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule 9. Rule\n\n## Note 8 (note-08.md)\n\nWhen note 8 applies\n\nRule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule 8. Rule\n\n## Note 7 (note-07.md)\n\nWhen note 7 applies\n\nRule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule 7. Rule\n\n## Note 6 (note-06.md)\n\nWhen note 6 applies\n\nRule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule 6. Rule\n\n## Note 5 (note-05.md)\n\nWhen note 5 applies\n\nRule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule 5. Rule\n\n## Note 4 (note-04.md)\n\nWhen note 4 applies\n\nRule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule 4. Rule",
+  "given": [
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-10.md",
+    "name": "Note 10"
+   },
+   {
+    "file": "note-09.md",
+    "name": "Note 9"
+   },
+   {
+    "file": "note-08.md",
+    "name": "Note 8"
+   },
+   {
+    "file": "note-07.md",
+    "name": "Note 7"
+   },
+   {
+    "file": "note-06.md",
+    "name": "Note 6"
+   },
+   {
+    "file": "note-05.md",
+    "name": "Note 5"
+   },
+   {
+    "file": "note-04.md",
+    "name": "Note 4"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming some notes, past the budget | 0, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "an index naming some notes, past the budget | 2000, read": {
+  "section": "What you learned in earlier runs: the index, one line per note, then the newest notes whole. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n- [Note 2](note-02.md) — When note 2 applies\n- [Note 3](note-03.md) — When note 3 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.\n\n## Note 11 (note-11.md)\n\nWhen note 11 applies\n\nRule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11. Rule 11.",
+  "given": [
+   {
+    "file": "note-11.md",
+    "name": "Note 11"
+   },
+   {
+    "file": "note-03.md",
+    "name": "Note 3"
+   },
+   {
+    "file": "note-02.md",
+    "name": "Note 2"
+   },
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "a note holding a secret | 8000, read": {
+  "section": "What you learned in earlier runs: each note whole, newest first. Follow a note when it applies to what you are doing.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nThe pass is [redacted].\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "a note holding a secret | 8000, no read": {
+  "section": "What you learned in earlier runs: each note whole, newest first. Follow a note when it applies to what you are doing.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nThe pass is [redacted].\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "a note holding a secret | 0, read": {
+  "section": "What you learned in earlier runs, one line per note. Follow a note when it applies to what you are doing.\n\n- [Note 0](note-00.md) — When note 0 applies\n- [Note 1](note-01.md) — When note 1 applies\n\nThe notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ },
+ "a note holding a secret | 2000, read": {
+  "section": "What you learned in earlier runs: each note whole, newest first. Follow a note when it applies to what you are doing.\n\n## Note 1 (note-01.md)\n\nWhen note 1 applies\n\nThe pass is [redacted].\n\n## Note 0 (note-00.md)\n\nWhen note 0 applies\n\nRule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule 0. Rule",
+  "given": [
+   {
+    "file": "note-01.md",
+    "name": "Note 1"
+   },
+   {
+    "file": "note-00.md",
+    "name": "Note 0"
+   }
+  ]
+ }
+}

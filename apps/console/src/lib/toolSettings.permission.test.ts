@@ -13,13 +13,12 @@ const CAPS_TOOLS = [
 ];
 
 describe("tool permissions", () => {
-  it("reads each tool's permission, the owner's default and those offered, in the server's order; none from an older server", () => {
+  it("reads each tool's permission, the owner's default and those offered, in the server's order; none before capabilities answer", () => {
     expect(toolGates(CAPS_TOOLS)).toEqual([
       { name: "read", permission: "allow", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
       { name: "ask_person", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"] },
       { name: "web_search", permission: "ask", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
     ]);
-    expect(toolGates([{ name: "read", available: true }])).toEqual([]);
     expect(toolGates(undefined)).toEqual([]);
   });
 

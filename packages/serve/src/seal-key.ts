@@ -16,13 +16,13 @@
 // start makes a key and records it (and the import's, which sets a data directory up as the server does); a runner reads
 // one and checks it, and never makes or records one. Several data directories in one process each keep their own key.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
 import { join } from "node:path";
 import { unseal } from "@parcha/pi-durable-agent";
 import type { Store } from "./store/index.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { handedSecret, holdSealKey } from "./secrets.js";
-import { webhookSecretIn } from "./webhooks.js";
+import { webhookKeptIn, webhookSecretIn } from "./webhooks.js";
 
 /** The seal key's own directory in the data directory, and its file there. */
 export const SEAL_KEY_DIR = "seal";
@@ -178,35 +178,10 @@ function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
   }
 }
 
-/** The values data directory `dataDir` keeps sealed beside the store, under the same key: the outbound webhook's signing
- *  secret (webhooks.ts) and any trigger settings file (sealed-settings.ts), each a check of whether a key opens it. */
+/** The value data directory `dataDir` keeps sealed beside the store, under the same key: the outbound webhook's signing
+ *  secret (webhooks.ts), as a check of whether a key opens it. */
 function sealedBeside(dataDir: string): Array<(key: Buffer) => boolean> {
-  const checks: Array<(key: Buffer) => boolean> = [];
-  if (webhookSecretIn(dataDir, {}) !== undefined) checks.push((key) => "secret" in (webhookSecretIn(dataDir, { [SEAL_KEY_ENV]: key.toString("base64") }) ?? {}));
-  let names: string[] = [];
-  try {
-    names = readdirSync(dataDir);
-  } catch {
-    // No data directory yet: nothing kept beside the store.
-  }
-  for (const name of names) {
-    const adapter = /^trigger-settings-(.+)\.json$/.exec(name)?.[1];
-    if (adapter === undefined) continue;
-    let values: unknown;
-    try {
-      values = (JSON.parse(readFileSync(join(dataDir, name), "utf8")) as { values?: unknown }).values;
-    } catch {
-      continue;
-    }
-    if (!values || typeof values !== "object") continue;
-    for (const [scope, fields] of Object.entries(values as Record<string, unknown>)) {
-      if (!fields || typeof fields !== "object") continue;
-      for (const [field, sealed] of Object.entries(fields as Record<string, unknown>)) {
-        if (typeof sealed === "string") checks.push((key) => opensUnder(key, Buffer.from(sealed, "base64"), `trigger-settings|${adapter}|${scope}|${field}`));
-      }
-    }
-  }
-  return checks;
+  return webhookKeptIn(dataDir) ? [(key) => "secret" in (webhookSecretIn(dataDir, key) ?? {})] : [];
 }
 
 async function storeSealOf(store: SealKeyStore, dataDir: string): Promise<StoreSeal> {

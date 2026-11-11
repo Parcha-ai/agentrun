@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, DockerProvider } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
@@ -333,7 +334,7 @@ test("connect() opens the daemon over docker exec and says hello", async () => {
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	assert.deepEqual(connected.value.hello, { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
+	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
 	assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
 	await connected.value.close();
 	const after = await connected.value.client.call("ping", {});

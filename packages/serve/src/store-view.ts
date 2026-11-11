@@ -7,10 +7,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
-import { currentLearning, holdsForOk, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
+import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
+import { said } from "./learning-words.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { handedValuesOf, launchOf } from "./handed-values.js";
-import { learningStartOf, type RunLaunch } from "./run-launch.js";
+import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
   momentOf,
   type Pending,
@@ -40,7 +41,7 @@ import {
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
-import { reflects, type Reflect } from "./learning-run.js";
+import { reflects, type Reflect } from "./reflect-range.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
@@ -69,6 +70,9 @@ export interface ViewDeps {
    *  run's error names a refused key in plain words, as its Timeline's error row does. Default: this process's
    *  environment (the server passes it with the keys a person saved). */
   readonly keyEnv?: () => NodeJS.ProcessEnv;
+  /** Each learned item's status on agent `agentId`'s learning folder's main (learning-routes.ts statusesOf): what a run held
+   *  for its owner's OK reads as it stands there. None: as the merge wrote it. */
+  readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -218,9 +222,17 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const records = await journalRecords(store.readJournal(runId), context);
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
   const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
-  // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given).
+  // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given, read
+  // from its rows uncut: a note whose name holds a secret is cut where it is shown, after it is matched). Before its end, a
+  // run that learns is seeded, then looking back once its end-of-run turn starts (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
-  const learningEnd = ended && withNotes(ended, started, notesReadOf(started?.given, reflectRange, timeline));
+  const read = started?.given.length ? notesReadOf(started.given, reflectRange, await runTimeline(store, runId, context, { settled: terminal })) : [];
+  const under = !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
+  const sofar = ended ?? under;
+  const shownEnd = sofar && withNotes(sofar, started, read);
+  // What it held for its owner's OK as it reads now, on its agent's folder's main (learning.ts currentLearning); its record
+  // stays as the merge wrote it.
+  const learningEnd = shownEnd && holdsForOk(shownEnd as Learning) && deps.statuses ? (currentLearning(shownEnd as Learning, await deps.statuses(row.agent)) as RunLearning) : shownEnd;
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = live && turns.open > 0;
@@ -301,13 +313,17 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output };
 }
 
-/** A run's learning as the view shows it: its end from the store, in a person's words cut of the host's secrets now, and,
- *  for an ended run, the notes it read. A learning still held for the owner's OK reads as it stands; an ended one (merged,
- *  dropped) reads as it was written. */
+/** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
+ *  person's words cut of the host's secrets now, and, for an ended run, the notes it read. */
 function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: boolean): unknown {
   if (!learningEnd) return null;
-  const learning = holdsForOk(learningEnd as Learning) ? currentLearning(learningEnd as Learning, undefined) : (learningEnd as Learning);
-  return learningView(learning, shown, settled);
+  return learningView(learningEnd as Learning, shown, settled);
+}
+
+/** A learning run's learning before its end (main's learning-run.ts onStart and its end-of-run turn): seeded, saying how
+ *  many notes its seed held, until its end-of-run turn starts; then looking back. */
+function underWay(started: NonNullable<RunLaunch["learning"]>, reflect: Reflect | undefined, at: string): RunLearning {
+  return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
 }
 
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept; a cap's room noted when it has

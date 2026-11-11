@@ -14,7 +14,8 @@ import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
-import { gradeModelFor, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
+import { gradeModelFor, type GradeRouteAsk, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
+import type { GraderRoute } from "./learning-ask.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -50,9 +51,10 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         routeOf: async (grade) => {
           const base = deps.env ?? process.env;
           const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
-          return gradeRouteOf(gradeModelFor(grade), env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
+          return gradeRouteFor(grade, env, deps.routeOf);
         },
         ...(deps.log ? { log: deps.log } : {}),
+        ...(deps.gradeBound ? { gradeBound: deps.gradeBound } : {}),
       });
     }
     // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
@@ -71,6 +73,19 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     return undefined;
   };
+}
+
+/** The route a grade asks for (gradeModelFor: the grade model the server named, else the agent's own), from the runner's
+ *  one route (`routeOf`), through gradeRouteOf. A grade model the server named (--grade-model, else AGENT_MODEL_STRONG)
+ *  is the strong tier's: it goes with that tier's settings, sent whole as AGENT_MODEL_STRONG is (never cut to its bare id
+ *  by AGENT_MODEL_GATEWAY_IDS) and priced at AGENT_MODEL_STRONG_PRICE. The agent's own model goes as its runs' does, on
+ *  the default tier. */
+export function gradeRouteFor(grade: GradeRouteAsk, env: NodeJS.ProcessEnv, routeOf: AdapterSpecDeps["routeOf"]): Promise<GraderRoute> {
+  return gradeRouteOf(gradeModelFor(grade), env, (model) => (grade.model !== undefined && model === grade.model
+    // The runner's environment under the grader as its strong model: every key it holds read through it, a non-enumerable
+    // one (a launcher-held or Settings key) too, which a copy would drop.
+    ? routeOf(undefined, Object.create(env, { AGENT_MODEL_STRONG: { value: model, enumerable: true } }) as NodeJS.ProcessEnv, "strong", PI_WIRES)
+    : routeOf(model, env, "default", PI_WIRES)));
 }
 
 /** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the

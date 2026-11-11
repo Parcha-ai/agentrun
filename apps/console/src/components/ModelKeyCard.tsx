@@ -15,12 +15,11 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  capabilities again, and the card goes once they say ready. With `needs` `model`, the server's AGENT_MODEL is the
  *  problem, which no key fixes: it says so. `model` is the server's default (`models.default`): when it names a
  *  provider among the keys (AGENT_MODEL set, its provider's key missing), only that key runs it, so the card offers that
- *  one alone and names the model. `atRest` is `features.tool_keys.at_rest`. */
-export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyNot = "sign_in" }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; atRest?: "sealed" | "unavailable"; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
+ *  one alone and names the model. */
+export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in" }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
-  const [noSealing, setNoSealing] = useState(false);
   const [problem, setProblem] = useState<ApiError | null>(null);
   const asked = useRef(0);
   const load = () => {
@@ -34,7 +33,6 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
   const provider = model?.includes("/") ? model.slice(0, model.indexOf("/")) : undefined;
   const required = rows?.find((k) => k.id === provider);
   const offered = required ? [required] : rows;
-  const cantStore = atRest === "unavailable" || noSealing;
   const picked = rows?.find((k) => k.id === pick);
   // The fields this card may set: any not set in the environment (its secret, "model:<KEY>", says), which wins.
   const own = picked?.fields.filter((f) => picked.secrets.find((s) => secretLabel(s.name) === f.name)?.source !== "env") ?? [];
@@ -57,25 +55,21 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
               <Button type="button" onClick={load} size="sm" className="mt-2">Try again</Button>
             </div>
           )}
-          {needs !== "model" && rows && cantStore && (
-            <p className="font-mono text-body" role="status">This server can't store keys: it was started without a seal key. Set one where the server starts ({rows.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).</p>
-          )}
-          {needs !== "model" && rows && !cantStore && !writable && <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-          {needs !== "model" && rows && !cantStore && writable && (
+          {needs !== "model" && rows && !writable && <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {needs !== "model" && rows && writable && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
               {offered!.map((k) => (
                 <Button key={k.id} size="sm" variant={pick === k.id ? "solid" : "primary"} aria-pressed={pick === k.id} onClick={() => { setPick(pick === k.id ? null : k.id); setProblem(null); }}>{k.label}</Button>
               ))}
             </div>
           )}
-          {picked && !cantStore && writable && (own.length
-            ? <KeyForm key={picked.id} tool={picked} fields={own} cantStore={cantStore} onCancel={() => setPick(null)}
+          {picked && writable && (own.length
+            ? <KeyForm key={picked.id} tool={picked} fields={own} onCancel={() => setPick(null)}
                 onSave={async (values) => {
                   setProblem(null);
                   try { await v2.saveToolKey(picked.id, values); } catch (e) {
                     if (e instanceof ClientError && e.status === 422) return e;
-                    if (e instanceof ClientError && e.code === "no_sealing_key") setNoSealing(true);
-                    else setProblem(apiError(e));
+                    setProblem(apiError(e));
                     return null;
                   }
                   setPick(null);

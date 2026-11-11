@@ -4,8 +4,6 @@
 // MCP server's tools have names of their own. Every one of them maps to a settings key, and a name nothing maps fails
 // closed: ask, never allow.
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
 import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
@@ -13,9 +11,9 @@ import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
 import { permissionsOf, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
-import { scratch } from "./support.mjs";
+import { runnerGate } from "./gate-support.mjs";
 
-const { deniedText, noApproverText, RunGate, waitingText } = gate;
+const { deniedText, noApproverText } = gate;
 /** The mapping, where the module has one; none (the red), every name maps to nothing. */
 const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
 const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || SERVE_OWN_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
@@ -58,22 +56,17 @@ test("every name a call reaches the gate by, on every harness, maps to its setti
   }
 });
 
-test("a name nothing maps fails closed: it asks, and where no one can approve it is refused", async (t) => {
+test("a name nothing maps fails closed: it asks, and where no one can approve it is refused", async () => {
   assert.equal(keyOf("pi", "mystery_tool"), undefined);
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  const where = { root, work, data, runId: "r1" };
-  assert.equal(new RunGate(where).policy("mystery_tool"), "ask", "never allow");
-  const park = { commit: async (change) => change({ appendEntry: async () => undefined }) };
-  assert.deepEqual(await new RunGate(where, {}, true, false).enter("mystery_tool", {}, "c1", park), { text: noApproverText("mystery_tool"), isError: true });
+  assert.equal(runnerGate().policy("mystery_tool"), "ask", "never allow");
+  assert.deepEqual(await runnerGate({ approvers: false }).decide("mystery_tool", {}), { deny: noApproverText("mystery_tool") });
 });
 
 /** A run's gate on `harness`, its server settings `settings` (none: the default), and its answer for one call as the
  *  runner's loops ask it (RunGate.decide, the adapter loop's spec.gate): "allow" (it runs), "ask" (it waits for a person,
  *  under the name askedAs gives) or { deny } (refused, in those words). */
 async function decideOn(t, harness, settings, name, args, mcpServers) {
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  if (settings) await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
-  const runGate = new RunGate({ root, work, data, runId: "r1", harness, ...(mcpServers ? { mcpServers } : {}) });
+  const runGate = runnerGate({ harness, settings, ...(mcpServers ? { mcpServers } : {}) });
   return { decided: await runGate.decide(name, args), askedAs: runGate.askedAs(name), policy: runGate.policy(name) };
 }
 const SKILL_READ = { skill: "status-report-format", path: "SKILL.md" };
@@ -115,48 +108,35 @@ test("the key only: read_skill_file's own path is no read path to the gate, so o
   }
 });
 
-/** pi's registration `name`, wrapped by a run's gate on `data`'s settings: what its call answers, whether the tool ran,
- *  and the requests the gate kept. */
-async function onPi(t, settings, name) {
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  if (settings) await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
-  const runGate = new RunGate({ root, work, data, runId: "r1", harness: "pi" });
-  let ran = 0;
-  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { content: [{ type: "text", text: "ran" }] }) };
-  const extension = runGate.extension([registration]);
-  const wrapped = extension.wraps.find((wrap) => wrap.tool === name)?.wrap(registration) ?? registration;
-  const kept = [];
-  const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
-  const result = await wrapped.execute({ q: 1 }, api, {});
-  const text = (result.content ?? result.output ?? []).map((block) => block.text ?? "").join("");
-  return { text, isError: result.isError === true, ran, kept };
-}
+/** A call of pi's registration `name` on a pi run with the server's `settings`: the gate's answer, and the key it is
+ *  asked under. */
+const onPi = async (settings, name) => {
+  const runGate = runnerGate({ settings });
+  return { decided: await runGate.decide(name, { q: 1 }), askedAs: runGate.askedAs(name) };
+};
 
-test("on pi, monid.run set to deny refuses monid's registration, monid_run, by its settings key", async (t) => {
-  const { text, ran } = await onPi(t, { "monid.run": { permission: "deny" } }, wireName("monid.run"));
-  assert.deepEqual([text, ran], [deniedText("monid.run"), 0]);
+test("on pi, monid.run set to deny refuses monid's registration, monid_run, by its settings key", async () => {
+  const { decided } = await onPi({ "monid.run": { permission: "deny" } }, wireName("monid.run"));
+  assert.deepEqual(decided, { deny: deniedText("monid.run") });
 });
 
-test("on pi, monid.run at its default asks: monid_run parks, and its request names the settings key", async (t) => {
-  const { text, ran, kept } = await onPi(t, undefined, wireName("monid.run"));
-  assert.deepEqual([text, ran], [waitingText("monid.run"), 0]);
-  assert.deepEqual(kept.map((entry) => entry.data?.tool), ["monid.run"]);
+test("on pi, monid.run at its default asks: monid_run waits for a person, asked under the settings key", async () => {
+  const { decided, askedAs } = await onPi(undefined, wireName("monid.run"));
+  assert.deepEqual([decided, askedAs], ["ask", "monid.run"]);
 });
 
-test("on pi, browser set to deny refuses each of its registrations, run and snapshot among them", async (t) => {
+test("on pi, browser set to deny refuses each of its registrations, run and snapshot among them", async () => {
   for (const name of ["run", "snapshot"]) {
-    const { text, ran } = await onPi(t, { browser: { permission: "deny" } }, name);
-    assert.deepEqual([text, ran], [deniedText("browser"), 0], name);
+    const { decided } = await onPi({ browser: { permission: "deny" } }, name);
+    assert.deepEqual(decided, { deny: deniedText("browser") }, name);
   }
 });
 
-test("on pi, the agent's ask for the person in its browser (browser_request_handoff) is held to the browser setting: deny refuses it, allow lets it run (the browser offers no ask)", async (t) => {
+test("on pi, the agent's ask for the person in its browser (browser_request_handoff) is held to the browser setting: deny refuses it, allow lets it run (the browser offers no ask)", async () => {
   assert.ok(BROWSER_TOOL_NAMES.includes("browser_request_handoff"), "pi-browser lists it");
   assert.equal(keyOf("pi", "browser_request_handoff"), "browser");
-  const denied = await onPi(t, { browser: { permission: "deny" } }, "browser_request_handoff");
-  assert.deepEqual([denied.text, denied.ran], [deniedText("browser"), 0], "deny: refused, never asked of the person");
-  const allowed = await onPi(t, { browser: { permission: "allow" } }, "browser_request_handoff");
-  assert.deepEqual([allowed.text, allowed.ran], ["ran", 1], "allow: it runs");
+  assert.deepEqual((await onPi({ browser: { permission: "deny" } }, "browser_request_handoff")).decided, { deny: deniedText("browser") }, "deny: refused, never asked of the person");
+  assert.equal((await onPi({ browser: { permission: "allow" } }, "browser_request_handoff")).decided, "allow", "allow: it runs");
   assert.deepEqual(permissionsOf("browser"), ["allow", "deny"], "the browser setting is allow or deny");
 });
 
@@ -166,21 +146,4 @@ test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has co
   assert.equal(keyOf("opencode", "srv_echo", ["other"]), undefined, "another server's name");
   assert.equal(keyOf("opencode", "web_fetch", ["web"]), "web_fetch", "a table tool, though `web` is a server");
   assert.equal(keyOf("opencode", "ask_person", ["ask"]), "ask_person");
-});
-
-test("an MCP call enters this gate once on every harness: the host tools bind none, and pi's extension skips only a registration the MCP gateway marks as gated by itself", async (t) => {
-  const { hostTools } = await import("../dist/host-tools.js");
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  const runGate = new RunGate({ root, work, data, runId: "r1", harness: "claude-agent" });
-  let entered = 0;
-  runGate.enter = async () => void entered++;
-  const park = { commit: async () => undefined };
-  // claude-agent and codex: the host tools bind no MCP tool, by any of its names.
-  const bound = hostTools({}, ["mcp:srv/echo", "mcp__srv__echo", "srv_echo"], {}, new Map(), [], { gate: runGate, park });
-  assert.deepEqual(bound.map((tool) => tool.name), []);
-  // pi: a registration the gateway marks (it enters the gate itself) is not wrapped again; an unmarked one is wrapped.
-  const registration = { name: "mcp__srv__echo", description: "", parameters: {}, execute: async () => ({ content: [] }) };
-  assert.deepEqual(runGate.extension([{ ...registration, [gate.GATED_BY_GATEWAY]: true }]).wraps, [], "the gateway's own: gated there");
-  assert.deepEqual(runGate.extension([registration]).wraps.map((wrap) => wrap.tool), ["mcp__srv__echo"], "unmarked: wrapped here");
-  assert.equal(entered, 0);
 });
