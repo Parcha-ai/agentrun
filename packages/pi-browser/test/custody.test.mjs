@@ -246,7 +246,7 @@ test("a session nobody calls for its idle window is released by the task", async
   assert.equal(result.sessions.sessions[0].releaseReason, "idle");
 });
 
-async function inProcess(t, extra = {}, policy = {}, script = ["browser_read", "browser_release"]) {
+async function inProcess(t, extra = {}, policy = {}, script = ["browser_read", "browser_release"], clock = undefined) {
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
     import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
@@ -266,7 +266,9 @@ async function inProcess(t, extra = {}, policy = {}, script = ["browser_read", "
   models.setProvider(model.provider);
   const registry = durable.createRegistry();
   registry.install(browser.extension);
-  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  // `clock`: the Harness's clock and timers are the test's own (fakeClock), so a task's sleep resumes when the test moves
+  // time on.
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry, onReport: () => {}, ...(clock ? { now: clock.now, setTimer: clock.setTimer } : {}) }, ctx);
   t.after(() => harness.close(ctx));
   const config = { label: "node-a", run: "run-abort", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000, ...policy } };
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
@@ -374,6 +376,90 @@ test("an aborted handoff wait is handed to a successor task: the person's answer
   const state = await harness.snapshot(browser.docs.Sessions, root.id, ctx);
   assert.deepEqual([state.sessions[0].state, state.sessions[0].fence], ["live", 2]);
   assert.match(state.notice ?? "", /A person finished your handoff/);
+});
+
+/** A clock the Harness reads and arms its timers on (HarnessOptions.now, setTimer): `advance` moves it on and fires what
+ *  came due, in order. Starts at real time, so what is stamped reads as now. */
+function fakeClock() {
+  let now = Date.now();
+  const due = new Set();
+  return {
+    now: () => now,
+    setTimer: (callback, delayMs) => {
+      const timer = { at: now + delayMs, callback };
+      due.add(timer);
+      return () => due.delete(timer);
+    },
+    advance(ms) {
+      now += ms;
+      for (const timer of [...due].sort((a, b) => a.at - b.at)) if (timer.at <= now) (due.delete(timer), timer.callback());
+    },
+    get time() { return now; },
+  };
+}
+
+test("a read of the answer that fails backs off, doubling, and a read that answers pending starts the short poll again (review)", async (t) => {
+  const clock = fakeClock();
+  // Fails twice, answers pending, fails once more, then the person's answer.
+  const reads = ["throw", "throw", "pending", "throw", "done"];
+  const polled = [];
+  const handoff = {
+    request: async (ask) => ({ interactionId: `int-${ask.requestId}` }),
+    outcome: async () => {
+      polled.push(clock.time);
+      const read = reads.shift() ?? "done";
+      if (read === "throw") throw new Error("the host could not be read");
+      return read;
+    },
+  };
+  const { root, ctx, settled } = await inProcess(t, { handoff }, {}, ["browser_read", ["browser_request_handoff", ASK]], clock);
+  const turn = await root.submit({ type: "input", content: "go" }, ctx);
+  let ended = false;
+  const done = turn.wait(ctx).then(() => (ended = true));
+  const real = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let i = 0; i < 400 && polled.length === 0; i += 1) await real(25);
+  // The clock moves 100 ms at a time, each step's poll seen before the next.
+  for (let step = 0; step < 100 && !ended && polled.length < 5; step += 1) {
+    const seen = polled.length;
+    clock.advance(100);
+    for (let i = 0; i < 20 && polled.length === seen; i += 1) await real(5);
+  }
+  await Promise.race([done, real(5_000)]);
+  assert.equal(ended, true, "the answer reached the agent");
+  assert.deepEqual(polled.slice(1).map((at, i) => at - polled[i]), [500, 1_000, 500, 500], "after a failed read 500 ms, after two 1,000 ms; after pending 500 ms again, and after the next failed read 500 ms");
+  await settled();
+});
+
+test("a hand-back resumes the agent within one poll of the person's answer, however long the wait was: 40 s in, at most HANDOFF_POLL_MS more", async (t) => {
+  const { HANDOFF_POLL_MS } = await import("@parcha/pi-browser/durable");
+  assert.equal(HANDOFF_POLL_MS, 500);
+  const clock = fakeClock();
+  const answer = { now: "pending" };
+  const polled = [];
+  const handoff = { request: async (ask) => ({ interactionId: `int-${ask.requestId}` }), outcome: async () => { polled.push(clock.time); return answer.now; } };
+  const { root, ctx, settled } = await inProcess(t, { handoff }, {}, ["browser_read", ["browser_request_handoff", ASK]], clock);
+  const turn = await root.submit({ type: "input", content: "go" }, ctx);
+  let ended = false;
+  const done = turn.wait(ctx).then(() => (ended = true));
+  const real = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let i = 0; i < 400 && polled.length === 0; i += 1) await real(25);
+  assert.ok(polled.length > 0, "the wait began");
+  const asked = polled[0];
+  // The person takes 40 s: the clock moves on a poll at a time, each poll seen before the next.
+  while (clock.time - asked < 40_000) {
+    const seen = polled.length;
+    clock.advance(HANDOFF_POLL_MS);
+    for (let i = 0; i < 200 && polled.length === seen; i += 1) await real(5);
+  }
+  assert.equal(ended, false, "the agent still waits on the person");
+  const polls = polled.length;
+  assert.ok(polls >= 40_000 / HANDOFF_POLL_MS - 2, `polled every ${HANDOFF_POLL_MS} ms through the wait, never backing off: ${polls} polls in 40 s`);
+  // The hand-back: one poll later, the agent has its answer and goes on.
+  answer.now = "done";
+  clock.advance(HANDOFF_POLL_MS);
+  await Promise.race([done, real(5_000)]);
+  assert.equal(ended, true, `the agent resumed within ${HANDOFF_POLL_MS} ms of the hand-back (the vendor backoff waited until 61.5 s)`);
+  await settled();
 });
 
 test("an abort handler whose release fails hands it to a successor task, which releases", async (t) => {

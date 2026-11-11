@@ -13,7 +13,7 @@ import { createWorkflowExtension } from "../dist/workflow/task.js";
 import { nodeRunner } from "../dist/workflow/node-runner.js";
 import { taskScope } from "../dist/workflow/node.js";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
-import { startWorkflowRevision } from "@parcha/pi-durable-agent/workflow";
+import { startWorkflowRevision } from "../dist/workflow-run.js";
 import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 

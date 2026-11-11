@@ -79,7 +79,10 @@ async function world(t, { handed, mark, leaky = LEAKY, stored }) {
   const spec = async (claim, run) => {
     if (mark === undefined) await store.runs.update(claim, { signInHanded: [handed] });
     else {
-      const db = new DatabaseSync(join(dir, "store.sqlite"));
+      // Its own connection, which waits out a write the runner's store has in flight (a claim, a lease's renewal): with
+      // node:sqlite's default busy wait of none, a write held at that moment threw SQLITE_BUSY, the claim failed, and the
+      // run waited out its lease past the test's wait (CI, #2365).
+      const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: WAIT_MS });
       db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify(mark), claim.runId);
       db.close();
     }

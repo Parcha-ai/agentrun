@@ -1,6 +1,6 @@
 // The workflow loop on the runner (design: "Runners carry many loops"; the lead's ruling, workflow agents keep running
 // after the cutover). A run of a workflow revision, which the runner claims like any run: this loop is its driver, so the
-// claim, the fence, a cancel and the end commit are its. The DSL's durable runner (pi-durable-agent/workflow
+// claim, the fence, a cancel and the end commit are its. The DSL's durable runner (workflow-run.ts
 // startWorkflowRevision over the workflow task, workflow/task.ts) runs the revision's workflow UNCHANGED — the same nodes,
 // decisions, call tools and cap it ran with in the per-run process — on the run's journal in the one store (A,
 // deps.journal(claim)) in place of a per-run store file. The interpreter's host (model nodes on the run's models, call
@@ -23,7 +23,7 @@ import { createRegistry, type EntryRecord, type Extension, Harness, ROOT_CONVERS
 import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task.js";
-import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "@parcha/pi-durable-agent/workflow";
+import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, endedBy, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
@@ -86,6 +86,12 @@ export interface WorkflowRunSpec {
    *  once, however the run ended (ended, stopped, failed, parked or interrupted), so a parked or resumed run starts fresh
    *  proxies on its next claim. Never throws out. Absent: nothing to let go. */
   readonly release?: () => Promise<void>;
+  /** Resolves once every model request the spec admitted has been booked, or a bound has passed (then a request left
+   *  unbooked reads at its hold and bound). A request its node let go of (a stop) is booked only once the provider's side
+   *  ends, which can be after the node ended: once the workflow's task is over, the loop waits for this before it closes
+   *  the Harness the bookings are written through. Not on a park or a lost claim: the next claim books a request left
+   *  open there as cut. Absent: nothing to wait for. */
+  readonly settle?: () => Promise<void>;
 }
 
 /** What the interpreter's host may ask of the loop while it runs. */
@@ -345,8 +351,10 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
       return { state: "interrupted" };
     }
 
-    // The task is terminal. Close the Harness, then read the run's view from its journal and write the end, both on a
-    // fresh journal of the same claim (the Harness closed its own).
+    // The task is terminal. Its model requests booked (a stopped one books once its provider's side ends, after the node
+    // let go of it), close the Harness, then read the run's view from its journal and write the end, both on a fresh
+    // journal of the same claim (the Harness closed its own).
+    await spec.settle?.().catch(() => undefined);
     await closeHarness();
     const endJournal = deps.journal(claim);
     // A person stopped or cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have
