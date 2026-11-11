@@ -722,7 +722,11 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
  *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}): DraftProblem[] {
+/** The MCP tools set to ask a learned call would ask its approver about (`asked`, learnedDraftTools), and whether a card
+ *  names them all (`fits`: learned-workflow.ts learnedAskFits, the gate's own rule, handed in so it is never copied). */
+export type DraftAsk = { readonly asked: readonly string[]; readonly fits: (asks: readonly string[]) => boolean };
+
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -741,6 +745,10 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
     if (typeof path !== "string" || !path) out.push({ rule: "workflow", detail: LEARNED_OUTPUT_PATH });
+    // Its MCP tools set to ask, on one approval card per learned call (#2424): a card that can't name them all is refused
+    // at the gate at every call, so the draft is refused here, in the gate's words.
+    const asks = ask ? draftMcpTools(doc).filter((tool) => ask.asked.includes(tool)) : [];
+    if (ask && asks.length && !ask.fits(asks)) out.push({ rule: "workflow", detail: `its approval card can't name all ${asks.length} MCP tools it would call that are set to ask: set some of them to allow or deny for this agent.` });
     // A composed workflow node's child too: its output is the value at its own output.path, or it fails the same way.
     for (const node of dsl.inspectWorkflow(doc).nodes) {
       if (node.kind !== "workflow") continue;

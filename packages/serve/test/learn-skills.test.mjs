@@ -412,8 +412,8 @@ test("the tools a learned draft may name are the granted ones the gate allows: o
   assert.equal(typeof tools.learnedDraftTools, "function");
   const granted = ["read", "web_fetch", "web_search"];
   const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
-  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {} });
-  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {}, asked: [] });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {}, asked: [] });
   // With where each was set, a deny names it.
   assert.deepEqual(tools.learnedDraftTools(granted, permission, undefined, () => "agent").deniedBy, { web_search: "agent" });
 });
