@@ -128,7 +128,10 @@ test("an unparsed answer is asked again once: the runner's reflect hook on a CLI
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop: loopWith(turns, hook, [skill("```"), skill("````")]), name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await ended(opened.server);
-  assert.equal(turns.length, 3, `the job, the end-of-run turn and its one re-ask: ${JSON.stringify(turns)}`);
+  // The learning run it queued is claimed by the same runner, whenever it is: once it has ended, run-1's turns are still
+  // only run-1's (#2343 review: it must never count in them).
+  await until(async () => (await opened.server.runs.get("run-1-learning"))?.state === "ended", "the learning run ran too", 10_000);
+  assert.equal(turns.length, 3,`the job, the end-of-run turn and its one re-ask: ${JSON.stringify(turns)}`);
   assert.match(turns[2], /^Your answer could not be read: a skill's block must open with four backticks/, "the re-ask says why, in the parser's words");
   const kept = await opened.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
