@@ -127,8 +127,7 @@ test("a suggested value is one the server takes: a bad id gets the documented on
   assert.equal((await api("POST", "/agents/brief/runs", { input: input.example })).status, 202);
 });
 
-// SKIP (follow-up #2432): only 3 of the 4 workflow agents are offered an input their workflow takes
-test.skip("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
+test("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("asks"))).status, 201, "its input requires question, a string");
   let offered = 0;
@@ -141,7 +140,8 @@ test.skip("a workflow agent's run is told from its workflow's input schema: neve
         assert.doesNotMatch(issue.message, /e\.g\./);
         continue;
       }
-      assert.equal(issue.field, "input", JSON.stringify(issue));
+      // The input, or the schema path in it its problem is at (#2093: `input at #/properties/question`).
+      assert.match(issue.field, /^input(?: at #\/\S*)?$/, JSON.stringify(issue));
       assert.deepEqual(issue.example, { question: "…" }, "made from the workflow's input schema: its required question, a string");
       offered++;
       const sent = await api("POST", "/agents/asks/runs", { ...body, input: issue.example });

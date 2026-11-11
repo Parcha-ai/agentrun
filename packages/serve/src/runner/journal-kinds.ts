@@ -9,6 +9,9 @@
 import type { MessageOrigin } from "../timeline/index.js";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 
+/** The session (sessions.ts journalSessions) a workflow run's call nodes log their effects on (KINDS.nodeEffect). */
+export const NODE_LOG_SESSION = "node-log";
+
 /** The phase row before a message a CLI run sends again (adapter-loop.ts CliRecord.sending): its runner was lost after
  *  sending it, before the message was recorded, so the model may read it twice, and the turn it starts is paid like any
  *  other. */
@@ -58,6 +61,10 @@ export const KINDS = {
   /** The resume of a paused workflow run (a `resume` row), taken: the workflow goes on from its journal. Neither a call nor
    *  a message, so the reader passes over it. */
   resume: "agentrun.resume",
+  /** A workflow call node's effect, as it starts and as it ends (pause.ts NodeLine: its path, item, tool, label, input,
+   *  then its status and output or error), on the run's node-log session (NODE_LOG_SESSION): the run's graph lists its
+   *  effects from these. Written as the effect runs, never for one the driver answers from its receipt. */
+  nodeEffect: "agentrun.node.effect",
   /** A CLI run's end-of-run turn (the loop's record): its prompt (`role: "person"`) and its answer (`role: "model"`, the
    *  text in `model` as pi's answer carries it), the entry and the answer of the submission its request id names, the
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
@@ -122,6 +129,15 @@ export interface HandoverAnswered {
 export interface RaiseData {
   readonly capUsd: number;
   readonly takes: readonly number[];
+}
+
+/** The cap a run is held to now, from its journal: its newest raise's (a KINDS.raise entry above 0), else its launch's;
+ *  none for a run launched with no cap. The one figure every reader of the run's cap takes: each request's admission
+ *  (adapter-loop.ts capNow), the run's view, and its end-of-run look back (learning-end.ts). */
+export function capNowOf(launchCapUsd: number | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[]): number | undefined {
+  if (launchCapUsd === undefined) return undefined;
+  const raised = entries.findLast((entry) => entry.kind === KINDS.raise && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && (entry.data as RaiseData).capUsd > 0);
+  return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
 }
 
 /** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
@@ -268,6 +284,16 @@ export interface EndData {
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it
    *  has none), kept at its end as main's server kept it on the run (runs.ts workflowEnd), and served as result.output. */
   readonly output?: unknown;
+  /** An escalated workflow run's review (outcome escalated): why it waits for a person, as its escalate node said it. */
+  readonly review?: EndReview;
+}
+
+/** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node
+ *  it escalated at), and its summary (else the run's). Served as the run's `review`, `at` its end. */
+export interface EndReview {
+  readonly kind: string | null;
+  readonly node: string | null;
+  readonly reason: string;
 }
 
 export interface SessionKeyData {

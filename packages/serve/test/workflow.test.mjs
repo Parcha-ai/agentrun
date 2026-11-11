@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { answerFlow, client, FAUX, flowAgent, follow, journalOf, serve, storeRun } from "./support.mjs";
+import { answerFlow, client, FAUX, flowAgent, follow, journalOf, runDir, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const start = async (api, id, input, workflow = answerFlow()) => {
@@ -72,8 +72,7 @@ test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the re
   assert.equal(storeRun(data, started.run_id).summary, "draft, answer");
 });
 
-// SKIP (follow-up #2432): an escalated workflow's review reads kind and node null and the reason "escalated at <node>", not the escalate node's own
-test.skip("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
+test("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
   const { api, baseUrl, data, close } = await serve(t);
   const gated = answerFlow();
   gated.schemas.In.properties.amount = { type: "number" };
@@ -100,6 +99,20 @@ test.skip("an escalated workflow run is completed on /v2 with no error and a rev
   const read = client(again.baseUrl, again.token);
   assert.deepEqual((await read("GET", "/runs")).body.runs.map((r) => [r.status, r.error, r.review]), [["completed", null, review]], "read from the store's row and serve.json");
   assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.review, review);
+});
+
+test("an escalated run's review is cut of a key the server holds, in its node and kind as in its reason", async (t) => {
+  const KEY = `not-a-secret-review-${"k".repeat(24)}`;
+  withEnv(t, { PARALLEL_API_KEY: KEY });
+  const { api } = await serve(t);
+  const gated = answerFlow();
+  gated.schemas.In.properties.amount = { type: "number" };
+  gated.root.steps.unshift({ node: "escalate", label: `too big ${KEY}`, when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: `needs a person, ${KEY}` });
+  const started = await start(api, "gated-key", { question: "What is six times seven?", amount: 600 }, gated);
+  await follow(api, started.run_id, ["completed"]);
+  for (const review of [(await api("GET", `/runs/${started.run_id}`)).body.review, (await api("GET", "/runs?status=completed")).body.runs[0].review]) {
+    assert.deepEqual([review.kind, review.node, review.reason], ["review", "too big [redacted]", "needs a person, [redacted]"], JSON.stringify(review));
+  }
 });
 
 test("a run loads only the tiers its revision uses: a fast-only workflow runs on AGENT_MODEL_FAST with no AGENT_MODEL", async (t) => {

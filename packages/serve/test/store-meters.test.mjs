@@ -23,13 +23,13 @@ async function claimed(store, { harness = "pi", runId = "run-1" } = {}) {
 
 const piEntry = (id, kind, model) => ({ type: "entry", value: { id, conversationId: ROOT, kind, model } });
 
-// SKIP (follow-up #2432): metersOverStore does not match the run's meters
-test.skip("metersOverStore reads every meter of a run over its journal, matching the file path's meterFiguresIn figures", async (t) => {
+test("metersOverStore reads every meter of a run over its journal, matching the file path's meterFiguresIn figures", async (t) => {
   const { store } = await storeOn(t);
   const claim = await claimed(store, { harness: "pi", runId: "run-1" });
   const j = store.journal(claim);
-  // The paid-tools session (kernel cap's TOOL_SESSION): one priced call (c1, $0.05) and one unpriced call (c2, not metered),
-  // read back as the TOOL_COST / TOOL_UNMETERED the file path held on the run's root (store-reads/journal withPaidCosts).
+  // The paid-tools session (kernel cap's TOOL_SESSION): one priced call (c1, $0.05), read back as the TOOL_COST the file path
+  // held on the run's root (store-reads/journal withPaidCosts). An unpriced call (c2) books nothing there: the MCP gateway
+  // marks it not metered on the root (TOOL_UNMETERED, mcp-gateway.ts), as the file path did.
   const conv = await j.mintId();
   await commitWrites(j, [
     { type: "conversation", value: { id: ROOT } },
@@ -41,11 +41,10 @@ test.skip("metersOverStore reads every meter of a run over its journal, matching
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "agentrun.session.key", data: { key: "paid-tools", conversation: conv } } },
     { type: "entry", value: { id: await j.mintId(), conversationId: conv, kind: "runner.request", data: { turn: 1, model: "paid:mcp:fake/paid", call: "c1", heldUsd: 0.05 } } },
     { type: "entry", value: { id: await j.mintId(), conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: 0.05 } } },
-    { type: "entry", value: { id: await j.mintId(), conversationId: conv, kind: "runner.request", data: { turn: 2, model: "paid:mcp:other/free", call: "c2", heldUsd: 0 } } },
-    { type: "entry", value: { id: await j.mintId(), conversationId: conv, kind: "runner.turn", data: { turn: 2, usd: 0 } } },
     piEntry(await j.mintId(), "pi.tool-result", [{ role: "tool", toolCallId: "c1", content: "ok", timestamp: T0 + 2 }]),
-    // The unpriced paid call's own model request: $0 of tokens (a known cost, so the tokens meter stays known at $0.02).
+    // The unpriced call's own model request: $0 of tokens (a known cost, so the tokens meter stays known at $0.02).
     piEntry(await j.mintId(), "pi.assistant", [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c2", name: "mcp:other/free", arguments: {} }], usage: { cost: { total: 0 } }, timestamp: T0 + 3 }]),
+    { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "agentrun.tool_unmetered", data: { tool: "mcp:other/free", charged_by: "other", call: "c2" } } },
     piEntry(await j.mintId(), "pi.tool-result", [{ role: "tool", toolCallId: "c2", content: "free", timestamp: T0 + 4 }]),
     // A browser session charge, native TOOL_COST on the root (browser-cost.ts writes it there): $0.03 over 120 seconds.
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "agentrun.tool_cost", data: { tool: "browser", usd: 0.03, seconds: 120, call: "b1" } } },

@@ -26,8 +26,7 @@ test("a tier the run has no model for is refused by name, never answered by the 
   assert.deepEqual(used, ["the-default"], "nothing was sent for the refused call");
 });
 
-// SKIP (follow-up #2432): the llm tool's output.model names the runner's internal provider (workflow-session-<tier>), not the model's own
-test.skip("tier \"{requestedTier}\" with requestedTier strong runs on the strong tier's model", async (t) => {
+test("tier \"{requestedTier}\" with requestedTier strong runs on the strong tier's model", async (t) => {
   withEnv(t, { AGENT_MODEL_STRONG: "faux-strong", AGENT_MODEL_FAST: "faux-fast" });
   const { api } = await serve(t);
   const workflow = {
