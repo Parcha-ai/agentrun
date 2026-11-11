@@ -286,6 +286,13 @@ test('--changed and --only on a tree of their own: stale packages build, current
     rmSync(join(dir, 'packages/a/fail'));
     run('--changed');
     assert.equal(run('--stale').stdout, '', 'fixed: current');
+
+    // A direct `npm run build -w` that deletes the dist and is cut short leaves a dist the stamp never described: not current.
+    rmSync(join(dir, 'packages/a/dist'), { recursive: true });
+    write('packages/a/dist/partial', 'half a build');
+    assert.equal(run('--stale').stdout, '@t/a\n@t/b\n', 'a rebuilt-by-hand, unfinished dist is stale, and so is what depends on it');
+    run('--changed');
+    assert.equal(run('--stale').stdout, '', 'built by the script: current');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

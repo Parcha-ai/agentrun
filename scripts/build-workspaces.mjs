@@ -80,7 +80,7 @@ export function subsetOrder(packages, names, built = (p) => existsSync(join(p.di
 }
 
 /** Where a package's build stamp is, under its own node_modules (git ignores it, and `npm pack` never carries it): readStamp
- *  reads none when the package has no dist, so a build that clears the dist (`rm -rf dist`) clears the stamp too. */
+ *  reads none when the package has no dist, so a build that clears or rewrites the dist (`rm -rf dist`) leaves a stamp that no longer matches it. */
 export const STAMP = join('node_modules', '.cache', 'agentrun-build-stamp');
 const stampPath = (pkg) => join(pkg.dir, STAMP);
 /** What a build reads beyond its own folder, and what in its folder it only writes: the console's build, which serve copies into
@@ -122,13 +122,30 @@ export function inputsOf(pkg, root = ROOT) {
   return createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
-/** A package's build stamp, `{ id, inputs, deps }`, or undefined when it has none (never built here, or its dist cleared).
+/** A hash of a package's dist: the path, size and modification time of every file in it. The stamp records it, so a dist that
+ *  changed after the stamp (a direct `npm run build -w` that cleared it and was cut short, or ran again) is not the one the
+ *  stamp describes. */
+export function distOf(pkg) {
+  const lines = [];
+  const walk = (dir, rel) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((x, y) => (x.name < y.name ? -1 : 1))) {
+      if (entry.isDirectory()) walk(join(dir, entry.name), `${rel}${entry.name}/`);
+      else { const st = statSync(join(dir, entry.name)); lines.push(`${rel}${entry.name}\t${st.size}\t${st.mtimeMs}`); }
+    }
+  };
+  walk(join(pkg.dir, 'dist'), '');
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+/** A package's build stamp, `{ id, inputs, deps }`, or undefined when it has none (never built here, its dist cleared or
+ *  changed since the stamp was written).
  *  `inputs` is what the build read (inputsOf), `deps` the id of each workspace dependency's stamp the build ran against,
  *  and `id` names this stamp: it changes whenever the package is built again. */
 export function readStamp(pkg) {
   try {
     if (!existsSync(join(pkg.dir, 'dist'))) return undefined;
     const raw = readFileSync(stampPath(pkg), 'utf8');
+    if (JSON.parse(raw).dist !== distOf(pkg)) return undefined;
     return { ...JSON.parse(raw), id: createHash('sha256').update(raw).digest('hex').slice(0, 16) };
   } catch {
     return undefined;
@@ -138,7 +155,7 @@ export function readStamp(pkg) {
 /** Records that `pkg` was built from `inputs` against `deps`, after a build that succeeded. */
 export function writeStamp(pkg, inputs, deps) {
   mkdirSync(dirname(stampPath(pkg)), { recursive: true });
-  writeFileSync(stampPath(pkg), `${JSON.stringify({ inputs, deps, at: Date.now() })}\n`);
+  writeFileSync(stampPath(pkg), `${JSON.stringify({ inputs, deps, dist: distOf(pkg), at: Date.now() })}\n`);
 }
 
 /** Forgets that `pkg` was built: a build in progress, or one that failed, leaves no stamp, however much it emitted. */
