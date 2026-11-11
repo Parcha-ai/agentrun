@@ -84,8 +84,7 @@ test.skip("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, t
   assert.equal(storeRun(data, started.run_id).summary, "draft, answer");
 });
 
-// SKIP (follow-up #2078): a workflow run's result, message refusal or tiers read differently on the runner
-test.skip("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
+test("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
   const { api, baseUrl, data, close } = await serve(t);
   const gated = answerFlow();
   gated.schemas.In.properties.amount = { type: "number" };

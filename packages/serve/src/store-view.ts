@@ -9,6 +9,7 @@ import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
+import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { handedValuesOf, launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
@@ -110,12 +111,15 @@ function servedOnce(store: Store, runId: string, input: string, values: readonly
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's. */
 const answerOf = (rows: readonly TimelineEvent[]): string | null => rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 
-/** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). */
-const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => ({ code: "run_failed", message: summary ?? "The run failed.", retryable: false });
+/** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart): a
+ *  provider's content-filter stop is `moderated`, in words a person can act on (content-filter.ts). */
+const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } =>
+  summary !== null && contentFiltered(summary) ? { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false } : { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
 
-/** An escalated run's review from its row: its summary is the reason (the store keeps no kind or node apart). */
+/** An escalated run's review: as its end kept it (`kept`, the escalate node's kind, label and summary), else its row's
+ *  summary as the reason. */
 type SavedReview = { kind: string | null; node: string | null; reason: string };
-const reviewOfRow = (state: RunReadState, summary: string | null): SavedReview | null => (state !== "escalated" ? null : { kind: null, node: null, reason: summary ?? "The workflow escalated." });
+const reviewOfRow = (state: RunReadState, summary: string | null, kept?: SavedReview): SavedReview | null => (state !== "escalated" ? null : (kept ?? { kind: null, node: null, reason: summary ?? "The workflow escalated." }));
 const reviewAt = (review: SavedReview | null, endedAt: string): (SavedReview & { at: string }) | null => (review ? { kind: review.kind, node: review.node, reason: review.reason, at: endedAt } : null);
 
 /** A run's facts as statusOf and momentOf read them, built from the run's journal: whether it stands parked at its cap
@@ -174,6 +178,8 @@ interface StoreRun {
   readonly approvalsMode: Approvals;
   /** A completed workflow run's output, as its end kept it (EndData.output); null when it kept none. */
   readonly output: unknown;
+  /** An escalated workflow run's review, as its end kept it (EndData.review); undefined when it kept none. */
+  readonly review?: EndData["review"];
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
@@ -314,10 +320,12 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
   const end = row.kind === "workflow" ? records.entries.findLast((entry) => entry.kind === KINDS.end) : undefined;
   const output = (end?.data as EndData | undefined)?.output ?? null;
+  // An escalated workflow run's review, as its end kept it (the escalate node's kind, label and summary).
+  const review = (end?.data as EndData | undefined)?.review;
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, decisions };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -356,7 +364,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const { row, runRow, launch, view, unshown, values, output } = run;
+  const { row, runRow, launch, view, unshown, values, output, review: kept } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
@@ -379,7 +387,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const errorWords = status === "failed" && !unshown ? await runErrorWordsOf({ ...deps, keyEnv: deps.keyEnv ?? (() => process.env) }, store, runId, { workflow: row.kind === "workflow" }) : undefined;
   const withheld = unshown || errorWords === "unreadable";
   const error = status === "failed" ? (withheld ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(errorWords ?? shownWords, errorOfRow(failedReason))) : null;
-  const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null), iso(endedAtMs)));
+  const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null, kept), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
