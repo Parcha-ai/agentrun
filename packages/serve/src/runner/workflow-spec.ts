@@ -830,14 +830,22 @@ function nodeToolGate(names: readonly string[], policy: CallPolicy): Extension {
     name: "tool-gate",
     wraps: [...names].map((name) => wrapTool({ name } as ToolRegistration, (inner: ToolRegistration) => ({
       ...inner,
-      async execute(args: never, api: never, context: never) {
-        const { permission, denyFrom } = await policy(inner.name);
-        if (permission === "deny") return forModel(deniedText(inner.name, undefined, denyFrom), { isError: true });
-        if (permission === "ask") return forModel(modelNodeAskText(inner.name), { isError: true });
-        return inner.execute(args, api, context);
-      },
+      execute: gatedNodeCall(inner.name, policy, inner.execute as GatedExecute),
     } as ToolRegistration))),
   });
+}
+
+/** A model node's tool call as its pi-durable task runs it: its args, the task's api and the call's context. */
+type GatedExecute = (args: never, api: never, context: never) => Promise<unknown>;
+
+/** `execute` behind the gate, for the tool `name`. */
+export function gatedNodeCall(name: string, policy: CallPolicy, execute: GatedExecute): GatedExecute {
+  return async (args, api, context) => {
+    const { permission, denyFrom } = await policy(name);
+    if (permission === "deny") return forModel(deniedText(name, undefined, denyFrom), { isError: true });
+    if (permission === "ask") return forModel(modelNodeAskText(name), { isError: true });
+    return execute(args, api, context);
+  };
 }
 
 /** `binding`'s tools with each call's paid requests booked on the run's one ledger (Ledger.paid, the paid tool calls on
