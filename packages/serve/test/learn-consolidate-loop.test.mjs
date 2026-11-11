@@ -461,3 +461,34 @@ test("a rewrite whose companions fit the count but not the grade prompt's room (
   assert.match(said, /workflows\/refunds\/workflow\.json/, said.slice(0, 600));
   assert.match(said, /do not fit/);
 });
+
+// #2335 review (PRRT_kwDOUmdVMs62FtV0, money): the consolidation's paid request is saved, with what it spent, as it
+// returns, before anything a crash can cut. A runner that goes down after the request and before the answer is checked
+// and saved: the next claim reuses the saved answer, never asks again, and the run's cost holds that one request.
+test("a consolidation whose runner goes down after its paid request resumes on the saved answer: one request, booked once", async (t) => {
+  const w = await world(t);
+  const id = "run-0-consolidate";
+  await w.store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", []) });
+  const asks = [];
+  const ask = async ({ prompt }) => {
+    asks.push(prompt);
+    return { text: prompt.startsWith("You keep an agent's learned notes") ? replaceAsked(prompt) : graderAnswer(prompt), usd: 0.01, tokens: { input: 10, cache_read: 0, cache_write: 0, output: 5 } };
+  };
+  // The first claim's runner goes down right after the request: its checks (which read the refused values) never run.
+  let down = true;
+  const refuse = async () => {
+    if (down) throw new Error("the runner went down");
+    return [];
+  };
+  const loopOf = () => learningLoopFactory({ refuse, store: w.store, data: w.data, ask })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
+  const first = await w.store.claim(id, "runner-a", { leaseMs: 60_000 });
+  await assert.rejects(loopOf().start(first), /the runner went down/);
+  down = false;
+  w.clock.now += 120_000;
+  const again = await w.store.claim(id, "runner-b", { leaseMs: 60_000 });
+  assert.ok(again, "claimable once its lease ran out");
+  assert.deepEqual(await loopOf().start(again), { state: "ended" });
+  assert.equal(asks.filter((prompt) => prompt.startsWith("You keep an agent's learned notes")).length, 1, "the paid consolidation request is asked once");
+  const row = await w.store.runs.get(id);
+  assert.equal(Math.round(row.costUsd * 1e6) / 1e6, 0.02, "the run's cost: the one consolidation request and its grade");
+});
