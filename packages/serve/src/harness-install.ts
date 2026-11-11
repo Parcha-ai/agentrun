@@ -479,7 +479,9 @@ export async function takeHold(dir: string, { isAlive = alive, host = hostname()
       if (live) return undefined;
       // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very
       // file's (its device and inode), which only one can make, and that one removes the hold, once the link shows it is
-      // still the hold judged left. The others wait. A reap a taker cut short left long ago is cleared for the next look.
+      // still the hold judged left: its device, inode and token. An inode alone is not enough: once another taker removes
+      // the hold, a fresh hold can be given the same inode, and only its token tells it apart. The others wait. A reap a
+      // taker cut short left long ago is cleared for the next look.
       const reap = `${at}.reap-${judged.dev}-${judged.ino}`;
       try {
         await link(at, reap);
@@ -492,7 +494,8 @@ export async function takeHold(dir: string, { isAlive = alive, host = hostname()
         return undefined;
       }
       const reaped = await lstat(reap);
-      if (reaped.ino === judged.ino && reaped.dev === judged.dev) await rm(at, { force: true });
+      const same = reaped.ino === judged.ino && reaped.dev === judged.dev && (await readHold(reap))?.token === held?.token;
+      if (same) await rm(at, { force: true });
       await rm(reap, { force: true });
     }
     return undefined;
