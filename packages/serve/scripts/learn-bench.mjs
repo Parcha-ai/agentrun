@@ -110,12 +110,15 @@ export function packageOf(job, templates) {
 
 // ---- the server and its API ---------------------------------------------------------------------------------------------
 
-function apiOf(base, token) {
+/** The bench's API on `base` under the server's token; a header given as null is left out (the owner's approve drops the
+ *  token: ownerHeaders). */
+export function apiOf(base, token) {
   return async (method, path, body, headers = {}) => {
     const raw = typeof body === "string";
+    const all = { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": raw ? "text/markdown" : "application/json" }), ...headers };
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": raw ? "text/markdown" : "application/json" }), ...headers },
+      headers: Object.fromEntries(Object.entries(all).filter(([, v]) => v !== null && v !== undefined)),
       ...(body === undefined ? {} : { body: raw ? body : JSON.stringify(body) }),
     });
     const text = await res.text();
@@ -180,6 +183,10 @@ async function ownerOf(api, base) {
   return { cookie, origin };
 }
 
+/** The headers of an owner's approve: their session cookie on this server's origin, and no token, since the route
+ *  refuses any request that carries one (server.ts, approveLearningFile), the server's own included. */
+export const ownerHeaders = (owner, etag) => ({ authorization: null, cookie: owner.cookie, origin: owner.origin, "if-match": etag });
+
 // ---- one series ------------------------------------------------------------------------------------------------------
 
 /** The agent's active learned items now: each name with its text's sha256, and the files waiting for the owner's OK.
@@ -235,19 +242,56 @@ export function runCost(view, usage, tokens) {
 /** When a wait started `now` gives up: the earlier of the run's own timeout and the bench's deadline. */
 export const waitUntil = (options, now = Date.now()) => Math.min(now + options.runTimeoutMs, options.deadline);
 
-/** Waits for run `runId` to end and, for a learning agent, for its learning to settle. */
-async function settled(api, runId, learns, deadline) {
+/** Waits for run `runId` to end and, for a learning agent, for its learning to settle. Past `deadline`, a run still
+ *  going is cancelled (timedOut); one that ended stands, and if its learning has not settled it says so
+ *  (learningUnsettled): its lesson is not ready, so its series stops (unsettledStop). */
+export async function settled(api, runId, learns, deadline) {
   for (;;) {
     const view = ok(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
     const learning = view.learning;
     const ended = !["queued", "working"].includes(view.status);
-    if (ended && view.status === "input_required") return { view, timedOut: false };
-    if (ended && (!learns || !learning || ["merged", "dropped"].includes(learning.state))) return { view, timedOut: false };
+    if (ended && view.status === "input_required") return { view, timedOut: false, learningUnsettled: false };
+    if (ended && (!learns || !learning || ["merged", "dropped"].includes(learning.state))) return { view, timedOut: false, learningUnsettled: false };
     if (Date.now() > deadline) {
+      if (ended) return { view, timedOut: false, learningUnsettled: true };
       await api("POST", `/runs/${runId}/cancel`, {});
-      return { view, timedOut: true };
+      return { view, timedOut: true, learningUnsettled: false };
     }
     await sleep(3000);
+  }
+}
+
+/** Why a series stops after `result`, a step whose learning had not settled by its deadline, or null: the next step
+ *  would run without that step's lesson, and read as learning that did not help. */
+export const unsettledStop = (result) => (result.learning_unsettled ? `the learning of step ${result.id} had not settled by its deadline (--run-timeout-s): no later step runs without its lesson` : null);
+
+/** Run `runId`'s whole timeline, page by page (next_after while has_more), as the template eval reads one: its rows by
+ *  id (a page may reset the view or drop rows), in seq order. */
+export async function timelineRows(api, runId) {
+  const view = new Map();
+  let after = 0;
+  for (;;) {
+    const page = ok("reading the timeline", await api("GET", `/runs/${runId}/timeline?after=${after}`)) ?? {};
+    if (page.reset) view.clear();
+    for (const id of page.drop ?? []) view.delete(id);
+    for (const row of page.rows ?? []) view.set(String(row.id), row);
+    const next = Number(page.next_after ?? after);
+    if (!page.has_more || next === after) break;
+    after = next;
+  }
+  return [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+}
+
+/** One grader's verdict on a step's `record`: a deterministic one checked here; an llm one not graded when the run did
+ *  not finish (`graded` false) or when its grader run fails (the step is kept, and says why). */
+export async function gradeOne(ctx, grader, kase, record, servers, graded) {
+  const head = { grader: grader.file, type: grader.type };
+  if (grader.type !== "llm") return { ...head, cost_usd: null, ...TE.gradeDeterministic(grader, record, servers) };
+  if (!graded) return { ...head, pass: false, reason: "not graded: the run did not finish", cost_usd: null };
+  try {
+    return { ...head, ...(await gradeLlm(ctx, TE.graderInput(grader, kase.input, record))) };
+  } catch (error) {
+    return { ...head, pass: false, reason: `not graded: ${String(error?.message ?? error).slice(0, 400)}`, cost_usd: null };
   }
 }
 
@@ -256,24 +300,20 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { api, options } = ctx;
   const started = ok("starting the run", await api("POST", `/agents/${q(agentId)}/runs`, { input: { content: kase.input }, ...(kase.maxCostUsd !== undefined ? { max_cost_usd: kase.maxCostUsd } : {}) }));
   const runId = String(started.run_id);
-  const { view, timedOut } = await settled(api, runId, learns, waitUntil(options));
-  const rows = (ok("reading the timeline", await api("GET", `/runs/${runId}/timeline`))?.rows) ?? [];
+  const { view, timedOut, learningUnsettled } = await settled(api, runId, learns, waitUntil(options));
+  const rows = await timelineRows(api, runId);
   const servers = Object.keys(kase.mcp);
   const record = { answer: typeof view.result?.final_answer === "string" ? view.result.final_answer : "", calls: TE.callsOf(rows, harness, servers), mcpCalls: ctx.fakes.flatMap((f) => f.calls.map((c) => ({ ...c }))), files: await filesOf(api, runId, kase) };
   for (const fake of ctx.fakes) fake.calls.length = 0;
   const graded = view.status === "completed";
   const graders = [];
-  for (const grader of kase.graders) {
-    if (grader.type !== "llm") { graders.push({ grader: grader.file, type: grader.type, cost_usd: null, ...TE.gradeDeterministic(grader, record, servers) }); continue; }
-    if (!graded) { graders.push({ grader: grader.file, type: grader.type, pass: false, reason: "not graded: the run did not finish", cost_usd: null }); continue; }
-    graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, TE.graderInput(grader, kase.input, record))) });
-  }
+  for (const grader of kase.graders) graders.push(await gradeOne(ctx, grader, kase, record, servers, graded));
   const learning = learns ? (await api("GET", `/runs/${runId}/learning`)).body ?? {} : null;
   const approvals = [];
   if (learns && options.approve) {
     for (const file of (await activeOf(api, agentId)).pending) {
       const etag = (await api("GET", `/agents/${q(agentId)}/learning/files/${q(file)}`)).headers.get("etag");
-      const answer = await api("POST", `/agents/${q(agentId)}/learning/files/${q(file)}/approve`, {}, { cookie: ctx.owner.cookie, origin: ctx.owner.origin, "if-match": etag });
+      const answer = await api("POST", `/agents/${q(agentId)}/learning/files/${q(file)}/approve`, {}, ownerHeaders(ctx.owner, etag));
       approvals.push({ file, status: answer.status });
     }
   }
@@ -297,7 +337,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const learned = learning ? { notes: (learning.learned ?? []).map((x) => x.name), skills: (learning.skills ?? []).map((x) => x.name), workflows: (learning.workflows ?? []).map((x) => x.name) } : null;
   const toolRows = rows.filter((r) => r.kind === "tool_use" && r.agent_label !== "learning" && r.tool_name);
   return {
-    id: one.id, kind: one.kind, agent_id: agentId, run_id: runId, status: timedOut ? "timed_out" : view.status,
+    id: one.id, kind: one.kind, agent_id: agentId, run_id: runId, status: timedOut ? "timed_out" : view.status, learning_unsettled: learningUnsettled,
     error: view.status === "completed" ? null : (view.error ? JSON.stringify(view.error).slice(0, 600) : timedOut ? "timed out" : null),
     pass: graded && graders.every((g) => g.pass), graders,
     // The answer the graders read, its head: what a failed grader is checked against when its reason is not enough.
@@ -482,6 +522,8 @@ async function seriesSteps(ctx, job, cases, harness, learns, steps, out) {
     const result = await step(ctx, job, one, cases.get(one.id), agentId, harness, learns);
     options.log(`${job.name} ${harness} ${arm} step ${one.id} (${one.kind}): ${result.status}, ${result.pass ? "pass" : "FAIL"}${result.cost_usd === null ? "" : ` $${result.cost_usd}`}`);
     out.steps.push(result);
+    const stop = unsettledStop(result);
+    if (stop) { out.hard_stop = stop; break; }
   }
 }
 

@@ -34,7 +34,10 @@ They feed staleness and wrong keeps. Every other grader is named freely.
 3. **Run the series.** It starts its own server (accounts on, a runner beside it) and runs one series per job, harness
    and arm:
    - **on:** one agent applied from the package with learning on, the steps in order. The step's learning is settled
-     before the next step, and pending items are approved by the owner (`--no-approve` leaves them pending).
+     before the next step, and pending items are approved by the owner, through their password session and never the
+     token (`--no-approve` leaves them pending). A run that ended but whose learning has not settled by the step's
+     deadline (`--run-timeout-s`) is not cancelled: the series stops there (`hard_stop`), since a later step would run
+     without its lesson.
    - **off:** a fresh agent per step, learning off.
 
    Every agent runs on the series' harness and the runner place, with the job's `deny` tools denied and the bench's

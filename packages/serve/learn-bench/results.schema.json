@@ -46,6 +46,7 @@
                 "agent_id": { "type": ["string", "null"] },
                 "run_id": { "type": ["string", "null"] },
                 "status": { "type": "string", "description": "The run's end (completed, failed, cancelled, input_required, timed_out), or not_run." },
+                "learning_unsettled": { "type": "boolean", "description": "on: the run ended but its learning had not settled by the step's deadline (--run-timeout-s); the run is not cancelled, and its series stops here (hard_stop), since a later step would run without its lesson." },
                 "error": { "type": ["string", "null"] },
                 "pass": { "type": "boolean", "description": "The run finished and every grader passed (the template eval's rule)." },
                 "graders": {
