@@ -250,7 +250,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const approvals = body.approvals === "never" ? "never" : "ask";
   // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
   const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
-  const { tools, gated } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
+  const { tools, gated } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true });
   return { tools, gated };
 }
 

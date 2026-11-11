@@ -71,14 +71,14 @@ test("an MCP tool is on a draft's list when the agent's revision grants it, by i
   assert.deepEqual([table.tools, table.gated], [[], { web_fetch: "ask" }]);
 });
 
-test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate holds is refused in the gate's words", () => {
+test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate denies is refused in the gate's words", () => {
   const offered = ["web_fetch", "mcp:linear/create_issue"];
   assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: offered }), { ok: true, problems: [], notes: [] });
   const ungranted = check(draft(withCall(mcpCall("mcp:linear/delete_issue"))), { tools: offered });
   assert.deepEqual(rules(ungranted), ["workflow"], JSON.stringify(ungranted.problems));
   assert.match(ungranted.problems[0].detail, /mcp:linear\/delete_issue/);
-  const asked = check(draft(withCall(mcpCall("mcp:linear/delete_issue"))), { tools: offered, gated: { "mcp:linear/delete_issue": "ask" } });
-  assert.match(asked.problems.map((p) => p.detail).join(" | "), /calls mcp:linear\/delete_issue, which is set to ask/);
+  const denied = check(draft(withCall(mcpCall("mcp:linear/delete_issue"))), { tools: offered, gated: { "mcp:linear/delete_issue": "deny" } });
+  assert.match(denied.problems.map((p) => p.detail).join(" | "), /calls mcp:linear\/delete_issue, which is set to deny/);
 });
 
 test("a draft whose call or model node names Bash, exec_command or apply_patch is refused as workflow, though the agent's definition lists it", () => {

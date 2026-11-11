@@ -636,8 +636,13 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
  *  skills.ts LEARNED_MCP_TOOL: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
-export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
-  [...new Set(granted.filter((name) => LEARNED_MCP_TOOL.test(name) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
+export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
+  [...new Set(granted.filter((name) => (options.mcp === true && LEARNED_MCP_TOOL.test(name)) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
+
+/** `mcp: true` at learn time (the end-of-run step's draft tools, a person's write): an MCP tool the revision grants by its
+ *  own name may be named. Without it (the runtime's read at a call, learned-workflow.ts), none is: the run's MCP tools are
+ *  its pin's, which the runtime reads apart and holds to the gate itself (#2424). */
+export type LearnedMcp = { readonly mcp?: boolean };
 
 /** `granted` with each MCP server's wildcard (`mcp:<server>/*`) read as the tools its server lists now (`listed`, by the
  *  server's name: none for a server not saved), each `mcp:<server>/<tool>`, in place; every other name as it is, each
@@ -658,13 +663,15 @@ export function mcpGrantsListed(granted: readonly string[], listed: (server: str
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom, options: LearnedMcp = {}): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
   const gated: Record<string, string> = {};
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
   const deniedBy: Record<string, DenyFrom> = {};
-  const tools = learnedWorkflowTools(granted, plane).filter((name) => {
+  const tools = learnedWorkflowTools(granted, plane, options).filter((name) => {
     const setting = permission(name);
-    if (setting === "allow") return true;
+    // An MCP tool set to ask is offered: its learned_workflow call asks once, naming its MCP tools, before any node runs
+    // (#2424). A table tool set to ask is not: its call node can't wait for an approval.
+    if (setting === "allow" || (setting === "ask" && LEARNED_MCP_TOOL.test(name))) return true;
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
