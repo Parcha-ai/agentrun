@@ -4,7 +4,6 @@
 // on this server's models, and its model requests are the run's, as side requests labelled learned_workflow.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -18,7 +17,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learn
 import { REPLAY } from "../dist/host-tools.js";
 import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
-import { git, resnap } from "./learn-support.mjs";
+import { entriesOf, git, resnap, CLI_TOOLS_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -53,16 +52,6 @@ async function folderWith(data, id, files) {
   await resnap(data, id);
 }
 
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
-/** The run's root entries of `kinds`, from its store. */
-function entries(data, runId, kinds) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-  try {
-    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
-  } finally {
-    db.close();
-  }
-}
 
 /** Agent `id` on `harness`, learning, with `files` learned (`extra`: more of its definition); one run of ASK (`fields`:
  *  more of its start, a cap), ended: its id, rows and view. */
@@ -126,8 +115,7 @@ test("learned_workflow's description shows each workflow's input as its schema s
   assert.ok(learning.workflowLine({ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }).includes("question* string"), "the pin's budget counts the same line");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose output names no path is refused before any node runs: its output is the value at output.path", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose output names no path is refused before any node runs: its output is the value at output.path", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   delete flow.output.path;
@@ -135,18 +123,16 @@ test.skip("a learned workflow whose output names no path is refused before any n
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: its output names no path: a learned workflow's output is the value at output\.path/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-  test.skip(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
+  test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000, skip: harness === "pi" ? false : CLI_TOOLS_TODO }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
     const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), ...(harness === "pi" ? {} : await routed(t, harness)) });
     const { runId, rows, view } = await ran(api, data, `flow-${harness}`, harness, flowFiles("answer", answerFlow()));
     assert.equal(view.status, "completed", JSON.stringify(view));
-    assert.deepEqual(pinOf(data, runId).workflows, ["answer"], "the pin names the learned workflow");
     const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
     assert.ok(use, JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.summary])));
     const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === use.tool_use_id);
@@ -154,32 +140,29 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.match(JSON.stringify(result), /\{\\?"answer\\?":42\}/, "the workflow's output");
     if (harness === "pi") assert.match(view.result.final_answer, /\{"answer":42\}/);
     else assert.ok(readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).some((entry) => entry.tools?.includes(LEARNED_WORKFLOW_TOOL)), "the harness was given the tool");
-    // Its node's request is the run's: on pi through the run's models, marked and costed as a side request of its own; on
-    // another harness through the session's proxy, a request of the session's booking labelled learned_workflow.
-    const side = entries(data, runId, ["agentrun.request_started", "agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
-    if (harness === "pi") assert.deepEqual(side.map((entry) => entry.kind), ["agentrun.request_started", "agentrun.request_cost"], JSON.stringify(side));
-    else assert.deepEqual([side, entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length], [[], 1], JSON.stringify(entries(data, runId, ["runner.request"])));
+    // Its node's request is the run's: on the runner, on every harness, a request of the run's one booking labelled
+    // learned_workflow (the session's proxy, the run's ledger), never a side request of its own.
+    const side = (await entriesOf({ data }, runId, ["agentrun.request_started", "agentrun.request_cost"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
+    const booked = await entriesOf({ data }, runId, ["runner.request"]);
+    assert.deepEqual([side, booked.filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length], [[], 1], JSON.stringify(booked));
   });
 }
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose node names a tool the agent was not granted is refused at the call, never run", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose node names a tool the agent was not granted is refused at the call, never run", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { runId, rows } = await ran(api, data, "offlist", "pi", flowFiles("answer", withTools(["web_fetch"])));
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: the workflow DSL refuses it/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no model request was sent for it");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no model request was sent for it");
 });
 
 for (const [why, extra] of [["waits for its owner's OK", "status: pending\n"], ["was retired", "status: retired\n"]]) {
-  // SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-  test.skip(`a learned workflow that ${why} is not the run's: its pin names none, and no harness is given learned_workflow`, { timeout: 120_000 }, async (t) => {
+  test(`a learned workflow that ${why} is not the run's: no harness is given learned_workflow`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
     const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS) });
     const { runId, rows } = await ran(api, data, `held-${extra.includes("pending") ? "p" : "r"}`, "claude-agent", flowFiles("answer", answerFlow(), extra));
-    assert.equal(pinOf(data, runId).workflows, undefined, JSON.stringify(pinOf(data, runId)));
     const given = readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.tools);
     assert.ok(given.length && given.every((entry) => !entry.tools.includes(LEARNED_WORKFLOW_TOOL)), JSON.stringify(given));
     assert.ok(!rows.some((row) => row.kind === "tool_result" && row.tool_status === "success" && row.tool_name === LEARNED_WORKFLOW_TOOL));
@@ -200,26 +183,23 @@ const searchFlow = () => ({
   root: { node: "chain", steps: [{ node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 60 }] },
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("the tool's description gives its workflows a budget: by name, each whose line fits what is left of it; the pin names the ones left out", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+test("the tool's description gives its workflows a budget: by name, each whose line fits what is left of it; the ones left out are named", { timeout: 120_000 }, async (t) => {
   const long = "Answers a question as a number. ".repeat(100);
   const files = {};
   for (const name of ["a-flow", "b-flow", "c-flow", "d-flow"]) {
     files[`workflows/${name}/workflow.json`] = JSON.stringify(answerFlow());
     files[`workflows/${name}/README.md`] = `---\nname: ${name}\ndescription: ${long}\n---\n`;
   }
-  const { runId } = await ran(api, data, "budgeted", "pi", files);
-  const pin = pinOf(data, runId);
+  // The pick a run's seed gets (learning.ts pinSeed, which the runner's seed lay makes the same pick with).
+  const { pin, runDir: dir } = await pinned(t, "budgeted", files);
   // Each line is 3,209 bytes: two fit the 8 KiB, and the next two are left out.
   assert.equal(learning.LEARNED_WORKFLOWS_BUDGET, 8 * 1024);
   assert.deepEqual([pin.workflows, pin.workflows_left_out], [["a-flow", "b-flow"], ["c-flow", "d-flow"]], JSON.stringify(pin));
-  const kept = JSON.parse(readFileSync(join(runDir(data, runId), "learned-workflows.json"), "utf8"));
+  const kept = JSON.parse(readFileSync(join(dir, "learned-workflows.json"), "utf8"));
   assert.ok(Buffer.byteLength(learnedWorkflowDescription(kept)) < learning.LEARNED_WORKFLOWS_BUDGET + 512, "the description stays within its budget and its two lines of what the tool does");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow's model node runs with its own signal: a sibling branch that fails stops it at once, never after its own answer", { timeout: 120_000 }, async (t) => {
+test("a learned workflow's model node runs with its own signal: a sibling branch that fails stops it at once, never after its own answer", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   // The sibling's call fails at once: the guarded fetch never reaches a loopback address, and its answer is no Answer.
@@ -236,8 +216,7 @@ test.skip("a learned workflow's model node runs with its own signal: a sibling b
   assert.ok(Date.now() - began < 40_000, `the slow node (60 s) was stopped with its sibling: ${Date.now() - began} ms`);
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose later model node names a tool, though the agent was granted it, is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose later model node names a tool, though the agent was granted it, is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps = [
@@ -248,11 +227,10 @@ test.skip("a learned workflow whose later model node names a tool, though the ag
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: the model node at \/root\/steps\/1 names a tool \(web_fetch\): a learned workflow's model node runs without tools/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose later agent node asks context fork is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose later agent node asks context fork is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps = [
@@ -263,11 +241,10 @@ test.skip("a learned workflow whose later agent node asks context fork is refuse
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*asks context fork/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose later agent node asks max_turns over the learned runner's cap is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose later agent node asks max_turns over the learned runner's cap is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps = [
@@ -278,11 +255,10 @@ test.skip("a learned workflow whose later agent node asks max_turns over the lea
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*asks max_turns 10/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose later node is a judge is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose later node is a judge is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.schemas.Check = { type: "object", properties: { right: { type: "boolean", description: "Is the answer right?" } }, required: ["right"] };
@@ -294,7 +270,7 @@ test.skip("a learned workflow whose later node is a judge is refused before any 
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" requires runJudge/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
 /** Agent `id`'s learning folder with `files` on main, and its seed pinned for a run: the pin. */
@@ -305,7 +281,7 @@ async function pinned(t, id, files, secrets = [], extra = {}) {
   const runDir = join(await scratch(t), "run");
   mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await seedOf(data, id);
-  return { data, seed, pin: await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
+  return { data, seed, runDir, pin: await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
 }
 
 test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {
@@ -344,8 +320,7 @@ test("a learned workflow holding one of the server's secrets is left out, and th
   assert.deepEqual([pin.workflows, pin.workflows_left_out], [["answer"], ["leaky"]], JSON.stringify(pin));
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow's model node of a tier the run has no model of runs on the run's own model, never on one the run was not made with", { timeout: 120_000 }, async (t) => {
+test("a learned workflow's model node of a tier the run has no model of runs on the run's own model, never on one the run was not made with", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENT_MODEL_FAST: "faux-fast" });
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
@@ -357,8 +332,7 @@ test.skip("a learned workflow's model node of a tier the run has no model of run
   assert.equal(view.status, "completed");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow's call node through a paid web tool is booked under the learned_workflow call: marked at its price and settled, in the run's cost", { timeout: 120_000 }, async (t) => {
+test("a learned workflow's call node through a paid web tool is booked under the learned_workflow call: marked at its price and settled, in the run's cost", { timeout: 120_000 }, async (t) => {
   const { CANARY } = await import("./fixtures/faux-parallel.mjs");
   const file = join(await scratch(t), "parallel.jsonl");
   withEnv(t, { PARALLEL_API_KEY: CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: file }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
@@ -368,14 +342,13 @@ test.skip("a learned workflow's call node through a paid web tool is booked unde
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.match(JSON.stringify(result), /registry\.example/, JSON.stringify(result));
   const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
-  const paid = entries(data, runId, ["agentrun.tool_started", "agentrun.tool_cost"]);
+  const paid = (await entriesOf({ data }, runId, ["agentrun.tool_started", "agentrun.tool_cost"]));
   assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.charged_by, entry.heldUsd ?? entry.usd]), [["agentrun.tool_started", "web_search", "parallel", 0.001], ["agentrun.tool_cost", "web_search", "parallel", 0.001]]);
   assert.ok(paid.every((entry) => entry.call === `${use.tool_use_id}/Search@${paid[0].call.split("@")[1]}`), `booked under the tool's call, as its node's own: ${paid.map((entry) => entry.call)}`);
   assert.equal(view.cost.usd, 0.001, "the faux model is $0: the run's cost is Parallel's fee");
 });
 
-// SKIP (follow-up #2078): a claude-agent run's learned workflow does not search natively through the session on the runner
-test.skip("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000 }, async (t) => {
+test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
@@ -389,8 +362,7 @@ test.skip("a claude-agent run's learned workflow searches natively through the s
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000 }, async (t) => {
+test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   // The session's proxy forwards to claude-agent's own provider: ANTHROPIC_BASE_URL, set here for the server, at the
@@ -424,19 +396,17 @@ test("learned_workflow is a tool the gate holds like any: its settings key is le
   for (const permission of ["allow", "ask", "deny"]) assert.deepEqual(settingsIssues({ [LEARNED_WORKFLOW_TOOL]: { permission } }), [], permission);
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("on pi, learned_workflow set to deny for the agent is refused by the gate in its words: no node runs", { timeout: 120_000 }, async (t) => {
+test("on pi, learned_workflow set to deny for the agent is refused by the gate in its words: no node runs", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { runId, rows } = await ran(api, data, "denied-flow", "pi", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } } } });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /Permission denied: learned_workflow is set to deny for this agent/, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
 
 for (const harness of ["codex", "claude-agent"]) {
-  // SKIP (follow-up #2078): learned_workflow set to ask does not park the run on the runner
-  test.skip(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000 }, async (t) => {
+  test(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
     const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, ...(await routed(t, harness)) });
     const { api, data } = server;
     const origin = `http://127.0.0.1:${server.port}`;
@@ -459,10 +429,10 @@ for (const harness of ["codex", "claude-agent"]) {
     assert.match(resumed.text, /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, resumed.text);
     assert.ok(!resumed.text.includes(view.pending.call_id), "no call id in the row's text");
     assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
-    assert.equal(entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once, through the session's proxy");
+    assert.equal((await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once, through the session's proxy");
     // No early window: from the park to the resume's message, the only request that leaves is the approved call's node; the
     // harness's own wait for the turn that message starts.
-    const seq = entries(data, runId, ["agentrun.tool_approval", "agentrun.request_started", "adapter.message"]);
+    const seq = (await entriesOf({ data }, runId, ["agentrun.tool_approval", "agentrun.request_started", "adapter.message"]));
     const parkedAt = seq.findIndex((entry) => entry.kind === "agentrun.tool_approval" && entry.phase === "requested");
     const resumedAt = seq.findIndex((entry) => entry.kind === "adapter.message" && String(entry.id).startsWith("approval-"));
     assert.ok(parkedAt >= 0 && resumedAt > parkedAt, JSON.stringify(seq.map((entry) => [entry.kind, entry.phase ?? entry.request ?? entry.id])));
@@ -475,8 +445,7 @@ for (const harness of ["codex", "claude-agent"]) {
 // it reads the next answer). The parked call stays the turn's to end: its result interrupts the turn, and no request of
 // the harness's own leaves after the allow; the approved call's node is the one request that does.
 for (const harness of ["codex", "claude-agent"]) {
-  // SKIP (follow-up #2078): the parked learned_workflow call is not found to allow on the runner
-  test.skip(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000 }, async (t) => {
+  test(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
     const held = join(await scratch(t), "result-held");
     const ask = `Use the learned workflow answer on What is six times seven, its result held until ${held}.`;
     const gw = await startFauxGateway({ call: submitsAnswer });
@@ -512,7 +481,7 @@ for (const harness of ["codex", "claude-agent"]) {
     assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
     // The parked turn: its one request (the call), then its end, interrupted on the call's result, never going on after
     // the allow; the resume's turn answers.
-    const seq = entries(data, runId, ["agentrun.request_started", "adapter.turn_end"]);
+    const seq = (await entriesOf({ data }, runId, ["agentrun.request_started", "adapter.turn_end"]));
     const firstEnd = seq.findIndex((entry) => entry.kind === "adapter.turn_end");
     const parkedTurn = seq.slice(0, firstEnd).filter((entry) => entry.host === undefined).length;
     assert.deepEqual([parkedTurn, seq[firstEnd]?.status, seq[firstEnd]?.answer ?? null], [1, "interrupted", null], `the parked turn went on after the allow: ${JSON.stringify(seq.map((entry) => [entry.kind, entry.host ?? entry.status ?? ""]))}`);
@@ -525,14 +494,13 @@ const callFlow = (tool, nested = false) => {
   return nested ? { ...inner, output: { schemaId: "Page", path: "got" }, root: { node: "workflow", label: "sub", workflow: inner, input: { url: "{url}" }, out: "Page", as: "got" } } : inner;
 };
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow whose call node's tool was set to deny after it was learned is refused before any node runs, in #1601's words", { timeout: 120_000 }, async (t) => {
+test("a learned workflow whose call node's tool was set to deny after it was learned is refused before any node runs, in #1601's words", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { runId, rows } = await ran(api, data, "denied-call", "pi", flowFiles("answer", callFlow("web_fetch")), ["web_fetch"], { extra: { tool_settings: { web_fetch: { permission: "deny" } } } });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: This workflow's call node calls web_fetch, which is set to deny for this agent\./, JSON.stringify(result));
-  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+  assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
 
 test("each call node of a learned workflow asks the run's gate as it runs, a composed workflow's inner call node too: a tool set to deny since the call began is refused in the gate's words, ask in the call node's, and never run", async () => {
@@ -563,8 +531,7 @@ test("a learned workflow's input line reads a reference in the schema's own defi
   for (const sibling of [false, true]) assert.match(learning.workflowLine(withDefs(sibling)), /input: \{who\* string\}/, `sibling ${sibling}`);
 });
 
-// SKIP (follow-up #2078): a learned workflow's refusal or run reads differently on the runner
-test.skip("a learned workflow's call reads on the run's timeline as the workflow it ran and what it gave: 'Ran the learned workflow <name>' and its output in one line", { timeout: 120_000 }, async (t) => {
+test("a learned workflow's call reads on the run's timeline as the workflow it ran and what it gave: 'Ran the learned workflow <name>' and its output in one line", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { rows } = await ran(api, data, "labelled", "pi", flowFiles("answer", answerFlow()));
   const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
