@@ -71,6 +71,13 @@ export function endedBy(cancel: boolean | undefined): string {
   return cancel ? "cancelled" : "stopped by a person";
 }
 
+/** The run's end on a person's stop or a cancel, as every loop and the runner write it: state 'stopped', words that say
+ *  which (endedBy), and the outcome the store tells them apart by: 'stopped' (the turn is over, never the run, as main's
+ *  stop leaves a run: a message reopens it) or 'cancelled' (over for good). */
+export function stopEnd(cancel: boolean | undefined): { readonly state: "stopped"; readonly summary: string; readonly outcome: "stopped" | "cancelled" } {
+  return { state: "stopped", summary: endedBy(cancel), outcome: cancel ? "cancelled" : "stopped" };
+}
+
 /** The refusal a denied call's model reads: serve's own words for a call a person denied (refusal-words.ts refusedText,
  *  one copy with the tool gate's), the person's note with it. Asked before its intent, the call never ran. */
 export function deniedText(tool: string, note?: string): string {
