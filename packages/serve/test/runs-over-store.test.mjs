@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, RunFinal } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
@@ -301,6 +301,39 @@ test("a different answer to an answered call is 409 already-answered", async () 
     (e) => e.code === "not_continuable" && /The tool call call-1 was already answered: allow\./.test(e.message) && e.extra.details.reason === "already_answered",
   );
   assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+test("a stop or cancel written between approve's read and its answer's write still makes the answer 409, by the rows' order", async () => {
+  for (const [kind, decision] of [["stop", "withdrawn"], ["cancel", "canceled"]]) {
+    const store = await freshStore();
+    const id = await queuedRun(store);
+    // The stop lands just as the answer is written: after approve read the run, before its own row.
+    const racing = { ...store, command: async (runId, row) => (await store.command(runId, { kind, body: {} }), store.command(runId, row)), commands: (...args) => store.commands(...args), runs: store.runs };
+    await assert.rejects(
+      () => approve(racing, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+      (e) => e.code === "not_continuable" && e.extra.details.reason === "already_answered" && e.extra.details.decision === decision,
+      `${kind}: the answer behind it is 409 ${decision}`,
+    );
+    assert.deepEqual((await commandsOf(store, id)).map((c) => c.kind), [kind, "approve"], `${kind}: the stop first, the answer after it (the runner refuses it at the stop)`);
+  }
+});
+
+test("an answer to a run gone final since it was read (its runner took a stop) is 409 with how its end answered the call, never a 500", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  const stopped = await store.command(id, { kind: "stop", body: {} });
+  // The run final: the store refuses a new row (RunFinal), and its stop row is taken.
+  const final = { ...store, command: async () => { throw new RunFinal(id); }, commands: async () => (await store.commands(id, 0)).map((c) => (c.id === stopped.id ? { ...c, takenAt: Date.now() } : c)), runs: store.runs };
+  await assert.rejects(
+    () => approve(final, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.extra.details.reason === "already_answered" && e.extra.details.decision === "withdrawn",
+  );
+  const ended = { ...store, command: async () => { throw new RunFinal(id); }, commands: async () => [], runs: store.runs };
+  await assert.rejects(
+    () => approve(ended, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && /withdrawn when its run ended/.test(e.message),
+    "a run that ended on its own: withdrawn when its run ended",
+  );
 });
 
 // ---- start ----------------------------------------------------------------------------------------------------------

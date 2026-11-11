@@ -232,12 +232,14 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
   return row && { decision: row.kind === "approve" ? "allow" : "deny" };
 }
 
-/** How a stop or cancel already written to run `runId`, its runner not having taken it yet, answers every call still
- *  waiting: the runner reads commands in the order they were written, so it applies the stop first and withdraws (or, on a
- *  cancel, cancels) the call, and refuses every answer written after it. An answer written then is told so at once, the
- *  same 409 the call's withdrawal will give, never 204 for a call that will not run. */
-async function pendingEnd(store: RunsStore, runId: string): Promise<{ decision: "withdrawn" | "canceled" } | undefined> {
-  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.takenAt === null && command.refused === null);
+/** How a stop or cancel written to run `runId` before `before` (a command id; absent, any) answers every call still waiting:
+ *  the runner reads commands in the order they were written, so it applies the stop first and withdraws (or, on a cancel,
+ *  cancels) the call, and refuses every answer written after it. An answer written then is told so at once, the same 409
+ *  the call's withdrawal gives, never 204 for a call that will not run. Read by the rows' order, so a stop that lands
+ *  between this read and the answer's write is caught once the answer is written (approve). Untaken rows only, unless
+ *  `taken` (a run already final: the end its runner applied). */
+async function endBefore(store: RunsStore, runId: string, { before = Number.POSITIVE_INFINITY, taken = false }: { before?: number; taken?: boolean } = {}): Promise<{ decision: "withdrawn" | "canceled" } | undefined> {
+  const row = (await store.commands(runId, 0)).filter((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before && command.refused === null && (taken || command.takenAt === null)).at(-1);
   return row && { decision: row.kind === "cancel" ? "canceled" : "withdrawn" };
 }
 
@@ -253,16 +255,27 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
   if (given) return settle(given);
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
-  const ending = await pendingEnd(store, moment.id);
+  const ending = await endBefore(store, moment.id);
   if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
+  let sent: { id: number };
   try {
-    await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+    sent = await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
   } catch (error) {
+    // The run went final since it was read (its runner took a stop or a cancel, or it ended): its calls were answered by
+    // that end, so the answer is told how, never a 500.
+    if (error instanceof RunFinal) {
+      const end = await endBefore(store, moment.id, { taken: true });
+      throw alreadyAnswered(id, end?.decision ?? "withdrawn", end === undefined);
+    }
     const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
     if (!won) throw error;
-    settle(won);
+    return settle(won);
   }
+  // A stop or cancel written between the read above and this answer comes first in the runner's order: the answer will be
+  // refused at that end, so the person is told now.
+  const raced = await endBefore(store, moment.id, { before: sent.id });
+  if (raced) throw alreadyAnswered(id, raced.decision);
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
