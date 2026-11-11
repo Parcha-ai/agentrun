@@ -27,7 +27,7 @@ import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
-import { deniedText, type SettingFrom } from "./tool-gate.js";
+import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
 import type { Complete } from "./llm.js";
@@ -36,6 +36,19 @@ import { workflowNodes } from "./model.js";
 
 /** What a learned_workflow call's approval card says of its MCP calls' arguments: the workflow decides them as it runs. */
 export const LEARNED_MCP_ARGUMENTS = "decided by the workflow while it runs, from its input and its earlier steps";
+
+/** What a learned_workflow call's card shows of the MCP tools set to ask that the workflow can call: that their arguments
+ *  are the workflow's to decide, then every one of them by name. The card leads with these (the call's own input after
+ *  them), so they are never cut behind a long input. */
+export const learnedAskShown = (asks: readonly string[]): Record<string, unknown> => ({ mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: [...asks] });
+
+/** The most bytes of the card those fields may take: the card's preview is cut at ARGS_PREVIEW_BYTES (2 KB), and its
+ *  braces and the call's name follow them. A workflow whose ask-gated MCP tools would not all show is refused, never
+ *  approved by a person who could not see what they approved. */
+export const LEARNED_ASK_CARD_BYTES = ARGS_PREVIEW_BYTES - 128;
+
+/** Whether every MCP tool set to ask that the workflow can call fits on its card (learnedAskShown, LEARNED_ASK_CARD_BYTES). */
+export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteLength(JSON.stringify(learnedAskShown(asks)), "utf8") <= LEARNED_ASK_CARD_BYTES;
 
 /** An MCP tool's catalog name, `mcp:<server>/<tool>`: a call node that names one runs it through the run's own MCP. */
 const MCP_TOOL = /^mcp:[^/]+\/.+$/;
