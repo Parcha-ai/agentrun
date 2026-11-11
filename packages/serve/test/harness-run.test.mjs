@@ -190,11 +190,11 @@ test.skip("a request admitted and cut by a crash is booked once, unknown: on res
   assert.equal(storeCount(data, runId, "adapter.request"), 3);
 });
 
-// SKIP (follow-up #2080): the first paid request's tool row never shows when a run resumes after a crash or a stop
-test.skip("a run cancelled while its harness's request is out, and never opened again, carries back a cost that is not a plain number", { timeout: 90_000 }, async (t) => {
+test("a run cancelled while its harness's request is out, and never opened again, carries back a cost that is not a plain number", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
-  const runId = await started(api, "cut-cancel", `Cut until ${go}.`, "codex");
+  // The agent has `read`: its first request's call is a host tool's, recorded as it runs (a tool it lacks never runs).
+  const runId = await started(api, "cut-cancel", `Cut until ${go}.`, "codex", ["read"]);
   // The first request is answered at its tool's end; the second is then admitted and cut, and the cancel lands.
   for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
     assert.ok(i < 300, "the first request's row");
