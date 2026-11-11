@@ -124,6 +124,21 @@ export interface RaiseData {
   readonly takes: readonly number[];
 }
 
+/** The run's cap now, the one reader of it: the cap of its newest raise in journal order (the last agentrun.raise entry,
+ *  in RaiseData's own shape, written when its runner takes the raise), else its launch's; undefined for an uncapped run.
+ *  The runner's admission gate (adapter-loop capNow), the run view's cost.cap_usd, its budget card and the raise check all
+ *  read this, so they never disagree on the cap a run stands at. */
+export function currentCapOf(launchCapUsd: number | undefined, entries: readonly { readonly kind?: string; readonly data?: unknown }[]): number | undefined {
+  if (launchCapUsd === undefined) return undefined;
+  let raised: number | undefined;
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.raise) continue;
+    const capUsd = (entry.data as Partial<RaiseData> | undefined)?.capUsd;
+    if (typeof capUsd === "number" && Number.isFinite(capUsd) && capUsd > 0) raised = capUsd;
+  }
+  return raised ?? launchCapUsd;
+}
+
 /** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
  *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
 export interface BudgetData {

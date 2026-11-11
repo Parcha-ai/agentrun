@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, currentCapOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 
@@ -1323,9 +1323,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The run's journal so far: a take an earlier claim's computer left in force ends released here (computer-journal.ts).
           await computerNow.up(await entriesOf(gate.journal, root.id, context));
         }
-        // The cap a raise left the run at, from its root (the newest raise entry), before any request of this claim: a
-        // claim that takes over a raised run (a resume, another runner's) holds it to the raise, never the launch's cap.
-        if (spec.cap) raisedCapUsd = (await raiseStateOf()).lastRaise?.to ?? raisedCapUsd;
+        // The cap a raise left the run at, before any request of this claim, through the one reader the run view and its
+        // budget card read too (currentCapOf: the newest raise entry over the launch's cap): a claim that takes over a
+        // raised run (a resume, another runner's, a restarted server's) holds it to the raise, never the launch's cap.
+        if (spec.cap) raisedCapUsd = currentCapOf(spec.cap.capUsd, await entriesOf(gate.journal, root.id, context)) ?? raisedCapUsd;
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
         // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.

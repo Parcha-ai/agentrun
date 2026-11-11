@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, serve, startInProcessRunner } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
@@ -46,7 +46,37 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   assert.deepEqual(said(rows).slice(0, 2), ["Write one.md", CONTINUE("$1")], JSON.stringify(said(rows)));
   assert.ok(!rows.some((row) => row.kind === "user_message" && row.text === CONTINUE("$1")), "the follow-up is never the person's message");
   assert.equal(run.result.final_answer, "On The cap was raised to $1; continue the task.: done.");
+  // The claim that took the raise admitted the follow-up's request at the raise: the cap holds its least, $0.1024, over the
+  // launch's $0.05, so a gate still reading the launch's cap in that claim would refuse it and pause the run again
+  // (Manuel's beta.32 run read $0.001 there). One cap park in its journal, the first, and the run completed.
+  assert.equal(await parksOf(store, runId), 1, "one pause, the first: the follow-up was never refused");
   assert.ok(run.cost.usd <= 1, `within the new cap: ${run.cost.usd}`);
+});
+
+/** How many times the run parked at its cap: its journal's agentrun.budget entries, from the store. */
+const parksOf = async (store, runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries.filter((entry) => entry.kind === "agentrun.budget").length;
+
+test("a raise of a paused run, its server restarted before any runner takes it, resumes the run at the raised cap: the gate, the run view and its card read one cap throughout", { timeout: 120_000 }, async (t) => {
+  // The first server's runner pauses the run at $0.05 (its first request's least is $0.1024), then stops: the raise is
+  // written with no runner to take it.
+  const first = await serve(t, { faux: OUTPUT_PRICED, runner: false });
+  const stopRunner = await startInProcessRunner(first.data, { faux: OUTPUT_PRICED });
+  const runId = await paused(first.api, "restarted-raise");
+  await stopRunner();
+  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  // Untaken, the raise is not yet the run's cap anywhere: the view reads the launch's, as the runner's gate would.
+  assert.equal((await view(first.api, runId)).cost.cap_usd, 0.05, "the raise holds once its runner takes it");
+  await first.close();
+  // Started again with a runner: it claims the run, takes the raise, and admits the follow-up's request at $1, which a
+  // gate still reading the launch's $0.05 would refuse (its least is $0.1024) and park the run again.
+  const { api, store } = await serve(t, { data: first.data, faux: OUTPUT_PRICED });
+  await follow(api, runId, ["completed", "failed", "cancelled", "input_required"], { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.pending, run.cost.cap_usd], ["completed", null, 1], JSON.stringify(run));
+  // The follow-up's request, held at its least ($0.1024, over the launch's $0.05), was admitted: one pause, the first.
+  assert.equal(await parksOf(store, runId), 1, "one pause, the first: the follow-up was never refused");
+  assert.ok(run.cost.usd <= 1, `within the raised cap: ${run.cost.usd}`);
 });
 
 test("a paused workflow run's raise names no message: it sends no follow-up, its waiting step is judged again; an agentic run's names its follow-up", async () => {
