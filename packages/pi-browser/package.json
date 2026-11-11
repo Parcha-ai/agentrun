@@ -1,9 +1,8 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.32",
+  "version": "0.1.0-beta.33",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
-    "pi-package",
     "pi-durable",
     "browser",
     "stagehand",
@@ -23,10 +22,6 @@
     "./durable": {
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
-    },
-    "./recorder": {
-      "types": "./dist/recorder/index.d.ts",
-      "import": "./dist/recorder/index.js"
     },
     "./live-view": {
       "types": "./dist/live-view/index.d.ts",
@@ -48,10 +43,6 @@
       "types": "./dist/providers/chrome-args.d.ts",
       "import": "./dist/providers/chrome-args.js"
     },
-    "./providers/assigned": {
-      "types": "./dist/providers/assigned.d.ts",
-      "import": "./dist/providers/assigned.js"
-    },
     "./providers/kernel": {
       "types": "./dist/providers/kernel.d.ts",
       "import": "./dist/providers/kernel.js"
@@ -63,10 +54,6 @@
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
-    },
-    "./coding-agent": {
-      "types": "./dist/coding-agent.d.ts",
-      "import": "./dist/coding-agent.js"
     }
   },
   "files": [
@@ -78,11 +65,6 @@
     "NOTICE",
     "README.md"
   ],
-  "pi": {
-    "extensions": [
-      "./dist/coding-agent.js"
-    ]
-  },
   "sideEffects": false,
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
@@ -102,7 +84,6 @@
   "peerDependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
     "@earendil-works/chord": "1.5.0",
-    "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-durable": "1.5.0"
   },
   "peerDependenciesMeta": {
@@ -112,9 +93,6 @@
     "@earendil-works/chord": {
       "optional": true
     },
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
     "@earendil-works/pi-durable": {
       "optional": true
     }
@@ -122,7 +100,6 @@
   "devDependencies": {
     "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-ai": "1.5.0",
-    "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-durable": "1.5.0"
   },
   "repository": {

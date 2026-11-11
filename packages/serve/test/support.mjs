@@ -13,6 +13,8 @@ import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
+import { dockerPathsForRuns } from "../dist/box-paths.js";
+import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
@@ -22,12 +24,10 @@ import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
-import { SEAL_KEY_ENV } from "../dist/tool-keys.js";
-import { ensureSealKey, sealKeyHome } from "../dist/seal-key.js";
-import { secret } from "../dist/secrets.js";
+import { bootSealKey } from "../dist/seal-key.js";
 
-// Every test process keeps the seal key a server makes at its first start (seal-key.ts) under a config home of its own,
-// never this machine's ~/.config: a server never starts without one, and a test must write nothing outside its own dirs.
+// Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
+// directories (a server keeps its seal key in its data directory, seal-key.ts).
 {
   const config = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-config-"));
   process.env.XDG_CONFIG_HOME = config;
@@ -297,35 +297,46 @@ export async function triggerStore(of) {
 /** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
  *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
- *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
- *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, ...switches } = {}) {
+ *  spec, a learning run on the learning loop, its model route the faux model under `faux`, its grade cut at
+ *  `gradeTimeoutMs` when given. Returns a close() that stops the runner and closes its store handle. */
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
-  // never reaches the network. The seal key is the server's (seal-key.ts), read as the CLI's runner reads it: the one
-  // handed over, else the one kept under this process's config home. It seals the live-viewer tokens the browser writes.
+  // never reaches the network. The seal key is the server's (seal-key.ts), booted as the CLI's runner boots it: the one
+  // handed over, else the one in the data directory, checked against what the store records. It seals the live-viewer
+  // tokens the browser writes.
   // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
-  const sealKey = ensureSealKey(secret(SEAL_KEY_ENV), { configHome: sealKeyHome(process.env) }).key;
+  let seal;
+  try {
+    seal = await bootSealKey(store, data, { role: "runner" });
+  } catch (error) {
+    await store.close();
+    throw error;
+  }
   // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
-  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows.
-  const computers = computerDepsFrom({ env, store, sealKey });
+  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows; a Docker computer's
+  // mounts by where the Docker has the data directory, as the CLI's runner reads it (box-paths.ts dockerPathsForRuns).
+  const sealKey = seal.key;
+  const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
   let runner;
   try {
     runner = startRunner({
       store,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}) }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) }),
     });
   } catch (error) {
+    seal.release();
     await store.close();
     throw error;
   }
   return async () => {
     await runner.close().catch(() => {});
     await store.close().catch(() => {});
+    seal.release();
   };
 }
 

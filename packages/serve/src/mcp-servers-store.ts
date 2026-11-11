@@ -1,14 +1,12 @@
-// The owner's remote MCP servers over the one store (store.mcp, store.mcpOauth), the store-backed replacement for the
-// McpServers file class (mcp-servers.ts). The probe and request validation are shared verbatim (mcp-probe.ts), so every
-// answer and refusal reads the same; what differs is only where the registry and the sign-ins in flight live and how the
-// credential is sealed. The credential is one sealed blob per row (store/seal.ts §7, the url's origin bound inside), so a
-// read opens it to show the auth's header names, the OAuth note and whether the sign-in expired; with no seal key a read
-// shows less than the file did (a degenerate misconfiguration — no credential can be saved without the key anyway).
+// The owner's remote MCP servers over the one store (store.mcp, store.mcpOauth): the registry and the sign-ins in flight.
+// The probe and request validation are mcp-probe.ts'. The credential is one sealed blob per row (store/seal.ts §7, the
+// url's origin bound inside), so a read opens it to show the auth's header names, the OAuth note and whether the sign-in
+// expired. The server never starts without its seal key, so every credential is kept sealed under it.
 //
 // Per the run-time ruling, the runner reads MCP servers, pins and credentials from the store at a run's claim
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
-// a run's launch calls. The switch wires it where `new McpServers(...)` was; mcpSource is dropped.
+// a run's launch calls.
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { metaToolOf } from "./mcp-meta.js";
 import {
@@ -79,7 +77,7 @@ function pendingOverStore(store: McpServersStore, sealKey: Buffer): PendingStore
 }
 
 /** The saved credential opened for a run of this server's own reads (preview by name, refresh, save keeping it): its
- *  headers to send, or the refusal that asks for it again, in the file registry's words. */
+ *  headers to send, or the refusal that asks for it again. */
 type Opened = { headers: HeaderMap; credential: McpCredential & { origin: string } };
 
 export class McpServersOverStore {
@@ -97,7 +95,7 @@ export class McpServersOverStore {
   private readonly stopped = new AbortController();
 
   constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, network: OAuthNetwork = systemNetwork) {
-    // The server never starts without a seal key (seal-key.ts ensureSealKey), so there is no keyless registry: every
+    // The server never starts without a seal key (seal-key.ts bootSealKey), so there is no keyless registry: every
     // credential is kept sealed under it.
     const sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
     if (!sealKey) throw new Error(`MCP servers' credentials are kept under the server's seal key (${SEAL_KEY_ENV}), and none was handed over: the server does not start without one.`);
@@ -105,7 +103,7 @@ export class McpServersOverStore {
     this.signIns = new McpSignIns(network, pendingOverStore(store, sealKey), () => privateOAuthHosts(store));
   }
 
-  /** This server's address as a browser reaches it and where it listens (McpServers.attach). */
+  /** This server's address as a browser reaches it and where it listens. */
   attach(base: string, listening: string): void {
     this.signIns.base = base.replace(/\/+$/, "");
     this.signIns.listening = listening.replace(/\/+$/, "");
@@ -120,7 +118,7 @@ export class McpServersOverStore {
     return new URL(this.signIns.base).origin;
   }
 
-  /** The server's own tool settings, set as the server starts (McpServers.toolSettings). */
+  /** The server's own tool settings, set as the server starts. */
   toolSettings: () => ToolSettingsMap = () => ({});
 
   async close(boundMs = 2_000): Promise<void> {
@@ -349,7 +347,7 @@ export class McpServersOverStore {
     return row;
   }
 
-  /** The saved credential opened, or the refusal that asks for it again (McpServers.opened). */
+  /** The saved credential opened, or the refusal that asks for it again. */
   private async opened(name: string, row: McpServerRow, field: string): Promise<Opened> {
     // No credential kept: none for a server that takes none, nor for a github_app server with no static headers.
     if (row.auth === "none" || row.sealed === null) return { headers: {}, credential: { type: "headers", headers: {}, origin: new URL(row.url).origin } };
@@ -390,7 +388,7 @@ export class McpServersOverStore {
       url: row.url,
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...listed,
-      // Each priced tool's price in USD a call, as the owner saved them (main's file registry served them on every read).
+      // Each priced tool's price in USD a call, as the owner saved them, on every read.
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
@@ -403,7 +401,7 @@ export class McpServersOverStore {
     };
   }
 
-  /** A body's URL, auth and prices, or 422 (McpServers.admit). */
+  /** A body's URL, auth and prices, or 422. */
   private admit(body: Record<string, unknown>, priced = false): { url: URL; auth: Auth; prices?: McpPrices } {
     const issues: InputIssue[] = unknownFields(body, priced ? ["url", "auth", "prices"] : ["url", "auth"]);
     const url = urlOf(body.url, issues);
@@ -432,8 +430,8 @@ export class McpServersOverStore {
  *  token does not change the url. The staleness key an OAuth sign-in carries from start to callback. */
 const saving = (row: McpServerRow) => `${row.url} ${row.updatedAt}`;
 
-/** The McpServers surface over the one store: the switch swaps `new McpServers(data, env, version)` for this. No load() is
- *  needed — every read goes to the store (the runner also writes the OAuth state), so a read is always current. */
+/** The owner's MCP registry over the one store. No load() is needed: every read goes to the store (the runner also writes
+ *  the OAuth state), so a read is always current. */
 export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessEnv, version: string, network?: OAuthNetwork): McpServersOverStore {
   return new McpServersOverStore(store, env, version, network);
 }

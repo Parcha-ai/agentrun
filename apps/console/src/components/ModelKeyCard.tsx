@@ -15,12 +15,11 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  capabilities again, and the card goes once they say ready. With `needs` `model`, the server's AGENT_MODEL is the
  *  problem, which no key fixes: it says so. `model` is the server's default (`models.default`): when it names a
  *  provider among the keys (AGENT_MODEL set, its provider's key missing), only that key runs it, so the card offers that
- *  one alone and names the model. `atRest` is `features.tool_keys.at_rest`. */
-export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyNot = "sign_in" }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; atRest?: "sealed" | "unavailable"; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
+ *  one alone and names the model. */
+export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in" }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
-  const [noSealing, setNoSealing] = useState(false);
   const [problem, setProblem] = useState<ApiError | null>(null);
   const asked = useRef(0);
   const load = () => {
@@ -34,7 +33,6 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
   const provider = model?.includes("/") ? model.slice(0, model.indexOf("/")) : undefined;
   const required = rows?.find((k) => k.id === provider);
   const offered = required ? [required] : rows;
-  const cantStore = atRest === "unavailable" || noSealing;
   const picked = rows?.find((k) => k.id === pick);
   // The fields this card may set: any not set in the environment (its secret, "model:<KEY>", says), which wins.
   const own = picked?.fields.filter((f) => picked.secrets.find((s) => secretLabel(s.name) === f.name)?.source !== "env") ?? [];
@@ -44,38 +42,34 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
       <div className="mx-auto flex max-w-[1600px] gap-3">
         <KeyRound className="mt-1 size-4 shrink-0 text-warning-text" aria-hidden />
         <div className="min-w-0 flex-1 space-y-3">
-          <h2 className="text-[15px] font-semibold">{needs === "model" ? "This server's default model doesn't run" : "Add a model key to run agents"}</h2>
+          <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : "Add a model key to run agents"}</h2>
           {needs === "model"
-            ? <p className="text-[13px] text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
+            ? <p className="text-body text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
             : required
-            ? <p className="text-[13px] text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
-            : <><p className="text-[13px] text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
-              <p className="text-[13px] text-muted-foreground">{KEY_ADVICE}</p></>}
+            ? <p className="text-body text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
+            : <><p className="text-body text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
+              <p className="text-body text-muted-foreground">{KEY_ADVICE}</p></>}
           {needs !== "model" && loadError && (
             <div role="alert">
-              <p className="font-mono text-[13px] text-destructive-text">The keys could not be read: {loadError.code}: {loadError.message}</p>
-              <button type="button" onClick={load} className="caps mt-2 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+              <p className="font-mono text-body text-destructive-text">The keys could not be read: {loadError.code}: {loadError.message}</p>
+              <Button type="button" onClick={load} size="sm" className="mt-2">Try again</Button>
             </div>
           )}
-          {needs !== "model" && rows && cantStore && (
-            <p className="font-mono text-[13px]" role="status">This server can't store keys: it was started without a seal key. Set one where the server starts ({rows.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).</p>
-          )}
-          {needs !== "model" && rows && !cantStore && !writable && <p className="text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-          {needs !== "model" && rows && !cantStore && writable && (
+          {needs !== "model" && rows && !writable && <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {needs !== "model" && rows && writable && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
               {offered!.map((k) => (
                 <Button key={k.id} size="sm" variant={pick === k.id ? "solid" : "primary"} aria-pressed={pick === k.id} onClick={() => { setPick(pick === k.id ? null : k.id); setProblem(null); }}>{k.label}</Button>
               ))}
             </div>
           )}
-          {picked && !cantStore && writable && (own.length
-            ? <KeyForm key={picked.id} tool={picked} fields={own} cantStore={cantStore} onCancel={() => setPick(null)}
+          {picked && writable && (own.length
+            ? <KeyForm key={picked.id} tool={picked} fields={own} onCancel={() => setPick(null)}
                 onSave={async (values) => {
                   setProblem(null);
                   try { await v2.saveToolKey(picked.id, values); } catch (e) {
                     if (e instanceof ClientError && e.status === 422) return e;
-                    if (e instanceof ClientError && e.code === "no_sealing_key") setNoSealing(true);
-                    else setProblem(apiError(e));
+                    setProblem(apiError(e));
                     return null;
                   }
                   setPick(null);
@@ -83,9 +77,9 @@ export function ModelKeyCard({ v2, needs, model, atRest, onSaved, writable, whyN
                   onSaved?.();
                   return null;
                 }} />
-            : <p className="text-[13px] text-muted-foreground">The server sets the {picked.label} key when it starts: change it there.</p>)}
+            : <p className="text-body text-muted-foreground">The server sets the {picked.label} key when it starts: change it there.</p>)}
           {problem && <div className="border"><RunError error={problem} title="The key was not saved" /></div>}
-          <p className="text-[12px] text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>.</p>
+          <p className="text-small text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>.</p>
         </div>
       </div>
     </section>

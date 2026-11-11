@@ -1,13 +1,14 @@
 import { Paperclip, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import type { Capabilities } from "@/lib/client";
 import { bytes } from "@/lib/format";
 import { refusalOf, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
-/** This server's upload limits (capabilities' `limits`): the largest file, and the most files one run names. Absent on a
- *  server that says nothing, and then nothing is checked here. */
-export type UploadLimits = { max_upload_bytes?: number; max_files_per_run?: number };
+/** This server's upload limits (capabilities' `limits`): the largest file (null: no limit), and the most files one run
+ *  names. Absent until the capabilities read answers, and then nothing is checked here. */
+export type UploadLimits = Capabilities["limits"];
 
 /** One file the person picked: sending (`progress` 0 to 1), or sent (`file`), and `removing` while its delete is asked. */
 export type Attached = { key: string; name: string; size: number; progress: number; file?: { file_id: string }; removing?: boolean };
@@ -22,7 +23,7 @@ type Said = { about?: string; text: string };
  *  - `frozen`: a start that names these files is under way: no file is added or removed until it answers.
  *  - `clear` forgets every file after a run started with them (the run has its own copies; the uploads stay on the server).
  *  - A screen left with sent files no run named deletes them; a start under way keeps its own. */
-export function useAttachments({ upload, remove, limits = {}, frozen = false }: { upload: Upload; remove?: (fileId: string) => Promise<unknown>; limits?: UploadLimits; frozen?: boolean }) {
+export function useAttachments({ upload, remove, limits, frozen = false }: { upload: Upload; remove?: (fileId: string) => Promise<unknown>; limits?: UploadLimits; frozen?: boolean }) {
   const [items, setItems] = useState<Attached[]>([]);
   const [said, setSaid] = useState<Said[]>([]);
   const sending = useRef(new Map<string, AbortController>());
@@ -47,11 +48,12 @@ export function useAttachments({ upload, remove, limits = {}, frozen = false }: 
   const add = useCallback((files: File[]) => {
     if (now.current.frozen) return;
     const refused: Said[] = [];
-    const room = limits.max_files_per_run === undefined ? Infinity : limits.max_files_per_run - count.current;
+    const room = limits ? limits.max_files_per_run - count.current : Infinity;
+    const largest = limits?.max_upload_bytes ?? null;
     const taken: File[] = [];
     for (const f of files) {
-      if (limits.max_upload_bytes !== undefined && f.size > limits.max_upload_bytes) refused.push({ text: `${f.name} is ${bytes(f.size)}: this server takes files up to ${bytes(limits.max_upload_bytes)}.` });
-      else if (taken.length >= room) refused.push({ text: `${f.name} is not added: a run names at most ${limits.max_files_per_run} files here.` });
+      if (largest !== null && f.size > largest) refused.push({ text: `${f.name} is ${bytes(f.size)}: this server takes files up to ${bytes(largest)}.` });
+      else if (taken.length >= room) refused.push({ text: `${f.name} is not added: a run names at most ${limits?.max_files_per_run} files here.` });
       else taken.push(f);
     }
     setSaid(refused);
@@ -82,7 +84,7 @@ export function useAttachments({ upload, remove, limits = {}, frozen = false }: 
         },
       );
     });
-  }, [limits.max_files_per_run, limits.max_upload_bytes, upload]);
+  }, [limits?.max_files_per_run, limits?.max_upload_bytes, upload]);
   const drop = useCallback((key: string) => {
     const { items: shown, frozen: held, remove: del } = now.current;
     const item = shown.find((x) => x.key === key);
@@ -119,13 +121,13 @@ export type Attachments = ReturnType<typeof useAttachments>;
  *  while it is), a way to remove it, the limits under it, and any refusal in the server's words. `compact`: on a phone
  *  (< 640 px) the drop zone folds to its button alone, an icon with the limits in its title (a phone drops no files); the
  *  chips and refusals still show under it. 640 px and up are unchanged. */
-export function FilePicker({ attachments, limits = {}, disabled, compact = false }: { attachments: Attachments; limits?: UploadLimits; disabled?: boolean; compact?: boolean }) {
+export function FilePicker({ attachments, limits, disabled, compact = false }: { attachments: Attachments; limits?: UploadLimits; disabled?: boolean; compact?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const { items, refusals, add, drop } = attachments;
   // Nothing changes while a start that names these files is under way.
   const off = disabled || attachments.frozen;
-  const said = [limits.max_files_per_run !== undefined ? `up to ${limits.max_files_per_run} files` : null, limits.max_upload_bytes !== undefined ? `${bytes(limits.max_upload_bytes)} each` : null].filter(Boolean).join(", ");
+  const said = limits ? [`up to ${limits.max_files_per_run} files`, ...(limits.max_upload_bytes !== null ? [`${bytes(limits.max_upload_bytes)} each`] : [])].join(", ") : "";
   return (
     <div
       className={cn("border border-dashed px-3 py-2.5", over ? "border-primary bg-primary/5" : "border-border", compact && "max-sm:border-0 max-sm:p-0")}
@@ -139,13 +141,13 @@ export function FilePicker({ attachments, limits = {}, disabled, compact = false
         <Button type="button" size="sm" onClick={() => input.current?.click()} disabled={off} title={compact ? `Attach files${said ? ` (${said})` : ""}` : undefined} className={cn(compact && "max-sm:h-10 max-sm:w-10 max-sm:px-0")}>
           <Paperclip aria-hidden /> <span className={cn(compact && "max-sm:sr-only")}>Attach files</span>
         </Button>
-        <span className={cn("text-[12px] text-muted-foreground", compact && "max-sm:hidden")}>or drop them here{said ? ` (${said})` : ""}. The run finds them in inputs/.</span>
+        <span className={cn("text-small text-muted-foreground", compact && "max-sm:hidden")}>or drop them here{said ? ` (${said})` : ""}. The run finds them in inputs/.</span>
         <input ref={input} type="file" multiple hidden aria-label="Pick files" onChange={(e) => { add([...(e.target.files ?? [])]); e.target.value = ""; }} />
       </div>
       {items.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-2" aria-label="Attached files">
           {items.map((x) => (
-            <li key={x.key} className="flex h-7 items-center gap-2 border bg-card px-2 font-mono text-[12px]">
+            <li key={x.key} className="flex h-7 items-center gap-2 border bg-card px-2 font-mono text-small">
               <span className="max-w-[16rem] truncate" title={x.name}>{x.name}</span>
               <span className="text-muted-foreground">{bytes(x.size)}</span>
               {!x.file && <span className="text-muted-foreground" aria-label={`${x.name} sent ${Math.round(x.progress * 100)}%`}>{Math.round(x.progress * 100)}%</span>}
@@ -155,8 +157,8 @@ export function FilePicker({ attachments, limits = {}, disabled, compact = false
           ))}
         </ul>
       )}
-      {items.some((x) => !x.file) && <p className="mt-2 text-[12px] text-muted-foreground" role="status">The run can start once every file is sent.</p>}
-      {refusals.length > 0 && <ul className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{refusals.map((r, i) => <li key={`${i}:${r}`}>{r}</li>)}</ul>}
+      {items.some((x) => !x.file) && <p className="mt-2 text-small text-muted-foreground" role="status">The run can start once every file is sent.</p>}
+      {refusals.length > 0 && <ul className="mt-2 font-mono text-small text-destructive-text" role="alert">{refusals.map((r, i) => <li key={`${i}:${r}`}>{r}</li>)}</ul>}
     </div>
   );
 }

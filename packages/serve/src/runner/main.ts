@@ -9,7 +9,12 @@
 // lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { SECRET_NAMES, secret } from "../secrets.js";
+import { dockerPathsForRuns } from "../box-paths.js";
+import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { HARNESS_TABLE_ENV } from "../harness-table.js";
+import { FAUX_PREFIX } from "../model.js";
+import { bootSealKey } from "../seal-key.js";
+import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
@@ -30,7 +35,7 @@ export interface RunnerProcessOptions {
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
   /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop). */
-  createLoop?: LoopFactory | ((store: Store) => LoopFactory);
+  createLoop?: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory);
   onEvent?: (event: RunnerEvent) => void;
   /** For tests: the clock the heartbeat is written by. Default Date.now. */
   now?: () => number;
@@ -101,16 +106,29 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
   return out;
 }
 
+/** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
+ *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a
+ *  run without --faux, as the server's own withoutFaux keeps it from the server), then `switches`, the ones this start
+ *  enabled (server.ts fauxEnvOf). Deleted from runEnv's result, never spread: its secrets are non-enumerable and a spread
+ *  drops them. */
+export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = runEnv(env);
+  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV) delete out[name];
+  return Object.assign(out, switches);
+}
+
 /** The runner's loop for every run: the dispatch over the store (createDispatchLoop), each run's harness loop picked by
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
- *  journal, the seal key and the model route. Refused in words with no seal key. */
-export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env): LoopFactory {
-  const sealKey = sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
+ *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
+ *  this process's, as it was handed or booted). Refused in words with no seal key. */
+export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer): LoopFactory {
+  const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
-  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows.
-  const computers = computerDepsFrom({ env: runs, store, sealKey });
+  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
+  // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
+  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
@@ -158,13 +176,20 @@ export function checkRunner(options: { dataDir: string; name: string; now?: () =
 /** Opens the store as a runner and starts claiming runs. */
 export async function startRunnerProcess(options: RunnerProcessOptions): Promise<RunnerProcess> {
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
-  const { store, kind, schema } = await openRunnerStore(options.dataDir, options.env ?? process.env, warn, options.storeUrl);
+  const env = options.env ?? process.env;
+  const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
   let runner: Runner;
+  let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   try {
+    // The server's seal key, booted the one way the server boots it (seal-key.ts): the one handed over, else the one in
+    // this data directory, checked against what the store records. A runner on a store whose secrets another key sealed
+    // (another machine's key on a shared Postgres, a lost key file) is refused in the server's words; a runner never makes
+    // or records a key.
+    seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], role: "runner" });
     const name = options.name ?? runnerName();
-    const made = options.createLoop ?? ofStore((opened) => runnerLoop(opened, options.dataDir));
+    const made = options.createLoop ?? ofStore((opened, sealKey) => runnerLoop(opened, options.dataDir, undefined, sealKey));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
-    const createLoop = isStoreFactory(made) ? made(store) : made;
+    const createLoop = isStoreFactory(made) ? made(store, seal.key) : made;
     runner = startRunner({
       store,
       createLoop,
@@ -174,10 +199,12 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {
+    seal?.release();
     await store.close();
     throw error;
   }
   let closing: Promise<void> | undefined;
+  const held = seal;
   return {
     runner,
     store: { kind, schema },
@@ -185,17 +212,18 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       (closing ??= (async () => {
         await runner.close();
         await store.close();
+        held.release();
       })()),
   };
 }
 
 const storeFactories = new WeakSet<object>();
 /** Marks `make` as a function of the store (startRunnerProcess gives it the store it opens). */
-export function ofStore(make: (store: Store) => LoopFactory): (store: Store) => LoopFactory {
+export function ofStore(make: (store: Store, sealKey: Buffer) => LoopFactory): (store: Store, sealKey: Buffer) => LoopFactory {
   storeFactories.add(make);
   return make;
 }
-const isStoreFactory = (made: LoopFactory | ((store: Store) => LoopFactory)): made is (store: Store) => LoopFactory => storeFactories.has(made);
+const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory)): made is (store: Store, sealKey: Buffer) => LoopFactory => storeFactories.has(made);
 
 /** The runner process's arguments: `--data D [--loops N] [--name N]`, or `--check --data D [--name N]`. Each option with
  *  a value is also taken as `--option=value` (the bin hands a data directory that starts with "-" so, never read as an
@@ -303,7 +331,7 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
       name: runnerOf,
       env,
       ...(args.loops ? { loops: args.loops } : {}),
-      createLoop: ofStore((store) => runnerLoop(store, args.dataDir, env)),
+      createLoop: ofStore((store, sealKey) => runnerLoop(store, args.dataDir, env, sealKey)),
       onEvent: (event) => {
         if (event.type === "error") return void console.error(`Runner ${runnerOf}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`);
         const line = said(runnerOf, event);

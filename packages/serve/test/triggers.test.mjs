@@ -184,7 +184,8 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("capped", { every_s: 30 }), "source.every_s", "invalid");
   await refused(schedule("capped", { cron: "* * * * * *" }), "source.cron", "invalid");
   await refused(schedule("capped", { cron: "0 9 * * *", timezone: "Mars/Olympus" }), "source.timezone", "invalid");
-  await refused(schedule("capped", { at: "2026-05-31T00:00:00Z" }), "source.at", "invalid");
+  // A one-time schedule at a past time is refused in words a person reads, on its field, never the raw field name (#2248).
+  assert.equal(await refused(schedule("capped", { at: "2026-05-31T00:00:00Z" }), "source.at", "invalid"), "Pick a time in the future: 2026-05-31T00:00:00Z has already passed.");
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
@@ -193,7 +194,7 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   assert.equal(taken.status, 201, JSON.stringify(taken.body));
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((trigger) => [trigger.target.agent_id, trigger.target.max_cost_usd]), [["flow", 0.5]]);
   assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "github"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "sealed" } });
-  // A server started with no seal key handed over has one all the same (ensureSealKey): what it keeps is always sealed.
+  // A server started with no seal key handed over has one all the same (bootSealKey, in its data directory): what it keeps is always sealed.
   assert.equal((await api("GET", "/capabilities")).body.features.webhooks.at_rest, "sealed");
 });
 

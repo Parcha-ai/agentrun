@@ -88,8 +88,9 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     // command whose delivery throws is never thrown out of here, where nothing would catch it and the runner's process
     // would go down. The runner already moved past its row (the dispatch said it holds it), so the dispatch tries it again
     // itself while the inner loop runs, as the runner tries again a row whose delivery threw (a store that failed for a
-    // moment). Once the inner loop has ended, a row still not delivered stays untaken (the store's take is the inner
-    // loop's own commit), so the run's next claim delivers it again and nobody's words are lost.
+    // moment), up to REPLAY_TRIES times. Once the inner loop has ended, or the tries are spent, a row still not delivered
+    // stays untaken (the store's take is the inner loop's own commit), so the run's next claim delivers it again and
+    // nobody's words are lost.
     const buffered = early.splice(0);
     void replay(claim.runId, inner, buffered, end);
     if (earlyStop) void inner.stop(earlyStop);
@@ -112,7 +113,11 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
         return false;
       }
     };
-    const why = () => (lastError as Error)?.message ?? String(lastError);
+    // What went wrong, cut of the values the run holds (LoopDeps.redact), as the log may not show them.
+    const why = () => {
+      const text = (lastError as Error)?.message ?? String(lastError);
+      return loopDeps.redact ? loopDeps.redact(text) : text;
+    };
     const failed: Command[] = [];
     try {
       for (const command of buffered) if (failed.length > 0 || !(await delivers(command))) failed.push(command);

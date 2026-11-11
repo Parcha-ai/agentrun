@@ -1,6 +1,5 @@
 // The runner's gate reads the server's tool settings from the one store (tool-plane.ts loadToolSettings), read once at the
-// claim, never from a file beside the data directory (the old per-run process's readToolSettings): a runner has no such
-// file, so a permission the owner saved would never reach a file-based gate. A stored deny is honored (over a tool's allow
+// claim: the store is the one place a permission the owner saved is kept. A stored deny is honored (over a tool's allow
 // default and under approvals "never" alike); and under approvals "never" a default-ask tool with nothing saved is lifted
 // to an allow, so an unattended run does not park on it. (monid.run defaults to ask; web_search to allow.)
 import assert from "node:assert/strict";

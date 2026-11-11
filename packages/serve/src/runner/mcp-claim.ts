@@ -14,7 +14,7 @@
 // aborts. A credential that can't be used gives its server's calls a reason (mcp-probe.ts UNUSABLE) and they are refused
 // unsent: sealed under another key or for another origin than its row's url (damaged), a sign-in refused or expired
 // (signedOut), a refresh that got no answer (silent), an address the check refuses (blocked). A runner never starts
-// without the seal key (seal-key.ts ensureSealKey), so a claim always has one.
+// without the seal key (seal-key.ts bootSealKey), so a claim always has one.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -39,7 +39,7 @@ import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { ClaimRefused } from "./loop-contract.js";
-import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
+import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
 import { tokenLeftOf } from "../mcp-probe.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
@@ -59,7 +59,7 @@ export interface McpClaimOptions {
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
-  /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts ensureSealKey). */
+  /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts bootSealKey). */
   sealKey: Buffer;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
   signal: AbortSignal;
@@ -350,7 +350,6 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
         // The registry keeps each tool as its server listed it (input_schema); the pin holds the harnesses' shape.
         return row && { url: row.url, tools: ((row.tools ?? []) as McpTool[]).map(boundTool), ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
       },
-      headers: () => undefined,
     });
   } catch (error) {
     throw new McpClaimRefused((error as Error).message);

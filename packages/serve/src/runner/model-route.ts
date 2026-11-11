@@ -191,6 +191,25 @@ type Part = { readonly type: string; readonly [key: string]: unknown };
 
 const textOf = (content: string | MessagesBlock[] | undefined): string => (typeof content === "string" ? content : (content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n"));
 
+/** A Messages block as pi-ai's part: a text as text, a base64 image as an image; anything else none. */
+const partOf = (block: MessagesBlock): Part[] =>
+  block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [];
+
+/** A tool_result's content as pi-ai's toolResult content: its parts in order (partOf), so a screenshot a tool returned
+ *  reaches the model, with the texts between two images joined by "\n" into one part, so a result of text alone is the
+ *  one text it always was (textOf). A string is one text. Never empty: a result with no text or image part is one empty
+ *  text. */
+const resultOf = (content: string | MessagesBlock[] | undefined): Part[] => {
+  if (typeof content === "string" || content === undefined) return [{ type: "text", text: content ?? "" }];
+  const parts: Part[] = [];
+  for (const part of content.flatMap(partOf)) {
+    const last = parts.at(-1);
+    if (part.type === "text" && last?.type === "text") parts[parts.length - 1] = { type: "text", text: `${String(last.text)}\n${String(part.text)}` };
+    else parts.push(part);
+  }
+  return parts.length ? parts : [{ type: "text", text: "" }];
+};
+
 /** A Messages request as pi-ai's context on `target`: its system prompt, tools and turns (a tool_result as its own
  *  toolResult message, naming the tool its call named; `providerId` maps a call id back to the provider's). */
 function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: string) => string): unknown {
@@ -211,12 +230,10 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
       messages.push({ role: "assistant", content, api: target.api, provider: target.provider, model: target.id, usage: zero, stopReason: content.some((part) => part.type === "toolCall") ? "toolUse" : "stop", timestamp: Date.now() });
       continue;
     }
-    const said = blocks.flatMap((block): Part[] =>
-      block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [],
-    );
+    const said = blocks.flatMap(partOf);
     for (const block of blocks.filter((each) => each.type === "tool_result")) {
       const id = block.tool_use_id ?? "";
-      messages.push({ role: "toolResult", toolCallId: providerId(id), toolName: named.get(id) ?? "", content: [{ type: "text", text: textOf(block.content) }], isError: block.is_error === true, timestamp: Date.now() });
+      messages.push({ role: "toolResult", toolCallId: providerId(id), toolName: named.get(id) ?? "", content: resultOf(block.content), isError: block.is_error === true, timestamp: Date.now() });
     }
     if (said.length) messages.push({ role: "user", content: said, timestamp: Date.now() });
   }

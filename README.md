@@ -1,13 +1,13 @@
 # AgentRun
 
-**AgentRun is an open-source server for AI agents. Agents on it keep running through restarts, work on real computers,
-and learn from every run.**
+**AgentRun is an open-source platform that supercharges your agents. It adds self-improvement, durable execution and a
+control plane on top of your favorite agent harness. Your agents become smarter, more fault tolerant and use fewer
+tokens with every run.**
 
-You bring the harness, the agent loop that talks to the model and calls tools: Claude Code, Codex, OpenCode or pi.
-AgentRun does everything around it. It keeps every run in one store, so a crash doesn't lose it. It gives the agent a
-computer to work on, holds it to your approvals and a spend cap, and keeps what it learned in a git folder that the
-next run starts from. Run it on your laptop with one command, in one container, or as a server with runners.
-Apache-2.0.
+Bring your agent on the harness it runs best on: Claude Code, Codex, OpenCode or pi. AgentRun does everything around
+it. It keeps every run in one store, so a crash doesn't lose it. It gives the agent a computer to work on, holds it to
+your approvals and a spend cap, and keeps what it learned in a git folder that the next run starts from. Run it on your
+laptop with one command, in one container, or as a server with runners. Apache-2.0.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun)
 
@@ -112,8 +112,28 @@ approval. `runs timeline RUN_ID --follow` streams each step as it happens, and e
 page. `npx @parcha/agentrun help` lists every command; `npx @parcha/agentrun skill install --claude` (or `--codex`)
 teaches your coding agent the CLI.
 
-To call the server from code, the TypeScript client (`packages/client`) and the Python client (`python/`) install from
-this repository; neither is on npm or PyPI yet.
+From code, the same run with the TypeScript client (`npm install @parcha/agentrun-client`, no dependencies). The
+client reads its server and token from the environment; the server prints both when it starts (with
+`npx @parcha/agentrun`, the token is in `~/.agentrun/.token`, and the address is normally `http://127.0.0.1:7340`):
+
+```sh
+export AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
+export AGENTRUN_API_KEY=$(cat ~/.agentrun/.token)
+```
+
+```ts
+import { AgentRun } from "@parcha/agentrun-client";
+
+const client = new AgentRun(); // AGENTRUN_BASE_URL and AGENTRUN_API_KEY
+const started = await client.runs.start("notes", { input: { content: "Ask me which region to cover, then write region.md about it." }, max_cost_usd: 1 });
+let run = await client.runs.wait(started.run_id);
+if (run.pending?.kind === "question") await client.runs.message(run.run_id, { content: "Europe" });
+run = await client.runs.wait(run.run_id);
+console.log(run.status, run.cost.usd);
+```
+
+The Python client is `pip install parcha-agentrun`, with the same methods
+([TypeScript client](packages/client/README.md), [Python client](python/README.md)).
 
 ## Templates
 
@@ -258,8 +278,7 @@ docker compose logs server     # the console's link, the first visit's setup cod
 ```
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
-A server in a container has no Docker sandbox yet, so agents there get file tools and `web_fetch` but no shell; for a
-sandbox, run the server on the host, or use a Daytona or E2B computer with workspaces on Archil.
+This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on the host, or use a Daytona or E2B computer with an Archil disk.
 
 **Runners on Postgres.** Set `AGENTRUN_STORE_URL` to a `postgres://` URL on the server and every runner (the compose
 file's `pg` profile runs one), start the server with `--no-runner`, and start each runner from the same image with

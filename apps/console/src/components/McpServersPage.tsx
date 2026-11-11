@@ -1,8 +1,10 @@
-import { Plug, TriangleAlert } from "lucide-react";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { Plug } from "lucide-react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { Banner } from "@/components/ui/banner";
+import { Input } from "@/components/ui/field";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
@@ -25,13 +27,12 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
 export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
-  const [unreadable, setUnreadable] = useState(false);
   const [loadError, setLoadError] = useState<Problem | null>(null);
   const [form, setForm] = useState<{ saved?: McpServer } | null>(null);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
-    v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setUnreadable(!!r.file_unreadable); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
+    v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The outcome is said once: a reload of the page does not say it again.
@@ -42,41 +43,36 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="caps text-[11px] text-muted-foreground">Settings</p>
+            <p className="caps text-label text-muted-foreground">Settings</p>
             <h1 className="mt-1 text-2xl font-semibold">MCP servers</h1>
-            <p className="mt-2 text-[14px] text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
+            <p className="mt-2 text-lead text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
           </div>
           {!form && <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>}
         </div>
         {signIn && (
-          <p className={`border p-4 text-[13px] ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">
+          <p className={`border p-4 text-body ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">
             {signIn.ok ? `Signed in to ${signIn.server}. Its tools are saved.` : `Signing in to ${signIn.server} failed: ${signInFailure(signIn.error)}.`}
           </p>
         )}
-        {!writable && <p className="border bg-card p-4 text-[13px]" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-        {unreadable && <Warning>The file this server keeps its MCP servers in can't be read: restore it or remove it. Nothing is written over it.</Warning>}
+        {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
         {loadError && (
-          <div className="border p-4" role="alert">
-            <p className="font-mono text-[13px] text-destructive-text">The MCP servers could not be read. {loadError.text}</p>
-            <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
-          </div>
+          <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
+            <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
+          </Banner>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
         {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
-          : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No MCP server is saved here yet.</p>)}
+          : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
         <PrivateHosts v2={v2} />
       </div>
     </div>
   );
 }
 
-const Warning = ({ children }: { children: ReactNode }) => (
-  <p className="flex gap-3 border border-warning/50 bg-warning/5 p-4 text-[13px]" role="alert"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning-text" aria-hidden />{children}</p>
-);
 const Said = ({ problem }: { problem: Problem }) => (
-  <div role="alert"><p className="font-mono text-[13px] text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-[12px] text-muted-foreground">{problem.detail}</p>}</div>
+  <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
 function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onChanged: () => void }) {
@@ -93,17 +89,17 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       <div className="flex flex-wrap items-start gap-3">
         <Plug className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-[15px] font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
-          <p className="mt-1.5 break-all font-mono text-[12px] text-muted-foreground">{s.url}</p>
-          {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
+          <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
+          {oauth && s.oauth && <p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
-            <summary className="cursor-pointer font-mono text-[12px]">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
-            <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
+            <summary className="cursor-pointer font-mono text-small">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
+            <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-small">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
           {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onChange} /></ul>}
-          {changes && <p className="mt-2 font-mono text-[12px]" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
+          {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
           <div className="flex flex-wrap gap-2">
@@ -117,7 +113,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       </div>
       {confirm && (
         <div role="alertdialog" aria-label={`Delete ${s.name}`} className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
-          <p className="min-w-0 flex-1 text-[13px]">Delete {s.name}? Its credential goes with it, and an agent that grants its tools can't call them.</p>
+          <p className="min-w-0 flex-1 text-body">Delete {s.name}? Its credential goes with it, and an agent that grants its tools can't call them.</p>
           <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { await v2.deleteMcpServer(s.name); onChanged(); })}>Delete</Button>
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
@@ -148,25 +144,25 @@ function PrivateHosts({ v2 }: { v2: Client }) {
   };
   return (
     <section aria-labelledby="mcp-private-hosts" className="space-y-3 border bg-card p-4">
-      <h2 id="mcp-private-hosts" className="caps text-[12px] font-semibold">Private network hosts</h2>
-      <p className="text-[13px] text-muted-foreground">Off by default. A host listed here may run an MCP server's sign-in on your private network (10.x, 172.16–31.x, 192.168.x, 100.64–127.x, fc00::/7), over https only; never this machine, loopback or a link-local address such as cloud metadata.</p>
+      <h2 id="mcp-private-hosts" className="caps text-small font-semibold">Private network hosts</h2>
+      <p className="text-body text-muted-foreground">Off by default. A host listed here may run an MCP server's sign-in on your private network (10.x, 172.16–31.x, 192.168.x, 100.64–127.x, fc00::/7), over https only; never this machine, loopback or a link-local address such as cloud metadata.</p>
       {loadError && (
         <div role="alert">
-          <p className="font-mono text-[13px] text-destructive-text">The private network hosts could not be read. {loadError.text}</p>
-          <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+          <p className="font-mono text-body text-destructive-text">The private network hosts could not be read. {loadError.text}</p>
+          <Button size="sm" onClick={load} className="mt-3">Try again</Button>
         </div>
       )}
       {hosts && (hosts.length
         ? <ul aria-label="Allowed private network hosts" className="border bg-background">{hosts.map((host) => (
             <li key={host} data-host={host} className="flex items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0">
-              <span className="break-all font-mono text-[13px]">{host}</span>
+              <span className="break-all font-mono text-body">{host}</span>
               <Button size="sm" disabled={busy} onClick={() => void save(hosts.filter((h) => h !== host))}>Remove</Button>
             </li>
           ))}</ul>
-        : <p className="border bg-background px-3 py-3 font-mono text-[13px] text-muted-foreground">No host is allowed: a sign-in on a private network is refused.</p>)}
+        : <p className="border bg-background px-3 py-3 font-mono text-body text-muted-foreground">No host is allowed: a sign-in on a private network is refused.</p>)}
       {hosts && (
         <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
-          <input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" className={input} />
+          <Input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" />
           <Button type="submit" size="sm" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
         </form>
       )}
@@ -175,8 +171,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
   );
 }
 
-const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong";
-const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true", className: input } as const;
+const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true" } as const;
 const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"]];
 /** A server's one secret ("mcp:<server>"), as its row says it: by the kind of credential it is. */
 const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in" };
@@ -233,33 +228,33 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
     void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth()); form.current?.reset(); onSaved(); });
   };
   const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
-  const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved. {what}</span>;
+  const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-small text-muted-foreground">Saved. {what}</span>;
   return (
     <form ref={form} autoComplete="off" onSubmit={submit} aria-label={saved ? `Change ${saved.name}` : "Add an MCP server"} className="space-y-4 border bg-card p-4"
       onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") edited(); checkSignIn(); }}>
-      <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Name</span>
-        <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
-        <input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} className={input} /></label>
-      <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Address</span>
-        <input name="mcp-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/mcp" spellCheck={false} className={input} /></label>
+      <label className="block"><span className="caps mb-2 block text-small font-semibold">Name</span>
+        <span className="-mt-1 mb-2 block text-small text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
+        <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} /></label>
+      <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
+        <Input name="mcp-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
       <fieldset>
-        <legend className="caps mb-2 text-[12px] font-semibold">Credential</legend>
+        <legend className="caps mb-2 text-small font-semibold">Credential</legend>
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
-            <label key={id} className="flex items-center gap-2 text-[13px]">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={!writable && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
+            <label key={id} className="flex items-center gap-2 text-body">
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={!writable && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-primary" />{label}
             </label>
           ))}
         </div>
       </fieldset>
-      {type === "bearer" && <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Token</span>{keepNote("A new token replaces it; leave this empty to keep it.")}<input name="mcp-token" {...secret} /></label>}
+      {type === "bearer" && <label className="block"><span className="caps mb-2 block text-small font-semibold">Token</span>{keepNote("A new token replaces it; leave this empty to keep it.")}<Input name="mcp-token" {...secret} /></label>}
       {type === "headers" && (
         <div className="space-y-2">
           {keepNote(`Its headers: ${saved?.auth.headers?.join(", ")}. New ones replace them all; leave the values empty to keep them.`)}
           {Array.from({ length: headerRows }, (_, i) => (
             <div key={i} className="flex gap-2">
-              <input name={`mcp-header-name-${i}`} aria-label={`Header ${i + 1} name`} placeholder="X-Api-Key" defaultValue={saved?.auth.headers?.[i]} spellCheck={false} className={input} />
-              <input name={`mcp-header-value-${i}`} aria-label={`Header ${i + 1} value`} {...secret} />
+              <Input name={`mcp-header-name-${i}`} aria-label={`Header ${i + 1} name`} placeholder="X-Api-Key" defaultValue={saved?.auth.headers?.[i]} spellCheck={false} />
+              <Input name={`mcp-header-value-${i}`} aria-label={`Header ${i + 1} value`} {...secret} />
             </div>
           ))}
           {headerRows < MAX_HEADERS && <Button type="button" size="sm" variant="ghost" onClick={() => setHeaderRows((n) => n + 1)}>Add header</Button>}
@@ -267,12 +262,12 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
       )}
       {type === "oauth" && (
         <div className="space-y-3">
-          <p className="text-[12px] text-muted-foreground">This server signs in for you and keeps the tokens; an agent never sees one. Sign in opens the server's own page to approve it, and its tools are saved once you do.</p>
-          {saved?.oauth?.client_id && <p className="text-[12px] text-muted-foreground">Signing in again uses the client it signed in with ({saved.oauth.client_id}); a client ID here replaces it.</p>}
-          <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Scopes (optional)</span><input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} className={input} /></label>
+          <p className="text-small text-muted-foreground">This server signs in for you and keeps the tokens; an agent never sees one. Sign in opens the server's own page to approve it, and its tools are saved once you do.</p>
+          {saved?.oauth?.client_id && <p className="text-small text-muted-foreground">Signing in again uses the client it signed in with ({saved.oauth.client_id}); a client ID here replaces it.</p>}
+          <label className="block"><span className="caps mb-2 block text-small font-semibold">Scopes (optional)</span><Input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} /></label>
           <div className="flex gap-2">
-            <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client ID (optional)</span><input name="mcp-client-id" spellCheck={false} className={input} /></label>
-            {writable && <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client secret (optional)</span><input name="mcp-client-secret" {...secret} /></label>}
+            <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">Client ID (optional)</span><Input name="mcp-client-id" spellCheck={false} /></label>
+            {writable && <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">Client secret (optional)</span><Input name="mcp-client-secret" {...secret} /></label>}
           </div>
         </div>
       )}
@@ -285,12 +280,12 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
       )}
       {preview && (
         <section aria-label="Preview" className="border bg-background p-3">
-          <p className="font-mono text-[12px] text-muted-foreground">MCP {preview.protocol}{preview.server_info?.name ? ` · ${preview.server_info.name}${preview.server_info.version ? ` ${preview.server_info.version}` : ""}` : ""} · {preview.tools.length} tool{preview.tools.length === 1 ? "" : "s"}</p>
-          {preview.instructions && <p className="mt-2 whitespace-pre-wrap text-[12px]">{preview.instructions}</p>}
+          <p className="font-mono text-small text-muted-foreground">MCP {preview.protocol}{preview.server_info?.name ? ` · ${preview.server_info.name}${preview.server_info.version ? ` ${preview.server_info.version}` : ""}` : ""} · {preview.tools.length} tool{preview.tools.length === 1 ? "" : "s"}</p>
+          {preview.instructions && <p className="mt-2 whitespace-pre-wrap text-small">{preview.instructions}</p>}
           <ul aria-label="Tools it lists" className="mt-2 divide-y border">
             {preview.tools.map((t) => (
-              <li key={t.name} className="px-3 py-2"><span className="font-mono text-[13px]">{t.name}</span>{t.title && <span className="ml-2 text-[12px]">{t.title}</span>}
-                {t.description && <span className="mt-0.5 block text-[12px] text-muted-foreground">{t.description}</span>}</li>
+              <li key={t.name} className="px-3 py-2"><span className="font-mono text-body">{t.name}</span>{t.title && <span className="ml-2 text-small">{t.title}</span>}
+                {t.description && <span className="mt-0.5 block text-small text-muted-foreground">{t.description}</span>}</li>
             ))}
           </ul>
         </section>

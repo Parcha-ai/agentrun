@@ -7,9 +7,16 @@
 # (packages/serve/docker/Dockerfile) in place of the published one.
 #
 # The server gets this host's Docker socket, and so does every process it starts. Whatever can reach that socket is root
-# on this host: run this only where you would give the server root. A run's box is a container beside the server's, made
-# through that socket: no socket, no network but the server's egress proxy (the hosts of AGENTRUN_BOX_ALLOW), every
-# capability dropped, the server's own uid, and of the data volume only that run's work/ and its proxy's socket.
+# on this host: run this only where you would give the server root. A run's Docker sandbox is a container beside the
+# server's, made through that socket: no socket, no network but its egress proxy (the hosts of AGENTRUN_BOX_ALLOW),
+# every capability dropped, and of the data volume only the run's folder (and the sandbox's own daemon, read-only),
+# mounted as the volume's subpaths.
+#
+# Its egress proxy refuses this host's own addresses, which the server in a container can't see: at its start it reads
+# them once through the socket (one short-lived container on the host's network, as nobody, from the proxy's own
+# image) and adds AGENTRUN_DOCKER_HOST_ADDRESSES; capabilities show the result. With none known, Docker sandboxes are
+# refused before a run, saying how to fix it.
+#
 # The port is published on this machine's loopback only; put a reverse proxy with TLS in front of it before you publish it
 # anywhere else, and set AGENTRUN_TRUSTED_PROXIES to the address the server sees it come from (Docker's bridge, in the
 # private ranges: uniquelocal), so the sign-in limit counts each visitor by its own address.
@@ -22,8 +29,8 @@ services:
     ports:
       - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
     volumes:
-      # Everything the server keeps, on a named volume: a box mounts its run's part of it by the volume's subpath, which is
-      # the one way a server in a container gives a box the run's files.
+      # Everything the server keeps, on a named volume: a sandbox mounts its run's part of it by the volume's subpath,
+      # which is how a server in a container gives a sandbox the run's files.
       - agentrun-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     # The socket's group, so the server (the image's node user) may use it.
@@ -39,8 +46,13 @@ services:
       AGENTRUN_BOXES: docker
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
-      # The key every saved secret (model and tool keys, MCP credentials, sign-ins) is sealed under. Make it once in .env
-      # (README) and keep it: without it a recreated container makes a new key, and the secrets saved under the old one are lost.
+      # More of this Docker host's own IP addresses, as a comma list, beside the ones the server reads through the
+      # socket: the ones no interface shows, such as a NAT'd or elastic public address. A sandbox's egress proxy refuses
+      # them all, so an allow-list never reaches the host itself.
+      AGENTRUN_DOCKER_HOST_ADDRESSES: ${AGENTRUN_DOCKER_HOST_ADDRESSES:-}
+      # The key every saved secret (model and tool keys, MCP credentials, sign-ins) is sealed under: AGENTRUN_SEAL_KEY,
+      # else the one the server keeps in its data directory (<data>/seal/seal.key). Make it once in .env (README) and keep
+      # it; a store whose secrets were sealed with another key refuses to start, so hand it the original.
       AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?make .env with AGENTRUN_SEAL_KEY (openssl rand -base64 32) and keep it; it seals every saved key}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
       AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}

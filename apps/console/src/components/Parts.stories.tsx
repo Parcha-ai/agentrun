@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Composer } from "@/components/Composer";
 import { NeedsYou } from "@/components/NeedsYou";
 import { RunError } from "@/components/RunError";
@@ -21,7 +21,7 @@ export const StatusBadges: Story = {
   render: () => {
     const seen = new Map<string, Run>();
     for (const n of runNames) { const r = recorded<Run>(n).body; seen.set(`${r.status}/${r.state}/${r.kind}`, r); }
-    return pad(<ul className="space-y-3">{[...seen].map(([k, r]) => <li key={k} className="flex items-center gap-4"><StatusBadge run={r} /><span className="font-mono text-[12px] text-muted-foreground">{k}</span></li>)}</ul>);
+    return pad(<ul className="space-y-3">{[...seen].map(([k, r]) => <li key={k} className="flex items-center gap-4"><StatusBadge run={r} /><span className="font-mono text-small text-muted-foreground">{k}</span></li>)}</ul>);
   },
 };
 export const ShellNav: Story = { render: () => <Shell active="agents"><div className="p-8 text-muted-foreground">Page</div></Shell> };
