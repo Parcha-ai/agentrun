@@ -40,8 +40,11 @@ export function useUnsavedChangesGuard(dirty: boolean): { asking: boolean; stay:
       // dirty), and the move takes the page away.
       holder = null;
       setHeld(null);
-      if (held.replay) held.replay();
-      else if (held.to !== null) location.hash = held.to;
+      if (!held.replay) { if (held.to !== null) location.hash = held.to; return; }
+      // A move the router is still taking back (its address not yet back on this page's) is made again only once it is
+      // back: a step counted from the entry it is leaving would land past the one the person asked for.
+      if (held.to !== null && location.hash !== here.current) window.addEventListener("hashchange", held.replay, { once: true });
+      else held.replay();
     },
   };
 }
