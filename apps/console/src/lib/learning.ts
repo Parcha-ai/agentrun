@@ -86,6 +86,11 @@ export const CHANGED = "It changed since you opened it.";
 /** What a restore says before it is made: what it changes, by the status it goes back to. Only an item that was active
  *  before its retire becomes active; one that waited for your OK waits again. */
 export const restores = (from: Retired["from"] | undefined): string => (from === "active" ? "It becomes active again for the next run." : "It goes back to waiting for your OK: no run uses it until you approve it.");
+/** What "Make this an agent" makes, said in its confirm: a workflow agent of its own, under this agent's policy, with the
+ *  learned workflow left where it is. */
+export const PROMOTES = (name: string) => `It makes a new agent that runs the steps of ${name} on their own, with no agent loop, under this agent's tool settings, approvals and cap. ${name} stays here, unchanged.`;
+/** A promotion made by a token, not the owner's password sign-in: the server refuses it (403). */
+export const PROMOTE_SIGN_IN = "Making an agent from it takes your password sign-in in the console.";
 /** A restore made by a token, not the owner's password sign-in: the server refuses it (403). */
 export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the console.";
 

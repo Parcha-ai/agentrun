@@ -71,9 +71,9 @@ export function bashPolicyOf(toolSettings: unknown): string | undefined {
 // - GIT_PAGER and PAGER cat, no prompt, no optional lock (status leaves the index unwritten) and no lazy fetch.
 // The config needs git 2.43 (attr.tree; safe.bareRepository is 2.38), and an older git ignores what it does not know,
 // so a shell under a policy runs with a prelude (policyPrelude) defining `git` as a function that runs git only at 2.43
-// or later and otherwise refuses, in words, before anything runs: fail closed, never a read with half the lock-down. A
-// stock serverless exec image has git 2.34 (archil.ts), so a read-only agent there gets no git until its image has a
-// newer one. The model cannot step around the function: the policy refuses `command`, a path to a program, `$`,
+// or later and otherwise refuses, in words, before anything runs: fail closed, never a read with half the lock-down.
+// Archil's stock exec image has git 2.34 (archil.ts), so a Mode 2 server runs its execs in DEFAULT_ARCHIL_EXEC_IMAGE
+// (archil-settings.ts, git 2.47) unless the owner saved another, which needs git 2.43 too. The model cannot step around the function: the policy refuses `command`, a path to a program, `$`,
 // `unset` and every program but git by name.
 // What config cannot turn off: diff.external (an empty value makes git diff fail; git has no unset on the command
 // line). It needs a repository's own config, which the policy never lets a command write and safe.bareRepository keeps
