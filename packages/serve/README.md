@@ -2989,7 +2989,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Test
 
 ```sh
-npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-disk -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
+npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
 npm test -w @parcha/agentrun-serve
 ```
 
