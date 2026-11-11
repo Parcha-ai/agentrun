@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -157,10 +157,14 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
  *  string it decodes to, keys too, as JSON.parse reads it (skills.ts decodedStrings, what draftProblems and a learned
  *  call's run read). A hidden character, a secret's shape or the host's value there is refused as one in its text is,
  *  though the text as stored spells it in escapes. True when it found one. */
-function decodedScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
+function decodedScanned(path: string, text: string, refused: (text: string) => boolean, add: Add, deep = true): boolean {
   const place = learnedPlace(path);
   if (!place) return false;
-  const [values, read] = place.kind === "workflow" ? [decodedStrings(text), "its JSON, read as JSON reads it,"] : [frontValues(text), "its front matter, read as YAML reads it,"];
+  const decoded = place.kind === "workflow" ? decodedStrings(text) : frontValues(text);
+  // Nested past the bound: refused on its own where its item is checked (`deep`), unread where the whole answer is
+  // scanned (unstorable), which a draft so deep never reaches storage past.
+  if (decoded === "too_deep") return deep ? (add("workflow", `its workflow.json nests deeper than ${DECODED_DEPTH}`, path), true) : false;
+  const [values, read] = [decoded, place.kind === "workflow" ? "its JSON, read as JSON reads it," : "its front matter, read as YAML reads it,"];
   let found = false;
   for (const value of values) {
     const hidden = hiddenCharacter(value);
@@ -234,7 +238,7 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
     if (change.path === INDEX_FILE) continue;
     nameScanned(change.path, refused, add);
     const text = change.bytes ? textOf(change.path, change.bytes, refused, add) : undefined;
-    if (text !== undefined) decodedScanned(change.path, text, refused, add);
+    if (text !== undefined) decodedScanned(change.path, text, refused, add, false);
   }
   return problems;
 }

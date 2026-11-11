@@ -665,22 +665,34 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
  *  escapes decoded: what draftProblems and a learned call's run read, and a model node is given). Text a scan of the
  *  stored JSON misses, spelled in \u escapes, is there as it will be read. None for a text that does not parse (the
  *  checks refuse it as no workflow). */
-export function decodedStrings(json: string): string[] {
+export function decodedStrings(json: string): string[] | "too_deep" {
   let doc: unknown;
   try {
     doc = JSON.parse(json);
   } catch {
     return [];
   }
+  // Walked with a stack of its own, never the call stack, and no deeper than DECODED_DEPTH: a draft nested past any
+  // workflow (thousands of arrays in a few KB) is refused on its own (check.ts), never a throw that takes its siblings.
   const out: string[] = [];
-  const walk = (value: unknown): void => {
-    if (typeof value === "string") return void out.push(value);
-    if (Array.isArray(value)) return value.forEach(walk);
-    if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) (out.push(key), walk(child));
-  };
-  walk(doc);
+  const stack: [unknown, number][] = [[doc, 0]];
+  while (stack.length) {
+    const [value, depth] = stack.pop()!;
+    if (typeof value === "string") {
+      out.push(value);
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    if (depth >= DECODED_DEPTH) return "too_deep";
+    if (Array.isArray(value)) for (let i = value.length - 1; i >= 0; i--) stack.push([value[i], depth + 1]);
+    else for (const [key, child] of Object.entries(value).reverse()) stack.push([child, depth + 1], [key, depth + 1]);
+  }
   return out;
 }
+
+/** How deep a learned workflow's JSON may nest (decodedStrings): far past any workflow the DSL writes, a node's schemas
+ *  included, and short of what a walk of it could not bound. */
+export const DECODED_DEPTH = 100;
 
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */

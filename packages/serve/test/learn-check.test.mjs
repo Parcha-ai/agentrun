@@ -343,7 +343,9 @@ test("a workflow.json nested 6,000 deep is refused on its own as nesting deeper 
   const changes = [added(NEW, note()), added(DRAFT_PATH, deep), added(README_PATH, readme)];
   const result = check(changes, { outcome: "completed", dsl, tools: [] });
   assert.ok(result.problems.some((p) => p.path === DRAFT_PATH && p.detail === `its workflow.json nests deeper than ${DECODED_DEPTH}`), JSON.stringify(result.problems));
-  assert.deepEqual(result.notes.map((one) => one.file), [NEW], "the note beside it is checked and kept");
+  // Refused on its own: no problem names the note beside it, which the proposal keeps when the draft is left out (#2254).
+  assert.deepEqual([...new Set(result.problems.map((p) => p.path))], [DRAFT_PATH], JSON.stringify(result.problems));
+  assert.deepEqual(check([added(NEW, note())], { outcome: "completed", dsl, tools: [] }).notes.map((one) => one.file), [NEW]);
   assert.deepEqual(checks.unstorable(changes), [], "nothing in it must never be stored, and reading it throws nothing");
   const { flows, left } = chooseWorkflows({ sha: null, notes: {}, files: [], skipped: [], workflows: [{ name: "deep", description: "Deep", workflow: deep }] }, secretsShown([]));
   assert.deepEqual([flows, left], [[], ["deep"]]);
