@@ -82,9 +82,11 @@ test("a hold that cannot be read is held while it is young, and taken over once 
 test("takers over one stale hold: exactly one holds it, and the hold left is its; a release lets go of its own hold alone", async (t) => {
   const dir = join(scratch(t, "hold-race"), "harnesses", "fake");
   mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
-  // A hold its installer left: a process of this host that is gone.
+  // A hold its installer left: a process of this host that is gone (pid 1 here). The takers are this process, which lives:
+  // a taker's fresh hold is its live installer's, never one left (a liveness that read every pid gone would have a later
+  // taker reap the winner's hold, as left, and both hold it).
   const left = () => writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 1, startedAt: Date.now(), token: "left" }));
-  const gone = { host: "this-host", isAlive: () => false };
+  const gone = { host: "this-host", isAlive: (pid) => pid !== 1 };
   for (let round = 0; round < 10; round++) {
     left();
     const tokens = (await Promise.all(Array.from({ length: 8 }, () => takeHold(dir, gone)))).filter(Boolean);
@@ -95,6 +97,17 @@ test("takers over one stale hold: exactly one holds it, and the hold left is its
     await releaseHold(dir, tokens[0]);
     assert.throws(() => readFileSync(installHoldOf(dir)), { code: "ENOENT" }, "its own release lets it go");
   }
+});
+
+test("a taker's fresh hold is never taken over by a later taker while its installer lives: one look after another, one holds it", async (t) => {
+  const dir = join(scratch(t, "hold-after"), "harnesses", "fake");
+  mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
+  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 1, startedAt: Date.now(), token: "left" }));
+  const taker = { host: "this-host", isAlive: (pid) => pid !== 1 };
+  const first = await takeHold(dir, taker);
+  assert.equal(typeof first, "string", "the left hold is taken over");
+  assert.equal(await takeHold(dir, taker), undefined, "a later look finds the first taker's live hold: held");
+  assert.equal(JSON.parse(readFileSync(installHoldOf(dir), "utf8")).token, first);
 });
 
 test("a hold whose installer on this host is still alive is held past the install's timeout: only its stop lets another install start", async (t) => {
