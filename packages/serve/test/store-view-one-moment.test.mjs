@@ -106,9 +106,12 @@ test("a run's view is of one moment: a write landing between any two of its read
   const total = dry.reads();
   assert.ok(total > 3, `the view reads the store more than once (${total})`);
 
-  const mixed = [];
+  // Each interleaving is a subtest of its own: its two stores (a Postgres pool each) are closed when it ends, not held until
+  // the whole test does, which a database's connection limit would not allow across the dozens of reads.
   for (let n = 1; n <= total; n++) {
-    const { store, runner } = await parkedRun(t);
+    await t.test(`the write lands after read ${n} of ${total}`, async (sub) => {
+    const mixed = [];
+    const { store, runner } = await parkedRun(sub);
     let landed = false;
     const hooked = interleaved(store, async (read) => {
       if (read === n && !landed) {
@@ -135,8 +138,9 @@ test("a run's view is of one moment: a write landing between any two of its read
         mixed.push(`${key}, write landed after read ${n} of ${total}: ${fields.length ? `neither ${fields.join(",")}` : from.join(" ")}; ${shown}`);
       }
     }
+    assert.deepEqual(mixed, [], "each answer is the run as it was before the write, or as it was after, never a mix");
+    });
   }
-  assert.deepEqual(mixed, [], "each answer is the run as it was before the write, or as it was after, never a mix");
 });
 
 /** A store whose first snapshot, once it has answered, saves a value to the server's secrets: it is saved after the rows
