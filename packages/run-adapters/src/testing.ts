@@ -170,7 +170,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       // the process ended before they ran. A recovered turn runs them first, as a real CLI's resume runs the calls left
       // dangling in its transcript; a turn settled or a new one sent leaves them.
       const begun = new Set(records.filter((r) => r.kind === FAUX_RECORDS.call || r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
-      let dangling = state === "open_turn" ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)) : [];
+      // Each keeps its action's resultWhen: its outcome is told only once that file exists, as on its first try.
+      const resultWhenOf = (action: FauxAction | undefined): string | undefined => (action && "resultWhen" in action && typeof action.resultWhen === "string" ? action.resultWhen : undefined);
+      let dangling = state === "open_turn" ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)).map((call) => ({ ...call, resultWhen: resultWhenOf(script[cursor - 1]) })) : [];
       /** What the session has been sent, as a model would be prompted with it. */
       const prompt = records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { text: string }).text);
       let ending: { promise: Promise<{ status: TurnStatus; error?: string }>; resolve: (end: { status: TurnStatus; error?: string }) => void } | undefined;
@@ -213,7 +215,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         const signal = AbortSignal.any([io.signal, (turnSignal = new AbortController()).signal]);
         try {
           // A recovered turn: the calls its last request left dangling run first, then the model goes on.
-          for (const { name, args, callId } of dangling.splice(0)) await runCall(name, args, callId, signal);
+          for (const { name, args, callId, resultWhen } of dangling.splice(0)) await runCall(name, args, callId, signal, resultWhen);
           for (;;) {
             const action = script[cursor];
             if (!action) return await end("completed");
@@ -290,7 +292,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                   const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
                   await io.models.afterRequest({ input: 10, output: 5, usd: action.sideDuring.usd }, side || undefined);
                 }
-                await runCall(name, args, callId, signal, "resultWhen" in action && typeof action.resultWhen === "string" ? action.resultWhen : undefined);
+                await runCall(name, args, callId, signal, resultWhenOf(action));
               }
               if (bookAfter) await book();
             }
