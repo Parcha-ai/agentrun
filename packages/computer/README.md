@@ -2081,6 +2081,34 @@ built for.
   - The live run needs Orgo's Scale plan or a Windows computer bought on the plan; the macOS run needs Orgo's Mac
     access.
 
+### An agent's own computer on Orgo (persistence)
+
+The Linux desktop declares `capabilities().persistence` (`{ keepsState: true, resume: true }`) and takes
+`spec.owner: { agent }` with no `lifetimeMs`: a computer that belongs to the agent and outlives the run (see
+"Persistent computers: an agent's own"). The Windows desktop's code declares it too, without resume; a Mac declares
+none.
+
+- **Its name** is `computer-<hex>-o<the owner's hash>`, with no run, epoch or deadline, and it has no Orgo end.
+- **Its labels live in a ledger.** Orgo holds no labels, and a detached computer is never woken to read its labels
+  file, so the provider keeps an agent's computer's labels (the owner's, the claim's run and epoch) and when it was
+  detached in a ledger: the `ledger` option, which Orgo's descriptor declares, so serve passes its computer ledger and
+  they outlive a restart. Without one it is kept in memory. `list` reads them with nothing run inside, and gives
+  `owned`, `owner`, `detachedAt`, and `deadline` undefined.
+- **No entry, no labels.** An agent's computer with no ledger entry is listed `owned` with no labels and no owner, to
+  an unfiltered list alone. The janitor can't read its owner, so it keeps it. Attach and detach refuse it in words,
+  and nothing reads its labels file instead: release it with delete.
+- **`release(ref, "detach")`** is for an agent's computer alone; a run's computer refuses it and runs on:
+  - Linux: Orgo's suspend saves memory and disk, and computerd init with them. `persistence.resume` is true.
+  - Windows: Orgo's stop archives its disk (files, apps and settings, not memory), and it reads `frozen`. `resume` is
+    false.
+  - macOS declares no persistence: Orgo stops no Mac, so `check()` refuses an owner.
+- **`attach({ id }, { claim })`** from a later run starts or resumes it first: attaching an agent's computer is asking
+  for it. A run's computer that isn't running is still never woken, and is never taken under a claim. Under a claim
+  the computer carries the claim's run and epoch, in the ledger and its labels file. A claim of the same run below
+  the epoch it carries is refused as fenced, and nothing changes. Its read-back spec carries `owner`.
+- **Init on Linux.** An owned computer's init takes the most this provider gives (`maxLifetimeMs`), since init ends its
+  programs at its deadline. `extend` refuses an owned computer: it has no deadline to move.
+
 ## Browsers: Browserbase and Kernel
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon

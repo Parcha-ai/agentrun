@@ -57,6 +57,7 @@ test("Orgo desktops: create({ os }) builds the Windows or the macOS provider, da
 		groups: ["exec", "files", "screen", "input.pointer", "input.keys"],
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
+		persistence: { keepsState: true, resume: false },
 	});
 	const mac = setup("macos").provider;
 	assert.equal(mac.capabilities().os, "macos");

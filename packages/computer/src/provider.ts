@@ -13,6 +13,11 @@ export type NetworkForm = "none" | "open" | "allow";
 export interface ComputerOwner {
 	/** The agent's id: a non-empty string with no NUL byte (ownerProblem). */
 	agent: string;
+	/**
+	 * The server the agent is on, where more than one server shares a vendor account: two servers may each have an agent
+	 * of one id, and each owns its own computer. A non-empty string with no NUL byte. Absent: the agent's id alone.
+	 */
+	server?: string;
 	/** How long the computer may stay detached before the janitor deletes it. Absent: it stays until it is deleted. */
 	idleTtlMs?: number;
 }
@@ -220,10 +225,12 @@ export function runLifetimeMs(spec: Pick<ComputerSpec, "lifetimeMs">): number {
 
 /** Why owner is not an agent's ownership, in words, or undefined when it is one. */
 export function ownerProblem(owner: unknown): string | undefined {
-	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, idleTtlMs? }";
-	const { agent, idleTtlMs } = owner as Partial<ComputerOwner>;
+	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, server?, idleTtlMs? }";
+	const { agent, server, idleTtlMs } = owner as Partial<ComputerOwner>;
 	if (typeof agent !== "string" || agent === "") return "owner.agent must be the agent's id, a non-empty string";
 	if (agent.includes("\0")) return "owner.agent cannot hold a NUL byte: no provider takes one in a label";
+	if (server !== undefined && (typeof server !== "string" || server === "")) return "owner.server, when given, is the server's id, a non-empty string";
+	if (typeof server === "string" && server.includes("\0")) return "owner.server cannot hold a NUL byte: no provider takes one in a label";
 	if (idleTtlMs !== undefined && !(Number.isSafeInteger(idleTtlMs) && idleTtlMs > 0)) return `owner.idleTtlMs is a whole number of milliseconds above 0, not ${JSON.stringify(idleTtlMs)}`;
 	return undefined;
 }

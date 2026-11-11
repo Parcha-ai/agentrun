@@ -27,7 +27,7 @@ export type RevisionKind = "agentic" | "workflow";
  *  it, ids its host knows, and the GPUs it asks for, a type its host's provider names and how many (absent: the host's
  *  default; `place` is its view where it can say it). */
 export type RevisionPlace = { mode: string; box?: string };
-export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } };
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number }; persistent?: boolean };
 export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
@@ -321,18 +321,18 @@ function placeOf(place: unknown): RevisionPlace {
   return { mode: place.mode, ...(place.box !== undefined ? { box: place.box } : {}) };
 }
 
-/** A computer as a body keeps it: `{kind, provider?, image?, gpu?}`, nothing else: kind and provider ids its host knows,
- *  image a name with no spaces around it, and gpu `{type, count}`, a type its host's provider names (the vendor's own,
- *  such as "A100-80GB") and a whole count from 1. */
+/** A computer as a body keeps it: `{kind, provider?, image?, gpu?, persistent?}`, nothing else: kind and provider ids its
+ *  host knows, image a name with no spaces around it, gpu `{type, count}`, a type its host's provider names (the vendor's
+ *  own, such as "A100-80GB") and a whole count from 1, and persistent a boolean (the agent keeps its own computer). */
 function computerOf(computer: unknown): RevisionComputer {
   const image = isObject(computer) ? computer.image : undefined;
   const named = (value: unknown): value is string => typeof value === "string" && value !== "" && value === value.trim();
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "image" && key !== "gpu")) throw invalid("the computer is not {kind, provider?, image?, gpu?}, kind and provider each an id (lowercase letters, digits and dashes), image a name");
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || (computer.persistent !== undefined && typeof computer.persistent !== "boolean") || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "image" && key !== "gpu" && key !== "persistent")) throw invalid("the computer is not {kind, provider?, image?, gpu?, persistent?}, kind and provider each an id (lowercase letters, digits and dashes), image a name, persistent a boolean");
   const gpu = computer.gpu;
   if (gpu !== undefined && (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count") || typeof gpu.type !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(gpu.type) || !Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1)) {
     throw invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
   }
-  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}), ...(named(image) ? { image } : {}), ...(gpu !== undefined ? { gpu: { type: gpu.type as string, count: gpu.count as number } } : {}) };
+  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}), ...(named(image) ? { image } : {}), ...(gpu !== undefined ? { gpu: { type: gpu.type as string, count: gpu.count as number } } : {}), ...(typeof computer.persistent === "boolean" ? { persistent: computer.persistent } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */

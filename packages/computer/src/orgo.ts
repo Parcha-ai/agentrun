@@ -19,7 +19,7 @@ import { DaemonClient } from "./client.js";
 import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
-import { EPOCH_LABEL, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
+import { EPOCH_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerLabels, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
@@ -31,9 +31,18 @@ import {
 	labelProblem,
 	labelsOf,
 	NAME_MAX,
+	NO_DEADLINE,
 	nameParts,
 	type OrgoComputer,
+	type OrgoLedger,
+	type OrgoLedgerEntry,
+	orgoMemoryLedger,
 	orgoName,
+	claimProblem,
+	lostEntry,
+	ownedListing,
+	ownerHashOfLabels,
+	ownerReadBack,
 	refProblem,
 	sameComputer,
 	show,
@@ -41,9 +50,11 @@ import {
 } from "./orgo-names.js";
 import type { Group } from "./protocol.js";
 import {
+	type AttachContext,
 	type AttachedComputer,
 	type CallContext,
 	type ComputerCapabilities,
+	type ComputerClaim,
 	type ComputerConnection,
 	type ComputerInfo,
 	type ComputerProvider,
@@ -128,6 +139,11 @@ export interface OrgoProviderOptions {
 	timeouts?: Partial<OrgoTimeouts>;
 	/** The addresses the probe tries, host:port over TCP or host:port/udp, to show none of them answers. */
 	probeTargets?: string[];
+	/**
+	 * Where agents' own computers' labels are kept (the server's computer ledger, as its descriptor declares): a detached
+	 * one is never woken to read its labels file. Default one in this process's memory.
+	 */
+	ledger?: OrgoLedger;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -251,10 +267,11 @@ export class OrgoProvider implements ComputerProvider {
 	readonly #display: string;
 	readonly #timeouts: OrgoTimeouts;
 	readonly #probeTargets: string[];
+	readonly #ledger: OrgoLedger;
 	/** Each computer's extend in flight, by id: the next waits for it, so two never read the same old deadline. */
 	readonly #extending = new Map<string, Promise<unknown>>();
 
-	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: OrgoProviderOptions) {
+	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, ledger = orgoMemoryLedger() }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId)) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is required");
 		let url: URL;
@@ -287,14 +304,16 @@ export class OrgoProvider implements ComputerProvider {
 		this.#display = display;
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
+		this.#ledger = ledger;
 	}
 
 	/**
 	 * daemon child: Orgo's own agent is the VM's first process, and init is a command it ran. lifetime janitor: Orgo ends
 	 * a computer only in whole hours (ends_in_hours, the backstop), so the janitor deletes it at its exact deadline, which
 	 * its name carries (list() reads it with nothing run inside); init ends its programs at that deadline inside. network
-	 * none alone, read back by the probe from inside (Orgo reads no policy back). release delete alone: Orgo's stop
-	 * freezes a computer, which nothing here needs.
+	 * none alone, read back by the probe from inside (Orgo reads no policy back). release delete, and detach for an
+	 * agent's own computer: Orgo's suspend saves its memory and disk, so it resumes where it was (persistence resume),
+	 * computerd init with it.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
@@ -312,6 +331,7 @@ export class OrgoProvider implements ComputerProvider {
 			mount: [...MOUNT],
 			// Init starts with --own-network (childCommands): no tool reaches these, nor any port root listens on.
 			vendorAgentPorts: [...ORGO_AGENT_PORTS],
+			persistence: { keepsState: true, resume: true },
 		};
 	}
 
@@ -333,7 +353,7 @@ export class OrgoProvider implements ComputerProvider {
 		refusals.push(...checkMount(mount, MOUNT));
 		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
-			if (SPEC_FIELDS.has(field) || field === "mount" || value === undefined) continue;
+			if (SPEC_FIELDS.has(field) || field === "mount" || field === "owner" || value === undefined) continue;
 			if (field === "user") refuse(field, `an Orgo computer's tools run as the provider's user (${this.#uid}:${this.#gid}, the remote tool user), never as one a spec names`);
 			else if (field === "workdir") refuse(field, `an Orgo computer works in ${WORK}, its home; a spec cannot name another`);
 			else if (field === "pids") refuse(field, "Orgo offers no pids limit to set; leave pids unset");
@@ -352,12 +372,15 @@ export class OrgoProvider implements ComputerProvider {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
-		const labels = { ...spec.labels };
+		// An agent's own computer outlives the run: no janitor's deadline and no Orgo end, the owner in its name and labels.
+		// Init still takes one, the most this provider gives (maxLifetimeMs), since it ends its programs at its deadline.
+		const owner = spec.owner;
+		const labels = { ...spec.labels, ...(owner === undefined ? {} : ownerLabels(owner)) };
 		const now = Date.now();
-		const deadline = new Date(now + runLifetimeMs(spec)).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
+		const deadline = owner === undefined ? new Date(now + runLifetimeMs(spec)).toISOString() : maxDeadline;
 		// The janitor's deadline is in the name, so list() and the sweep read it with nothing run inside.
-		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline));
+		const name = orgoName(labels, randomBytes(6).toString("hex"), owner === undefined ? new Date(deadline) : undefined, owner);
 		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
 		const ram = spec.memoryMb === undefined ? 4 : spec.memoryMb / 1024;
 		const cpu = spec.cpus ?? (CPU_FOR_RAM[ram] as number);
@@ -368,7 +391,7 @@ export class OrgoProvider implements ComputerProvider {
 			ram,
 			cpu,
 			// Orgo's end, the vendor's backstop: whole hours, deleting the computer and its disk. init ends it on time.
-			ends_in_hours: Math.max(1, Math.ceil(runLifetimeMs(spec) / HOUR)),
+			...(owner === undefined ? { ends_in_hours: Math.max(1, Math.ceil(runLifetimeMs(spec) / HOUR)) } : {}),
 			...(spec.image === BASE ? {} : { template_ref: spec.image }),
 		};
 		const made = await this.#rest.request<OrgoComputer>("POST", "/computers", { body, timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
@@ -380,8 +403,13 @@ export class OrgoProvider implements ComputerProvider {
 		const id = made.value?.id;
 		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return vendorFail("orgo",`Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
 		const ref = { id, name };
-		const file: LabelsFile = { name, labels, deadline, maxDeadline, image: spec.image, cpus: cpu, memoryMb: ram * 1024 };
-		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal);
+		// An agent's computer's labels go in the ledger at once, so list finds it as the agent's whatever happens next.
+		if (owner !== undefined) {
+			const kept = await this.#keep({ id, labels });
+			if (!kept.ok) return this.#abandon(ref, kept.error);
+		}
+		const file: LabelsFile = { name, labels, deadline: owner === undefined ? deadline : NO_DEADLINE, maxDeadline: owner === undefined ? maxDeadline : NO_DEADLINE, image: spec.image, cpus: cpu, memoryMb: ram * 1024 };
+		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal, { deadline, maxDeadline });
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" });
 		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
 		return this.#abandon(ref, prepared.error);
@@ -392,14 +420,14 @@ export class OrgoProvider implements ComputerProvider {
 	 * installed (its sha256 read back), Orgo's X server's path socket there, the labels file, init started, its first
 	 * connection, then the daemon's report and the probe. Its value is the probe's notes.
 	 */
-	async #prepare(ref: ComputerRef, status: string, file: LabelsFile, daemon: Buffer, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #prepare(ref: ComputerRef, status: string, file: LabelsFile, daemon: Buffer, signal?: AbortSignal, init: { deadline: string; maxDeadline: string } = file): Promise<Result<string[]>> {
 		const { uploadMs, execMs } = this.#timeouts;
 		const running = status === "running" ? ok(undefined) : await this.#untilRunning(ref, signal);
 		if (!running.ok) return running;
 		const staging = `${STAGING}${randomBytes(8).toString("hex")}`;
 		const uploaded = await this.#channel.upload(ref.id, staging, daemon, { timeoutMs: uploadMs, ...(signal ? { signal } : {}) });
 		if (!uploaded.ok) return fail(uploaded.error.code, `the daemon's upload into ${ref.name} failed: ${uploaded.error.message}`);
-		const commands = childCommands({ staging, deadline: file.deadline, user: `${this.#uid}:${this.#gid}`, display: this.#display, maxDeadline: file.maxDeadline });
+		const commands = childCommands({ staging, deadline: init.deadline, user: `${this.#uid}:${this.#gid}`, display: this.#display, maxDeadline: init.maxDeadline });
 		const install = await this.#channel.run(ref.id, ["sh", "-c", commands.install], { timeoutMs: execMs, ...(signal ? { signal } : {}) });
 		if (!install.ok) return install;
 		if (install.value.exitCode !== 0) return fail("refused", `installing the daemon failed (exit ${install.value.exitCode}): ${install.value.output.trim().slice(0, 500)}`);
@@ -626,6 +654,47 @@ export class OrgoProvider implements ComputerProvider {
 		return `; the computer named ${name}: ${said.join("; ")}`;
 	}
 
+	/** An agent's computer's ledger entry, put; a ledger that fails is a failure in words. */
+	async #keep(entry: OrgoLedgerEntry): Promise<Result<void>> {
+		try {
+			await this.#ledger.put(entry);
+			return ok(undefined);
+		} catch (error) {
+			return vendorFail("orgo", `the ledger of agents' computers could not be written: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	/** Every agent's computer's ledger entry, by id. */
+	async #entries(): Promise<Result<Map<string, OrgoLedgerEntry>>> {
+		try {
+			return ok(new Map((await this.#ledger.list()).map((entry) => [entry.id, entry])));
+		} catch (error) {
+			return vendorFail("orgo", `the ledger of agents' computers could not be read: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	/** An agent's computer's ledger entry; a computer with none is refused in words (lostEntry). */
+	async #entry(ref: ComputerRef): Promise<Result<OrgoLedgerEntry>> {
+		const entries = await this.#entries();
+		if (!entries.ok) return entries;
+		const entry = entries.value.get(ref.id);
+		return entry === undefined ? fail("refused", lostEntry(ref.name)) : ok(entry);
+	}
+
+	/** An agent's computer marked detached in the ledger, now (the janitor's idle clock), or when it was already. */
+	async #detached(entry: OrgoLedgerEntry): Promise<Result<void>> {
+		return entry.detachedAt !== undefined ? ok(undefined) : this.#keep({ ...entry, detachedAt: new Date().toISOString() });
+	}
+
+	/** A deleted computer's ledger entry, gone; best effort, since the computer is gone whatever the ledger says. */
+	async #forget(id: string): Promise<void> {
+		try {
+			await this.#ledger.remove(id);
+		} catch {
+			// A stale entry names a computer Orgo no longer has: list never shows it.
+		}
+	}
+
 	/** DELETE, tried again while Orgo answers 409 (waking), then the wait until Orgo no longer has the computer. */
 	async #delete(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
 		const { requestMs, pollMs, goneMs } = this.#timeouts;
@@ -636,6 +705,7 @@ export class OrgoProvider implements ComputerProvider {
 			if (status !== 409 || tries >= DELETE_TRIES) return deleted;
 			await pause(pollMs);
 		}
+		await this.#forget(ref.id);
 		const until = Date.now() + goneMs;
 		let last = "unread";
 		for (;;) {
@@ -679,7 +749,7 @@ export class OrgoProvider implements ComputerProvider {
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drift.join("; ")}`);
 	}
 
-	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
+	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal, claim }: AttachContext = {}): Promise<Result<AttachedComputer>> {
 		const given = (typeof ref === "object" && ref !== null ? ref : {}) as { id?: unknown; labels?: unknown };
 		if ((given.id === undefined) === (given.labels === undefined)) return fail("invalid", "attach takes { id } or { labels }, one of them");
 		if (given.id !== undefined) {
@@ -687,7 +757,7 @@ export class OrgoProvider implements ComputerProvider {
 			const read = await this.#get(given.id, signal);
 			if (!read.ok) return read.error.code === "not_found" ? fail("not_found", `no Orgo computer has the id ${given.id}`) : read;
 			if (!this.#ours(read.value)) return fail("not_found", `no Orgo computer of this provider has the id ${given.id}`);
-			return this.#attached(read.value, signal);
+			return this.#attached(read.value, signal, claim);
 		}
 		const problem = filterProblem(given.labels);
 		if (problem) return fail("invalid", problem);
@@ -700,28 +770,59 @@ export class OrgoProvider implements ComputerProvider {
 		if (listed.value.length > 1) return fail("invalid", `${listed.value.length} computers match the labels ${words}: ${listed.value.map((info) => info.ref.name).join(", ")}`);
 		const found = await this.#own((listed.value[0] as ComputerInfo).ref, signal);
 		if (!found.ok) return found;
-		return this.#attached(found.value, signal);
+		return this.#attached(found.value, signal, claim);
 	}
 
 	/**
 	 * The drift check of a computer attach did not make: its labels file, the truth, held to its name, then its daemon
 	 * and the probe, as at create. One that drifts is refused and left as it is. A computer that does not run is
-	 * refused: reading it from inside would wake it.
+	 * refused: reading it from inside would wake it. An agent's own computer is the exception: attaching it is asking
+	 * for it, so one a detach suspended is resumed first (#wake), its memory and init with it.
 	 */
-	async #attached(record: OrgoComputer, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
+	async #attached(record: OrgoComputer, signal?: AbortSignal, claim?: ComputerClaim): Promise<Result<AttachedComputer>> {
 		const ref = { id: record.id, name: record.name };
-		if (record.status !== "running") return fail("refused", `${ref.name} is ${record.status}: its labels file and daemon are read from inside, and a read would wake it`);
+		const parts = nameParts(record.name) as { owner?: string; run?: string; epoch?: string };
+		let entry: OrgoLedgerEntry | undefined;
+		if (parts.owner !== undefined) {
+			const found = await this.#entry(ref);
+			if (!found.ok) return found;
+			entry = found.value;
+		}
+		if (claim !== undefined) {
+			const fenced = claimProblem(ref.name, parts.owner, entry, claim);
+			if (fenced !== undefined) return fail("refused", fenced);
+		}
+		if (record.status !== "running") {
+			if (entry === undefined) return fail("refused", `${ref.name} is ${record.status}: its labels file and daemon are read from inside, and a read would wake it`);
+			const woken = await this.#wake(ref, record.status, signal);
+			if (!woken.ok) return woken;
+		}
+		// An agent's computer taken back runs again, no longer detached; under a claim, it carries the claim's run and
+		// epoch from now on, in the ledger and in its labels file.
+		if (entry !== undefined) {
+			const read = await this.#readLabels(ref, signal);
+			if (!read.ok) return read;
+			const labels = { ...entry.labels, ...(claim === undefined ? {} : { [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) }) };
+			const kept = await this.#keep({ id: ref.id, labels });
+			if (!kept.ok) return kept;
+			if (claim !== undefined) {
+				const written = await this.#writeLabels(ref, { ...read.value, labels }, signal);
+				if (!written.ok) return written;
+			}
+		}
 		const file = await this.#readLabels(ref, signal);
 		if (!file.ok) return file;
 		const found: string[] = [];
-		const parts = nameParts(record.name) as { run?: string; epoch?: string };
 		const { labels } = file.value;
 		if (typeof file.value.name !== "string" || !sameComputer(file.value.name, record.name)) found.push(`name: Orgo's is ${record.name}, the labels file's ${show(file.value.name)}`);
+		if ((parts.owner ?? "") !== ownerHashOfLabels(labels)) found.push(`owner: the name's owner hash ${show(parts.owner)} is not the labels file's owner ${show(labels[OWNER_LABEL])}`);
 		const run = labels[RUN_LABEL];
-		if ((parts.run ?? "") !== (typeof run === "string" && run !== "" ? runHash(run) : "")) found.push(`run: the name's run hash ${show(parts.run)} is not the labels file's run ${show(run)}`);
-		if ((parts.epoch ?? "") !== (labels[EPOCH_LABEL] ?? "")) found.push(`epoch: the name says ${show(parts.epoch)}, the labels file ${show(labels[EPOCH_LABEL])}`);
-		const deadline = new Date(file.value.deadline);
-		if (Number.isNaN(deadline.getTime())) found.push(`deadline: the labels file reads ${show(file.value.deadline)}, not a time`);
+		// An agent's own computer is no run's: its name carries no run or epoch, whatever run made it.
+		if (parts.owner === undefined && (parts.run ?? "") !== (typeof run === "string" && run !== "" ? runHash(run) : "")) found.push(`run: the name's run hash ${show(parts.run)} is not the labels file's run ${show(run)}`);
+		if (parts.owner === undefined && (parts.epoch ?? "") !== (labels[EPOCH_LABEL] ?? "")) found.push(`epoch: the name says ${show(parts.epoch)}, the labels file ${show(labels[EPOCH_LABEL])}`);
+		const deadline = parts.owner === undefined ? new Date(file.value.deadline) : undefined;
+		if (deadline !== undefined && Number.isNaN(deadline.getTime())) found.push(`deadline: the labels file reads ${show(file.value.deadline)}, not a time`);
+		if (parts.owner !== undefined && file.value.deadline !== NO_DEADLINE) found.push(`deadline: an agent's own computer has none, and the labels file reads ${show(file.value.deadline)}`);
 		let notes: string[] = [];
 		let kind: AttachedComputer["spec"]["kind"];
 		if (found.length === 0) {
@@ -749,11 +850,27 @@ export class OrgoProvider implements ComputerProvider {
 				...(file.value.cpus === undefined ? {} : { cpus: file.value.cpus }),
 				...(file.value.memoryMb === undefined ? {} : { memoryMb: file.value.memoryMb }),
 				workdir: WORK,
-				deadline,
+				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
+				...ownerReadBack(labels),
 			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
+	}
+
+	/**
+	 * An agent's own computer that a detach suspended, resumed for its attach: Orgo's resume (its memory back, computerd
+	 * init still running), then running. One stopped outside this provider comes back from its disk alone, with no init:
+	 * Orgo's start, and its daemon's absence then refuses the attach in words.
+	 */
+	async #wake(ref: ComputerRef, status: string, signal?: AbortSignal): Promise<Result<void>> {
+		const how = status === "suspended" || status === "suspending" ? "resume" : status === "frozen" || status === "stopped" ? "start" : undefined;
+		if (how === undefined && !RUNNING.has(status)) return fail("refused", `${ref.name} is ${status}: no resume or start brings it back`);
+		if (how !== undefined) {
+			const woken = await this.#rest.request("POST", `/computers/${encodeURIComponent(ref.id)}/${how}`, { body: {}, timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
+			if (!woken.ok) return fail(woken.error.code, `${ref.name} could not ${how} for its attach: ${woken.error.message}`);
+		}
+		return this.#untilRunning(ref, signal);
 	}
 
 	/**
@@ -767,16 +884,27 @@ export class OrgoProvider implements ComputerProvider {
 		const listed = await this.#desktops(signal);
 		if (!listed.ok) return listed;
 		const others = Object.keys(labels).filter((key) => key !== RUN_LABEL && key !== EPOCH_LABEL);
+		// An agent's computers' labels are the ledger's: read once, only when the workspace holds one.
+		const owned = listed.value.some((record) => nameParts(record.name)?.owner !== undefined) ? await this.#entries() : ok(new Map<string, OrgoLedgerEntry>());
+		if (!owned.ok) return owned;
 		const infos: ComputerInfo[] = [];
 		for (const record of listed.value) {
 			const parts = nameParts(record.name);
 			// Orgo's workspace listing names each desktop's os: a Windows or macOS one is the desktop provider's
 			// (orgo-desktop.ts), never this one's to list or its janitor's to sweep.
 			if (parts === undefined || record.status === "deleted" || (record.os !== undefined && record.os !== "linux")) continue;
-			if (labels[RUN_LABEL] !== undefined && parts.run !== runHash(labels[RUN_LABEL])) continue;
-			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			const ref = { id: record.id, name: record.name };
 			const running = RUNNING.has(record.status);
+			// An agent's computer: every label from its ledger entry, with nothing run inside, whatever its state; no deadline.
+			if (parts.owner !== undefined) {
+				const view = ownedListing(owned.value.get(record.id), labels);
+				if (view === undefined) continue;
+				infos.push({ ref, deadline: undefined, state: running ? "running" : "stopped", network: "none", ...view });
+				continue;
+			}
+			if (labels[OWNER_LABEL] !== undefined || labels[OWNER_SERVER_LABEL] !== undefined) continue;
+			if (labels[RUN_LABEL] !== undefined && parts.run !== runHash(labels[RUN_LABEL])) continue;
+			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			// The name keeps the run's hash, not the run: listed with no run to match, the hash is given, so a caller (serve's
 			// janitor) can still tell whose run a computer is.
 			let read: Record<string, string> = {
@@ -825,17 +953,37 @@ export class OrgoProvider implements ComputerProvider {
 		}
 	}
 
-	/** delete: idempotent, a computer Orgo no longer has is done; it waits until Orgo no longer has it. No stop. */
+	/**
+	 * delete: idempotent, a computer Orgo no longer has is done; it waits until Orgo no longer has it. detach, for an
+	 * agent's own computer alone: Orgo's suspend, its memory and disk saved, read back suspended. No stop: a run's
+	 * computer is deleted.
+	 */
 	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
-		if (how === "stop") return fail("unsupported", "an Orgo computer has no stop that this provider declares: release it with delete");
+		if (how !== "stop" && how !== "delete" && how !== "detach") return fail("invalid", `release is "stop", "delete" or "detach", not ${String(how)}`);
+		if (how === "stop") return fail("unsupported", "an Orgo computer has no stop that this provider declares: release it with delete, or detach an agent's own");
 		const read = await this.#get(ref.id);
-		if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
-		if (read.value.status === "deleted") return ok(undefined);
+		if (!read.ok) return read.error.code === "not_found" && how === "delete" ? ok(undefined) : read;
+		if (read.value.status === "deleted") return how === "delete" ? ok(undefined) : fail("not_found", `${ref.name} is deleted: there is nothing to detach`);
 		if (!this.#ours(read.value, ref.name)) return fail("not_found", `no Orgo computer of this provider is ${ref.name} (${ref.id}), so it is left as it is`);
-		return this.#delete(ref, signal);
+		if (how === "delete") return this.#delete(ref, signal);
+		if (nameParts(read.value.name)?.owner === undefined) return fail("refused", `${ref.name} is a run's computer, not an agent's own: it is deleted at its release, never detached`);
+		const entry = await this.#entry(ref);
+		if (!entry.ok) return entry;
+		if (read.value.status === "suspended") return this.#detached(entry.value);
+		const suspended = await this.#rest.request<{ status?: unknown }>("POST", `/computers/${encodeURIComponent(ref.id)}/suspend`, { timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
+		if (!suspended.ok) return fail(suspended.error.code, `${ref.name} could not be suspended for its agent: ${suspended.error.message}`);
+		// 202 suspending: its memory is still being saved. Read until Orgo says suspended.
+		const until = Date.now() + this.#timeouts.goneMs;
+		for (;;) {
+			const now = await this.#get(ref.id, signal);
+			if (!now.ok) return now;
+			if (now.value.status === "suspended") return this.#detached(entry.value);
+			if (Date.now() >= until) return fail("timeout", `${ref.name} was not suspended ${seconds(this.#timeouts.goneMs)} after its suspend; Orgo last read ${now.value.status}`);
+			await pause(this.#timeouts.pollMs, signal);
+			if (signal?.aborted) return fail("aborted", `the wait for ${ref.name} to be suspended was aborted`);
+		}
 	}
 
 	/**
@@ -866,6 +1014,7 @@ export class OrgoProvider implements ComputerProvider {
 		if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) return fail("invalid", "extend takes ttlMs, a whole number of milliseconds above 0");
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
+		if (nameParts(found.value.name)?.owner !== undefined) return fail("refused", `${ref.name} is an agent's own computer: it has no deadline to move`);
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}, not running`);
 		const file = await this.#readLabels(ref, signal);
 		if (!file.ok) return file;

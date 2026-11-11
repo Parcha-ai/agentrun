@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-computer
+kind: breaking
+---
+Persistent Orgo Linux desktops: the Linux desktop declares `capabilities().persistence` with resume and takes `spec.owner: { agent, server? }`, a computer that outlives the run with no deadline and no Orgo end. Its labels and when it was detached are kept in the provider's ledger (Orgo's descriptor declares `ledger`, so serve's computer ledger backs it), and `list` gives `owned`, `owner` and `detachedAt` from it. `release(ref, "detach")` suspends it with its memory, and `attach({ id }, { claim })` from a later run resumes it under the new claim; a lower epoch of the same run is fenced. An agent's computer with no ledger entry is never attached or detached: delete it. The Windows desktop's code keeps its own persistence (stopped to its disk, no resume); a Mac declares none. An owner may name its server (`owner.server`, label `agentrun.owner-server`, `ownerFilter` for an owner's listing), so one agent id on two servers owns two computers; a configuration declares its `persistence` in the registry (`KindCapabilities`), as its built provider does.
+
+Who breaks: an Orgo spec whose `labels` carry `agentrun.owner`, `agentrun.owner-server` or `agentrun.idle-ttl-ms` is refused by `check()`, so give the owner as `spec.owner`; and `sweep()`'s `ownerGone` is now called with the whole owner (`{ agent, server? }`), not the agent's id.

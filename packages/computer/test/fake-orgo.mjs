@@ -36,9 +36,10 @@ const json = (status, body, headers = {}) => new Response(body === undefined ? n
  *  - extra: ({ method, path, query, body, form, record }) => a Response for a route this fake has not (a Windows or macOS
  *    desktop's screenshot and input calls, fake-orgo-desktop.mjs), or undefined;
  *  - upload: (form) => what an upload with destPath does in the computer (fake-orgo-desktop.mjs puts the file there);
+ *  - power: (record, verb) => what a stop, suspend, start or resume does inside (a stop's cold start loses init);
  * fake.requests holds every request: { method, path, headers, body, form }; fake.computers each computer's record.
  */
-export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, deleteRefused = () => undefined } = {}) {
+export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, power, deleteRefused = () => undefined } = {}) {
 	const computers = new Map();
 	const requests = [];
 	let wakingLeft = waking;
@@ -111,6 +112,30 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 			const from = record.ends_at === null ? Date.now() : Date.parse(record.ends_at);
 			record.ends_at = new Date(from + body.hours * 3_600_000).toISOString();
 			return json(200, { success: true, ends_at: record.ends_at });
+		}
+		// Orgo's power calls, by its docs: stop (Linux and Windows) archives the disk and reads frozen; suspend (Linux)
+		// keeps memory too and reads suspended; start brings back a frozen or stopped one, resume a suspended one.
+		if ((match = /^\/computers\/([^/]+)\/(stop|suspend|start|resume)$/.exec(path)) && method === "POST") {
+			const record = computers.get(match[1]);
+			if (!visible(record) || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
+			const verb = match[2];
+			if (verb === "stop") {
+				if (!["linux", "windows"].includes(record.os)) return json(400, { error: "Only Linux and Windows computers can be stopped.", code: "STOP_UNSUPPORTED" });
+				if (record.status !== "running" && record.status !== "frozen") return json(409, { error: `Computer is ${record.status}` });
+				record.status = "frozen";
+			} else if (verb === "suspend") {
+				if (record.os !== "linux") return json(400, { error: "Suspend is available for Linux computers.", code: "SUSPEND_UNSUPPORTED" });
+				if (record.status !== "running" && record.status !== "suspended") return json(409, { error: `Computer is ${record.status}` });
+				record.status = "suspended";
+			} else if (verb === "start") {
+				if (!["frozen", "stopped", "suspended"].includes(record.status)) return json(409, { error: `Computer is ${record.status}` });
+				record.status = "running";
+			} else {
+				if (record.status !== "suspended") return json(409, { error: `Computer is ${record.status}` });
+				record.status = "running";
+			}
+			power?.(record, verb);
+			return json(200, { success: true, status: record.status });
 		}
 		if ((match = /^\/computers\/([^/]+)\/bash$/.exec(path)) && method === "POST") {
 			const record = computers.get(match[1]);
