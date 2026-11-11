@@ -44,9 +44,10 @@ async function proxyOn(t, origin, { count = async () => Response.json({ input_to
   const counts = [];
   const sent = [];
   const asked = [];
+  const marked = [];
   const p = await startModelProxy({
     policy, model: 'claude-main', origin, credential: () => 'provider-secret', price: () => 0.001, log: () => {},
-    hooks: { beforeRequest: async (r) => { asked.push(r.inputTokensMax); await admit(r); }, afterRequest: async () => {} },
+    hooks: { beforeRequest: async (r) => { asked.push(r.inputTokensMax); marked.push(r.inputTokensCounted === true); await admit(r); }, afterRequest: async () => {} },
     fetch: async (url, init) => {
       if (String(url).endsWith('/count_tokens')) {
         counts.push({ url: String(url), headers: init.headers, body: JSON.parse(String(init.body)) });
@@ -57,16 +58,17 @@ async function proxyOn(t, origin, { count = async () => Response.json({ input_to
     },
   }, 'session-key');
   t.after(() => p.close());
-  return { p, counts, sent, asked };
+  return { p, counts, sent, asked, marked };
 }
 
 const bytesOf = (body) => Buffer.byteLength(JSON.stringify(applyAnthropic(body, MESSAGES, options)), 'utf8');
 
 test("straight to Anthropic, a request's input bound is Anthropic's count of it (and the tool-use prompt), never its bytes; each answer request is counted", async (t) => {
-  const { p, counts, asked, sent } = await proxyOn(t, 'https://api.anthropic.com');
+  const { p, counts, asked, sent, marked } = await proxyOn(t, 'https://api.anthropic.com');
   assert.equal((await send(p.url, firstTurn)).status, 200);
   assert.equal((await send(p.url, firstTurn)).status, 200);
   assert.deepEqual(asked, [6_000 + PROMPT, 6_000 + PROMPT], `counted, against ${bytesOf(firstTurn) + PROMPT} by its bytes`);
+  assert.deepEqual(marked, [true, true], 'each counted bound is marked so (inputTokensCounted), so a host pairs it only with another counted one');
   assert.equal(sent.length, 2, 'each request went on');
   assert.equal(counts.length, 2);
   // Only Anthropic's own endpoint, with the credential and the version, and only the fields it counts.
@@ -74,6 +76,21 @@ test("straight to Anthropic, a request's input bound is Anthropic's count of it 
   assert.deepEqual(Object.keys(counts[0].headers).map((n) => n.toLowerCase()).sort(), ['anthropic-version', 'content-type', 'x-api-key']);
   assert.equal(counts[0].headers['x-api-key'], 'provider-secret');
   assert.deepEqual(Object.keys(counts[0].body).sort(), ['messages', 'model', 'system', 'tools']);
+});
+
+test("an unmeasured bound stays unmeasured: a request with the web search tool (whose pages it reads have no bound) is never counted into a number", async (t) => {
+  const searching = anthropicPolicy({ ...options, webSearch: true });
+  const counts = [];
+  const asked = [];
+  const p = await startModelProxy({
+    policy: searching, model: 'claude-main', origin: 'https://api.anthropic.com', credential: () => 'provider-secret', price: () => 0.001, log: () => {},
+    hooks: { beforeRequest: async (r) => { asked.push(r); }, afterRequest: async () => {} },
+    fetch: async (url) => (String(url).endsWith('/count_tokens') ? (counts.push(url), Response.json({ input_tokens: 10 })) : new Response(ANSWER, { status: 200, headers: { 'content-type': 'text/event-stream' } })),
+  }, 'session-key');
+  t.after(() => p.close());
+  const reply = await send(p.url, { ...firstTurn, tools: [tool, { type: 'web_search_20250305', name: 'web_search', max_uses: 1 }] });
+  assert.equal(asked.length, 1, reply.text);
+  assert.deepEqual([asked[0].inputTokensMax, asked[0].inputTokensCounted, counts.length], [undefined, undefined, 0], JSON.stringify(asked[0]));
 });
 
 test("a count above the request's bytes is not taken: the bound is the lower of the two", async (t) => {
@@ -92,9 +109,9 @@ test("a count that fails, throws, times out or says no count leaves the byte bou
   };
   for (const [name, count] of Object.entries(failures)) {
     if (name === 'timeout') continue; // its own case below, on a short timeout
-    const { p, asked, sent } = await proxyOn(t, 'https://api.anthropic.com', { count });
+    const { p, asked, sent, marked } = await proxyOn(t, 'https://api.anthropic.com', { count });
     assert.equal((await send(p.url, firstTurn)).status, 200, name);
-    assert.deepEqual([asked, sent.length], [[bytesOf(firstTurn) + PROMPT], 1], name);
+    assert.deepEqual([asked, sent.length, marked], [[bytesOf(firstTurn) + PROMPT], 1, [false]], name);
   }
   // A count that never answers is given up at its timeout (here 50 ms), and the bound is the bytes'.
   const said = [];
@@ -105,9 +122,9 @@ test("a count that fails, throws, times out or says no count leaves the byte bou
 
 test("through a gateway (OpenRouter) or any other base, nothing is counted: the byte bound stands and the key goes only where the request goes", async (t) => {
   for (const origin of ['https://openrouter.ai/api', 'https://api.anthropic.com.example.net', 'https://gateway.example/anthropic']) {
-    const { p, counts, asked } = await proxyOn(t, origin);
+    const { p, counts, asked, marked } = await proxyOn(t, origin);
     assert.equal((await send(p.url, firstTurn)).status, 200, origin);
-    assert.deepEqual([counts.length, asked], [0, [bytesOf(firstTurn) + PROMPT]], origin);
+    assert.deepEqual([counts.length, asked, marked], [0, [bytesOf(firstTurn) + PROMPT], [false]], origin);
   }
 });
 

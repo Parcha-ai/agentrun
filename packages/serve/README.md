@@ -2766,18 +2766,21 @@ gateway or any other base), and its bound is that count plus the tool-use prompt
 that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
 
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
-step is sent only when the run's spend plus that step's least (its input bound at the cache-write price and a 1,024-token
+step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
 answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
-cache write $3.75 a million) through the dispatch's own system prompt and tools, five requests (four screenshots, then
-the answer), spending about $0.04 in all:
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
+screenshots, then the answer), spending about $0.04 in all:
 
-| Route | First request needs | Five-step run needs |
-| --- | --- | --- |
-| Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 |
-| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 |
+| Cap mode | Route | First request needs | Five-step run needs | Each further step |
+| --- | --- | --- | --- | --- |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| `expected` (the default) | Either | as `strict` | as `strict` today | as `strict` today |
 
-Each further step of such a run needs about $0.013 more (what the step spends, and its grown context at the cache-write
-price). A claude-agent run's first request is of the same size (the pinned
+In `strict` mode every step's whole input is priced at the cache-write price. The `expected` row is today's: the runner
+does not yet price a step from what the previous request read from the cache, as `expected` is described above, so it
+prices like `strict`. Once it does, a five-step run in `expected` mode needs about $0.06 by either route, and about
+$0.007 a further step. A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests

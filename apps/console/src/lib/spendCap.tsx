@@ -4,7 +4,8 @@
 /** The README's section on the spend cap, the smallest cap that works among it. */
 export const SPEND_CAP_DOCS_URL = "https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md#spend-cap";
 
-/** The cap fields' one-line help: a run on Sonnet needs about $0.10 to take a few steps, and where that is worked out. */
+/** The cap fields' one-line help: a run on Sonnet needs about $0.10 to take a few steps (the README's five-step figures,
+ *  $0.09 to $0.11, by route and cap mode), and where that is worked out. */
 export function SpendCapMinimum() {
   return (
     <>

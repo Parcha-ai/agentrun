@@ -494,6 +494,9 @@ export interface ProxyRequest {
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
+  /** Its `inputTokensMax` is its provider's count (ProviderPolicy.countInput), not its bytes: a host that compares one
+   *  request's bound with another's (how far a conversation grew) pairs a counted bound only with a counted one. */
+  inputTokensCounted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -1045,10 +1048,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // counted bound beside a byte bound would read the bytes as growth. A count that fails or times out leaves the byte
     // bound, and never holds the request up for long. A noted request is counted with its note, which bounds it without
     // the note too (the note only adds).
+    // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
+    let inputTokensCounted = false;
     if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
       const counted = await countedInputOf(policy, origin, body, headers, forward, say);
-      if (counted !== undefined && counted < inputTokensMax) inputTokensMax = counted;
-      if (counted !== undefined && inputTokensMaxWithoutNote !== undefined && counted < inputTokensMaxWithoutNote) inputTokensMaxWithoutNote = counted;
+      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
+        inputTokensMax = counted;
+        inputTokensCounted = true;
+        if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
+      }
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
@@ -1060,6 +1068,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(host === undefined ? {} : { host }),
+        ...(inputTokensCounted ? { inputTokensCounted: true as const } : {}),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).

@@ -1,4 +1,6 @@
-// The smallest cap a pi run on Sonnet can work under, as docs/run-caps.md states it, held to what the cap does. The run is
+// The smallest cap a pi run on Sonnet can work under in `strict` cap mode, as serve's README states it, held to what the
+// cap does. (The default, `expected`, prices a step after the first from what the previous one read from the cache; its
+// row in the README is the runner's once that pricing is wired there.) The run is
 // a desktop agent's through the dispatch's own spec (its system prompt and tools: read, write, edit and the desktop's),
 // five model requests: four screenshots, then the answer. Each step is admitted only when what the run spent plus the
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
@@ -58,7 +60,8 @@ async function desktopRun(t, capUsd, origin) {
   const provider = { api: "anthropic-messages", origin, credential: () => `not-a-secret-${"x"}` };
   const result = await capRun(t, {
     specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: () => "allow" }),
-    runCap: { capUsd: () => capUsd, modelOf: () => SONNET },
+    // Strict mode, the figures the README prints for it: every step's input at the cache-write price, whatever was cached.
+    runCap: { capUsd: () => capUsd, modelOf: () => SONNET, mode: "strict" },
     cap: specCap(capUsd),
   });
   return { ...result, counted };
