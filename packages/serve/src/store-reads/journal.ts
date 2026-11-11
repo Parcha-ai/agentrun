@@ -10,6 +10,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
+import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
@@ -40,14 +41,16 @@ export async function runReflect(store: Store, runId: string, context: Context):
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
-/** The calls the CLI record holds parked at their gate (a start marked parked) with no sent mark and no end. */
+/** The calls the CLI record holds parked at an MCP door (a start marked parked, not in its tool bridge) with no sent mark
+ *  and no end. */
 function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
   const parked = new Set<string>();
   const past = new Set<string>();
   for (const entry of entries) {
     const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
     if (typeof callId !== "string") continue;
-    if (entry.kind === KINDS.callStart && (entry.data as { parked?: unknown }).parked === true) parked.add(callId);
+    const start = entry.data as { parked?: unknown; bridge?: unknown };
+    if (entry.kind === KINDS.callStart && start.parked === true && start.bridge !== true) parked.add(callId);
     else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
   }
   for (const callId of past) parked.delete(callId);
@@ -149,6 +152,13 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
 /** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
 export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
 
+/** A path as a run's rows name it, for a harness working in `cwd`: one under `cwd` by its name there (`hello.md`), any
+ *  other as given. */
+const inWorkspace = (cwd: string) => (path: string): string => {
+  const root = cwd.replace(/\/+$/, "");
+  return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
+};
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
  *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
@@ -159,9 +169,32 @@ export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.s
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
+  // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
+  const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
+}
+
+/** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
+ *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
+ *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
+function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
+  const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
+  const said = (text: string) => (redact ? redact(text) : text);
+  for (const entry of entries) {
+    if (entry.kind !== LEARNED_NODES) continue;
+    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
+    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
+    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown };
+      if (typeof one.label !== "string" || typeof one.status !== "string") return [];
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0 }];
+    }));
+  }
+  if (!traces.size) return rows;
+  return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every
