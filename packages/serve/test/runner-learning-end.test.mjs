@@ -228,6 +228,33 @@ test("the draft ask describes each tool a call node may run, by the server's own
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
 
+test("the draft ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate holds is not offered, and the run is asked its turn (LS-07)", async (t) => {
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const takes = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
+  const gives = { type: "object", properties: { id: { type: "string" } } };
+  const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:github/*": { permission: "allow" } };
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [
+      { name: "create_issue", description: "Create an issue in a team", input_schema: takes, output_schema: gives },
+      { name: "delete_issue", description: "Delete an issue", input_schema: { type: "object" } },
+    ] });
+    await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object", properties: { repo: { type: "string" } } } }] });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt, "the run was asked its end-of-run turn");
+  const listed = prompt.slice(prompt.indexOf("What each tool a call node may run takes and gives:"), prompt.indexOf("A skill is how"));
+  assert.ok(listed.includes(`- \`mcp:linear/create_issue\`: Create an issue in a team. Takes ${JSON.stringify(takes)}. Gives ${JSON.stringify(gives)}.`), listed || prompt.slice(0, 200));
+  assert.ok(listed.includes('- `mcp:github/create_pull_request`: Open a pull request. Takes {"type":"object","properties":{"repo":{"type":"string"}}}.'), listed);
+  // Granted but held by its gate (unset: ask): no call node may run it, so it is not offered.
+  assert.ok(!prompt.includes("mcp:linear/delete_issue"), "delete_issue asks: not offered");
+});
+
 // A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives
 // nothing new to look back on: it is not asked its end-of-run turn (no model request), and its learning is dropped
 // `empty` in said.onlyWorkflow's words, at no cost. Any other tool, or a learned workflow that fails, is asked as before.
