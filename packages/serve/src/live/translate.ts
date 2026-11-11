@@ -161,7 +161,7 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   const tasks = commit.tasks.filter(mine);
   const submissions = commit.submissions.filter(mine);
   // The end-of-run turn's input placed in this commit: its messages from there on are the turn's.
-  state.reflectFrom ??= reflectFrom(submissions);
+  state.reflectFrom ??= reflectFrom(submissions, entries);
   const tag = (entry: EntryRecord) => (state.reflectFrom !== undefined && Number(entry.id) >= state.reflectFrom ? { agent_label: REFLECT_LABEL } : {});
   for (const entry of entries) {
     const message = modelOf(entry);
