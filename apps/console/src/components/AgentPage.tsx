@@ -23,7 +23,7 @@ import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
-import { providerLabel } from "@/lib/toolSettings";
+import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -167,7 +167,12 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
                 {agent.tools?.length ? (
                   <ul className="flex flex-wrap gap-x-4 gap-y-1" aria-label="Tools">
                     {agent.tools.map((t) => (
-                      <li key={t.name}><span title={t.blurb}>{t.name}</span>{t.provider ? ` · ${providerLabel(t.provider, t.name)}` : ""}{t.permission ? ` · ${t.permission}` : ""}</li>
+                      <li key={t.name}>
+                        <span title={t.blurb}>{t.name}</span>{t.provider ? ` · ${providerLabel(t.provider, t.name)}` : ""}{t.permission ? ` · ${t.permission}` : ""}
+                        {/* A tool its runs would not get (bash's family with no computer that gives a shell, a web tool its
+                            provider can't serve here): the server's resolution says why, on hover. */}
+                        {resolution(t.resolved, t.name).unavailable && <span data-unavailable className="text-warning-text" title={t.resolved}> · unavailable</span>}
+                      </li>
                     ))}
                   </ul>
                 ) : "none"}

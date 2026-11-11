@@ -4,18 +4,20 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { CAPS, costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
+import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
+import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
+import { waitingText } from "../tool-gate.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
@@ -28,7 +30,7 @@ export async function runEntries(store: Store, runId: string, context: Context):
  *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
 export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
   const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? []);
+  const from = reflectFrom(records.submissions ?? [], records.entries);
   if (from === undefined) return undefined;
   const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
   return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
@@ -39,9 +41,36 @@ export async function runReflect(store: Store, runId: string, context: Context):
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
+/** The calls the CLI record holds parked at their gate (a start marked parked) with no sent mark and no end. */
+function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
+  const parked = new Set<string>();
+  const past = new Set<string>();
+  for (const entry of entries) {
+    const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
+    if (typeof callId !== "string") continue;
+    if (entry.kind === KINDS.callStart && (entry.data as { parked?: unknown }).parked === true) parked.add(callId);
+    else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
+  }
+  for (const callId of past) parked.delete(callId);
+  return parked;
+}
+
 function piShaped(entries: readonly EntryLike[]): EntryLike[] {
-  return entries.map((entry) => {
+  const waiting = parkedUnsent(entries);
+  return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // A call through a CLI's own MCP client that its gate parked (adapter-loop.ts park): the CLI was answered the gate's
+    // waiting words (mcp-run.ts), which the record never keeps as the call's end, since an end is its outcome and the call
+    // is answered from it. While the call is parked and unsent, those words show as its result row from its ask on, as pi's
+    // parked call shows them; its sent mark or its end (run, refused, withdrawn) ends that.
+    // Once per call, at its first ask: a call asked again (a resume, a raise while it waits) shows one waiting result.
+    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.delete(data.callId)) {
+      const tool = typeof data.tool === "string" ? data.tool : "tool";
+      const timestamp = typeof data.requestedAt === "string" && Number.isFinite(Date.parse(data.requestedAt)) ? { timestamp: Date.parse(data.requestedAt) } : {};
+      // Its own id (the ask's, marked), so the renderer never takes it for the ask entry seen twice.
+      const result = { ...entry, id: `${String(entry.id)}:parked`, kind: "pi.tool-result", data: {}, model: [{ role: "tool", toolCallId: data.callId, content: waitingText(tool), ...timestamp }] } as unknown as EntryLike;
+      return [entry, result];
+    }
     // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
     const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
@@ -85,13 +114,15 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];
   // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
-  const named = new Map<number, { tool: string; call?: string; chargedBy?: string }>();
+  // Its tool: the one the request names (`tool`: a browser step's "browser", which the renderer folds into its call's row
+  // with its session `tag`, as main's browser charge), else its paid name.
+  const named = new Map<number, { tool: string; call?: string; chargedBy?: string; tag?: string }>();
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
-    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string };
-    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}) });
+    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string; tool?: string; tag?: string };
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}), ...(typeof d.tag === "string" && d.tag ? { tag: d.tag } : {}) });
   }
-  const charges: { tool: string; call?: string; chargedBy?: string; usd: number | null }[] = [];
+  const charges: { turn: number; tool: string; call?: string; chargedBy?: string; tag?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { turn?: number; usd?: number | null; givenBack?: boolean };
@@ -100,7 +131,7 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // that ran is a charge at what it charged, $0 included (main's TOOL_COST of usd 0, a Parallel 4xx); one whose charge
     // is unknown (null) is a charge of an unknown amount (main's TOOL_COST with no usd).
     if (!req || d.givenBack === true) continue;
-    charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
+    charges.push({ ...req, turn: d.turn as number, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
   }
   if (!charges.length) return [...entries];
   const out = [...entries];
@@ -109,8 +140,8 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // MCP server, a browser vendor).
     const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
-    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
-    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
+    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.tag ? { tag: charge.tag } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}#${charge.turn}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }
   return out;
@@ -118,6 +149,13 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
 
 /** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
 export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+
+/** A path as a run's rows name it, for a harness working in `cwd`: one under `cwd` by its name there (`hello.md`), any
+ *  other as given. */
+const inWorkspace = (cwd: string) => (path: string): string => {
+  const root = cwd.replace(/\/+$/, "");
+  return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
+};
 
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
@@ -129,9 +167,32 @@ export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.s
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
+  // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
+  const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
+}
+
+/** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
+ *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
+ *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
+function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
+  const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
+  const said = (text: string) => (redact ? redact(text) : text);
+  for (const entry of entries) {
+    if (entry.kind !== LEARNED_NODES) continue;
+    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
+    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
+    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown };
+      if (typeof one.label !== "string" || typeof one.status !== "string") return [];
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0 }];
+    }));
+  }
+  if (!traces.size) return rows;
+  return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every

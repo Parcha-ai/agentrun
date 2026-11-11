@@ -323,7 +323,7 @@ test("the served definition takes exactly the fields this server takes: a contra
   const refused = Object.keys(fields).filter((field) => fields[field]["x-agentrun-serve-unsupported"]);
   assert.deepEqual(Object.keys(fields).filter((field) => !refused.includes(field)).sort(), [...DEFINITION_FIELDS].sort(), "every field validate.ts takes, and no other, unmarked");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported_fields, refused.map((field) => `DefinitionInput.${field}`));
-  const values = { input_schema: { type: "object" }, output_schema: { type: "object" } };
+  const values = { input_schema: { type: "object" } };
   for (const field of refused) {
     const answer = await api("POST", "/agents", agent(`with-${field.replaceAll("_", "-")}`, { [field]: values[field] ?? "x" }));
     assert.equal(answer.status, 422, field);
@@ -644,7 +644,7 @@ test("a tool key's save documents every status it answers, 503 unavailable among
 test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
   const { doc } = await served(t);
   // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
-  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("@parcha/pi-durable-agent/timeline")), "utf8");
+  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("../dist/timeline/index.js")), "utf8");
   const union = /export type TimelineKind =([^;]+);/.exec(declaration.replace(/\/\*[\s\S]*?\*\//g, ""))?.[1] ?? "";
   const declared = [...union.matchAll(/"([a-z_]+)"/g)].map(([, kind]) => kind);
   assert.ok(declared.includes("decision") && declared.includes("usage"), `the timeline's kinds are read: ${declared}`);

@@ -8,14 +8,14 @@
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
 import { decisionKeysFor, providersNamed } from "../decisions.js";
 import type { LearnedWorkflow } from "../learning.js";
-import { GATEWAY_KEY_ENV, PROVIDER_KEYS, workflowNodes } from "../model.js";
+import { GATEWAY_KEY_ENV, modelKeys, PROVIDER_KEYS, type Tier, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import type { SealedKeys } from "../store/store.js";
 import { handsParallel } from "../tool-plane.js";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "../agent-rows.js";
 
 /** Every server secret a run might be handed (runs.ts RUN_SECRETS is the tool and model keys; the decision keys go beside
  *  them). Read from the store into a working environment, then scoped to the run below. */
@@ -86,6 +86,18 @@ export async function learnedDecisionKeys(deps: ClaimSecretsDeps, workflows: rea
   const providers = [...named].filter((id) => allowed(id));
   if (!providers.length) return {};
   return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false });
+}
+
+/** The model keys the host's models of `tiers` need (model.ts modelKeys: each one's provider's, or the gateway's), read as
+ *  claimSecrets reads a run's (the runner's environment first, then the key saved in Settings → Model keys), for a run's
+ *  learned workflow nodes of those tiers (adapter-run-spec.ts learnedTierRoutes): claimSecrets opens only the run's own
+ *  model's. For the tiers' routes alone, through withModelKeys (never enumerable), never onto a tool's environment. */
+export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[]): Promise<NodeJS.ProcessEnv> {
+  if (!tiers.length) return {};
+  const working = await workingEnv(deps);
+  const out: NodeJS.ProcessEnv = {};
+  for (const name of modelKeys(working, undefined, tiers)) if (working[name] !== undefined) out[name] = working[name];
+  return out;
 }
 
 /** Every model key a model route reads by name: each of pi-ai's providers' (model.ts PROVIDER_KEYS) and the gateway's. */

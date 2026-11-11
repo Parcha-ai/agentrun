@@ -5,17 +5,18 @@
 // a person's words, the verdict, what it merged, learned, held for the owner's OK and lost, what the checks left out,
 // and what the grade spent. What the server keeps on a run before its end (what it was given and read, its seed's
 // notes, its answer's time and costs) is the run's, not this.
+import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
-import type { Reflect } from "../reflect-range.js";
+import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
-import type { RunRow } from "@parcha/pi-durable-agent";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { runReflect, runTimeline } from "./journal.js";
+import type { RunRow } from "../agent-rows.js";
+import type { EntryLike, TimelineEvent } from "../timeline/index.js";
+import { runEntries, runReflect, runTimeline } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
@@ -156,7 +157,14 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     const final = FINAL_STATES.includes(run.state);
     const started = await learningStartOfRun(store, run.id);
     const end = await runLearningEnd(store, run.id);
-    const read = final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: true })) : [];
+    // What the run's journal says here (the notes its job opened, what its claims laid of the skills and workflows it was
+    // offered): read once for a settled run and kept by its epoch (settledJournalReads), else read now.
+    const offered = !!(started?.skills?.length || started?.workflows?.length);
+    const journal = async () => ({
+      read: final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: true })) : [],
+      laid: offered ? laidOf(await runEntries(store, run.id, BACKGROUND_CONTEXT)) : undefined,
+    });
+    const { read, laid } = final ? await settledJournalReads(store, run.id, run.epoch, journal) : await journal();
     if (started || end) files.push(notesOf({ given: started?.given ?? [], read }));
     // The row learningImpact reads (the file path's RunRow): an ended run is a completed one.
     rows.push({
@@ -164,19 +172,58 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
       startedAt: new Date(run.startedAt).toISOString(), endedAt: run.endedAt === null ? null : new Date(run.endedAt).toISOString(),
       costUsd: run.costUsd, importedFrom: run.importedFrom, archivedAt: run.archivedAt === null ? null : new Date(run.archivedAt).toISOString(),
     } as unknown as RunRow);
-    learnings.set(run.id, end ? impactLearningOf(end, started) : null);
+    // What its claims laid of the skills and workflows it was offered (every learningLaid entry, laidOf): the run started
+    // from those alone.
+    learnings.set(run.id, end ? impactLearningOf(end, started, laid) : null);
   }
   return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
+}
+
+/** What a settled run's journal tells the agent's learning view, kept by store and run id with the run's epoch: a claim
+ *  and a run's end each move the epoch, and only a claim writes to its journal, so a settled run's reads hold until the
+ *  next claim of it. At most SETTLED_READS_MAX runs a store, the oldest read dropped first. */
+const settledReads = new WeakMap<Store, Map<string, { readonly epoch: number; readonly value: SettledReads }>>();
+type SettledReads = { readonly read: readonly NoteUsed[]; readonly laid: Laid | undefined };
+const SETTLED_READS_MAX = 4096;
+async function settledJournalReads(store: Store, runId: string, epoch: number, read: () => Promise<SettledReads>): Promise<SettledReads> {
+  let runs = settledReads.get(store);
+  if (!runs) settledReads.set(store, (runs = new Map()));
+  const kept = runs.get(runId);
+  if (kept && kept.epoch === epoch) return kept.value;
+  const value = await read();
+  runs.delete(runId);
+  runs.set(runId, { epoch, value });
+  if (runs.size > SETTLED_READS_MAX) runs.delete(runs.keys().next().value!);
+  return value;
+}
+
+/** What a run's claim laid of its learning seed: the learned skills and workflows it was given, by name. */
+type Laid = { readonly skills: readonly string[]; readonly workflows: readonly string[] };
+/** What every claim of a run laid, from its learningLaid entries, each name once: a resumed claim finds an earlier
+ *  claim's skill folders there already and lays none of them again, though the run still has them. None laid when it has
+ *  no entry. */
+export function laidOf(entries: readonly EntryLike[]): Laid {
+  const names = (list: unknown) => (Array.isArray(list) ? list.filter((name): name is string => typeof name === "string") : []);
+  const skills = new Set<string>();
+  const workflows = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.learningLaid) continue;
+    const data = (entry.data ?? {}) as { skills?: unknown; workflows?: unknown };
+    for (const name of names(data.skills)) skills.add(name);
+    for (const name of names(data.workflows)) workflows.add(name);
+  }
+  return { skills: [...skills], workflows: [...workflows] };
 }
 
 /** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
  *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did
  *  not); its grade's cost once it ended (0 when nothing was graded). */
-function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"]): ImpactLearning {
+function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined): ImpactLearning {
   const over = end.state === "merged" || end.state === "dropped";
   const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   return {
-    state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}), ...looked,
+    state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}),
+    ...(laid?.skills.length ? { seed_skills: laid.skills.length } : {}), ...(laid?.workflows.length ? { seed_workflows: laid.workflows.length } : {}), ...looked,
     ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
   };
 }
@@ -192,6 +239,120 @@ export function notesReadOf(given: readonly NoteUsed[] | undefined, reflect: Pic
   if (!given?.length) return [];
   const names = new Map(given.map((note) => [note.file, note.name]));
   return notesRead(reflect as Reflect | undefined, rows).flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+}
+
+/** What a run's job did with the learned skills and workflows its launch offered it (GET /runs/{id}/learning `used`:
+ *  its `skills` and `workflows`, apart from the skills and workflows it learned): each skill, and whether the job read its SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, or a
+ *  harness's own skill tool on it); each learned workflow the job called, by the call's `name` (callArgsOf), how
+ *  many calls and how many failed. The end-of-run turn's rows are left out, as notesRead leaves them. */
+export type LearnedUse = { readonly skills: readonly { readonly name: string; readonly read: boolean }[]; readonly workflows: readonly { readonly name: string; readonly calls: number; readonly failed: number }[] };
+/** learned_workflow by every name a harness calls it (runner/learning-end.ts LEARNED_NAMES). */
+const WORKFLOW_CALLS = new Set(["learned_workflow", "mcp__hands__learned_workflow"]);
+/** Each tool call of a run's journal, by its call's id: its tool and the arguments it was called with, as recorded (pi's
+ *  call in its assistant entry, a CLI harness's in its record's call start). A timeline row's input preview is cut and
+ *  for some tools absent, so what a call read or ran is read from these. */
+export function callArgsOf(entries: readonly EntryLike[]): Map<string, { tool: string; args: Record<string, unknown> }> {
+  const out = new Map<string, { tool: string; args: Record<string, unknown> }>();
+  const argsOf = (value: unknown) => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+  for (const entry of entries) {
+    if (entry.kind === "pi.assistant") {
+      for (const part of ((entry.model?.[0] as { content?: unknown } | undefined)?.content ?? []) as { type?: string; id?: string; name?: string; arguments?: unknown }[]) {
+        if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") out.set(part.id, { tool: part.name, args: argsOf(part.arguments) });
+      }
+    } else if (entry.kind === KINDS.callStart) {
+      const data = (entry.data ?? {}) as { callId?: unknown; tool?: unknown; input?: unknown };
+      if (typeof data.callId === "string" && typeof data.tool === "string") out.set(data.callId, { tool: data.tool, args: argsOf(data.input) });
+    }
+  }
+  return out;
+}
+
+/** The plugin claude-agent serves a run's skills from (@parcha/agentrun-harness-claude CLAUDE_AGENT_SKILLS_PLUGIN): the
+ *  model loads each as `agentrun:<name>`, or by its bare name. */
+const CLAUDE_SKILLS_PLUGIN = "agentrun";
+
+/** The id ranges of a run's end-of-run turns, each from its prompt (an endOfRunTurn entry, `role: "person"`) to its
+ *  answer (`role: "model"`); one with no answer runs to the person's next message (a reopened run's follow-up), else to
+ *  the end. A reopened run has one per time it looked back. */
+function endOfRunTurns(entries: readonly EntryLike[]): [number, number][] {
+  const turns: [number, number][] = [];
+  let open: number | undefined;
+  for (const entry of [...entries].filter((one) => one.id !== undefined).sort((a, b) => a.id! - b.id!)) {
+    const role = (entry.data as { role?: unknown } | undefined)?.role;
+    if (entry.kind === KINDS.endOfRunTurn && role === "person") open ??= entry.id!;
+    else if (open !== undefined && ((entry.kind === KINDS.endOfRunTurn && role === "model") || (entry.kind === KINDS.message && role === "person"))) {
+      turns.push([open, entry.id!]);
+      open = undefined;
+    }
+  }
+  if (open !== undefined) turns.push([open, Number.POSITIVE_INFINITY]);
+  return turns;
+}
+
+/** The skills a run's job loaded with a harness's own Skill tool (claude-agent's): a native call, which the CLI's session
+ *  records as a kernel step of its own (`kernel.start` named `tool.Skill`, keyed `tool:<call id>`, then its `kernel.end`)
+ *  and never as a host tool's call record, so no timeline row or callArgsOf entry has it. Each by the name the model
+ *  gave (`agentrun:<name>` or the bare one), only when its step completed, and only outside every end-of-run turn (a
+ *  reopened run's follow-up's loads are the job's). */
+export function nativeSkillLoads(entries: readonly EntryLike[]): string[] {
+  const turns = endOfRunTurns(entries);
+  const inTurn = (id: number | undefined) => id !== undefined && turns.some(([from, to]) => id >= from && id <= to);
+  const asked = new Map<string, string>();
+  const loaded: string[] = [];
+  for (const entry of entries) {
+    if (inTurn(entry.id)) continue;
+    const data = (entry.data ?? {}) as { name?: unknown; stepId?: unknown; status?: unknown; input?: unknown };
+    if (entry.kind === "kernel.start" && data.name === "tool.Skill" && typeof data.stepId === "string") {
+      const skill = (data.input as { skill?: unknown } | undefined)?.skill;
+      if (typeof skill === "string") asked.set(data.stepId, skill);
+    } else if (entry.kind === "kernel.end" && typeof data.stepId === "string" && data.status === "completed" && asked.has(data.stepId)) {
+      loaded.push(asked.get(data.stepId)!);
+    }
+  }
+  return loaded;
+}
+
+/** Whether a skill loaded by the name `asked` is skill `name`: by its plugin-qualified name or its bare one. */
+const loadsSkill = (asked: string, name: string) => asked === name || asked === `${CLAUDE_SKILLS_PLUGIN}:${name}`;
+
+/** Where a claim lays a learned skill's SKILL.md in the run's work (learning.ts RUN_SKILLS). */
+const laidSkillPath = (name: string) => `.agents/skills/${name}/SKILL.md`;
+/** Whether call `call` read skill `name`'s SKILL.md: the read hand on the path its claim laid it at (`.agents/skills/
+ *  <name>/SKILL.md` in the run's work, relative or absolute under it, never another file whose path ends the same way), a
+ *  CLI adapter's read_skill_file of the skill's SKILL.md, or a Skill tool call on the skill. */
+function readsSkill(call: { tool: string; args: Record<string, unknown> }, name: string): boolean {
+  const text = (key: string) => (typeof call.args[key] === "string" ? (call.args[key] as string) : "");
+  if (call.tool === "read" || call.tool === "mcp__hands__read") {
+    const path = posix.normalize(text("path"));
+    return path === laidSkillPath(name) || (path.startsWith("/") && path.endsWith(`/${laidSkillPath(name)}`));
+  }
+  if (call.tool === "read_skill_file") return text("skill") === name && posix.normalize(text("path")) === "SKILL.md";
+  if (call.tool === "Skill") return [text("skill"), text("command"), text("name")].some((asked) => loadsSkill(asked, name));
+  return false;
+}
+
+/** `laid`: what the run's claims laid (laidOf): a skill its launch offered but no claim laid (over the budget, or a name
+ *  the revision's own skill holds, whose copy is the one installed) is not the run's learned skill, whatever it read.
+ *  `loads`: the skills its job loaded with a harness's own Skill tool (nativeSkillLoads), each a read of its SKILL.md. */
+export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map(), laid: Pick<Laid, "skills"> = { skills: [] }, loads: readonly string[] = []): LearnedUse {
+  const job = rows.filter((row) => !reflects(reflect as Reflect | undefined, row.id));
+  const results = new Map(job.flatMap((row) => (row.kind === "tool_result" && row.tool_use_id ? [[row.tool_use_id, row.tool_status] as const] : [])));
+  const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id).flatMap((row) => {
+    const call = args.get(row.tool_use_id!);
+    return call ? [{ id: row.tool_use_id!, ...call }] : [];
+  });
+  const installed = new Set(laid.skills);
+  const skills = (started?.skills ?? []).filter((name) => installed.has(name)).map((name) => ({ name, read: calls.some((call) => results.get(call.id) === "success" && readsSkill(call, name)) || loads.some((asked) => loadsSkill(asked, name)) }));
+  const workflows = new Map<string, { calls: number; failed: number }>();
+  for (const call of calls) {
+    if (!WORKFLOW_CALLS.has(call.tool) || typeof call.args.name !== "string") continue;
+    const seen = workflows.get(call.args.name) ?? { calls: 0, failed: 0 };
+    seen.calls += 1;
+    // Only a result that says so: a call with no result yet (one still running) is no failure.
+    if (results.get(call.id) === "failed") seen.failed += 1;
+    workflows.set(call.args.name, seen);
+  }
+  return { skills, workflows: [...workflows].map(([name, seen]) => ({ name, ...seen })) };
 }
 
 /** `end` with its run's given notes (from its launch's learning start) and the notes its job read. */
@@ -222,8 +383,10 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
-  const read = started?.given.length ? notesReadOf(started.given, await runReflect(store, runId, BACKGROUND_CONTEXT), await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled })) : [];
+  const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
+  const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
+  const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
-  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled }, shown, secrets);
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries), nativeSkillLoads(entries)) }, shown, secrets);
 }

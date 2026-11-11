@@ -34,7 +34,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []): J
 const snapshot: ToolContract = {
   name: "snapshot",
   label: "Browser: snapshot",
-  description: "Capture the active page's Stagehand accessibility tree and hydrate its displayed IDs for subsequent run actions. Every call replaces the active page's ID map.",
+  description: "Capture the active page's accessibility tree and hydrate its displayed IDs for subsequent run actions. Every call replaces the active page's ID map. On an agent's browser computer a frame another site runs in its own process is not in the tree: the snapshot names each frame it left out.",
   parameters: object({ includeIframes: { type: "boolean", default: true } }),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "none", listedWhen: "always",
 };
@@ -43,12 +43,20 @@ const snapshot: ToolContract = {
  *  cookies across pages always, its agent's saved sign-ins only on a plane that has them (a local Chrome keeps none). */
 export const BROWSER_KEEPS = Object.freeze({
   cookies: "It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies.",
-  signIns: "It keeps this agent's saved sign-ins and cookies: use it for anything behind a sign-in, or a page that depends on an earlier one.",
+  signIns: "This browser opens with this agent's saved browser profile: a site the agent was signed in to there opens signed in here, and only here (web_fetch reads every page signed out). Use it for anything behind a sign-in, or a page that depends on an earlier one.",
 });
 
+/** The prompt section's line for a browser that opens with its agent's saved profile: said once, before the tools, so the
+ *  model knows of it when it picks between the browser and web_fetch (a description alone was not enough). It promises no
+ *  sign-in: on an agent's first run the profile is new and holds none (sign-ins-store.ts makes it), so the claim is
+ *  conditional, and the steer away from web_fetch holds either way. A sign-in page means this session has none, never
+ *  that none is saved: a vault restore that fails starts the session signed out and leaves the saved sign-in as it was. */
+export const SIGNED_IN_LINE =
+  "This browser opens with this agent's saved browser profile, so a site the agent was signed in to there opens signed in here. For a page that needs you signed in, use the browser (run, snapshot, browser_read), not web_fetch: web_fetch reads every page signed out. If the browser shows a sign-in page, this session has no sign-in for that site.";
+
 const runDescription = (signIns: boolean): string =>
-  `Browse and automate websites in the persistent Stagehand browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
-  'Navigate with JavaScript such as await page.goto("https://example.com"); there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. Each action must use "op" (never "kind") and "id" (never "ref"). Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
+  `Browse and automate websites in the persistent browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
+  'Navigate with JavaScript such as await page.goto("https://example.com"), or with a goto action; there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. An agent\'s browser computer (Browserbase, Kernel or Local Chrome) takes actions only: code is refused there. Each action must use "op" (never "kind") and "id" (never "ref"), but goto, which takes a "url". Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"goto","url":"https://example.com"}]}, {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
 
 const run: ToolContract = {
   name: "run",
@@ -59,9 +67,18 @@ const run: ToolContract = {
     code: { type: "string", minLength: 1 },
     actions: {
       type: "array",
-      description: 'Snapshot actions with the exact fields "op" and "id". Do not use "kind" or "ref".',
+      description: 'Snapshot actions with the exact fields "op" and "id" (goto: "op" and "url"). Do not use "kind" or "ref".',
       items: {
         oneOf: [
+          {
+            type: "object",
+            properties: {
+              op: { const: "goto", description: 'Action operation. Use "op": "goto"; never use a "kind" field.' },
+              url: { type: "string", description: "The http or https URL to open in the active page (or about:blank)." },
+            },
+            required: ["op", "url"],
+            additionalProperties: false,
+          },
           actionSchema("click"),
           actionSchema("hover"),
           actionSchema("fill", { value: { type: "string" } }),
@@ -225,15 +242,16 @@ export const BROWSER_TOOL_NAMES = Object.freeze(BROWSER_TOOLS.map((tool) => tool
 export const WEB_TOOL_NAMES = Object.freeze(WEB_TOOLS.map((tool) => tool.name));
 
 /** Depends only on configuration, never live state, so every request renders the same text and keeps the prompt cache. */
-export function browserSection(policy: { readonly idleReleaseS: number }, offered: { readonly downloads?: boolean; readonly upload?: boolean } = {}): string {
+export function browserSection(policy: { readonly idleReleaseS: number }, offered: { readonly downloads?: boolean; readonly upload?: boolean; readonly signedIn?: boolean } = {}): string {
   const idle = Math.round(policy.idleReleaseS);
   const download = offered.downloads
     ? " A file the page offers as a download: click its link, then call browser_downloads, which copies it into the workspace under downloads/ (listed in downloads/manifest.json); open it with read."
     : " A file the page offers as a download cannot be collected from the browser: take the link's URL from the page and fetch it with `web_fetch` when that tool is offered, or cite the page that links it.";
   return [
     "You control one remote browser:",
+    ...(offered.signedIn ? [SIGNED_IN_LINE] : []),
     "- snapshot: the active page's accessibility tree, with bracketed element IDs for run actions.",
-    "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\", never \"kind\" or \"ref\".",
+    "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\" (a goto action \"op\" and \"url\"), never \"kind\" or \"ref\". An agent's browser computer takes actions only.",
     "- screenshot: the rendered page as an image.",
     "- browser_read: the current page's content, filed as evidence with its URL.",
     "- browser_relaunch: a fresh session, Verified or egressing from a given place.",
