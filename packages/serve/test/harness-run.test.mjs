@@ -436,6 +436,37 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
+test("pi: a message sent while the turn a steered message started works reaches that turn too; the run does not end until both are answered", { timeout: 90_000 }, async (t) => {
+  // The first turn holds; a message steered into it is answered in a turn of its own after it (steeredIn), which holds
+  // too; a second message sent while that turn works is placed in it, never left for the run's end and a reopen.
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const [go, goToo] = [join(await scratch(t), "go"), join(await scratch(t), "go-too")];
+  assert.equal((await api("POST", "/agents", agent("held-twice", { tools: [] }))).status, 201);
+  const run = await api("POST", "/agents/held-twice/runs", { input: { content: `Hold twice, until ${go} and then ${goToo}.` } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
+  await writeFile(go, "");
+  // The steered message's turn holds on the second file: the second message lands while it works.
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => (r.kind === "final_answer" || r.kind === "text_block") && r.summary === "Answer 1."); i++) {
+    assert.ok(i < 300, "the first turn's answer");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and also?" })).status, 202);
+  await writeFile(goToo, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  // Settled: no reopen is still to come.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const said = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block").map((r) => r.summary);
+  assert.equal(said.length, 3, `an answer for the input and for each message: ${JSON.stringify(said)}`);
+  // One end: the second message was answered in the claim, never left for the run's end to open it again.
+  const ends = storeEntries(data, runId).filter((entry) => entry.kind === "agentrun.end");
+  assert.equal(ends.length, 1, `the run ended once, after both messages were answered: ${ends.length} ends`);
+});
+
 test("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");

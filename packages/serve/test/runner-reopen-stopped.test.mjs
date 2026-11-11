@@ -90,7 +90,9 @@ function stalling(stallAt = [1], answers = ["Second answer.", "Third answer.", "
 
 /** A pi run through a runner, its requests in `stallAt` held open; the server's store, the runner and the route. `computer`:
  *  the run has a desktop, a hold of its own per claim, whose show-up each claim writes on the run's root before its turn. */
-async function runner(t, stallAt = [1], answers, { computer = false } = {}) {
+async function runner(t, stallAt = [1], answers, { computer = false, stopInSpec = false } = {}) {
+  // `stopInSpec`: the first claim's spec waits, as a harness's first-use install does, until a person's stop cuts it.
+  let specs = 0;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-reopen-stopped-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [];
@@ -115,6 +117,10 @@ async function runner(t, stallAt = [1], answers, { computer = false } = {}) {
         launchOf: (runId) => store.runs.launch(runId),
         resolve: (harness, given) => (harness === "pi"
           ? createAdapterLoop(async (claim, run) => {
+              if (stopInSpec && specs++ === 0) {
+                await new Promise((resolve) => (run.stopped.aborted ? resolve() : run.stopped.addEventListener("abort", resolve, { once: true })));
+                throw new Error("the harness's install was cut by the stop");
+              }
               const spec = await adapterRunSpecFromLaunch(given, run, deps, claim);
               if (!computer) return spec;
               const hold = computerHold();
@@ -197,6 +203,20 @@ test("a run with a desktop: a person's stop then a message reopens it, the stopp
   await endedAfter(server, ended);
   assert.equal(origin.requests.length, 3, `the completed run's message was asked as one new turn: ${origin.requests.length}`);
   assert.ok(JSON.stringify(origin.requests[2].messages).includes("Third question."), "the third request is the second message's turn");
+});
+
+test("a person's stop while the run waits on its harness's install, then a message: the message is the run's first input, and the input the person stopped is never sent", { timeout: 120_000 }, async (t) => {
+  const { server, origin } = await runner(t, [], ["Answer to the message.", "Never asked."], { stopInSpec: true });
+  await until(async () => (await server.runs.get(RUN)).runner !== null, "the run is claimed, its spec waiting");
+  await sendCommand(server, RUN, { kind: "stop", body: {} });
+  const stopped = await settled(server);
+  assert.deepEqual([stopped.state, stopped.outcome], ["stopped", "stopped"], JSON.stringify(stopped));
+  assert.equal(origin.requests.length, 0, "nothing was asked before the stop");
+  await message(server, await momentOverStore(server, RUN), "Do this instead.");
+  await settled(server, "ended");
+  assert.equal(origin.requests.length, 1, `one turn, the message's: ${origin.requests.length} requests`);
+  const asked = JSON.stringify(origin.requests[0].messages);
+  assert.ok(asked.includes("Do this instead.") && !asked.includes("First question."), `the message, never the stopped input: ${asked.slice(0, 400)}`);
 });
 
 test("a cancel ends the run for good: it reads cancelled, and a message is refused with nothing written", { timeout: 120_000 }, async (t) => {

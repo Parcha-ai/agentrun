@@ -28,7 +28,7 @@ import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutco
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
@@ -695,12 +695,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
     }
   };
-  /** The claim's turn has answered and no wait in the claim takes the person's next message: from here to the run's end a
-   *  message is never placed into its session (no turn waits on it there, and the end-of-run turn is not the message's to
-   *  answer). It is left untaken, and the run's end opens the run again with it as a new turn (store run-patch.ts
-   *  refuseLeftovers), as main's does once the end is in. A turn that ended on a question to the person is not answered:
-   *  the wait in the claim (or the park) takes their message. */
-  let answered = false;
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
@@ -887,30 +881,31 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // between that choice and the message's placing.
     const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
-    // The claim's turn answered, and not on a question to the person (no wait in the claim takes the message, nor the idle
-    // session after the question): no turn here takes it (`answered`).
-    if (answered && !askedLast && !(reopen !== undefined && reopen === waitTurn)) return { later: "the run has answered and is ending: the message opens it again as a new turn once its end is in" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
     // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
     // server refuses one with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
     if (followUp && (askedLast || (reopen !== undefined && reopen === waitTurn))) return { refused: "The run is waiting on a person." };
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
-    if (reopen && !reopen.sent && session.state === "idle") {
+    if (reopen && !reopen.sent && (session.state === "idle" || session.state === "new")) {
       const theSession = session;
       const theRecord = cliRecord;
       // Who wrote it, when the person did not (a trigger's message that reopened the run): its input is that origin's.
       const by = originOf((command.body as { origin?: unknown } | null)?.origin);
+      // A run a person stopped before its first input was sent (a stop during a harness's first-use install): its session
+      // is new, and the person's message is the run's first input, under the first input's id, never after the input
+      // they stopped.
+      const sendId = theSession.state === "new" ? INPUT_REQUEST : requestId;
       // The row is taken only once the session holds the prompt: pi's in its submission's commit; a CLI's (whose harness
       // writes no submission) in the record's follow-up entry, written right after the send, as sendAfterTurn takes its
       // row. A runner lost between the send and that entry leaves the row untaken, so the next claim sends it again: a
       // follow-up may be sent twice after a crash, never lost. The answer to a wait in the claim: the row's waiting summary
       // goes in that commit too.
-      const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(requestId);
+      const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(sendId);
       const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
-        await theSession.send(text, { id: requestId, ...(by ? { origin: by } : {}) });
+        await theSession.send(text, { id: sendId, ...(by ? { origin: by } : {}) });
         await theRecord?.followUp(text, requestId, by);
       })();
       reopen.placed?.();
@@ -1442,7 +1437,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const endsRoot = foundEntries.at(-1)?.kind === KINDS.end;
           const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
           if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
-          if (endsRoot && !inFlight && session!.state === "idle") reopen = {};
+          // A session still new (a person stopped the run before its first input was sent): the follow-up is its first
+          // input, and the input the person stopped is never sent.
+          if (endsRoot && !inFlight && (session!.state === "idle" || session!.state === "new")) reopen = {};
         }
         opened();
         await reportHeld(harness, root.id);
@@ -1560,9 +1557,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let waitingOn: string | undefined;
         for (;;) {
           const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
-          // The turn answered: a message from here waits for the run's end, which opens the run again with it (steer). A wait
-          // in the claim on the person's answer clears it below.
-          if (end === "answered") answered = true;
           if (end === "parked") {
             // Let the tool host go first (a browser's release, booked under the live claim), then seal.
             await releaseHost(harness);
@@ -1643,7 +1637,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (waited) {
               turn = waited.next;
               waitingOn = callId;
-              answered = false;
               continue;
             }
             parkOn = callId;
