@@ -16,6 +16,7 @@ import { PROVIDERS } from "@parcha/agentrun-computer";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_TABLE_ENV } from "../harness-table.js";
 import { maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
@@ -245,6 +246,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       (closing ??= (async () => {
         // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
         await Promise.all([janitor?.close(), runner.close()]);
+        // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
+        await claimInstallsStopped();
         await store.close();
         held.release();
       })()),
