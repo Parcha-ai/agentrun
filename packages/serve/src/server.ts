@@ -52,7 +52,7 @@ import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, noticeOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -3406,12 +3406,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const RUN_ENDS_NEWEST = 50;
   const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
   const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
-  /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
+  /** The run as the store holds it now, with its notice (its status and title as the run list shows them, store-view.ts
+   *  noticeOverStore: no other word of it read or redacted); null when there is no such run. */
   const endNotice = async (id: string) => {
     const row = await store.runs.get(id);
-    const summary = row && (await summaryOverStore(store, id, viewDepsFor(ownOriginOf())));
-    if (!row || !summary) return null;
-    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
+    const notice = row && (await noticeOverStore(store, id, viewDepsFor(ownOriginOf())));
+    if (!row || !notice) return null;
+    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: notice.status, title: notice.title } };
   };
   const toldEnds = new Map<string, string>();
   /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since

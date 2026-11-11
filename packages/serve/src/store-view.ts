@@ -493,6 +493,16 @@ export async function factsOverStore(store: Store, runId: string, deps: ViewDeps
   return { kind: run.row.kind, revision: run.row.revision, agentId: run.row.agent, status, createdAt: iso(run.runRow.startedAt), endedAt: endedAtMs === null ? null : iso(endedAtMs), unshown: run.unshown };
 }
 
+/** A run's end notice as the run-end follower tells it (server.ts endNotice, the run.ended webhook): its status and its
+ *  title as its view states them, and no other word of it. Its input, output and answer are never read here, so telling an
+ *  end redacts nothing but its title. Undefined for an unknown run. */
+export async function noticeOverStore(store: Store, runId: string, deps: ViewDeps): Promise<{ status: string; title: string } | undefined> {
+  const run = await storeRunOf(store, runId, deps);
+  if (!run) return undefined;
+  const { status } = statusOf(run.view, factsOf(run));
+  return { status, title: run.unshown ? WITHHELD_TITLE : withoutLoopback(redacted(run.launch?.title ?? "", run.values)) };
+}
+
 /** A run's facts as its view states them (factsOverStore): no word of it, so nothing in it is redacted. */
 export type RunStated = { readonly kind: string; readonly revision: string; readonly agentId: string; readonly status: string; readonly createdAt: string; readonly endedAt: string | null; readonly unshown: boolean };
 
