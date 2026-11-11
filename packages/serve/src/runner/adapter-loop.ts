@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type Ended, type HostTool, type ModelUsage, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
@@ -30,7 +30,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, overCapOf, type Previous, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { portModels, type PortModels } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -983,10 +983,26 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // handle not opened on this claim reads what the run's records held when the claim began.
         const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         let capBuilt: RunCap | undefined;
+        /** The session's previous request, as the cap's `expected` pricing reads it (the kernel's Previous): the last of the
+         *  harness's own requests on this claim that answered, its input as its usage reported it (read from or written to
+         *  the cache, and the rest) and its input bound, and when it ended. None before one has: priced as a cache miss. */
+        let previous: Previous | undefined;
+        /** Each of this claim's requests as the cap was asked about it, by its turn, until it ends. */
+        const askedFor = new Map<number, { model: string; bound?: number; own: boolean }>();
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
-          return (capBuilt ??= runCap({ sessions, ...specNow.runCap, capUsd: capNow }));
+          return (capBuilt ??= runCap({ sessions, ...specNow.runCap, capUsd: capNow, previousOf: (model) => (previous?.model === model ? previous : undefined) }));
+        };
+        /** A request of this claim ended (`request_end`): one of the harness's own (no host label, no side call) that
+         *  answered with its input reported is the session's previous request from now. */
+        const requestEnded = (turn: number, usage: ModelUsage, how: Ended | undefined): void => {
+          const asked = askedFor.get(turn);
+          askedFor.delete(turn);
+          if (!asked?.own || asked.bound === undefined || usage.cut || (how !== undefined && how.end !== "answered")) return;
+          const cachedTokens = (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+          if (!(usage.input >= 0 && cachedTokens >= 0 && usage.input + cachedTokens > 0)) return;
+          previous = { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, endedAt: (specNow?.runCap?.now ?? Date.now)() };
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -1128,6 +1144,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return overCapOf(await sessions.read(spec.session.key), others, cap);
         };
         const beforeRequest: BeforeRequest = async (request) => {
+          // Kept until it ends, so its answer can be the session's previous request (requestEnded).
+          askedFor.set(request.turn, { model: request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), own: request.host === undefined && !request.side });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause).
           const over = await overCap();
@@ -1172,6 +1190,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           beforeRequest,
           onEvent: async (event) => {
             if (event.type === "request_start") await deps.flush();
+            if (event.type === "request_end") requestEnded(event.turn, event.usage, event.ended);
           },
         });
         // A paid request an earlier claim admitted and never saw answered (its runner lost while the request was out): the

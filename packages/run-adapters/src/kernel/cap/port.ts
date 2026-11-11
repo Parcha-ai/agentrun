@@ -47,9 +47,10 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     // any paid step, so every refusable step after it sees it. Only a figure is money: one that is not goes to the rule.
     if (request.paid?.owed && isFigure(request.feeUsd ?? 0)) return { holdUsd: request.feeUsd ?? 0 };
     const model = options.modelOf(request.model) ?? unpriced(request.model);
-    // A request the host sends beside the harness's own (its host label: a learned workflow's node) is another
-    // conversation's prompt: nothing of the session's cache is read for it, so it is priced as a cache miss.
-    const previous = request.host === undefined ? options.previousOf?.(request.model) : undefined;
+    // A request the host sends beside the harness's own (its host label: a learned workflow's node), or a side call (a
+    // title, a summary), is another conversation's prompt: nothing of the session's cache is read for it, so it is priced
+    // as a cache miss.
+    const previous = request.host === undefined && !request.side ? options.previousOf?.(request.model) : undefined;
     const asked: ModelCapRequest = {
       kind: "model",
       id: `turn-${request.turn}`,
