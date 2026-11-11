@@ -558,3 +558,43 @@ test("a learned workflow's call reads on the run's timeline as the workflow it r
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.equal(result?.summary, "Ran the learned workflow answer: answer 42", JSON.stringify(result));
 });
+
+/** A workflow whose last node writes the card report in its fixed format, as the bench's expense draft does (#2412): its
+ *  output an object of one string field. */
+const reportFlow = () => ({
+  v: 2, name: "card-report",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Report: { type: "object", required: ["report"], properties: { report: { type: "string" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Report", path: "report" },
+  root: { node: "chain", steps: [{ node: "extract", label: "format", instructions: "Write the card report: the table, then Flagged:, then Grand total: last.", out: "Report", as: "report" }] },
+});
+
+test("learned_workflow's description says a workflow that does the job asked gives the answer: its text as it is, in its format, nothing added (#2412)", () => {
+  const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: "{}" }]);
+  assert.match(said, /its output is your answer: reply with its text as it is, in its format, and add nothing/, said);
+});
+
+test("a learned workflow's output is handed back as text when it is text, one string or an object of one string field, and as JSON otherwise (#2412)", async () => {
+  const { learnedOutput } = await import("../dist/learned-workflow.js");
+  const report = "| Category | Count | Total |\n|---|---|---|\nGrand total: $2.00";
+  assert.equal(learnedOutput(report), report);
+  assert.equal(learnedOutput({ report }), report, "the draft's Report object: its one string field");
+  assert.equal(learnedOutput({ answer: 42 }), '{"answer":42}');
+  assert.equal(learnedOutput({ a: "x", b: "y" }), '{"a":"x","b":"y"}');
+  assert.equal(learnedOutput(null), "null");
+  assert.equal(learnedOutput(undefined), "null");
+});
+
+test("a learned workflow whose last node writes a report in a fixed format hands the run that report line by line, never JSON-quoted, and the run's answer holds it so (#2412)", { timeout: 120_000 }, async (t) => {
+  const { REPORT } = await import("./fixtures/faux-model.mjs");
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, "formatted", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Use the learned workflow card-report on the week's card transactions." });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.ok(view.result.final_answer.includes(REPORT), `the answer holds the report as written: ${JSON.stringify(view.result.final_answer)}`);
+  assert.ok(!view.result.final_answer.includes("\\n"), "no JSON escape reached the answer");
+});

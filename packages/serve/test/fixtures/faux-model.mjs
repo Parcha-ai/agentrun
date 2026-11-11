@@ -38,6 +38,9 @@ export default function reply(context, faux) {
   return faux.signal && answer instanceof Promise ? Promise.race([answer, abortedOf(faux)]) : answer;
 }
 
+/** The report a format node writes ("Write the card report"): a table, then its Flagged and Grand total lines. */
+export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2 | 1663.10 |\n\nFlagged: Best Buy\nGrand total: $1663.10";
+
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
@@ -78,6 +81,11 @@ function replyTo(context, faux) {
     if (canary.includes("Submit the held key")) {
       if (answered) return faux.message("Submitted.");
       return faux.message(faux.toolCall("submit", { note: `kept ${CUT_KEY} here`, n: 7 }), { stopReason: "toolUse" });
+    }
+    // A node that writes a report in a fixed format (a learned workflow's last node, as a skill's format asks it).
+    if (canary.includes("Write the card report")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { report: REPORT }), { stopReason: "toolUse" });
     }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
