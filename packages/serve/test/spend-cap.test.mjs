@@ -89,6 +89,15 @@ test("a response that stops at its length and costs past the cap is stopped afte
   assert.deepEqual(run.result, { output: null, final_answer: "The answer, cut at its length." }, "the answer the cap stopped is kept, cut as it was");
 });
 
+test("a paid answer cut at its length and past the timeline's 2,000-character row is kept whole as the answer, never the row's cut", async (t) => {
+  const long = `The answer begins here. ${"Forty-two is the figure. ".repeat(150)}And it ends here.`;
+  assert.ok(long.length > 3_000);
+  const { api } = await gateway(t, { price: "1,1", text: long, tokens: 1_000_000, incomplete: true });
+  const run = await ended(api, (await start(api, "over-long", "What is six times seven?", { max_cost_usd: 0.05 })).run_id);
+  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  assert.equal(run.result?.final_answer, long, `the whole paid answer: ${run.result?.final_answer?.length} of ${long.length} characters`);
+});
+
 const GROUPS = ["meter", "agent", "key", "day", "region"];
 /** /usage for every grouping: its total and each line's usd. */
 const usages = async (api) => Promise.all(GROUPS.map(async (group) => (await api("GET", `/usage?group_by=${group}`)).body));
