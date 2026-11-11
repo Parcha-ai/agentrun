@@ -80,7 +80,9 @@ export function costIsBooked(entries: readonly EntryLike[], cli: boolean): boole
  *  session's is unknown, never 0 for it. */
 export function bookedCapSpend(entries: readonly EntryLike[]): number | null {
   let spent = 0;
-  for (const conversation of sessionConversations(entries).values()) {
+  // Every conversation that holds booking records, keyed or not, as bookedSpend reads them.
+  const booking = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn).map((e) => Number(e.conversationId)));
+  for (const conversation of booking) {
     const records = entries.filter((e) => Number(e.conversationId) === conversation && e.kind !== KINDS.sessionKey).map((e) => ({ kind: e.kind, data: (e.data ?? null) as SessionRecord["data"] }));
     const read = sessionSpendOf(records).spentUsd;
     if (read === null) return null;
