@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { seal } from "@parcha/pi-durable-agent";
+import { seal } from "../dist/sealing.js";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");

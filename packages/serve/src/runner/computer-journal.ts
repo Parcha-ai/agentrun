@@ -8,7 +8,7 @@
 //
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "../timeline/index.js";
 import {
   COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
 } from "../computer-commands.js";

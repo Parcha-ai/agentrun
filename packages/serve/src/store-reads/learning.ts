@@ -13,8 +13,8 @@ import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead }
 import type { Reflect } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
-import type { RunRow } from "@parcha/pi-durable-agent";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { RunRow } from "../agent-rows.js";
+import type { TimelineEvent } from "../timeline/index.js";
 import { runReflect, runTimeline } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";

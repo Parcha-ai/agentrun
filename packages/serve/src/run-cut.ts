@@ -20,13 +20,6 @@ export async function runCutValues(deps: { serverSecrets: () => string[]; signIn
   return { values: [...deps.serverSecrets(), ...handed.refs.filter((ref) => ref.length >= MIN_SECRET)] };
 }
 
-/** Run `runId`'s cut as a function of a text: the one rule its served words are shown by (run-view.ts shownOf: no value
- *  of the cut set, in any spelling, and no loopback address), or `unreadable` when the run is withheld. */
-export async function runCutOf(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Pick<Store, "runs">, runId: string): Promise<((text: string) => string) | "unreadable"> {
-  const cut = await runCutValues(deps, store, runId);
-  return cut === "unreadable" ? "unreadable" : shownOf(cut.values);
-}
-
 /** Run `runId`'s error words: how its error text reads wherever it is served (its view's error, its Timeline's error
  *  rows), main's errorWords: a refused key in plain words (key-refusal.ts keyRefusal, the key its harness's route sends
  *  by this server's settings and keys), else the text by the one rule (shownOf); `unreadable` when the run is withheld.

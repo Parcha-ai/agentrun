@@ -76,6 +76,27 @@ run is not given. So is an agent node that asks more than the learned runner's 8
 starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
+A draft the static checks pass is then dry-run (`draftDryRun`, the DSL's `dryRunWorkflow`); one they refuse, or any
+when they refuse the answer whole, never is. It runs on its block's `example:` line, one JSON object, the run's own
+input to it, else on an input synthesized from its input schema. Every model, Jev and tool-call answer is synthesized
+from the node's output schema: no request is sent, nothing is paid and no tool runs. No code runs in the host: the dry
+run hands every code node to a runner that refuses it, so the DSL never evaluates a code expression or body. Nothing large is built in the host either: a schema whose minItems is past 100 or
+minLength past 1,000, or whose synthesized instance would hold more than 2,000 values or 64,000 characters, is refused
+(`workflow`), and a dry run handed one anyway stands down as not run before building it. The bounds are read at schema
+positions only (properties, items, `$defs` and definitions, anyOf, oneOf, allOf and the rest): a `const`, an `enum`
+value, a `default` or an example that holds `minItems` is data, never a bound. Its loops are bounded the same
+way, read at node positions only (a chain's steps, a parallel's branches, a map's or a loop's body, a route's branches,
+a composed workflow's root), so a literal shaped like a loop is no loop: a loop's maxIters past 50, or nested loops whose maxIters multiply past 1,000, is refused, since a loop whose body
+asks no model (an empty map) is work no step counts; and the dry run stops by the clock after 10 s. It checks
+the wiring of the path that one input takes at run time (the state each step reads, the output's path and schema),
+not every branch or body, and never the answers. A draft whose dry run fails is left out (`workflow`, "its dry run failed ..."), and the end-of-run turn is asked
+once more for the whole answer with that draft fixed or left out; the second answer stands only when the checks keep it and no draft in it still fails its dry run.
+The example is never written anywhere in the folder (the README holds `name` and `description` alone), and is read for
+what must never be stored as every text the run gives is: one holding a held secret or a secret's shape refuses the
+whole answer. The proposal keeps each kept draft's dry run (`dryRuns`: passed, or not run and why), and the grader is
+told it under the draft in the host's own words; what the check said is made from the draft's own text (a schema's id,
+a path), so it is fenced as data, never outside a fence.
+
 ## The index
 
 `MEMORY.md` is one line per active note, by file name, `- [name](file.md) — description`, built by the host from the
@@ -163,9 +184,13 @@ Over a cap is refused, never cut.
   again, until it passes, and goes on to the grader, and the run's learning names what was left out (`problems`). A
   count cap names the items past it, in the order the answer gave them whatever their kind, and a size cap the item
   over it: one oversized or extra item is left out, the rest kept. A note left out past the supersedes cap holds
-  nothing as superseded for the notes after it. The whole proposal is refused when a problem names no item it proposed,
-  when its rule refuses the whole (`outside`, `deleted`, `index_full`, the notes' total, which no one item is past,
-  `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
+  nothing as superseded for the notes after it. New notes are settled in one order: each alone against the seed (what
+  it supersedes), then one note a rule (the rest its alternates), then the holders' shared checks (two notes
+  superseding one, the supersedes cap, and the index counted whole after the repeats are out: past 200 lines, the notes
+  that add lines are left out from the answer's end, `index_full`); a holder they refuse is left out and its next
+  alternate holds its rule, until nothing changes, and only then the unneeded alternates are left out as `duplicate`.
+  The whole proposal is refused when a problem names no item it proposed, when its rule refuses the whole (`outside`,
+  `deleted`, `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
   trusted for any item), or when nothing is left, with every pass's problems. Before any item is kept, every name and text
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
@@ -207,8 +232,8 @@ only a path the merge changed, such as a note it marked superseded), one item a 
 (a re-filed skill whose note file the run's own note takes is left out), so what it wrote is learned and nothing else. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
 each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts `ruleOf`), is
 exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the seed's active
-notes, and of two new notes the same, the second; a note refused for its own merge, what it supersedes say, holds
-no rule, so its valid copy is kept), and the merge's own computation leaves it out unsaid, against the
+notes, and of two new notes the same, the second; duplicates are settled with the merge's checks: a note
+those refuse, what it supersedes say, holds no rule, so its valid copy is kept, and a repeat never fills the index), and the merge's own computation leaves it out unsaid, against the
 main it commits on (computed again on the main that won when another write landed first), as it leaves out a name main
 came to hold meanwhile. A note that supersedes the one it repeats updates it, never a duplicate. Anything near is the
 grader's to judge. Steps or a format for one kind of job,

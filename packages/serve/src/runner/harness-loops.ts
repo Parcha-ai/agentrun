@@ -93,7 +93,7 @@ export function gradeRouteFor(grade: GradeRouteAsk, env: NodeJS.ProcessEnv, rout
 }
 
 /** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
- *  dispatch (dispatch.ts) reads each run's launch and asks the switch (resolveRunnerLoop) for its harness loop. The server
+ *  dispatch (dispatch.ts) reads each run's launch and asks resolveRunnerLoop for its harness loop. The server
  *  start and the test server pass this to startRunner. */
 export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
   return createDispatchLoop({

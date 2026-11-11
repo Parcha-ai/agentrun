@@ -5,7 +5,7 @@
 // journal. The live halves (a run's open browser viewer, the timeline's live stream) read the runner's live state through
 // the store (live/stream.ts watchRun) and the viewer handover, which the runner publishes.
 import type { Context } from "@earendil-works/chord";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { TimelineEvent } from "./timeline/index.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
@@ -129,8 +129,7 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     run: { id: runId, agent: String(view.agent_id), revision: String(view.revision), status, paused: status === "paused", startedAt: String(view.created_at), endedAt: view.ended_at as string | null },
     ended,
     workflow,
-    // No per-run store file and no run directory now: the store and a context carry the journal the graph reads.
-    storeFile: "",
+    // No run directory now: the store and a context carry the journal the graph reads.
     root: "",
     input: launch?.input ?? {},
     modelCost: ended ? costOf(rows) : 0,

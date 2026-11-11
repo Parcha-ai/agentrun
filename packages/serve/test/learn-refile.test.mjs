@@ -477,3 +477,43 @@ test("the checks: a note refused for what it supersedes reserves no rule, so a v
   const alone = checkProposal({ base, changes: [change(b)] });
   assert.deepEqual([alone.ok, alone.notes.map(({ file }) => file)], [true, [b.file]], "with a.md left out, b.md passes");
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62DYhZ): a re-filed skill alone, whose note main already holds the same: no new item is
+// left to merge, but the skill main holds is still retired, so the old skill never stays served beside the note.
+test("a re-filed skill alone whose note main already holds the same still retires the old skill", async (t) => {
+  const same = skillAsNote(SKILL.file, SKILL.text).text;
+  const answer = verdictOf([{ file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const { end, notes, skills, learning } = await refileRun(t, { existing: same, skill: SKILL, notes: [], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes["report-format.md"], same, "the note stands as it was");
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]], "the old skill is retired, not left active");
+  assert.notEqual(learning?.state, undefined);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62DgJ_): at a full index, which note repeats which is settled before the index is
+// counted: the repeat is left out, and the rest fits (a.md adds a line, b.md replaces two with one).
+test("the checks at a full index: a repeat is left out before the index is counted, and the other notes fit", () => {
+  const actives = Array.from({ length: 200 }, (_, i) => noteNamed(`old-${i}`, `Old ${i}`, `Old rule number ${i}.`));
+  const base = { files: ["MEMORY.md", ...actives.map(({ file }) => file)], active: actives.map(({ file, text }) => parseNoteFile(file, text)), rules: new Map(actives.map(({ file }, i) => [ruleOf(`Old rule number ${i}.`), file])) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const a = noteNamed("a", "A", "A brand new rule.");
+  const b = noteNamed("b", "B", "Old rules zero and one, together.", "supersedes: [old-0.md, old-1.md]\n");
+  const c = noteNamed("c", "C", "a brand  NEW rule.");
+  const checked = checkProposal({ base, changes: [change(a), change(b), change(c)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["duplicate", c.file]], JSON.stringify(checked.problems));
+});
+
+// #2335 review (PRRT_kwDOUmdVMs62DtnX, on #2256's check): c.md and a.md both supersede old.md, b.md repeats a.md. The
+// merge's check refuses a.md (old.md superseded twice), so a.md holds no rule and b.md, a valid copy, is kept.
+test("the checks: a note the merge's shared checks refuse holds no rule, so its valid copy is kept", () => {
+  const old = noteNamed("old", "Old", "The old rule.");
+  const base = { files: ["MEMORY.md", old.file], active: [parseNoteFile(old.file, old.text)], rules: new Map([[ruleOf("The old rule."), old.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const c = noteNamed("c", "C", "The newer rule, version C.", "supersedes: [old.md]\n");
+  const a = noteNamed("a", "A", "The newer rule, version A.", "supersedes: [old.md]\n");
+  const b = noteNamed("b", "B", "The newer rule, version A.");
+  const checked = checkProposal({ base, changes: [change(c), change(a), change(b)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["supersedes", a.file]], JSON.stringify(checked.problems));
+  const next = checkProposal({ base, changes: [change(c), change(b)] });
+  assert.deepEqual([next.ok, next.notes.map(({ file }) => file)], [true, [c.file, b.file]]);
+});

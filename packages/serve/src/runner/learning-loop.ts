@@ -39,6 +39,8 @@ export const UNAVAILABLE_BACKOFF_MS = [30_000, 120_000, 600_000, 1_800_000] as c
 export interface KeptProposal {
   readonly notes: readonly NoteText[];
   readonly files?: readonly NoteText[];
+  /** Each kept draft's dry run, by its workflow.json's path (learn/skills.ts draftDryRun), which the grader is told. */
+  readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
   readonly asked?: readonly string[];
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
@@ -441,7 +443,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: grading,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
               ...(consolidation ? { consolidation: true as const } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
@@ -506,13 +508,16 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           }
           const taken = already ? { verdict: oneItemAFile(proposal, graded.verdict), replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
           const verdict = taken.verdict;
-          if (!verdict.merge) {
-            await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
-            return { state: "ended" };
-          }
           const merging = keptOf(proposal, verdict);
           // What the grader read beside the proposal is pinned too: changed on main since the seed, the merge is refused.
           const change = { ...mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded }), ...(beside.length ? { pinned: beside.map(({ file }) => file) } : {}) };
+          // Nothing new left to merge: dropped, unless the grader kept a re-filed skill whose rule main already holds as a
+          // note (takenOnMain's SAME_NOTE). Its old SKILL.md is still retired (mergeChangeOf's retire), in a write of that
+          // alone, so no old skill stays served beside the note.
+          if (!verdict.merge && !(graded.verdict.merge && change.retire?.length)) {
+            await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
+            return { state: "ended" };
+          }
           const result = await learning.commit(ws, taken.replace.length ? { ...change, replace: taken.replace } : change);
           if (result.ok) {
             // What the merge left out against the main it committed on (a rule a note holds, a name one holds), each
@@ -525,7 +530,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(settled.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
-            const detail = mergedWords(settled.merging, settled.verdict, checked);
+            // A write that retired a skill alone learned nothing new: said so.
+            const detail = mergedWords(settled.merging, settled.verdict, checked) || said.empty;
             // Whether the agent's learning is due a consolidation now, queued before this run ends: a queue that fails
             // parks the run (its merge is on main, so it wakes to the same merge and asks again), never a lost one.
             if (afterwards && learning.consolidation) {
