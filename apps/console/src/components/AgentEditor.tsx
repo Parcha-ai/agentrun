@@ -7,10 +7,11 @@ import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
+import { ToolCard } from "@/components/ToolCard";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { Field as UiField, Input, Textarea } from "@/components/ui/field";
-import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, editBody,harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, editBody, harnessOptions, defaultPlaceOf, isStarter, notOn, reachesWeb, runsOn, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, toolsOnSwitch, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -79,6 +80,18 @@ function workflowIssues(problem: SaveProblem | null, workflow: boolean): { path:
   return mine.length ? mine : workflow ? [{ path: "", message: problem.message }] : null;
 }
 
+/** The step that shows a definition's field (`definition.tools[3]`: Tools & skills); none for one no step shows. */
+function stepOfField(field: string): Step | undefined {
+  const name = /^definition\.([a-z_]+)/.exec(field)?.[1];
+  if (!name) return undefined;
+  if (["name", "description", "instructions"].includes(name)) return "context";
+  if (["tools", "tool_settings", "approvals", "skills"].includes(name)) return "tools";
+  if (["harness", "thinking", "model", "max_cost_usd", "learning"].includes(name)) return "settings";
+  if (["place", "computer"].includes(name)) return "computer";
+  if (name === "workflow") return "workflow";
+  return undefined;
+}
+
 const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] = [
   { id: "context", label: "Context", note: "Name, description and instructions", Icon: FileText },
   { id: "workflow", label: "Workflow", note: "Its graph and its JSON", Icon: Workflow },
@@ -102,9 +115,27 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
-  // The form as it opened or was last saved: a form that differs from it, or a typed revision note, is unsaved, and a
-  // move away asks first.
-  const [clean, setClean] = useState<AgentFields>(f);
+  // The form as saved: as it opened, or as its last save left it. Save is on, and leaving asks first, only for a form
+  // unlike it (one flag, so the two never disagree). The revision note is not part of it: a note alone saves nothing.
+  const [base, setBase] = useState<AgentFields>(f);
+  // What a form saves, to tell whether it differs from the saved one: on an agent, the definition its save would send (a
+  // setting put back to the saved one, or to what the form shows when the definition has none, is no change; the form's
+  // own tool settings, else the definition's), with approvals as the form shows them and the tools as a set (a harness
+  // switch and back can reorder them, never change them).
+  const saves = (x: AgentFields): Record<string, unknown> => {
+    // The cap and the workflow as Save sends them: "2.50" is the saved 2.5, and reformatted JSON is the same workflow.
+    // Text that doesn't parse stays as typed (a change: Save says why it can't send it).
+    const { maxCostText, workflowText, ...fields } = x;
+    const cap = capOf(maxCostText), parsed = parsedWorkflow(workflowText);
+    const sent: AgentFields & Record<string, unknown> = { ...fields, maxCost: cap.ok ? cap.value ?? 0 : maxCostText, ...(workflowText !== undefined ? { workflowSent: parsed !== undefined ? parsed : workflowText } : {}) };
+    const def: Record<string, unknown> = agent ? { ...editBody(agent, sent, "").definition } : { ...sent };
+    delete def.version;
+    if (def.tool_settings && !Object.keys(def.tool_settings).length) delete def.tool_settings;
+    return { ...def, tools: [...((def.tools as string[] | undefined) ?? [])].sort(), approvals: x.approvals ?? d?.approvals ?? "ask" };
+  };
+  const dirty = !same(saves(f), saves(base));
+  // The tools a harness switch took off (the new harness doesn't run them here), with why, so a switch back ticks them again.
+  const [held, setHeld] = useState<string[]>([]);
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -117,14 +148,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       const place = x.place ?? newAgentPlace(caps.places);
       return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
     };
-    // Defaults that arrive late are where the form opens, never an edit: the clean form takes them too.
-    setF(follow); setClean(follow);
+    // Defaults that arrive late are where the form opens, never an edit: the saved form takes them too.
+    setF(follow); setBase(follow);
   }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
-  const [saved, setSaved] = useState(false);
   // A workflow agent's past revision, opened from History as its read-only graph.
   const [viewing, setViewing] = useState<Revision | null>(null);
   const goTo = (s: Step) => { setViewing(null); setStep(s); };
@@ -134,13 +164,35 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // it names (one the form does not show, such as a place, only above).
   const warnings = agent?.warnings ?? [];
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
-  const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
+  // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
+  const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
+  // The Save button, which keeps the focus after a save the server refused, where its reason shows.
+  const saveButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (problem?.kind === "invalid" || problem?.kind === "other") saveButton.current?.focus(); }, [problem]);
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
+  // What a new agent still needs before Create is on.
+  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
   const approvals: Approvals = f.approvals ?? d?.approvals ?? "ask";
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
+  // Picking a harness: a new agent whose tools are untouched takes that harness's tools. Otherwise the tools it doesn't
+  // run here come off at once, before any save, and are held: a switch back ticks them again.
+  const toolOpts = { mcpHarnesses: caps.mcpHarnesses, workflow };
+  // A place off the box (the runner) takes the box's tools (bash) off the held ones too: a later switch back to a harness
+  // never ticks a tool the place now refuses.
+  const leavePlace = (place: { mode?: string }) => {
+    if (place.mode === "sandbox") return;
+    const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
+    setHeld((h) => h.filter((t) => !sandboxOnly.has(t)));
+  };
+  const pickHarness = (harness: string) => {
+    if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place) }); setHeld([]); return; }
+    const next = toolsOnSwitch(harness, f.tools ?? [], held, caps.tools, toolOpts);
+    set({ harness, tools: next.tools });
+    setHeld(next.held);
+  };
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   // The Computer step is an agentic agent's (a workflow runs on the runner), on a server that lists where runs can go.
@@ -150,6 +202,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
+    // The form this save sends: once saved, it is the form as saved.
+    const sent = f;
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
@@ -172,19 +226,16 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
-    setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
-    if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
-    // Saved, the form as it was sent is the clean one (an edit made while the save was under way stays unsaved).
-    if (!p) setClean(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(f) : f);
-  };
-  // What a form saves, to tell whether it differs from the clean one: on an agent, the definition its save would send, so
-  // a choice put back to the saved one (or to what the form shows when the definition has none) is no change.
-  const saves = (x: AgentFields) => {
-    const { version: _version, ...def } = agent ? editBody(agent, x, "").definition : { version: 0, ...x };
-    return { ...def, approvals: x.approvals ?? d?.approvals ?? "ask" };
+    setSaving(false); setProblem(p);
+    if (p) return;
+    // Saved, the form as it was sent is the saved one (an edit made while the save was under way stays unsaved).
+    // The held tools are the saved harness's to give back no more; a switch made while the save was under way keeps its own.
+    setNote(""); if (formNow.current.harness === sent.harness) setHeld([]);
+    setBase(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(sent) : sent);
+    if (unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
   // A save under way holds nothing: a new agent's save opens its page itself.
-  const guard = useUnsavedChangesGuard(!saving && (note !== "" || !same(saves(f), saves(clean))));
+  const guard = useUnsavedChangesGuard(!saving && dirty);
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses);
@@ -218,12 +269,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         <div className="border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
           <p className="flex items-center gap-2 font-mono text-body text-warning-text"><TriangleAlert className="size-4 shrink-0" aria-hidden /> Saved. A run of this revision is refused until the server has what each line names:</p>
           <ul className="mt-2 space-y-1 font-mono text-small">
-            {warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="text-muted-foreground">{w.field}</span> {w.message}</li>)}
+            {warnings.map((w, i) => {
+              // The step a line's field is on, as a link to it (the raw field on hover); a field no step shows, as is.
+              const at = steps.find((s) => s.id === stepOfField(w.field));
+              return <li key={`${w.field}:${i}`}>{at ? <button type="button" title={w.field} onClick={() => goTo(at.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">{at.label}</button> : <span className="text-muted-foreground">{w.field}</span>} {w.message}</li>;
+            })}
           </ul>
         </div>
       )}
-      {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
-      {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <ol className={cn("relative flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
@@ -244,6 +297,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           ))}
         </ol>
         <section className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-10">
+          {/* A new agent's form is read-only while its Create is under way: what the request sent is the form, and no edit
+              made meanwhile is left behind. A refused Create gives it back as it was. */}
+          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           <p className="caps text-label text-muted-foreground">Step {at + 1}</p>
           <h2 className="caps mb-6 border-b pb-4 text-prose font-semibold">{steps[at].label}</h2>
 
@@ -290,6 +346,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   const place = placeOfComputer(computer);
                   const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
                   set({ computer, place, ...(place.mode === "runner" ? { tools: (f.tools ?? []).filter((t) => !sandboxOnly.has(t)) } : {}) });
+                  leavePlace(place);
                 }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
@@ -298,7 +355,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
               <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []}
-                onChange={(next) => set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) })} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+                onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
 
@@ -306,24 +363,26 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
-                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
+                {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
                     // names shows as such, to untick.
-                    const runs = (workflow && t.call_only) || toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
+                    const runs = runsOn(f.harness ?? "pi", t.name, caps.tools, toolOpts);
                     const on = f.tools?.includes(t.name) ?? false;
                     // A tool the server's provider leaves unavailable runs here once this agent picks a provider of its own.
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places)) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places));
+                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
+                    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
+                    // (cut to one line); the reason in full is its title, and in Details.
+                    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
                     return (
-                      <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-body", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-                        <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-primary" />
-                        <span className="min-w-0">{t.name}{why && <span className="ml-2 text-label text-muted-foreground">{why}</span>}
-                          {t.summary && <Summary text={t.summary} />}</span>
-                      </label></li>
+                      <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
+                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
                     );
                   })}
                   {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
@@ -340,7 +399,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
-                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? setF(({ tool_settings: _gone, ...rest }) => rest) : set({ tool_settings: next }))} />
               )}
               {/* The agent's approvals (definition.approvals): whether a call its gate says ask waits for you. */}
               {!workflow && !starting && (
@@ -374,7 +433,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     {choices.map((h) => {
                       const row = (
                         <>
-                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools, f.place) } : {}) })} className="mt-1 accent-primary" />
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
                           <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
                         </>
                       );
@@ -394,6 +453,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                       );
                     })}
                   </div>
+                  {/* What the switch took off, and why, here before any save: the Tools step shows each the same way. */}
+                  {held.length > 0 && (
+                    <div className="mt-3 border px-3 py-2 font-mono text-small" role="status" aria-label="Tools this harness doesn't run">
+                      <p className="text-warning-text">{choices.find((h) => h.id === f.harness)?.label ?? f.harness} doesn't run {held.length === 1 ? "this tool" : "these tools"} here, so {held.length === 1 ? "it's" : "they're"} unticked. Switching back ticks {held.length === 1 ? "it" : "them"} again.</p>
+                      <ul className="mt-1 space-y-0.5">{held.map((t) => <li key={t}>{t}: <span className="text-muted-foreground">{notOn(f.harness ?? "pi", t, caps.tools, caps.mcpHarnesses)}</span></li>)}</ul>
+                    </div>
+                  )}
                 </Field>
               )}
               {!workflow && !starting && (
@@ -447,15 +513,22 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               ))}
             </ul>
           )}
+          </fieldset>
         </section>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t px-5 py-3 md:px-8">
         <Button size="sm" variant="ghost" disabled={at === 0} onClick={() => goTo(steps[at - 1].id)}><ArrowLeft aria-hidden /> Previous</Button>
         {step !== "history" && <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={creating ? "" : "What changed (a note on this revision)"} aria-label="Revision note" className={cn("h-9 min-w-0 flex-1", creating && "invisible")} />}
         {step === "history" && <span className="flex-1" />}
-        {saved && <span className="caps text-label text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
+        {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
+        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
+        {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so
+            none is made up for them. */}
+        {creating && !saving && !viewing && createNeeds.map((why) => <p key={why} className="w-full text-right font-mono text-small text-muted-foreground">{why}</p>)}
+        {/* Why a save failed, under the button that made it. */}
+        {problem?.kind === "invalid" && <p className="w-full text-right font-mono text-small text-destructive-text" role="alert">The server refused the save: {problem.message}</p>}
+        {problem?.kind === "other" && <p className="w-full text-right font-mono text-small text-destructive-text" role="alert">{problem.message}</p>}
       </footer>
       <ConfirmDialog open={guard.asking} title="Leave without saving?" confirm="Leave" cancel="Stay" onConfirm={guard.leave} onCancel={guard.stay}>
         {creating ? "This new agent is not saved yet." : "Your changes to this agent are not saved."} Leave drops them; Stay keeps them here.
@@ -470,16 +543,3 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
  *  the group; `named`: what it holds is a radiogroup with that name already. */
 const Field = ({ named, ...props }: Omit<React.ComponentProps<typeof UiField>, "group"> & { named?: boolean }) => <UiField {...props} group={props.id ? false : named ? "heading" : true} />;
 
-/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
- *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
-function Summary({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <span className="mt-0.5 block font-sans text-label text-muted-foreground">
-      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
-      {text.length > 120 && (
-        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
-      )}
-    </span>
-  );
-}
