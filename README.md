@@ -239,8 +239,10 @@ flowchart LR
 
 Each agent has a learning folder: plain git with one branch, `main`. A run reads the index of active notes in its
 instructions and gets the learned skills beside its own. When the run ends, it gets one more turn to say what it would
-keep. Code checks the proposal first (no secrets, no files outside the folder, size limits), and leaves out only the
-items that break a rule. Then one grader judges what it says, and AgentRun commits what passes. A risky rule waits for
+keep. Code checks the proposal first. An item that breaks a rule of its own (a size or count limit, its name, its
+shape) is left out and the rest goes on. A secret or a hidden character anywhere in the answer, a file outside the
+folder, a deletion or a full index drops the whole answer, since no item of it can be trusted. Then one grader judges
+what it says, and AgentRun commits what passes. A risky rule waits for
 your OK. A rule the run found in a page or a pasted email, or a note that holds an account number, is dropped.
 
 Once an agent's notes outgrow the learning budget, each run gets the ones that bear on its first message, whole, and a

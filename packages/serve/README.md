@@ -2504,7 +2504,8 @@ index past 200 lines, hidden characters, and text shaped like a secret or holdin
 launcher's, the keys and tokens in its environment, its API and door tokens, each webhook trigger's signing secret as it
 is now), in a note or its name. A cap leaves out the items past it, in the order the answer gave them, and the run's
 learning names what was left out. The whole answer is refused when it holds a secret or a hidden character (no item of
-it is trusted), when the index would pass 200 lines, or when nothing is left. A `MEMORY.md` the
+it is trusted), when it writes a path outside the folder or deletes a file, when a text is not UTF-8, when the index
+would pass 200 lines, or when nothing is left. A `MEMORY.md` the
 answer gives is ignored. What passes is kept as the run's proposal, with what the user said, each message cut of the
 server's secrets, in the store in the same write as the run's end, beside what the turn answered. The run's end queues a
 learning run of its own, which no list of runs shows.
