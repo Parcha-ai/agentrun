@@ -228,6 +228,128 @@ test("the draft ask describes each tool a call node may run, by the server's own
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
 
+test("the draft ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const takes = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
+  const gives = { type: "object", properties: { id: { type: "string" } } };
+  // create_issue allowed, delete_issue denied, github's unset (ask: its learned_workflow call asks once, #2424).
+  const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:linear/delete_issue": { permission: "deny" } };
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [
+      { name: "create_issue", description: "Create an issue in a team", input_schema: takes, output_schema: gives },
+      { name: "delete_issue", description: "Delete an issue", input_schema: { type: "object" } },
+    ] });
+    await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object", properties: { repo: { type: "string" } } } }] });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt, "the run was asked its end-of-run turn");
+  const listed = prompt.slice(prompt.indexOf("What each tool a call node may run takes and gives:"), prompt.indexOf("A skill is how"));
+  assert.ok(listed.includes(`- \`mcp:linear/create_issue\`: Create an issue in a team. Takes ${JSON.stringify(takes)}. Gives ${JSON.stringify(gives)}.`), listed || prompt.slice(0, 200));
+  assert.ok(listed.includes('- `mcp:github/create_pull_request`: Open a pull request. Takes {"type":"object","properties":{"repo":{"type":"string"}}}.'), listed);
+  // Granted but denied by its gate: no call node may run it, so it is not offered.
+  assert.ok(!prompt.includes("mcp:linear/delete_issue"), "delete_issue is denied: not offered");
+});
+
+test("with no one to answer an ask (the store's approvers row: the server's accounts off), the draft ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
+  const { writeApprovers } = await import("../dist/server-approvers.js");
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/*"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    await writeApprovers(server.settings, false);
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue in a team", input_schema: { type: "object" } }] });
+    await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object" } }] });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt, "the run was asked its end-of-run turn");
+  assert.ok(prompt.includes("- `mcp:linear/create_issue`: Create an issue in a team."), prompt.slice(prompt.indexOf("What each tool"), prompt.indexOf("A skill is how")));
+  assert.ok(!prompt.includes("mcp:github/create_pull_request"), "github's tool asks, and no one can answer: not offered");
+});
+
+// #2424's card rule on the runner path: the learning end hands the draft check the MCP tools set to ask and learnedAskFits,
+// so a draft calling more ask-set MCP tools than one approval card can name is left out of what the run keeps.
+test("a run's workflow draft whose ask-set MCP tools would not all fit on its learned call's approval card is left out in the gate's words; its note is kept (LS-07, #2424)", async (t) => {
+  const names = Array.from({ length: 40 }, (_, i) => `create_issue_with_a_rather_long_descriptive_name_${String(i).padStart(2, "0")}`);
+  const flow = {
+    v: 2, name: "file-issues",
+    schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+    input: { schemaId: "Q" }, output: { schemaId: "R", path: "r0" },
+    root: { node: "chain", steps: names.map((name, i) => ({ node: "call", label: `Call ${i}`, via: "tool", tool: `mcp:linear/${name}`, args: { title: "{title}" }, out: "R", as: `r${i}`, deadline_s: 30 })) },
+  };
+  const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-issues\n---\ndescription: Files the week's issues; use when asked to file them\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/*"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  }, async (server) => {
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: names.map((name) => ({ name, description: "Create an issue", input_schema: { type: "object" } })) });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }, { say: answer }] });
+  await w.ended();
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.workflows, 0, JSON.stringify(kept?.proposal));
+  assert.match(JSON.stringify(kept?.proposal?.left ?? kept?.proposal), /its approval card can't name all 40 MCP tools it would call that are set to ask/);
+});
+
+test("a run's workflow draft calling an MCP tool with no declared price is proposed held, saying which step, tool and server; one calling a priced tool is not (LS-07)", async (t) => {
+  for (const prices of [undefined, { create_issue: 0.01 }]) {
+    const flow = {
+      v: 2, name: "file-ticket",
+      schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+      input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" },
+      root: { node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{title}" }, out: "R", as: "r", deadline_s: 30 },
+    };
+    const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-ticket\n---\ndescription: Files a ticket; use when asked to file one\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
+    const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
+      const seed = await seedOf(dir, "agent-1");
+      return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+    }, async (server) => {
+      await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], ...(prices ? { prices } : {}) });
+    });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+    await w.ended();
+    const kept = await w.server.learning.proposal("run-1");
+    assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
+    const want = prices ? undefined : { "workflows/file-ticket/workflow.json": ["its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap"] };
+    assert.deepEqual(kept.proposal.proposal.held, want, prices ? "priced: no hold" : "unpriced: held");
+  }
+});
+
+// #2479 review (PRRT_kwDOUmdVMs62Q9R7): a draft's MCP tools are read from its JSON as JSON.parse reads it, so an address
+// spelled with an escaped slash ("mcp:linear\/create_issue", which the checks pass as mcp:linear/create_issue) finds its
+// declared price, and a priced tool's draft is not held.
+test("a draft naming a priced MCP tool with an escaped slash in its address is not held as unpriced (LS-07)", async (t) => {
+  const flow = {
+    v: 2, name: "file-ticket",
+    schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+    input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" },
+    root: { node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{title}" }, out: "R", as: "r", deadline_s: 30 },
+  };
+  const json = JSON.stringify(flow).replace("mcp:linear/create_issue", "mcp:linear\\/create_issue");
+  assert.ok(json.includes("mcp:linear\\/create_issue"));
+  const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-ticket\n---\ndescription: Files a ticket; use when asked to file one\n---\n${json}\n\`\`\`\``;
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  }, async (server) => {
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], prices: { create_issue: 0.01 } });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+  await w.ended();
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
+  assert.equal(kept.proposal.proposal.held, undefined, "priced, though its address is escaped: not held");
+});
+
 // A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives
 // nothing new to look back on: it is not asked its end-of-run turn (no model request), and its learning is dropped
 // `empty` in said.onlyWorkflow's words, at no cost. Any other tool, or a learned workflow that fails, is asked as before.
