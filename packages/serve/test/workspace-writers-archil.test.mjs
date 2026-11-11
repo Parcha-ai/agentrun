@@ -1,7 +1,7 @@
 // Mode 2: the run's files the server writes and reads, through an ArchilWorkspace over the fake disk
 // (fixtures/archil-fake.mjs), the same calls Mode 1 makes through a LocalWorkspace: uploads into inputs/, the files'
 // list and a ranged read, a revision's skills and their read back, the learned notes and skills, the first message's
-// files, the browser's evidence, monid's long answers, and pdf_pages. Each lands under the run's folder's keys on the
+// files, the browser's evidence and the files its browser_upload chooses, monid's long answers, and pdf_pages. Each lands under the run's folder's keys on the
 // disk, and nothing is written on this machine for the run.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -15,7 +15,7 @@ import { firstMessage } from "../dist/run-manifest.js";
 import { listFiles, sendFile } from "../dist/run-files.js";
 import { layLearned, layPinnedSkills, secretsShown } from "../dist/learning.js";
 import { promptOf, skillsOf } from "../dist/skills.js";
-import { evidenceIn } from "../dist/tools.js";
+import { evidenceIn, uploadsFrom } from "../dist/tools.js";
 import { Uploads } from "../dist/uploads.js";
 import { archilWorkspace, layOwnSkills, runKey } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
@@ -117,4 +117,20 @@ test("pdf_pages reads an image from the disk and writes its page back there; a d
   assert.ok(keysOf(disk).includes(drawn.pages[0].image), `${drawn.pages[0].image} on the disk`);
   const loaded = await imageLoader(work)(drawn.pages[0].image);
   assert.deepEqual([Buffer.from(loaded.bytes).equals(png), loaded.mime], [true, "image/png"]);
+});
+
+test("browser_upload chooses a file from the disk, by its path in the run's folder, and nothing outside it", async () => {
+  const { work } = fresh();
+  await work.write("reports/q3.pdf", "%PDF-1.7 q3");
+  await work.write("big.bin", Buffer.alloc(17));
+  const files = uploadsFrom(work, 16, (name) => (name.endsWith(".pdf") ? "application/pdf" : "application/octet-stream"));
+  const chosen = await files.resolve("reports/q3.pdf");
+  assert.deepEqual([text(chosen.bytes), chosen.name, chosen.mime], ["%PDF-1.7 q3", "q3.pdf", "application/pdf"]);
+  assert.deepEqual(await files.resolve("missing.txt"), { refused: "no file at missing.txt in the workspace" });
+  assert.deepEqual(await files.resolve("reports"), { refused: "reports is not a regular file" });
+  assert.deepEqual(await files.resolve("big.bin"), { refused: "big.bin is 17 bytes, over the 16-byte limit" });
+  // A file that grows while it is read is refused, never chosen in part.
+  const growing = { ...work, stat: (path) => work.stat(path), read: async (path, range) => { const bytes = await work.read(path, range); if (range?.offset === undefined) await work.append(path, "+"); return bytes; } };
+  assert.deepEqual(await uploadsFrom(growing, 16, () => "text/plain").resolve("reports/q3.pdf"), { refused: "reports/q3.pdf changed while it was read; try again" });
+  for (const outside of ["../other-run/secret.txt", "/etc/passwd"]) assert.deepEqual(await files.resolve(outside), { refused: `${outside} resolves outside the workspace` }, outside);
 });

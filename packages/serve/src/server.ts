@@ -52,7 +52,7 @@ import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -113,6 +113,7 @@ import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -229,6 +230,10 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
+  /** With `faux` only: a fake GitHub App, connected at the start, its API in this process on loopback (github-faux.ts),
+   *  so the console's GitHub flows run with nothing sent to GitHub. Its webhook secret is kept beside the data
+   *  (FAUX_GITHUB_FILE) for a test's signed delivery. Refused on a data directory another GitHub App is connected in. */
+  fauxGitHub?: boolean;
   /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
    *  fake), in place of Kernel's API. */
   fauxKernel?: string;
@@ -1326,7 +1331,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runReadsDeps: RunReadsDeps = {
     runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
     env,
-    runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
@@ -1434,7 +1439,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Connect GitHub: the server's one GitHub App, in the store's trigger_settings (adapter github, scope server), where the
   // runner reads it per claim (runner/github-app.ts).
   const github = new GitHubConnection(triggerSettings.get("github"));
-  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
+  // --faux-github (with --faux only): the fake App is connected afresh at each start, its API in this process.
+  const was = options.faux && options.fauxGitHub ? github.view() : undefined;
+  if (was && was.slug !== FAUX_GITHUB.slug) throw new Error(`--faux-github connects a fake GitHub App, and this data directory has the GitHub App ${was.slug} connected: use a scratch data directory.`);
+  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub() : undefined;
+  if (fauxGitHub) {
+    stops.push(() => fauxGitHub.close());
+    if (was) await github.remove();
+    await github.save(fauxGitHub.app);
+    await github.setInstallations([{ id: FAUX_GITHUB.installation, account: FAUX_GITHUB.account }]);
+    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories })}\n`, { mode: 0o600 });
+  }
+  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: fauxGitHub?.url ?? options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
@@ -1591,19 +1607,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> {
     const revision = (entry ?? (await needAgent(id))).revision;
-    if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
+    if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
+    const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
     const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
     const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
-    const { tools, gated, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"), undefined, undefined, { mcp: true, approvers: await readApprovers(store.settings) });
+    const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
+    // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
+    const { tools, gated, deniedBy, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    return { tools, gated, ask: { asked, fits: learnedAskFits } };
+    return { tools, gated, deniedBy, ask: { asked, fits: learnedAskFits } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -3508,6 +3526,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     await mcpStopped;
     await githubStopped;
+    // --faux-github's fake GitHub API, once nothing asks it anything.
+    await fauxGitHub?.close();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
