@@ -12,7 +12,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 vi.setConfig({ testTimeout: 20_000 });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const CAPS = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
+const CAPS = { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const agent = (id: string, name: string, extra: object = {}) => ({ agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name, instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...extra });
 const ACTIVE = [agent("qa-learn", "QA learn", { learning: { pending: 2 } }), agent("calc", "Calc", { learning: { pending: 0 } }), agent("off", "Learning off")];
 const ARCHIVED = [agent("gone", "Gone", { archived_at: "2026-11-05T00:00:00Z", learning: { pending: 4 } })];

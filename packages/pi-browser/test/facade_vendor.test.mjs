@@ -12,7 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("the vendored facade is byte for byte the upstream commit its manifest names", () => {
   const out = execFileSync(process.execPath, [path.join(ROOT, "scripts/vendor-facade.mjs"), "--check"], { encoding: "utf8" });
-  assert.match(out, /4 files match [0-9a-f]{40} \(@browserbasehq\/stagehand@4\.1\.0\)/);
+  assert.match(out, /3 files match [0-9a-f]{40} \(@browserbasehq\/stagehand@4\.1\.0\)/);
 });
 
 test("one changed byte, a stray file or a missing file is drift", async (t) => {

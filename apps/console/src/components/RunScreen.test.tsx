@@ -57,12 +57,12 @@ function nowhereBut(frame: HTMLIFrameElement | null, ...secrets: string[]) {
 
 const MESSAGES = { steer: false, answer: true, follow_up: true, steer_workflow_runs: false };
 describe("the run page reads the run's screen, whatever its capabilities list", () => {
-  const base = { sha: null, updated_at: "2026-11-05T09:00:00Z", poll_after_ms: 0, run_id: RUN, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null } as Run;
+  const base = { sha: null, updated_at: "2026-11-05T09:00:00Z", poll_after_ms: 0, run_id: RUN, place: { mode: "runner" }, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null } as Run;
   async function live(caps: unknown) {
     const reads: string[] = [];
     const v2 = {
       getRun: async () => base, listFiles: async () => ({ run_id: RUN, files: [], complete: true, truncated: false }),
-      getTimeline: async () => ({ run_id: RUN, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 }),
+      getTimeline: async () => ({ run_id: RUN, place: { mode: "runner" }, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 }),
       listRevisions: async () => ({ revisions: [], next_cursor: null }),
       runComputer: async (id: string) => { reads.push(id); return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; },
     };

@@ -11,14 +11,12 @@ import type { SecretMeta } from "@/lib/v2";
  *  opens). An action with no handler is not offered. `required` false: a key its provider can do without (Kernel's project),
  *  said Optional, its absence no warning; left out, a secret is needed. `stateSaid`: the page already shows Set or
  *  Missing beside it (the Keys page's chip on a key of one field), so the row's own word is for a screen reader only. */
-export function SecretRow({ field: f, label, writable, required = true, disabled = false, stateSaid = false, now = Date.now, note, onPaste, onRemove }: {
+export function SecretRow({ field: f, label, writable, required = true, stateSaid = false, now = Date.now, note, onPaste, onRemove }: {
   field: SecretMeta;
   /** What the page calls it where its name ends in no field ("Bearer token", "Signing secret"): secretLabel. */
   label?: string;
   writable: boolean;
   required?: boolean;
-  /** Offered but not usable now (this server can't store a secret: no seal key). */
-  disabled?: boolean;
   stateSaid?: boolean;
   now?: () => number;
   note?: string;
@@ -36,7 +34,7 @@ export function SecretRow({ field: f, label, writable, required = true, disabled
       {note && <span className="text-warning-text">{note}</span>}
       {acts && (
         <span className="ml-auto flex gap-2 font-sans">
-          {onPaste && <Button type="button" size="sm" variant={f.set ? "outline" : "primary"} disabled={disabled} onClick={onPaste}>{f.set ? "Replace" : "Paste"}</Button>}
+          {onPaste && <Button type="button" size="sm" variant={f.set ? "outline" : "primary"} onClick={onPaste}>{f.set ? "Replace" : "Paste"}</Button>}
           {onRemove && f.set && <Button type="button" size="sm" variant="destructive" onClick={onRemove}>Remove</Button>}
         </span>
       )}

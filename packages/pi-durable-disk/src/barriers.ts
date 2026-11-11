@@ -42,27 +42,12 @@ export interface BarrierRow {
 
 /** Every barrier. The keys are the names a `syncNow()` call takes, as `BARRIER.<key>`. */
 export const BARRIERS = {
-  piToolIntent: {
-    store: "run-journal",
-    site: "serve/src/tool-gate.ts",
-    status: "active",
-    proof: null,
-    why: "a pi tool call that is not replay-safe, or a billed replay-safe one: its intent, before it executes",
-  },
-  kernelEffectIntent: {
-    store: "run-journal",
-    site: "serve/src/sessions.ts",
-    via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync()" },
-    status: "active",
-    proof: null,
-    why: "a kernel effect (claude-agent, codex, opencode) that is not replay-safe: its start record, before it runs",
-  },
   paidToolHold: {
     store: "run-journal",
     site: "serve/src/paid-calls.ts",
     status: "active",
     proof: null,
-    why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
+    why: "a paid tool call's hold (paid calls and monid), before the call is sent",
   },
   browserSessionOpen: {
     store: "run-journal",
@@ -111,7 +96,7 @@ export const BARRIERS = {
 
 export type BarrierName = keyof typeof BARRIERS;
 
-/** The names, for a call site: `syncNow(store, BARRIER.piToolIntent)`. */
+/** The names, for a call site: `syncNow(store, BARRIER.paidToolHold)`. */
 export const BARRIER = Object.fromEntries(Object.keys(BARRIERS).map((name) => [name, name])) as { readonly [Name in BarrierName]: Name };
 
 export interface StoreRow {
@@ -210,7 +195,7 @@ export const NORMAL_PRECONDITIONS = {
   },
   barrierProofs: {
     done: false,
-    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof): the tool gate's, the kernel drive's and the paid hold's went with the per-run process's app",
+    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof): the paid hold's went with the per-run process's app",
   },
 } as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 
