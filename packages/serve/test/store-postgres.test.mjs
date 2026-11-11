@@ -732,6 +732,41 @@ test("an applied migration whose file changed since is refused at the server's o
   await assert.rejects(openPostgresStore({ url: PG_URL, schema }), /0001_initial\.sql with other text than this build's/);
 });
 
+test("a store holding two answers to one approval is refused migration 0003 in words: the run, the call, its commands, and what to do", ONLY, async (t) => {
+  const schema = await schemaFor(t);
+  const store = await openPostgresStore({ url: PG_URL, schema });
+  await queued(store);
+  await store.close();
+  // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
+  // one answer, which the migration keeps as it is.
+  await sql(schema, "DROP INDEX commands_one_answer");
+  await sql(schema, "DELETE FROM schema_migrations WHERE version = 3");
+  const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
+  const first = await answer("approve", "call-1");
+  const second = await answer("deny", "call-1");
+  const other = await answer("deny", "call-2");
+  let words = "";
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), (error) => {
+    words = error.message;
+    return true;
+  });
+  assert.match(words, /0003_commands_one_answer\.sql/, words);
+  assert.match(words, /run run-1/, words);
+  assert.match(words, /tool call call-1/, words);
+  assert.match(words, new RegExp(`commands ${first} \\(approve\\), ${second} \\(deny\\)`), words);
+  assert.match(words, new RegExp(`WHERE id IN \\(${second}\\)`), "says which rows to refuse, the first answer kept");
+  assert.doesNotMatch(words, /call-2/, "an approval with one answer is not named");
+  assert.deepEqual((await sql(schema, "SELECT max(version) AS v FROM schema_migrations"))[0].v, 2, "nothing applied");
+  // Doing what the words say lets the server start: the migration applies, and the first answer stands.
+  const statement = /(UPDATE \S+\.commands SET .*? WHERE id IN \([\d, ]+\))/.exec(words)?.[1];
+  assert.ok(statement, `the words carry the statement to run: ${words}`);
+  await sql(undefined, statement);
+  const opened = await openPostgresStore({ url: PG_URL, schema });
+  await opened.close();
+  const live = await sql(schema, "SELECT id FROM commands WHERE refused IS NULL ORDER BY id");
+  assert.deepEqual(live.map((row) => Number(row.id)), [first, other], "the first answer to call-1 and the one to call-2 stand");
+});
+
 test("a schema name that is not a plain lower-case name is refused before anything is opened", ONLY, async () => {
   for (const schema of ["Agentrun", "a-b", "x; DROP TABLE runs", "", "1abc"]) {
     await assert.rejects(openPostgresStore({ url: PG_URL, schema }), TypeError, schema);

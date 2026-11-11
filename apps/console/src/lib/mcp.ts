@@ -134,6 +134,13 @@ export function signInOf(query: string | undefined): { server: string; ok: boole
 
 /** An MCP server's tool as the harnesses call it, `mcp__<server>__<tool>`, read `<server> · <tool>` (the harness's own
  *  `hands` server is not one); null for any other name. */
+/** An MCP server's tool as a workflow's call node names it (`tool: "mcp:<server>/<tool>"`, the tool settings' key): its
+ *  server and its tool, or null for any other tool. */
+export function mcpCallTool(tool: string): { server: string; tool: string } | null {
+  const m = /^mcp:([a-z][a-z0-9-]{0,31})\/(.+)$/.exec(tool);
+  return m ? { server: m[1]!, tool: m[2]! } : null;
+}
+
 export function mcpToolLabel(name: string): string | null {
   const m = /^mcp__([a-z][a-z0-9-]{0,31})__(.+)$/.exec(name);
   return m && m[1] !== "hands" ? `${m[1]} · ${m[2]}` : null;
