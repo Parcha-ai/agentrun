@@ -106,21 +106,34 @@ export const PRINT_MAX = 4096;
  *  a line break is still seen whole, never hidden by its hex part cut alone), and the fold-aware one always after, on
  *  what is left (a folded value split by whitespace or percent-encoded is found there, never handed back). */
 export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
+  return redactWith(text, values, max, SHAPES, secretShapes);
+}
+
+/** `text` as redactSecrets cuts it, and of a bank's numbers beside their words too (MONEY_SHAPES): what learning prints
+ *  and serves of what it learned or refused (a problem's path and detail, a note read), never a run's own view, which
+ *  may show its user an account number. */
+export function redactLearned(text: string, values: readonly string[], max = PRINT_MAX): string {
+  return redactWith(text, values, max, [...SHAPES, ...MONEY_SHAPES], learnedSecretShapes);
+}
+
+/** redactSecrets over `shapes`, each found in place, and `shapesOf` read of what is left (a shape still there cuts the
+ *  text whole). */
+function redactWith(text: string, values: readonly string[], max: number, shapes: readonly (readonly [string, RegExp])[], shapesOf: (text: string) => string[]): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
   const given = withPathSpellings(values.filter((v) => v.length > 0));
   const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? [...needlesOf(v).plain, ...percentForms(v)] : [])]).filter((form) => form.length > 0));
   const found = [
     ...[...forms].flatMap((form) => places(text, form)),
     ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
-    ...SHAPES.flatMap(([, pattern]) => spans(text, pattern)),
+    ...shapes.flatMap(([, pattern]) => spans(text, pattern)),
   ];
   const unfolded = cutAt(text, found);
-  if (valueMatcher(given, { fold: false })(unfolded) || secretShapes(unfolded).length > 0) return "[redacted]";
+  if (valueMatcher(given, { fold: false })(unfolded) || shapesOf(unfolded).length > 0) return "[redacted]";
   // Then the folded finds cut in place, and the fold-aware check over what is left, always: a folded value split by
   // whitespace or percent-encoded has no span here, but the matcher's squeezed and decoded views still see it.
   const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
   const out = folds.length ? cutAt(text, [...found, ...folds]) : unfolded;
-  return valueMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
+  return valueMatcher(given)(out) || shapesOf(out).length > 0 ? "[redacted]" : out;
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */

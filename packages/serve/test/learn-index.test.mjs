@@ -18,7 +18,7 @@ const VALUES = {
   invisible: ["hiddenCharacter"],
   reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectAgain", "reflectPrompt", "SKILL_BLOCK", "WORKFLOW_BLOCK"],
   notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
-  secrets: ["MIN_SECRET", "PRINT_MAX", "redactSecrets", "secretShapes", "valueMatcher"],
+  secrets: ["learnedSecretShapes", "MIN_SECRET", "PRINT_MAX", "redactLearned", "redactSecrets", "secretShapes", "valueMatcher"],
   skills: ["draftFiles", "draftProblems", "frontKeys", "held", "isHeld", "LEARNED_KEYS", "LEARNED_MAX_TURNS", "learnedFront", "learnedName", "learnedPlace", "learnedStatus", "NO_TOOL_LIST", "readmeOf", "released", "retiredLearned", "servedSkill", "setsStatus", "SKILL_NAME", "SKILLS_DIR", "skillProblems", "WORKFLOW_NAME", "WORKFLOWS_DIR"],
 };
 const MODULES = { check, grade, invisible, reflect, notes, secrets, skills };

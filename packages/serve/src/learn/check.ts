@@ -5,7 +5,7 @@
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { learnedSecretShapes, redactSecrets, valueMatcher } from "./secrets.js";
+import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
 import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
@@ -92,12 +92,13 @@ const MODES: Record<string, string> = { "120000": "a link: never followed", "040
 /** Why a run's path is none of what it may propose. */
 const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.md, and workflows/<name>/ with its workflow.json and README.md";
 
-/** `problem` as it may be printed: its path and detail cut of `values` and of secret shapes, whole when over PRINT_MAX. */
+/** `problem` as it may be printed: its path and detail cut of `values` and of every shape learning refuses, a bank's
+ *  numbers too (redactLearned: a name refused for one never prints it), whole when over PRINT_MAX. */
 export const printable = (problem: Problem, values: readonly string[]): Problem => ({
   // A rule is one of Rule's words as the checks write it; a kept row read back is untrusted, so it is cut too.
-  rule: redactSecrets(problem.rule, values) as Problem["rule"],
-  ...(problem.path === undefined ? {} : { path: redactSecrets(problem.path, values) }),
-  detail: redactSecrets(problem.detail, values),
+  rule: redactLearned(problem.rule, values) as Problem["rule"],
+  ...(problem.path === undefined ? {} : { path: redactLearned(problem.path, values) }),
+  detail: redactLearned(problem.detail, values),
 });
 
 type Add = (rule: Rule, detail: string, path?: string) => void;

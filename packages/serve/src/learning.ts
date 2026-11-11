@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -130,7 +130,7 @@ export type Shown = { text: (text: string) => string; name: (name: string) => st
 /** What a name holding a secret reads: learn/secrets.ts redactSecrets' mark, the name's whole, never a part of it. */
 const REDACTED = "[redacted]";
 /** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
+ *  learn/secrets.ts redactLearned, a bank's numbers too), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
  *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. A text served
  *  has no loopback address, the address alone (key-refusal.ts withoutLoopbackAddresses, the pattern a run's words share,
  *  run-view.ts shownOf): the host's own, never a person's; a run error's `url:` tail is no rule of a note's, a patch's or a
@@ -138,8 +138,10 @@ const REDACTED = "[redacted]";
  *  # Learned section, server.ts's learning start), where an address on the run's own machine is the note's to give. */
 export function secretsShown(values: readonly string[], { local = false }: { local?: boolean } = {}): Shown {
   const matches = valueMatcher(values);
-  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  const cut = (text: string) => (holds(text) ? redactSecrets(text, values) : text);
+  // Every shape learning refuses, a bank's numbers beside their words too (learnedSecretShapes): a name or a text refused
+  // for one never shows it here, though a run's own view may show its user an account number.
+  const holds = (text: string) => matches(text) || learnedSecretShapes(text).length > 0;
+  const cut = (text: string) => (holds(text) ? redactLearned(text, values) : text);
   return { holds, text: local ? cut : (text) => withoutLoopbackAddresses(cut(text)), name: (name) => (holds(name) ? REDACTED : name) };
 }
 
