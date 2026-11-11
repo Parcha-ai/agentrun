@@ -213,3 +213,43 @@ test("the count is the DSL's own synthesis, counted without building it: values 
     assert.deepEqual(skills.synthesizedSize(schema, definitions), counted(built), JSON.stringify(schema));
   }
 });
+
+// A loop the dry run's step count never sees: its body a map over an empty list (no model or tool answer, so no step),
+// its until never true, its maxIters huge. Refused statically by its bound (a loop's maxIters, and nested loops' product,
+// past their caps), and a dry run handed one anyway stands down as not run: both within a time bound.
+const spinning = (name, maxIters = 100_000_000, inner) => ({
+  v: 2, name,
+  schemas: { Question: { type: "object", properties: { question: { type: "string" }, items: { type: "array", maxItems: 0, items: { type: "string" } }, done: { type: "boolean" } }, required: ["question", "items", "done"] }, Answer: schemas.Answer },
+  input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [
+    { node: "loop", label: "spin", maxIters, until: { predicate: "field_true", path: "done" }, body: inner ?? { node: "map", label: "each", itemsPath: "items", as: "seen", body: { node: "extract", label: "one", instructions: "x", out: "Answer", as: "one" } } },
+    { node: "extract", label: "answer", instructions: "Answer.", out: "Answer", as: "answer" },
+  ] },
+});
+const EMPTY = JSON.stringify({ question: "q", items: [], done: false });
+
+test("a draft whose loop could spin with no step (an empty map for its body, an until never true) is refused statically, within a time bound", async (t) => {
+  const started = Date.now();
+  const { result, proposal } = await proposed(t, [noteBlock, block("spin", spinning("spin"), EMPTY)].join("\n\n"));
+  assert.ok(Date.now() - started < 10_000, `settled in ${Date.now() - started} ms`);
+  assert.deepEqual([result.state, result.notes, result.workflows], ["proposed", 1, 0], JSON.stringify(result));
+  assert.ok((result.left ?? []).some(({ path, rule, detail }) => path === "workflows/spin/workflow.json" && rule === "workflow" && /maxIters/.test(detail)), JSON.stringify(result.left));
+  assert.equal(proposal?.dryRuns?.["workflows/spin/workflow.json"], undefined, "never dry-run");
+});
+
+test("draftProblems refuses a loop's maxIters past its cap, and nested loops whose bounds multiply past theirs; within both, nothing", () => {
+  const nested = spinning("x", 40, { node: "loop", label: "inner", maxIters: 40, until: { predicate: "field_true", path: "done" }, body: { node: "extract", label: "one", instructions: "x", out: "Answer", as: "one" } });
+  for (const [what, flow] of [["one loop", spinning("x", 1_000)], ["nested", nested]]) {
+    const problems = draftProblems(dsl, JSON.stringify(flow), []);
+    assert.ok(problems.some(({ rule, detail }) => rule === "workflow" && /maxIters/.test(detail)), `${what}: ${JSON.stringify(problems)}`);
+  }
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(spinning("x", 20)), []), []);
+});
+
+test("a dry run handed a spinning draft anyway stands down as not run, within a time bound", async () => {
+  const started = Date.now();
+  const dry = await skills.draftDryRun(dsl, JSON.stringify(spinning("spin")), EMPTY);
+  assert.ok(Date.now() - started < 2_000, `settled in ${Date.now() - started} ms`);
+  assert.equal(dry.status, "not_run", JSON.stringify(dry));
+  assert.match(dry.detail, /maxIters/, dry.detail);
+});

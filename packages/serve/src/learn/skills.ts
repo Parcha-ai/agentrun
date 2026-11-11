@@ -179,6 +179,9 @@ export type DraftDryRun = { readonly status: "passed" | "not_run" | "failed"; re
 export const DRY_RUN_FAILED = "its dry run failed";
 /** The most synthetic steps a draft's dry run takes before it stops, as not run. */
 const DRY_RUN_STEPS = 2_000;
+/** The longest a draft's dry run may take, by the clock, before it stops, as not run: a backstop behind the steps and the
+ *  static bounds (the DSL reads its signal at each step). */
+const DRY_RUN_MS = 10_000;
 
 /** The code runner a dry run hands every code node to: it refuses each. Given a runner, the DSL validates with
  *  executeCode: false (a code node's expression is parsed, never evaluated or probed) and never compiles or calls a code
@@ -267,6 +270,33 @@ function workflowsOf(doc: unknown): Record<string, unknown>[] {
   return out;
 }
 
+/** The most iterations one loop of a learned draft may run (its maxIters), and the most nested loops may run together
+ *  (their maxIters multiplied, outermost to innermost). A loop's iterations are work the dry run does in the host whether
+ *  or not its body asks a model (an empty map, a predicate), so they are bounded here, not only by the dry run's steps. */
+export const LEARNED_MAX_ITERS = 50;
+export const LEARNED_LOOP_ITERS = 1_000;
+
+/** Why `doc`'s loops could run too long: a loop whose maxIters is past LEARNED_MAX_ITERS, or nested loops whose maxIters
+ *  multiply past LEARNED_LOOP_ITERS, a composed workflow node's child's included. Read from the JSON alone. */
+export function loopProblems(doc: unknown): string[] {
+  const problems: string[] = [];
+  const walk = (value: unknown, around: number) => {
+    if (!value || typeof value !== "object") return;
+    let within = around;
+    const node = value as { node?: unknown; label?: unknown; maxIters?: unknown };
+    if (node.node === "loop") {
+      const iters = typeof node.maxIters === "number" ? node.maxIters : 0;
+      const label = JSON.stringify(String(node.label ?? "").slice(0, 64));
+      within = around * iters;
+      if (iters > LEARNED_MAX_ITERS) problems.push(`its loop ${label} runs up to maxIters ${iters} times (the most is ${LEARNED_MAX_ITERS})`);
+      else if (within > LEARNED_LOOP_ITERS) problems.push(`its loop ${label} and the loops around it run up to ${within} times together, their maxIters multiplied (the most is ${LEARNED_LOOP_ITERS})`);
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) walk(child, within);
+  };
+  walk(doc, 1);
+  return problems;
+}
+
 /** Why a dry run of `doc` would build too much in the host: a schema whose minItems or minLength is past its cap, or
  *  whose synthesized instance holds more values or characters than SYNTH_VALUES or SYNTH_CHARS. Empty when none. Read
  *  from the JSON alone, building nothing. */
@@ -316,13 +346,14 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
     if (typeof given !== "object" || given === null || Array.isArray(given)) return { status: "failed", detail: `${DRY_RUN_FAILED}: its example: line is not one JSON object` };
     input = given as Record<string, unknown>;
   }
-  // Nothing is synthesized past the bounds: a draft whose schemas would build too much stands down here, before the DSL
-  // builds anything of it (the static checks refuse it first; this holds for a draft handed here anyway).
-  const tooLarge = synthesisProblems(doc);
+  // Nothing is synthesized or looped past the bounds: a draft whose schemas would build too much, or whose loops could run
+  // too long, stands down here before the DSL runs any of it (the static checks refuse it first; this holds for a draft
+  // handed here anyway).
+  const tooLarge = [...synthesisProblems(doc), ...loopProblems(doc)];
   if (tooLarge.length) return { status: "not_run", detail: tooLarge.join("; ").slice(0, 300) };
   let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
   try {
-    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode });
+    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode, signal: AbortSignal.timeout(DRY_RUN_MS) });
   } catch (error) {
     return { status: "failed", detail: `${DRY_RUN_FAILED}: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
   }
@@ -447,7 +478,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...synthesisProblems(doc).map((detail) => ({ rule: "workflow" as const, detail }))];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...[...synthesisProblems(doc), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
