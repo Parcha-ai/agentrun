@@ -5,7 +5,7 @@
 // on its Workspace, its gate the store's tool settings. Every harness here is a stand-in on loopback: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { tmpdir } from "node:os";
@@ -236,26 +236,30 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
 });
 
 // A CLI's files on this machine (its working directory, its private folder) are the claim's own: swept when the claim
-// ends (#2166). A follow-up that reopens the run is claimed again on the same runner, which lays the folder again: the
-// harness's session comes back from the run's journal, so the new turn reads the first one, and its folder goes too.
-test("a CLI run's scratch folder is swept at its claim's end; a follow-up on the same runner lays it again, the session back from the journal, and sweeps it too", async (t) => {
+// ends (#2166). Each claim's private folder is its own (harness/<epoch>), so a claim that lets go late (its release
+// follows the run's end commit) sweeps only its own: a next claim's folder, and the scratch folder holding it, stay.
+test("a CLI run's scratch folder is swept at its claim's end", async (t) => {
   const gateway = await responsesGateway(t, "Hello from OpenCode.");
   const env = { AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
-  const { row, dir, server } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
+  const { row, dir } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   const scratch = scratchFolder(dir, "agent-1", RUN);
   await until(() => !existsSync(scratch), `the scratch folder swept at the claim's end: ${scratch}`, 10_000);
-  await server.runs.reopen(RUN, { kind: "steer", body: { text: "And once more?" } });
-  await server.flush?.();
-  const again = await until(async () => {
-    const now = await server.runs.get(RUN);
-    return now.epoch > row.epoch && ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the follow-up's end");
-  assert.equal(again.state, "ended", `the follow-up ended: ${JSON.stringify(again)}`);
-  assert.equal(gateway.seen.length, 2, "one model request for each turn");
-  const sent = JSON.stringify(gateway.seen[1].body.input);
-  for (const said of ["Say hello.", "Hello from OpenCode.", "And once more?"]) assert.ok(sent.includes(said), `the follow-up's request carries the session, ${said}: ${sent.slice(0, 600)}`);
-  await until(() => !existsSync(scratch), `the scratch folder swept at the follow-up claim's end: ${scratch}`, 10_000);
+});
+
+test("a claim's sweep removes its own private folder, and the scratch folder only once no other claim's is in it", async (t) => {
+  assert.equal(typeof spec.sweepScratch, "function", "runner/cli-run-spec.js exports sweepScratch");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-sweep-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const scratch = join(dir, "scratch", "run-1");
+  const harnesses = join(scratch, "harness");
+  for (const epoch of ["1", "2"]) mkdirSync(join(harnesses, epoch, "codex-home"), { recursive: true });
+  await spec.sweepScratch(join(harnesses, "1"), [harnesses, scratch]);
+  assert.equal(existsSync(join(harnesses, "1")), false, "the late claim's own folder is gone");
+  assert.equal(existsSync(join(harnesses, "2", "codex-home")), true, "the next claim's folder stays, whole");
+  await spec.sweepScratch(join(harnesses, "2"), [harnesses, scratch]);
+  assert.equal(existsSync(scratch), false, "the last claim's sweep takes the scratch folder with it");
+  await spec.sweepScratch(join(harnesses, "3"), [harnesses, scratch]);
 });
 
 // A run a trigger started: its launch names the trigger and the first input's origin (run-launch.ts, as the server writes
