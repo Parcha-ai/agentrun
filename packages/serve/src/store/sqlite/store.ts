@@ -1086,8 +1086,9 @@ class SqliteStore implements Store {
           from, to,
         );
         return rows.flatMap((row): LearningSpend[] => {
-          // A proposal: once its learning run ended (or failed), its row's cost is the grade's spend.
-          if (row.learning_run_id !== null) return row.run_state === "ended" || row.run_state === "failed" ? [{ agentId: row.agent_id, at: row.run_ended_at ?? row.created_at, costUsd: row.run_cost_usd }] : [];
+          // A proposal: once its learning run ended, failed or was stopped, its row's cost is the grade's spend (a stop
+          // seen after a paid grade keeps it, learning-loop.ts).
+          if (row.learning_run_id !== null) return row.run_state === "ended" || row.run_state === "failed" || row.run_state === "stopped" ? [{ agentId: row.agent_id, at: row.run_ended_at ?? row.created_at, costUsd: row.run_cost_usd }] : [];
           // Kept with no learning run: dropped before it was proposed (nothing graded), unless it is still a proposal.
           const kept = JSON.parse(row.proposal) as { state?: unknown } | null;
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];

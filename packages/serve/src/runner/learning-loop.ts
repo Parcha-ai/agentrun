@@ -187,18 +187,19 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
         const journal: Journal = deps.journal(claim);
         let rooted = false;
         /** What the grade spent, as the run's learning end reads it (store-reads/learning.ts runLearningEnd): the graded
-         *  entry's, a failed grade's (null: unknown), else nothing graded, 0. Kept as the learning run's cost when it ends
-         *  ended or failed, so what learning spent reads from the run rows alone (store learning.spend). */
+         *  entry's, a failed or cut grade's (null: unknown), else nothing graded, 0. Kept as the learning run's cost when it
+         *  ends ended, failed or stopped, so what learning spent reads from the run rows alone (store learning.spend): a
+         *  stop seen after a paid grade never hides it. */
         let spend: number | null = 0;
         /** One entry on the root, committed; `end` stages the run's state with it (keyed to this entry, its effect), and
-         *  `take` the stop row it applies. An end that ends or fails the run keeps what the grade spent as its cost. */
+         *  `take` the stop row it applies. An end that ends, fails or stops the run keeps what the grade spent as its cost. */
         const append = async (kind: string, data: unknown, end?: "ended" | "failed" | "stopped" | "parked", take?: number) => {
           const writes: StorageWrite[] = [];
           if (kind === KINDS.learningDropped && data !== null && typeof data === "object" && "usd" in data) spend = (data as DroppedData).usd ?? null;
           if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } } as StorageWrite);
           const id = await journal.mintId();
           writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } } as StorageWrite);
-          if (end) journal.stage({ run: { state: end, ...(end === "ended" || end === "failed" ? { costUsd: spend } : {}) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
+          if (end) journal.stage({ run: { state: end, ...(end === "parked" ? {} : { costUsd: spend }) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
           const result = await journal.commit([writes], () => {}, context);
           if (result.stored === 0) throw result.refused;
           rooted = true;
@@ -277,6 +278,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               // An answer the host cannot read is asked once more, as the server's grade did.
               if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
             } catch (error) {
+              // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
+              spend = usd;
               const end = await halted();
               if (end) return end;
               await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");

@@ -148,6 +148,31 @@ test("a stop row ends the learning run stopped, its row taken, with nothing merg
   assert.notEqual((await store.commands("learn-1", 0)).find((row) => row.id === stop.id).takenAt, null, "its row taken");
 });
 
+test("a learning run stopped after its grade booked keeps that grade's cost on its row, and /v2/usage's learning spend counts it", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock);
+  const stop = await store.command("learn-1", { kind: "stop" });
+  await loop.stop({ kind: "command", commandId: stop.id });
+  assert.equal((await loop.start(claim)).state, "stopped");
+  assert.equal(calls.ask.length, 1, "the grade was asked and booked before the stop was seen");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", 0.01], "the paid grade stays on the stopped run's row");
+  const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
+  assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", 0.01]], "what /v2/usage reads as learning's spend");
+});
+
+test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop } = loopOn(store, clock, { answers: [new Error("the grade request was cut")] });
+  const stop = await store.command("learn-1", { kind: "stop" });
+  await loop.stop({ kind: "command", commandId: stop.id });
+  assert.equal((await loop.start(claim)).state, "stopped");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
+  const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
+  assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", null]]);
+});
+
 test("a learning run whose source kept nothing ends with nothing graded", async (t) => {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store);
