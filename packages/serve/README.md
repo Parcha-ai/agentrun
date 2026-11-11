@@ -455,9 +455,9 @@ go through `work/` by path.
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
   server's uid:gid, so what it writes in `work/` stays this server's. It starts from [the box's image](#the-boxs-image).
   It may use 2 CPUs' time, 4 GiB of memory, swap included, and 1,024 processes and threads (`--cpu-period 100000
-  --cpu-quota 200000 --memory 4g --memory-swap 4g --pids-limit 1024`), so a runaway build or a fork bomb stops in the
-  box. `AGENTRUN_BOX_CPUS` (at least `0.01`), `AGENTRUN_BOX_MEMORY` (with its unit, such as `8g`, and at least `6m`) and
-  `AGENTRUN_BOX_PIDS` (at most 4,194,304) change them; any other value refuses the start. `AGENTRUN_BOX_CPUS` caps CPU
+  --cpu-quota 200000 --memory 4096m --memory-swap 4096m --pids-limit 1024`), so a runaway build or a fork bomb stops in
+  the box. `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY` and `AGENTRUN_BOX_PIDS` change them, for Docker computers only
+  ([a Docker computer's size](#computers)). `AGENTRUN_BOX_CPUS` caps CPU
   time, as a CFS quota (the cap `--cpus` sets), so it holds whatever CPU count Docker's VM has, and where the kernel
   gives Docker no CPU controller (a rootless Docker without one delegated), Docker ignores it with a warning.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
@@ -627,10 +627,8 @@ is Modal's default sandbox runtime (gVisor), not a virtual machine: the server d
   show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
 - A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
   with the run's `work/`. The call that met the gone box fails, saying so.
-- Each Modal sandbox reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
-  the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
-  `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
-  no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
+- A Modal sandbox is the size Modal makes it, which the provider bills for while the box lives: `AGENTRUN_BOX_CPUS`,
+  `AGENTRUN_BOX_MEMORY` and `AGENTRUN_BOX_PIDS` size Docker computers only. Its lifetime is 24 hours, as every box's is.
 - A start copies back, then ends, the sandbox of every run that has ended or is archived.
 
 ### The box's image
@@ -737,6 +735,15 @@ the provider with them and starts nothing. A key set in the server's environment
 `KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
+
+**A Docker computer's size.** A Docker computer, a sandbox or a desktop, may use 2 CPUs' time, 4 GiB of memory with swap
+included, and 1,024 processes and threads, unless the server's environment says otherwise: `AGENTRUN_BOX_CPUS` (at least
+`0.01`, such as `1.5`), `AGENTRUN_BOX_MEMORY` (a size with its unit, `b`, `k`, `m` or `g`, such as `8g`: at least `6m`,
+a fraction of a MiB dropped) and `AGENTRUN_BOX_PIDS` (from 1 to 4,194,304). The claim puts them on the computer's spec,
+and the Docker provider runs the container with them (`--cpu-quota`, `--memory` and `--memory-swap`, `--pids-limit`).
+They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
+size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
+the provider's words.
 
 **GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
 "count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
