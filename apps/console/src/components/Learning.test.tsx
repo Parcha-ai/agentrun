@@ -1216,3 +1216,67 @@ describe("the Learning tab's per-note run counts", () => {
     expect(first).not.toContain("Used in");
   });
 });
+
+// LS-10: a learned workflow drawn with the console's workflow graph (the one a workflow agent's tab draws), from its
+// workflow.json as the learning file read gives it; its JSON stays a click away.
+describe("the Learning tab's learned workflow, drawn", () => {
+  const DRAFT_FILE = "workflows/check-refunds/workflow.json";
+  const README_FILE = "workflows/check-refunds/README.md";
+  const DOC = { v: 2, name: "check-refunds", schemas: { In: { type: "object" }, Page: { type: "object" } }, input: { schemaId: "In" }, root: { node: "chain", label: "check refunds", steps: [
+    { node: "call", label: "fetch the policy page", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page" },
+    { node: "extract", label: "read the refund window", from: "{page}", out: "Page", as: "window" },
+  ] } };
+  const learned = (status: "active" | "pending" = "active") => view({
+    workflows: [{ name: "check-refunds", file: DRAFT_FILE, readme: README_FILE, description: "Checks a store's refund window", status, run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+  } as Partial<AgentLearning>);
+
+  it("an active one opens to its graph: each node drawn by its label, and the JSON behind it", async () => {
+    const t = await open(agent(true), { learning: async () => learned(), read: async () => ({ note: `${JSON.stringify(DOC, null, 2)}\n`, etag: '"wf-v1"' }) });
+    await t.click(/^Show the workflow check-refunds$/);
+    const flow = t.card("check-refunds")!;
+    const graph = flow.querySelector('svg[role="img"][aria-label="The workflow check-refunds, as a graph"]');
+    expect(graph).not.toBeNull();
+    expect(graph!.textContent).toContain("fetch the policy page");
+    expect(graph!.textContent).toContain("read the refund window");
+    expect(flow.textContent).toContain('"name": "check-refunds"');
+  });
+  it("a workflow.json that is not a workflow (no root, or not JSON) shows its text as before, with no graph", async () => {
+    for (const text of ['{"v": 2, "name": "check-refunds"}\n', "not json"]) {
+      const t = await open(agent(true), { learning: async () => learned(), read: async () => ({ note: text, etag: '"wf-v1"' }) });
+      await t.click(/^Show the workflow check-refunds$/);
+      const flow = t.card("check-refunds")!;
+      expect(flow.querySelector("svg")).toBeNull();
+      expect(flow.querySelector("pre")!.textContent).toBe(text);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+});
+
+// LS-10: an agent's impact counts runs that started from a learned skill or workflow, as from a note: its words say
+// what it learned, never notes alone.
+describe("the before and after of an agent that learned only skills or workflows", () => {
+  const IMPACT = { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11, cost_runs: 2, median_learning_usd: null }, after: { runs: 3, median_duration_s: 12, median_cost_usd: 0.03, cost_runs: 3, median_learning_usd: null } };
+  const only = (kind: "skills" | "workflows") => view({
+    notes: { items: [], total: 0, next_cursor: null }, index: "", impact: IMPACT,
+    [kind]: [{ name: "find-policies", file: kind === "skills" ? "skills/find-policies/SKILL.md" : "workflows/find-policies/workflow.json", description: "Find a store's policies", status: "active", run: "run-b", bytes: 92, etag: '"v1"' }],
+  } as Partial<AgentLearning>);
+  for (const kind of ["skills", "workflows"] as const) {
+    it(`renders it for ${kind} alone, in words that name what it learned, not notes`, async () => {
+      const t = await open(agent(true), { learning: async () => only(kind) });
+      const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
+      expect(card).not.toBeNull();
+      expect(card.textContent).toContain("on 3 runs");
+      const basis = card.querySelector('[title^="Medians of"]')!.getAttribute("title")!;
+      expect(basis).toContain("Medians of 2 runs before it first learned and 3 runs that started from what it learned (a note, a skill or a workflow).");
+      expect(basis).not.toContain("first note");
+      expect(basis).not.toContain("its notes");
+      // The notes' own line says no note is in use, never that the run starts with nothing learned.
+      expect(t.text()).not.toContain("the next run starts with nothing learned");
+    });
+  }
+  it("until there is one, its line names the first thing it learned, not its first note", async () => {
+    const t = await open(agent(true), { learning: async () => view({ impact: null }) });
+    expect(t.text()).toContain("After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.");
+    expect(t.text()).not.toContain("its first note");
+  });
+});

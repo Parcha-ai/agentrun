@@ -87,6 +87,14 @@ export type RunReview = NonNullable<Run["review"]>;
 
 export type TimelineKind = components["TimelineKind"];
 export type TimelineRow = components["TimelineRow"];
+/** One node of a learned workflow's run, on its learned_workflow call's result row (learnednodes/1): its label, its kind,
+ *  how it ended (`ok`, `failed`, `escalated`) and how long it took. Never why it failed. */
+export type LearnedNode = NonNullable<TimelineRow["learned_nodes"]>[number];
+/** GET /v2/runs/{id}/learning: a run's learning, null for a run that does not learn. */
+export type RunLearningRead = Answer<"getRunLearning">;
+/** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
+ *  read it, each learned workflow it called, how many times and how many of those failed. */
+export type LearnedUse = NonNullable<RunLearningRead>["used"];
 export type TimelinePage = components["TimelinePage"];
 
 export type RunFile = components["RunFile"];
