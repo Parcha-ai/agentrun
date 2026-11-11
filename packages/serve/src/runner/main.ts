@@ -67,6 +67,9 @@ export interface RunnerProcess {
   readonly runner: Runner;
   /** What the store is, for the ready line: its kind and schema version. */
   readonly store: { readonly kind: string; readonly schema: number };
+  /** What its runs may hold, in MiB (RunnerMemory.budgetMib): its host's memory, or its container's limit, less the
+   *  server's own. Said once at its start, after the ready line. */
+  readonly memoryMib: number;
   /** Closes the runner (its loops stopped, its runs released), then its store connection. */
   close(): Promise<void>;
 }
@@ -196,6 +199,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
   const env = options.env ?? process.env;
   const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
+  const memory = options.memory ?? runnerMemory(store);
   let runner: Runner;
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   let janitor: ReturnType<typeof startJanitor> | undefined;
@@ -219,7 +223,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       name,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
-      memory: options.memory ?? runnerMemory(store),
+      memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
@@ -234,6 +238,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   return {
     runner,
     store: { kind, schema },
+    memoryMib: memory.budgetMib,
     close: () =>
       (closing ??= (async () => {
         // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
@@ -436,7 +441,12 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
     return 0;
   }
   // Ready is said once SIGTERM and SIGINT are handled, so a stop sent on reading it always closes the runner.
-  await runUntilSignalled(started, RUNNER_SIGNALS, () => console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`));
+  // Then its memory budget, a line of its own (the ready line's shape is read by deploy checks): what a container's limit
+  // gave it is seen where it runs.
+  await runUntilSignalled(started, RUNNER_SIGNALS, () => {
+    console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`);
+    console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
+  });
   return 0;
 }
 
