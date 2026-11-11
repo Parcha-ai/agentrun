@@ -62,7 +62,7 @@
       "types": "./dist/kernel.d.ts",
       "default": "./dist/kernel.js"
     },
-    "./local-chrome": {
+    "./local": {
       "types": "./dist/local.d.ts",
       "default": "./dist/local.js"
     },

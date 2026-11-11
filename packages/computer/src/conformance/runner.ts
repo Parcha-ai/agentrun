@@ -100,8 +100,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
 	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
-	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared).
-	const declared = options.declared ?? PROVIDERS.find((entry) => entry.id === provider.id)?.capabilities;
+	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared), its
+	// parked configurations with its offered ones: a parked one built for the suite is held to its own declaration.
+	const entry = PROVIDERS.find((one) => one.id === provider.id);
+	const declared = options.declared ?? (entry ? [...entry.capabilities, ...(entry.parked ?? [])] : undefined);
 	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));

@@ -27,7 +27,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserClient, browserHello, carries, labelsProblem } from "./browser.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
-import { LOCAL } from "./descriptors/local.js";
+import { LOCAL } from "./descriptors/local-chrome.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import type { KindCapabilities } from "./kinds.js";
 import { BROWSER_FILE, type BrowserRecord, type BrowserState, CHROME_PID_FILE, EGRESS_SOCKET_FILE, PROFILE_DIR, READY_MS, STATE_FILE, SUPERVISOR_FILE, type SupervisorLine } from "./local-supervisor.js";
@@ -101,8 +101,7 @@ const readJson = async <T>(file: string): Promise<T | undefined> => {
 
 /** Computers that are this machine's Chrome. */
 export class LocalBrowserProvider implements ComputerProvider {
-	// Typed, not inferred: the descriptor's own type reads this module's (its load()), so an inferred id would be a cycle.
-	readonly id: string = LOCAL.id;
+	readonly id = "local-chrome";
 	readonly version = VERSION;
 	readonly #executablePath: string | undefined;
 	readonly #env: Readonly<Record<string, string | undefined>>;

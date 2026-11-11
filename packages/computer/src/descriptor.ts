@@ -26,11 +26,11 @@ export interface DescriptorSetting {
 	readonly default?: string;
 }
 
-/** A configuration not offered yet: the image a setting would name it by, and why it is parked, in words. */
-export interface ParkedImage {
-	readonly image: string;
-	readonly why: string;
-}
+/**
+ * A configuration its module builds but the provider does not offer yet: its kind, groups, image and create() options,
+ * as an offered one's, and why it is parked, in words. The conformance suite holds a built one to it as to an offered one.
+ */
+export type ParkedConfiguration = KindCapabilities & { readonly image: string; readonly why: string };
 
 /**
  * A provider, declared once. Every field is data but load(), which imports the provider module only when called:
@@ -79,10 +79,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly hostEnv?: readonly string[];
 	/**
-	 * Configurations its module builds but does not offer yet, by the image a setting would name (Orgo's Windows and
-	 * macOS desktops): a setting naming one is refused in these words, saying it is parked, never as an unknown image.
+	 * Configurations its module builds but does not offer yet (Orgo's Windows and macOS desktops), each by the image a
+	 * setting would name and why: a setting naming one is refused in its words, saying it is parked, never as an unknown
+	 * image. No setting kind lists one, and Settings never offers one.
 	 */
-	readonly parked?: readonly ParkedImage[];
+	readonly parked?: readonly ParkedConfiguration[];
 	/** The provider module, loaded on demand: its create(), its conformance module. */
 	load(): Promise<Module>;
 }
@@ -140,7 +141,7 @@ export function descriptorProblems(value: unknown): string[] {
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
 	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
 	if (d.parked !== undefined) {
-		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "")) problems.push("parked is a list of an image and why it is parked");
+		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "" || typeof one.kind !== "string" || !Array.isArray(one.groups))) problems.push("parked is a list of configurations, each with its image and why it is parked");
 		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
 	}
 	return problems;

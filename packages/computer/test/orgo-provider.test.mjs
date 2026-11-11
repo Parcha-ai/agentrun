@@ -62,11 +62,8 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	assert.deepEqual(MOUNT, []);
 	assert.deepEqual(
 		CAPABILITIES,
-		[
-			{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], image: "linux", options: {} },
-			{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
-		],
-		"what a built provider declares, known without building one: the Linux desktop (the default), then Windows, each by its image and os; no macOS until a server runs the janitor (#2318)",
+		[{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], image: "linux", options: {} }],
+		"what a built provider declares, known without building one: the Linux desktop alone, by its image; Windows and macOS are parked",
 	);
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
 	assert.equal(orgo.fromEnv, undefined, "every setting is an option");

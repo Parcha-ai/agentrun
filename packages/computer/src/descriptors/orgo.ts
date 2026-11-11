@@ -3,7 +3,7 @@
 // are parked: built for the conformance suite, never selected by an agent's setting.
 import type { KindCapabilities } from "../kinds.js";
 import type { Group } from "../protocol.js";
-import { defineProvider } from "../descriptor.js";
+import { defineProvider, type ParkedConfiguration } from "../descriptor.js";
 import { LINUX_DESKTOP } from "./shared.js";
 
 /** Orgo's Linux image: a desktop computer when its setting names none. */
@@ -26,11 +26,12 @@ export const MACOS_GROUPS: readonly Group[] = ["exec", "screen", "input.pointer"
  */
 export const ORGO_CONFIGURATIONS = [{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {} }] as const satisfies readonly KindCapabilities[];
 
-/** Orgo's desktops not offered yet, and why, in the words a setting naming one is refused in. */
+/** Orgo's desktops not offered yet, each as its module builds it (create()'s os), and why, in the words a setting naming
+ *  one is refused in. */
 export const ORGO_PARKED = [
-	{ image: ORGO_WINDOWS_IMAGE, why: "Orgo's Windows desktops are parked for now: Orgo offers Linux desktops" },
-	{ image: ORGO_MACOS_IMAGE, why: "Orgo's macOS desktops are parked for now: Orgo offers Linux desktops" },
-] as const;
+	{ kind: "desktop", groups: [...WINDOWS_GROUPS], image: ORGO_WINDOWS_IMAGE, options: { os: "windows" }, why: "Orgo's Windows desktops are parked for now: Orgo offers Linux desktops" },
+	{ kind: "desktop", groups: [...MACOS_GROUPS], image: ORGO_MACOS_IMAGE, options: { os: "macos" }, why: "Orgo's macOS desktops are parked for now: Orgo offers Linux desktops" },
+] as const satisfies readonly ParkedConfiguration[];
 
 export const ORGO = defineProvider({
 	id: "orgo",

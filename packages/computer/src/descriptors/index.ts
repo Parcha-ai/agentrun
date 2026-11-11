@@ -5,7 +5,7 @@ import { DAYTONA } from "./daytona.js";
 import { DOCKER } from "./docker.js";
 import { E2B } from "./e2b.js";
 import { KERNEL } from "./kernel.js";
-import { LOCAL } from "./local.js";
+import { LOCAL } from "./local-chrome.js";
 import { MODAL } from "./modal.js";
 import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";

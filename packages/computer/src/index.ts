@@ -25,7 +25,7 @@ export {
 } from "./screen-watch.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /orgo,
-// /phone-harness, /browserbase, /kernel, /local-chrome).
+// /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
@@ -81,7 +81,7 @@ export {
 	type RestReply,
 	type UrlStore,
 } from "./browser.js";
-// Local Chrome's provider class is on its subpath (@parcha/agentrun-computer/local-chrome), as every provider's is;
+// Local Chrome's provider class is on its file's subpath (@parcha/agentrun-computer/local), as every provider's is;
 // the Chrome helpers it runs on are not a provider and stay here.
 export { CHROME_ENV, CHROME_FLAGS, checkChrome, chromeFence, findChrome, killTree, NO_CHROME } from "./chrome.js";
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
@@ -103,7 +103,7 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type ParkedImage, type ProviderDescriptor } from "./descriptor.js";
+export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 export {
 	BROWSER_IMAGE,
 	BROWSERBASE,
