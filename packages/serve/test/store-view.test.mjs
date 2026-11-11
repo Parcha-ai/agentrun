@@ -518,6 +518,151 @@ test("an escalated run reads completed with a review, and keeps its answer", asy
   assert.equal(view.error, null);
 });
 
+test("an answer longer than a timeline row holds reads whole: all 5000 of its characters, on pi and on a CLI's record, in the run's result and its served Timeline row", async (t) => {
+  const { runTimeline } = await import("../dist/store-reads/journal.js");
+  const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.agents.create({ id: "agent-2", name: "Second agent" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer.", harness: "codex" } });
+  const [head, tail] = ["start of the answer ", " end of the answer"];
+  const long = `${head}${"x".repeat(5000 - head.length - tail.length)}${tail}`;
+  assert.equal(long.length, 5000);
+
+  // pi: its own entries, the answer in its last assistant turn.
+  await store.runs.create({ id: "pi", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Write it all." }, title: "Long", place: { mode: "runner" } } });
+  const pi = await store.claim("pi", "runner-a", { leaseMs: 60_000 });
+  await conversation(store, pi, { ask: "Write it all.", answer: long, usd: 0.01 });
+  await store.runs.update(pi, { state: "ended", outcome: "completed", summary: "Long.", costUsd: 0.01, endedAt: T0 + 1_000 });
+
+  // A CLI's run: the adapter loop's record (agentrun.message entries), the answer its model's last message.
+  await store.runs.create({ id: "cli", agentId: "agent-2", revisionId: "rev-2" }, { body: { input: { message: "Write it all." }, title: "Long", place: { mode: "runner" } } });
+  const cli = await store.claim("cli", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(cli);
+  const said = async (role, text) => ({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.message", data: { role, text } } });
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, await said("person", "Write it all."), await said("model", long)], context);
+  await store.runs.update(cli, { state: "ended", outcome: "completed", summary: "Long.", costUsd: 0.01, endedAt: T0 + 1_000 });
+
+  for (const runId of ["pi", "cli"]) {
+    const view = await viewOverStore(store, runId, deps);
+    const answer = view.result?.final_answer ?? "";
+    assert.ok(answer === long, `${runId}: the answer is whole: ${answer.length} characters, ending ${JSON.stringify(answer.slice(-30))}`);
+    // The renderer's own row is cut at its CAPS; the served Timeline (GET /runs/{id}/timeline's rows, the console's
+    // Timeline and its live pages) reads past it, its answer row whole.
+    const row = (await runTimeline(store, runId, context, { settled: true })).findLast((r) => r.kind === "final_answer");
+    assert.ok(row && row.text.length < long.length, `${runId}: the renderer's row is cut`);
+    const served = (await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, store, runId, context)).findLast((r) => r.kind === "final_answer");
+    assert.ok(served?.text === long, `${runId}: the served Timeline's answer row is whole: ${served?.text?.length} characters`);
+  }
+});
+
+test("an answer one character past a timeline row's cap reads whole, and one exactly at the cap reads as it is", async (t) => {
+  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { store } = await storeOn(t);
+  await agent(store);
+  for (const [runId, length] of [["past", CAPS.text + 1], ["at", CAPS.text]]) {
+    const answer = `${"y".repeat(length - 4)} end`;
+    await store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Edge", place: { mode: "runner" } } });
+    const claim = await store.claim(runId, "runner-a", { leaseMs: 60_000 });
+    await conversation(store, claim, { ask: "Say it.", answer, usd: 0.01 });
+    await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Edge.", costUsd: 0.01, endedAt: T0 + 1_000 });
+    const served = (await viewOverStore(store, runId, deps)).result?.final_answer ?? "";
+    assert.ok(served === answer, `${runId}: ${length} characters served whole, got ${served.length} ending ${JSON.stringify(served.slice(-12))}`);
+  }
+});
+
+test("a held key straddling the old 2000-character cut of an answer is served with no piece of it, the whole answer read past the cut, on pi and on a CLI's record", async (t) => {
+  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const KEY = ["not-a-secret", "straddle-key", "0123456789abcdef"].join("-");
+  const held = { ...deps, serverSecrets: () => [KEY] };
+  const pieces = Array.from({ length: KEY.length - 7 }, (_, i) => KEY.slice(i, i + 8));
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.agents.create({ id: "agent-2", name: "Second agent" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer.", harness: "codex" } });
+  // The key starts 10 characters before the old cut and ends past it; the answer goes on for another 3000 after it.
+  const head = "h".repeat(CAPS.text - 10);
+  const tail = ` and ${"t".repeat(3000)} the end`;
+  const answer = `${head}${KEY}${tail}`;
+
+  await store.runs.create({ id: "pi", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Held", place: { mode: "runner" } } });
+  const pi = await store.claim("pi", "runner-a", { leaseMs: 60_000 });
+  await conversation(store, pi, { ask: "Say it.", answer, usd: 0.01 });
+  await store.runs.update(pi, { state: "ended", outcome: "completed", summary: "Held.", costUsd: 0.01, endedAt: T0 + 1_000 });
+
+  await store.runs.create({ id: "cli", agentId: "agent-2", revisionId: "rev-2" }, { body: { input: { message: "Say it." }, title: "Held", place: { mode: "runner" } } });
+  const cli = await store.claim("cli", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(cli);
+  const said = async (role, text) => ({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.message", data: { role, text } } });
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, await said("person", "Say it."), await said("model", answer)], context);
+  await store.runs.update(cli, { state: "ended", outcome: "completed", summary: "Held.", costUsd: 0.01, endedAt: T0 + 1_000 });
+
+  for (const runId of ["pi", "cli"]) {
+    const view = await viewOverStore(store, runId, held);
+    const served = view.result?.final_answer ?? "";
+    for (const piece of pieces) assert.ok(!JSON.stringify(view).includes(piece), `${runId}: the view holds ${piece}`);
+    assert.ok(served.startsWith(head) && served.endsWith(tail), `${runId}: the answer is read whole around the key: ${served.length} characters, ending ${JSON.stringify(served.slice(-12))}`);
+    assert.equal(served.slice(head.length, served.length - tail.length), "[redacted]", `${runId}: the key's place`);
+  }
+});
+
+test("a run's view reads its whole answer once per held value set: a second view reads nothing again, a key saved since reads it again, and one deleted since serves the smaller set's answer", async (t) => {
+  const { answerPasses } = await import("../dist/key-refusal.js");
+  const KEY = ["not-a-secret", "polled-key", "0123456789abcdef"].join("-");
+  let held = [];
+  const polled = { ...deps, serverSecrets: () => held };
+  const { store } = await storeOn(t);
+  await agent(store);
+  const answer = `${"p".repeat(3000)} ${KEY} the end`;
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Polled", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  await conversation(store, claim, { ask: "Say it.", answer, usd: 0.01 });
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Polled.", costUsd: 0.01, endedAt: T0 + 1_000 });
+
+  const first = (await viewOverStore(store, "run-1", polled)).result.final_answer;
+  assert.equal(first, answer, "no key held yet: the answer whole");
+  const read = answerPasses.count;
+  const second = (await viewOverStore(store, "run-1", polled)).result.final_answer;
+  assert.equal(answerPasses.count, read, "the second view read the answer from what the first one served");
+  assert.equal(second, first);
+  held = [KEY];
+  const third = (await viewOverStore(store, "run-1", polled)).result.final_answer;
+  assert.ok(answerPasses.count > read, "a key held since: the answer is read again");
+  assert.equal(third, `${"p".repeat(3000)} [redacted] the end`);
+  // The key deleted: the held set is the first view's again, so its answer is served (whole, the key in it, as no key
+  // holds it now), never the larger set's redacted one.
+  held = [];
+  const fourth = (await viewOverStore(store, "run-1", polled)).result.final_answer;
+  assert.equal(fourth, answer, "a key deleted since: the answer as the smaller set serves it");
+});
+
+test("a value handed to the run (its agent's saved sign-in), straddling the old 2000-character cut of its answer, is served with no piece of it, the answer whole around it", async (t) => {
+  const { CAPS } = await import("@parcha/pi-durable-agent/timeline");
+  const { createHash, randomBytes } = await import("node:crypto");
+  const { raw } = await import("./store-target.mjs");
+  const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
+  const SEAL = randomBytes(32);
+  const { store, file } = await storeOn(t);
+  await agent(store);
+  const pointer = `bb-ctx-HANDED-${randomBytes(10).toString("hex")}`;
+  await saveSignIn(store, SEAL, { agentId: "agent-1", provider: "browserbase", pointer });
+  const head = "h".repeat(CAPS.text - 10);
+  const tail = ` and ${"t".repeat(3000)} the end`;
+  const answer = `${head}${pointer}${tail}`;
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Handed", place: { mode: "runner" }, plane: { browser: "browserbase" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  await conversation(store, claim, { ask: "Say it.", answer, usd: 0.01 });
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Handed.", costUsd: 0.01, endedAt: T0 + 1_000 });
+  // The run was handed the sign-in: its mark, as the runner writes it (the pointer's hash).
+  const db = await raw(file);
+  await db.run("UPDATE runs SET sign_in_handed = ? WHERE id = ?", JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), "run-1");
+  await db.close();
+  const handed = { ...deps, signIns: signInsOverStore(store, SEAL, { remove: async () => {} }) };
+  const view = await viewOverStore(store, "run-1", handed);
+  const served = view.result?.final_answer ?? "";
+  for (let i = 0; i + 8 <= pointer.length; i++) assert.ok(!JSON.stringify(view).includes(pointer.slice(i, i + 8)), `the view holds ${pointer.slice(i, i + 8)}`);
+  assert.ok(served.startsWith(head) && served.endsWith(tail), `the answer is read whole around the handed value: ${served.length} characters, ending ${JSON.stringify(served.slice(-12))}`);
+  assert.equal(served.slice(head.length, served.length - tail.length), "[redacted]", "the handed value's place");
+});
+
 test("a cancelled run (the store's stopped state) reads cancelled, with no result, error or review", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);

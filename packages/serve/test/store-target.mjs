@@ -18,7 +18,10 @@ export const sqliteOnly = (what) => ({ skip: onPostgres ? `SQLite only: ${what}`
 export function sqliteAdapterTests(test, what) {
   if (!onPostgres) return test;
   const skip = `SQLite only: ${what}`;
-  return (name, options, fn) => (typeof options === "function" ? test(name, { skip }, options) : test(name, { ...options, skip }, fn));
+  const skipped = (name, options, fn) => (typeof options === "function" ? test(name, { skip }, options) : test(name, { ...options, skip }, fn));
+  // node:test's forms too (a file's test.skip, test.todo, test.only), each skipped the same way: a file that calls one
+  // must load on Postgres, never fail as a whole.
+  return Object.assign(skipped, { skip: skipped, todo: skipped, only: skipped });
 }
 /** A test's options that skip it on SQLite (a Postgres adapter test). */
 export const postgresOnly = (what) => ({ skip: onPostgres ? false : `Postgres only (AGENTRUN_TEST_PG_URL): ${what}` });

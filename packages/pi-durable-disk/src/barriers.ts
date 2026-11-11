@@ -46,7 +46,7 @@ export const BARRIERS = {
     store: "run-journal",
     site: "serve/src/tool-gate.ts",
     status: "active",
-    proof: "packages/serve/test/barriers-box-loss.test.mjs",
+    proof: null,
     why: "a pi tool call that is not replay-safe, or a billed replay-safe one: its intent, before it executes",
   },
   kernelEffectIntent: {
@@ -54,28 +54,14 @@ export const BARRIERS = {
     site: "serve/src/sessions.ts",
     via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync()" },
     status: "active",
-    proof: "packages/serve/test/barriers-box-loss.test.mjs",
+    proof: null,
     why: "a kernel effect (claude-agent, codex, opencode) that is not replay-safe: its start record, before it runs",
-  },
-  sideRequestStarted: {
-    store: "run-journal",
-    site: "serve/src/harness-app.ts",
-    status: "active",
-    proof: "packages/serve/test/side-request-box-loss.test.mjs",
-    why: "a non-pi harness's model request: its start mark and bound, before it is sent",
-  },
-  modelRequestStarted: {
-    store: "run-journal",
-    site: "serve/src/request-start.ts",
-    status: "active",
-    proof: "packages/serve/test/barrier-box-loss.test.mjs",
-    why: "a pi model or compaction request: its start mark and bound, before it is sent",
   },
   paidToolHold: {
     store: "run-journal",
     site: "serve/src/paid-calls.ts",
     status: "active",
-    proof: "packages/serve/test/barrier-box-loss.test.mjs",
+    proof: null,
     why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
   },
   browserSessionOpen: {
@@ -85,14 +71,6 @@ export const BARRIERS = {
     status: "active",
     proof: "packages/serve/test/browser-session-barrier.test.mjs",
     why: "a browser session's creating record (its tag, the call's hold), before the vendor's session is created",
-  },
-  workflowAdmit: {
-    store: "run-journal",
-    site: "serve/src/app.ts",
-    via: { file: "dsl/src/recovery/driver.ts", text: "if (options.afterAdmit) await persist(options.afterAdmit);" },
-    status: "active",
-    proof: "packages/serve/test/barrier-box-loss.test.mjs",
-    why: "a workflow effect's admission with its intent, before it is dispatched",
   },
   decisionHold: {
     store: "run-journal",
@@ -220,23 +198,19 @@ export const NORMAL_PRECONDITIONS = {
   },
   endToEndBoxLoss: {
     done: false,
-    what: "the tool gate and kernel drive proofs bite now (barriers-box-loss); the side-request proof (side-request-box-loss) bites only at NORMAL, so 2b flips this with its evidence",
-  },
-  retryMarkSynced: {
-    done: true,
-    what: "no barrier needed before pi-ai's retry: a lost attempt's end mark (serve/src/request-start.ts) carries the request's hold, which its start mark, synced before the request left (modelRequestStarted), carries too, and the retry writes no start mark of its own; a box that drops the lost mark leaves the request read as one a crash cut, at that same hold, and the WAL keeps the lost mark whenever it keeps an answer of the retry (serve/test/retry-mark-box-loss.test.mjs, a guard)",
+    what: "an end-to-end box-loss test bites at NORMAL for each run-journal effect: the ones the per-run process's app had (its tool gate, kernel drive, model and paid-call marks) went with it, so none is in place",
   },
   holdRefusedUnsynced: {
     done: true,
-    what: "a paid call's hold and a model request's start mark are not written when there is no run store to sync, and a sync that fails after one is answered in the store, a hold by its $0 settle and a start mark by its unsent end, after it in the WAL, so any later sync that keeps one keeps the other (serve/test/hold-refused.test.mjs)",
+    what: "a paid call's hold is not written when there is no run store to sync, and a sync that fails after one is answered in the store by its $0 settle, after it in the WAL, so any later sync that keeps one keeps the other (serve/test/hold-refused.test.mjs)",
   },
   browserSessionBarrier: {
     done: true,
     what: "the durable unit is the session open (browserSessionOpen, written and synced before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
   },
   barrierProofs: {
-    done: true,
-    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof)",
+    done: false,
+    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof): the tool gate's, the kernel drive's and the paid hold's went with the per-run process's app",
   },
 } as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 

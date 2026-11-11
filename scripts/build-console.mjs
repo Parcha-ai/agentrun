@@ -16,7 +16,7 @@ import { isMain } from './is-main.mjs';
 
 /** The console's build inputs, below the repository's root: with its own, the sources it imports through its aliases
  *  (vite.config.ts): the DSL's, the timeline library's and pi-browser's core. */
-const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src', 'packages/pi-durable-agent/src/timeline', 'packages/pi-browser/src/core'];
+const INPUTS = ['apps/console/src', 'apps/console/index.html', 'apps/console/package.json', 'apps/console/package-lock.json', 'apps/console/tsconfig.json', 'apps/console/vite.config.ts', 'apps/console/third-party-notices.mjs', 'apps/console/credential-gate.mjs', 'apps/console/tailwind.config.ts', 'apps/console/postcss.config.js', 'packages/dsl/src', 'packages/pi-durable-agent/src/timeline', 'packages/pi-browser/src/core'];
 export const HASH_FILE = '.build-hash';
 
 const filesUnder = (path) => (statSync(path).isDirectory() ? readdirSync(path).sort().flatMap((name) => filesUnder(join(path, name))) : [path]);
