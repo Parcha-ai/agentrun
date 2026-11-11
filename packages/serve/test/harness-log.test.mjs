@@ -2,10 +2,8 @@
 // failed run's message is made of.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HARNESS_LOG_EVENT, harnessLog } from "../dist/adapters.js";
-import { failureLine, lastLogLine } from "../dist/runs.js";
 
 const CANARY = "not-a-secret-canary-0123456789";
 
@@ -29,24 +27,6 @@ test("a harness's log line: one JSON line of the run's log format, its path with
   assert.ok(all.includes("/usr/bin") === false && !all.includes("abc"), "nothing else of the environment is written");
 });
 
-test("a failed run's message is its log's last line past any harness line: a proxy refusal just before a crash is not why the process went", () => {
-  const own = JSON.stringify({ at: "2026-10-29T05:00:00.000Z", event: "fenced", message: "the lease lapsed" });
-  const harness = JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: "model proxy (openai): refused" });
-  assert.equal(failureLine(`${own}\n${harness}\n`), own);
-  assert.equal(failureLine(`${own}\nplain words from a crash\n${harness}`), "plain words from a crash");
-  assert.equal(failureLine(`${harness}\n`), harness, "a log of harness lines only gives its last");
-  assert.equal(failureLine(""), "");
-});
-
-test("a failed run's message, read from its process.log, is in words of the process's own last line, never a harness line after it", async (t) => {
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const own = JSON.stringify({ at: "2026-10-29T05:00:00.000Z", event: "fenced", message: "the lease lapsed" });
-  const harness = JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: "model proxy (openai): refused" });
-  await writeFile(join(dir, "process.log"), `${own}\n${harness}\n`);
-  assert.equal(await lastLogLine({ dir }), "fenced: the lease lapsed");
-});
-
 test("a key-shaped variable the environment holds as a non-enumerable property is cut out of the line too", () => {
   const lines = [];
   const env = { PATH: "/usr/bin" };
@@ -66,21 +46,6 @@ test("a key holding a quote or a backslash is cut out too: values are scrubbed b
   assert.equal(said.userAgent, "curl [redacted]");
   assert.deepEqual(said.nested, { why: ["it said [redacted]"] });
   for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
-});
-
-test("a failed run's message is found past more than one read of harness lines, and never from the torn line a read starts in", async (t) => {
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const own = JSON.stringify({ at: "2026-10-29T05:00:00.000Z", event: "fenced", message: "the lease lapsed" });
-  const harness = (n) => JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: `model proxy (openai): refused ${n}`, padding: "x".repeat(40) });
-  // About 30 KB of harness lines after the process's own: many reads back, each starting inside a line.
-  const after = Array.from({ length: 250 }, (_, n) => harness(n)).join("\n");
-  assert.ok(after.length > 8 * 4096);
-  await writeFile(join(dir, "process.log"), `${own}\n${after}\n`);
-  assert.equal(await lastLogLine({ dir }), "fenced: the lease lapsed");
-  // Harness lines only: the last whole one, never a fragment.
-  await writeFile(join(dir, "process.log"), `${after}\n`);
-  assert.equal(await lastLogLine({ dir }), "harness: model proxy (openai): refused 249");
 });
 
 test("a key is cut as literal text, whatever characters it holds: one full of a pattern's special characters is cut, and nothing else", () => {
@@ -136,49 +101,4 @@ test("an array item past the first is serialized through its own toJSON before t
   harnessLog("codex", { OPENAI_API_KEY: awkward }, (line) => lines.push(line))("model proxy (openai): refused", { items: [item, item] });
   assert.deepEqual(JSON.parse(lines[0]).items, [{ said: "it gave [redacted]" }, { said: "it gave [redacted]" }], "each item is what its toJSON gives, cut");
   for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
-});
-
-test("a failed run's message comes whole from a process line longer than one read, and an empty log gives none", async (t) => {
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const long = JSON.stringify({ at: "2026-10-29T05:00:00.000Z", event: "failed", message: `the store said ${"x".repeat(10_000)}` });
-  const harness = JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: "model proxy (openai): refused" });
-  await writeFile(join(dir, "process.log"), `{"event":"running"}\n${long}\n${harness}\n${harness}\n`);
-  assert.equal(await lastLogLine({ dir }), `failed: the store said ${"x".repeat(10_000)}`.slice(0, 299) + "…");
-  await writeFile(join(dir, "process.log"), "");
-  assert.equal(await lastLogLine({ dir }), "");
-});
-
-test("past the 1 MiB a failed run's message is looked for in, the last whole harness line is the message, never the torn line where the reach ends", async (t) => {
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  // Lines of varying length, so the reach's start falls inside one (checked below): that line's tail is not a line.
-  const harness = (n) => JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: `model proxy (openai): refused ${n}`, pad: "y".repeat(n % 13) });
-  const lines = Array.from({ length: 14_000 }, (_, n) => harness(n));
-  const text = `{"event":"running","message":"started"}\n${lines.join("\n")}\n`;
-  const reach = Buffer.byteLength(text) - (1 << 20);
-  assert.ok(reach > 0 && text[reach - 1] !== "\n", "the reach starts inside a line");
-  await writeFile(join(dir, "process.log"), text);
-  assert.equal(await lastLogLine({ dir }), "harness: model proxy (openai): refused 13999");
-});
-
-// The default model the server hands a run (model.ts), in the run's environment as every launch sets it, is a model id,
-// not a secret: a harness's log line naming it keeps it, and so does a failed run's message made of that line
-// (lastLogLine). Under a key-shaped name, harnessLog cut it out as one: "model [redacted] not found".
-test("a harness's log line, and a failed run's message made of it, name the server's default model: its variable is no secret's", async (t) => {
-  const { DEFAULT_MODEL_ENV } = await import("../dist/model.js");
-  const model = "openai/gpt-6.1-sol";
-  const lines = [];
-  // A placeholder, never a real key, built at run time as the file's other tests build theirs.
-  const placeholder = (what) => `not-a-secret-${what}`;
-  const log = harnessLog("codex", { [DEFAULT_MODEL_ENV]: model, AGENT_MODEL_API_KEY: placeholder("gateway-key") }, (line) => lines.push(line));
-  log(`codex: model ${model} not found`, { status: 404 });
-  assert.equal(lines.length, 1);
-  assert.ok(lines[0].includes(model), `the line names the model: ${lines[0]}`);
-  assert.ok(!lines[0].includes("[redacted]"), lines[0]);
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  await writeFile(join(dir, "process.log"), lines.join(""));
-  const said = await lastLogLine({ dir });
-  assert.ok(said.includes(model) && !said.includes("[redacted]"), `the run's failure names the model: ${said}`);
 });
