@@ -45,14 +45,15 @@ function provider(id, computers, { failing, hanging, lifetime = "janitor" } = {}
 
 const labels = (run, epoch) => ({ "agentrun.run": run, "agentrun.epoch": String(epoch) });
 
-/** This server's runs: one ended (its computer left by a crashed runner); one held by a claim at epoch 3; one whose
- *  claim at epoch 2 reads as lapsed on this process's clock, which the janitor never judges (the lease is the store's). */
+/** This server's runs: one ended (its computer left by a crashed runner); one held by a claim at epoch 3; one a crashed
+ *  runner left parked under its name at epoch 2, its claim run out. `held` is what the store says of each claim now, by
+ *  its own clock (runs.heldAt); the rows' claimedUntil, read on this process's clock, would say otherwise. */
 const RUNS = {
-  "run-mine": { id: "run-mine", state: "ended", epoch: 1, runner: null, claimedUntil: null },
-  "run-live": { id: "run-live", state: "running", epoch: 3, runner: "runner-b", claimedUntil: NOW + 60_000 },
-  "run-lapsed": { id: "run-lapsed", state: "running", epoch: 2, runner: "runner-c", claimedUntil: NOW - 60_000 },
+  "run-mine": { id: "run-mine", state: "ended", epoch: 1, runner: null, claimedUntil: null, held: undefined },
+  "run-live": { id: "run-live", state: "running", epoch: 3, runner: "runner-b", claimedUntil: NOW - 60_000, held: 3 },
+  "run-parked": { id: "run-parked", state: "parked", epoch: 2, runner: "runner-c", claimedUntil: NOW + 60_000, held: undefined },
 };
-const store = (runs = RUNS) => ({ runs: { get: async (id) => runs[id], list: async () => Object.values(runs) }, computerLedger: {} });
+const store = (runs = RUNS) => ({ runs: { get: async (id) => runs[id], list: async () => Object.values(runs), heldAt: async (id) => runs[id]?.held }, computerLedger: {} });
 
 /** The computers as the runner composed them: a registry of `providers`, each with a key named <ID>_KEY, and the key
  *  reader answering the keys in `keys`; a key named in `unreadable` throws as a store that can't be read. */
@@ -93,10 +94,13 @@ test("a claimed run's computer of an older epoch is a lost claim's, and is swept
   assert.deepEqual(docker.released, [["older-epoch", "delete"]]);
 });
 
-test("a claim the janitor's own clock reads as lapsed still holds its computer: no claim is judged on this process's clock (review)", async () => {
-  const docker = provider("docker", [{ name: "lapsed-held", labels: labels("run-lapsed", 2), deadline: PAST }]);
+test("whether a claim holds a run is the store's to say, never this process's clock: a held claim keeps its computer, and a parked run whose crashed runner's claim ran out does not (review)", async () => {
+  const docker = provider("docker", [
+    { name: "held-by-store", labels: labels("run-live", 3), deadline: PAST },
+    { name: "parked-run-out", labels: labels("run-parked", 2), deadline: PAST },
+  ]);
   await sweepServerComputers({ store: store(), computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
-  assert.deepEqual(docker.released, [], "kept until the run is claimed again at a later epoch");
+  assert.deepEqual(docker.released, [["parked-run-out", "delete"]]);
 });
 
 test("a provider that keeps only the run's hash (Orgo's names) is swept by it: the hash of this store's run, and never another's (review)", async () => {
@@ -167,6 +171,22 @@ function dataDir(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
+
+test("runs.heldAt is the store's word on a claim, by its own clock: the claim's epoch while it holds, nothing once its lease runs out", async (t) => {
+  let clock = NOW;
+  const server = await openSqliteStore({ dataDir: dataDir(t), role: "server", now: () => clock });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  assert.equal(await server.runs.heldAt("run-1"), undefined, "queued: no claim holds it");
+  const [claim] = await server.runs.claimMany("runner-a", 1, { leaseMs: 1_000 });
+  assert.equal(await server.runs.heldAt("run-1"), claim.epoch);
+  clock += 2_000;
+  const row = await server.runs.get("run-1");
+  assert.equal(row.runner, "runner-a", "the row still names its runner");
+  assert.equal(await server.runs.heldAt("run-1"), undefined, "its lease ran out on the store's clock: nothing holds it");
+  assert.equal(await server.runs.heldAt("no-such-run"), undefined);
+});
 
 test("the runner process sweeps at its start when asked, with the computers its loop composed; without asking it never does", async (t) => {
   const dir = dataDir(t);

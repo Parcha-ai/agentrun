@@ -7,9 +7,9 @@
 // - one whose agentrun.run label names a run in this server's store (or, where the provider keeps only the run's hash,
 //   agentrun.run.hash is the hash of one): a vendor account or a Docker host shared with another server lists that
 //   server's computers too, and they are never touched;
-// - never one a claim holds: its run has a runner, at the computer's own epoch. Whether that claim has lapsed is not
-//   judged here (the lease is on the store's clock, not this process's); a lapsed claim's run is claimed again, at a new
-//   epoch, and its computer is then an older epoch's;
+// - never one a claim holds, at the computer's own epoch: whether a claim holds the run now is the store's to say
+//   (runs.heldAt), by its own clock, never this process's. A claim that ran out holds nothing, so a run a crashed runner
+//   left parked under its name still has its computer swept at the deadline;
 // - past its deadline, by the computer package's sweep (janitor.ts): the deadline label, or over the provider's cap.
 // What a computer leaves outside itself (Docker's egress parts) goes with its release; the provider's sweepLeftovers is
 // not asked, since it reads labels alone and can't tell this server's parts from another's.
@@ -59,7 +59,7 @@ const runsByHash = (store: JanitorDeps["store"]): RunsByHash => {
 };
 
 /** Whether a listed computer is this server's and no claim holds it: its run (by its label, or its hash's) is in this
- *  store, and the run has no runner, or a runner at a later epoch than the computer's. */
+ *  store, and no claim holds the run now (by the store's clock), or one holds it at a later epoch than the computer's. */
 async function sweepable(store: JanitorDeps["store"], labels: Readonly<Record<string, string>>, byHash: RunsByHash): Promise<boolean> {
   const named = labels[RUN_LABEL];
   const hash = labels[RUN_HASH_LABEL];
@@ -68,10 +68,11 @@ async function sweepable(store: JanitorDeps["store"], labels: Readonly<Record<st
   const run = await store.runs.get(runId);
   // No such run here: another server's computer.
   if (!run) return false;
-  if (run.runner === null) return true;
+  const held = await store.runs.heldAt(run.id);
+  if (held === undefined) return true;
   // A claim holds its own epoch's computer; one of an older epoch is a lost claim's (releaseOlder's too).
   const epoch = epochOf(labels);
-  return epoch.ok && epoch.value < run.epoch;
+  return epoch.ok && epoch.value < held;
 }
 
 /** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and no leftovers pass.
