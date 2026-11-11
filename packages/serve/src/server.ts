@@ -92,6 +92,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_S
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
+import { type ServerLock, ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
@@ -138,7 +139,6 @@ import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
-// server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -300,8 +300,7 @@ export type ServeOptions = {
    *  the CLI says a first build in words, as it starts and as it ends. */
   onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
-   *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
-   *  standard error, after `agentrun-serve: `. */
+   *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
@@ -801,9 +800,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
-  // One server per data root is the store's own EXCLUSIVE lock (StoreOwned), taken when startHolding opens the store; a
-  // data directory an earlier version wrote is refused there too (StoreFromEarlierVersion), in words, to start fresh. No
-  // server.lock, no oldHomes/oldLayout checks, no migration.
+  // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
+  // when startHolding opens the store; a data directory an earlier version wrote is refused there too
+  // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
   // What a start that fails stops: the webhook deliveries it began, which would write the next server's outbox, and the
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
@@ -812,6 +811,22 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
+  }
+}
+
+/** How long a start waits for the data root's lock (server-lock.ts) held by another server: long enough for one that
+ *  has just lost its store to exit. */
+const DATA_ROOT_WAIT_MS = 5_000;
+
+/** The data root's lock, waited for up to DATA_ROOT_WAIT_MS while another server holds it; ServerLockHeldError past it. */
+async function dataRootLock(data: string): Promise<ServerLock> {
+  for (const until = Date.now() + DATA_ROOT_WAIT_MS; ; ) {
+    try {
+      return takeServerLock(data);
+    } catch (error) {
+      if (!(error instanceof ServerLockHeldError) || Date.now() >= until) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 }
 
@@ -846,10 +861,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
-  // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
-  // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
+  // owner lock holds the store to this server (the data root's own lock follows), and it refuses a data directory an
+  // earlier version wrote, in words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
-  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
+  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts).
   // A server deploying while the old one still holds the schema waits for it (said once), never exits at once.
   const store = await openStore({
     dataDir: data, role: "server",
@@ -857,6 +872,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   });
   stops.push(() => store.close());
+  // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
+  // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
+  // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
+  // Postgres) would share. A server that has just lost the store may still be exiting: waited for, for a moment.
+  const dataLock = await dataRootLock(data);
+  stops.push(async () => dataLock.release());
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
@@ -3382,6 +3403,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
+    dataLock.release();
     seal.release();
   }
   return {
