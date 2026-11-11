@@ -74,6 +74,19 @@ export function runRunChangeCases(test, subject) {
     assert.deepEqual((await readAll(store, cursor, 2)).changes.map((change) => change.id), ["run-after"]);
   });
 
+  test("run changes: a built-in learning run (one a run's kept learning queued) is in no change, as the run list leaves it out; the run that queued it is", async (t) => {
+    const { store } = await subject.open(t);
+    const start = (await store.runs.changedSince(undefined)).next;
+    const source = await claimed(store, "run-asks-to-learn");
+    const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [] }, detail: "Proposed 1 note." };
+    await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
+    const learning = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
+    assert.ok(learning, "the learning run is claimed");
+    await store.runs.update(learning, { state: "ended" });
+    const { changes } = await readAll(store, start);
+    assert.deepEqual(changes.map((change) => [change.id, change.state]), [["run-asks-to-learn", "ended"]], "the person's run ends in the feed; its learning run's end is not there");
+  });
+
   test("run changes: a page is at most the limit asked (200 by default), oldest first, with the cursor to the next", async (t) => {
     const { store } = await subject.open(t);
     const start = (await store.runs.changedSince(undefined)).next;

@@ -1077,6 +1077,78 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.deepEqual(outboxOf(dir).attempts.map((a) => [a.status_code, a.redelivery]), [[503, false], [200, true]]);
   });
 
+  test("a close while a try's refused write is being written again waits for that write: the delivered message reads delivered once the close returns", async (t) => {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const log = logged();
+    let settles = 0;
+    let atRewrite;
+    const rewriting = new Promise((resolve) => (atRewrite = resolve));
+    let letRewrite;
+    const rewritten = new Promise((resolve) => (letRewrite = resolve));
+    // The try's write refused once; written again, it waits for the test to let it land.
+    const on = await webhookOn(t, dir, { storeRetryMs: 50, wrap: seeing("channels", (channels) => ({ settle: async (...args) => {
+      const n = ++settles;
+      if (n === 1) throw new Error("the store stayed locked past its busy wait: database is locked");
+      if (n === 2) (atRewrite(), await rewritten);
+      return channels.settle(...args);
+    } })) });
+    t.after(() => letRewrite());
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await rewriting;
+    const closing = webhooks.close();
+    assert.equal(await settledYet(closing), false, "the close waits for the write under way");
+    letRewrite();
+    await closing;
+    assert.deepEqual(outboxOf(dir).messages.map((m) => m.status), ["delivered"], "written before the close returned");
+    assert.equal(hook.got.length, 1);
+  });
+
+  test("a close while a try's refused write waits for its turn writes it then: the delivered message reads delivered once the close returns", async (t) => {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const log = logged();
+    let refuse = 1;
+    // The try's write refused once, and its next write a minute away: the close comes first.
+    const on = await webhookOn(t, dir, { storeRetryMs: 60_000, wrap: seeing("channels", (channels) => ({ settle: async (...args) => {
+      if (refuse > 0) throw ((refuse -= 1), new Error("the store stayed locked past its busy wait: database is locked"));
+      return channels.settle(...args);
+    } })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await log.when("condition=attempt_unsaved");
+    await webhooks.close();
+    assert.deepEqual(outboxOf(dir).messages.map((m) => m.status), ["delivered"], "written by the close, before it returned");
+    assert.equal(hook.got.length, 1);
+  });
+
+  test("a built-in learning run that ends sends no run.ended; the person's run that queued it does, and so does a run after it", async (t) => {
+    const hook = await receiver(t);
+    const server = await serve(t, { ...PRIVATE_OK, runner: false });
+    const { data } = server;
+    assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+    const writer = await askerStore(t, data);
+    const endsOf = (id) => ofType(hook.got, "run.ended").filter((r) => JSON.parse(r.body).data.run_id === id);
+    // A person's run ends keeping its learning, which queues the learning run that grades and merges it.
+    await writer.runs.create({ id: "run-learns", agentId: "asker", revisionId: "asker-rev" }, { body: { input: { message: "Answer." }, title: "Learns", place: { mode: "runner" } } });
+    const source = await writer.claim("run-learns", "test-runner", { leaseMs: 60_000 });
+    const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [] }, detail: "Proposed 1 note." };
+    await writer.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
+    await hook.when(() => endsOf("run-learns").length === 1, "the run.ended of the person's run", data);
+    // The learning run ends; then a person's run after it, whose notice shows the server read past the learning run's end.
+    const learning = await writer.claim("learn-1", "test-runner", { leaseMs: 60_000 });
+    await writer.runs.update(learning, { state: "ended" });
+    await endedInStore(writer, "asker", "run-after");
+    await hook.when(() => endsOf("run-after").length === 1, "the run.ended of run run-after", data);
+    await settled(data);
+    assert.deepEqual(endsOf("learn-1").length, 0, "no run.ended for the learning run");
+  });
+
   test("a try whose timer fires a little before its message is due is armed again for its time: every try comes, then the failure is said", async (t) => {
     const down = await receiver(t, () => 200, true);
     const log = logged();

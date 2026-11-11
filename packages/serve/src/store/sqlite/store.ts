@@ -820,12 +820,14 @@ class SqliteStore implements Store {
         return rows.map(runOf);
       },
       // The run-change feed: the rows the runs_changed trigger wrote, each in its write's transaction, after the cursor's
-      // seq. One writer numbers them in commit order, so the last one read is the watermark and the cursor is its seq.
+      // seq. One writer numbers them in commit order, so the last one read is the watermark and the cursor is its seq. A
+      // built-in learning run's changes are left out, as the run list leaves it out (NOT_A_LEARNING_RUN): its end is the
+      // server's own work, never a person's run to tell of.
       changedSince: async (cursor, { limit } = {}) => {
         const after = cursor === undefined ? 0 : seqOf(cursor);
         const page = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : RUN_CHANGES_PAGE;
         const rows = await db.all<{ seq: number; run_id: string; state: RunState; ended_at: number | null; epoch: number; runner: string | null }>(
-          "SELECT seq, run_id, state, ended_at, epoch, runner FROM run_changes WHERE seq > ? ORDER BY seq LIMIT ?",
+          "SELECT seq, run_id, state, ended_at, epoch, runner FROM run_changes WHERE seq > ? AND run_id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL) ORDER BY seq LIMIT ?",
           after,
           page,
         );

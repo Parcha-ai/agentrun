@@ -158,8 +158,11 @@ export class Webhooks {
   private changing: Promise<unknown> = Promise.resolve();
   /** A DELETE under way: no notice is queued meanwhile, so none slips past its drop of the queued messages. */
   private removing = false;
-  /** The timers of tries' writes the store refused, each written again (resettle): stopped at the close. */
-  private readonly rewriting = new Set<NodeJS.Timeout>();
+  /** The tries' writes the store refused, each waiting to be written again (resettle), by its timer: the close writes each
+   *  at once instead. */
+  private readonly rewriting = new Map<NodeJS.Timeout, () => Promise<void>>();
+  /** Those writes under way, which the close waits for, so each lands before the store closes. */
+  private readonly rewrites = new Set<Promise<void>>();
   /** The message writes in flight (posted), each settled or not: a DELETE waits for them before its drop. */
   private readonly posting = new Set<Promise<void>>();
 
@@ -430,15 +433,20 @@ export class Webhooks {
     return this.attempt(id, { retry: false, redelivery: true });
   }
 
-  /** Stops: no try starts, those in flight are cut and waited for, and nothing more is written. A message cut here is
-   *  still queued in the store, for the next server (its receiver may get it twice, under the same webhook-id). */
+  /** Stops: no try starts, those in flight are cut and waited for, and nothing more is written but the tries' writes the
+   *  store refused before (resettle), each written now and waited for, so a try's known outcome (a delivered message, a
+   *  410's turn-off) lands before the store closes. A message cut here is still queued in the store, for the next server
+   *  (its receiver may get it twice, under the same webhook-id). */
   async close(): Promise<void> {
     this.closed = true;
-    for (const timer of [...this.timers.values(), ...this.rewriting]) clearTimeout(timer);
+    for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
+    const waiting = [...this.rewriting];
     this.rewriting.clear();
+    for (const [timer, rewrite] of waiting) (clearTimeout(timer), void rewrite());
     this.stop.abort();
     await Promise.allSettled([...this.trying]);
+    await Promise.allSettled([...this.rewrites]);
   }
 
   /** Why `url` may not be sent to (a private address, by name or by what the name resolves to now), or undefined. A name
@@ -674,14 +682,13 @@ export class Webhooks {
    *  (`after`), among the webhook's changes. Its own timer, beside the message's: the message keeps its schedule meanwhile.
    *  A message's own try writes only while the message is still its (sending, its claim): one a DELETE dropped, or another
    *  try settled, is not its to write. A redelivery, which claims nothing, writes its landing whatever the message's state
-   *  (a queued one reads sent, and its next try then finds nothing to send). Closed, it is left as the store holds it, for
-   *  the next server. */
+   *  (a queued one reads sent, and its next try then finds nothing to send). One under way when the server closes is waited
+   *  for, and one waiting is written at the close (close); one refused again then is left as the store holds it, for the
+   *  next server. */
   private resettle(id: string, redelivery: boolean, write: () => Promise<void>, after: () => Promise<void>): void {
     if (this.closed) return;
-    const timer = setTimeout(() => {
-      this.rewriting.delete(timer);
-      void this.change(async () => {
-        if (this.closed) return;
+    const rewrite = (): Promise<void> => {
+      const task = this.change(async () => {
         try {
           if (!redelivery && (await this.store.channels.get(id))?.state !== "sending") return;
           await write();
@@ -690,9 +697,16 @@ export class Webhooks {
         }
         await after();
       }).catch((error: Error) => this.say({ condition: "attempt_unsaved", webhook_id: id, error: error.message }));
+      this.rewrites.add(task);
+      void task.finally(() => this.rewrites.delete(task));
+      return task;
+    };
+    const timer = setTimeout(() => {
+      this.rewriting.delete(timer);
+      void rewrite();
     }, this.storeRetryMs);
     timer.unref();
-    this.rewriting.add(timer);
+    this.rewriting.set(timer, rewrite);
   }
 
   /** Every queued message dropped, with `why` in the log. `strict`: a drop the store refuses throws (a DELETE then fails
