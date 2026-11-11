@@ -37,8 +37,9 @@ rest, never published; removing the flag lifts a hold. Release order: `scripts/r
 
 ## Setup and checks
 
-Use Node 24.11 or newer (the packages' `engines`; `.nvmrc` pins 24.21.0) and npm 11 (CI pins 11.21.0).
-`scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
+Use Node 24.22.3 or newer (the packages' `engines`, Node's November 2026 security release; `.nvmrc` pins 24.22.3)
+and npm 11 (CI pins 11.21.0). `scripts/check-node.mjs` refuses anything older, patch included, which covers Node 23 and
+24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
 decides it is the command with `isMain(import.meta)` (`scripts/is-main.mjs`), which refuses the command on such a Node
 instead of exiting 0 having done nothing.
 Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand,
