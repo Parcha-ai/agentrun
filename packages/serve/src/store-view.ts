@@ -26,6 +26,7 @@ import {
   approvalOf,
   asksOf,
   answersOf,
+  activePauseOf,
   budgetOf,
   browserPending,
   type ComputerAsk,
@@ -263,6 +264,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  const pause = activePauseOf(records.entries);
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
   const paused = pausedOf(runRow, records.entries);
@@ -309,6 +311,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     // The cap pause's words, so the moment reads paused for a store budget park (the write half's raiseCap/sendMessage read
     // moment.paused/pausedWords); the file path's turns-based pausedAt gives nothing over the store.
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
+    // The park's own id: a raise's answer names the follow-up the runner sends for this pause (raiseFollowUpId).
+    ...(budget?.kind === "budget" && pause !== undefined ? { pause } : {}),
     meta,
   };
   // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
