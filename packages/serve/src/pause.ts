@@ -12,7 +12,7 @@
 // Live view: `live.json`, the driver's frame and the run's decision receipts, rewritten whole by the run's process when
 // they change. The run's process holds its store exclusively (pi-durable-disk's exclusive profile: no other connection
 // reads it until the process exits), so this file is what GET /v2/runs/{id}/graph reads while the run goes.
-import { appendFileSync, existsSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUN_CANCELLED } from "./files.js";
 
@@ -40,12 +40,6 @@ export type NodeLine =
   | { t: "effect.start"; path: string | null; item: number | null; tool: string; label: string; input: unknown; at: string }
   | { t: "effect.end"; path: string | null; item: number | null; tool: string; label: string; status: "done" | "failed"; output?: unknown; error?: string; error_truncated?: boolean; at: string };
 
-/** Appends to the run's node log; a write that fails is lost, never the run's. */
-export const nodeLog = (root: string) => (line: NodeLine) => {
-  try {
-    appendFileSync(join(root, NODE_LOG), `${JSON.stringify(line)}\n`, { mode: 0o600 });
-  } catch {}
-};
 
 /** The node log of the run at `root`, in order; a torn last line is left out. */
 export async function readNodeLog(root: string): Promise<NodeLine[]> {

@@ -35,7 +35,10 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
   const cap = run.cost?.cap_usd;
-  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number";
+  // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
+  // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
+  const waitsOnOther = !!run.pending && run.pending.kind !== "budget";
+  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   return (

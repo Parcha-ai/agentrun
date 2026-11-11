@@ -804,7 +804,7 @@ test("through the API: a browser call counts once among the run's paid tool call
 });
 
 test("a run that mixes browser and monid charges, as serve books them, reads from its rows as booked: $0.0448 in all, $0.0018 browser time, $0.003 monid's, each charge once", async () => {
-  const [{ timelineOf, TOOL_COST }, { costOf, knownToolCostOf, toolCostOf }] = await Promise.all([import("@parcha/pi-durable-agent/timeline"), import("../dist/runs.js")]);
+  const [{ timelineOf, TOOL_COST }, { costOf, knownToolCostOf, toolCostOf }] = await Promise.all([import("@parcha/pi-durable-agent/timeline"), import("../dist/run-view.js")]);
   let id = 1;
   const at = (s) => Date.UTC(2026, 10, 5, 12, 0, s);
   // Each model request costs $0.01; four of them.

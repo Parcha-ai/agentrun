@@ -5,18 +5,14 @@
 // and lets one as pinned through. `pin_broken` is the server's mark of a pin its own settings file holds that does not
 // read; in an agent's settings it is refused.
 //
-// This is the cutover's acceptance for the agent-level pin (#1990's rules): its cases run once AGENT_LAYER_PINS is on,
-// as #1990's own agent-layer cases do, and are skipped with that reason until then. On the cutover base as it is, an
-// agent's pin is refused twice over: by validate.ts (the not_set_up_here issue of AGENT_PIN_LATER) while the flag is off,
-// and, with it on, by pi-durable-agent's agent store, whose tool settings take only names; agents in the one store, which
-// keeps a revision's body as given (store-tool-pin.test.mjs), and the flag on, they pass.
+// This is the cutover's acceptance for the agent-level pin (#1990's rules): agents in the one store, which keeps a
+// revision's body as given (store-tool-pin.test.mjs), keep the pin whole.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { runGate } from "../dist/tool-gate.js";
-import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, serve, withEnv } from "./support.mjs";
 
@@ -26,8 +22,6 @@ const GIVEN = { permission: "allow", pin: { thread_ts: null, channel_id: ["C0B",
 /** The same pin as the cutover keeps it: arguments sorted, the list de-duplicated and sorted. */
 const KEPT = { permission: "allow", pin: { channel_id: ["C0A", "C0B"], thread_ts: null } };
 const fields = (answer) => (answer.body?.error?.fields ?? []).map((f) => [f.field, f.reason]);
-/** An agent's own pin is kept from the store cutover on (tool-plane.ts AGENT_LAYER_PINS): these cases run from then. */
-const AGENT_PINS = AGENT_LAYER_PINS ? {} : { skip: "an agent's own pin waits for the store cutover (AGENT_LAYER_PINS)" };
 
 /** The text of revision `id`'s tool settings as the one store holds it. */
 function storedSettings(data, revisionId) {
@@ -64,19 +58,19 @@ async function pinned(t) {
   return { ...server, made };
 }
 
-test("an agent's own pin is taken and read back in the canonical form: arguments sorted, its one-of list de-duplicated and sorted", { timeout: 120_000, ...AGENT_PINS }, async (t) => {
+test("an agent's own pin is taken and read back in the canonical form: arguments sorted, its one-of list de-duplicated and sorted", { timeout: 120_000 }, async (t) => {
   const { api } = await pinned(t);
   const read = (await api("GET", "/agents/pinned")).body;
   assert.equal(JSON.stringify(read.definition.tool_settings), JSON.stringify({ [SEND]: KEPT }));
 });
 
-test("the one store's revision keeps the pin as that same text", { timeout: 120_000, ...AGENT_PINS }, async (t) => {
+test("the one store's revision keeps the pin as that same text", { timeout: 120_000 }, async (t) => {
   const { api, data } = await pinned(t);
   const { revision } = (await api("GET", "/agents/pinned")).body;
   assert.equal(storedSettings(data, revision), JSON.stringify({ [SEND]: KEPT }));
 });
 
-test("the gate of a run on that revision is handed the pin whole: a call not as pinned is refused in the pin's words, one as pinned goes through", { timeout: 120_000, ...AGENT_PINS }, async (t) => {
+test("the gate of a run on that revision is handed the pin whole: a call not as pinned is refused in the pin's words, one as pinned goes through", { timeout: 120_000 }, async (t) => {
   const { api, data } = await pinned(t);
   const read = (await api("GET", "/agents/pinned")).body;
   const root = join(data, "runs", "run-pin");

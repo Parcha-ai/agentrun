@@ -21,7 +21,8 @@ test("a refused call's words are let go whatever its result: blocked, an error, 
     words.refuse("call-1", "Permission denied: read is set to deny on this server.");
     const replaced = words.resultOf("call-1", result);
     assert.equal(words.held, 0, `${kind}: no words held after the call's result`);
-    if (kind === "blocked") assert.deepEqual(replaced, { output: [{ type: "text", text: "Permission denied: read is set to deny on this server." }], isError: true });
+    // Marked refused in its details (CALL_REFUSED), which the model never reads: its Timeline rows say it was refused.
+    if (kind === "blocked") assert.deepEqual(replaced, { output: [{ type: "text", text: "Permission denied: read is set to deny on this server." }], isError: true, details: { "agentrun.refused": true } });
     else assert.equal(replaced, undefined, `${kind}: pi's own result stands`);
   }
 });
