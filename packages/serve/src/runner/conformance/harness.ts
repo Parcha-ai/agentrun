@@ -19,7 +19,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, StoreConstraint, type StoreRole, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
-import { type AnswerData, KINDS } from "../journal-kinds.js";
+import { type AnswerData, KINDS, MESSAGE_SENT_AGAIN } from "../journal-kinds.js";
 import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
 import { timelineReducer, type TimelineEvent } from "../../timeline/index.js";
 import { emptyState, translate } from "../../live/translate.js";
@@ -126,6 +126,7 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
   return {
     beforeIntent: async () => (point === "beforeIntent" ? crash() : undefined),
     beforeResult: async () => (point === "beforeResult" ? crash() : undefined),
+    afterMessageSent: async () => (point === "afterMessageSent" ? crash() : undefined),
   };
 }
 
@@ -690,6 +691,46 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    id: "message-resent-after-crash",
+    title: "a message sent as its own turn by a runner lost before its row was taken is sent again by the next, and the timeline says so",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, letSlowGo, slowStarted } = suiteTools();
+      const text = "check the totals";
+      // The call, then the turn's words, then the message's turn (sent once by runner-a, again by runner-b), each saying
+      // the message it was given.
+      const script: ScriptStep[] = [{ call: "slow" }, { sayLastSteer: true }, { sayLastSteer: true }, { sayLastSteer: true }];
+      const holder: { runner?: Runner; crashed?: boolean } = {};
+      await w.start("runner-a", { script, tools, hooks: crashAt("afterMessageSent", holder) }, holder);
+      await slowStarted;
+      const row = await sendCommand(w.server, RUN, { kind: "steer", body: { text } });
+      await until(() => w.handedOver(row.id), "the message handed to the loop mid-turn");
+      letSlowGo();
+      // runner-a dies once the session holds the message, before the commit that records it and takes its row.
+      await until(() => holder.crashed, "the crash after the message was sent", EVENT_WAIT_MS);
+      assert.equal((await w.commandRow(row.id)).takenAt, null, "the row is untaken when runner-a is lost");
+      await w.claimsSettled("runner-a");
+      w.runOut();
+      await w.start("runner-b", { script, tools, hooks: quiet });
+      await w.ended("ended", EVENT_WAIT_MS);
+      const { messages } = await w.read();
+      const sent = messages.filter((message) => message.role !== "model" && message.text === text);
+      assert.ok(sent.length >= 1, `the message is on the record: ${JSON.stringify(messages)}`);
+      assert.ok(messages.some((message) => message.role === "model" && message.text.includes(text) && message.entry > sent[0]!.entry), `the model answered it: ${JSON.stringify(messages)}`);
+      const taken = await w.commandRow(row.id);
+      assert.ok(taken.takenAt !== null && taken.refused === null, `its row is taken once runner-b sent it: ${JSON.stringify(taken)}`);
+      // Never silent: the timeline says the message went again, once, before it.
+      const rows = await w.liveRows();
+      const again = rows.filter((one) => one.summary === MESSAGE_SENT_AGAIN);
+      const shown = JSON.stringify(rows.map((one) => [one.kind, one.summary]));
+      assert.deepEqual(again.map((one) => one.kind), ["phase"], `one row says it was sent again: ${shown}`);
+      // Just before the message it was said of: the person's row of it is the next message row.
+      const at = rows.indexOf(again[0]!);
+      const message = rows.findIndex((one, i) => i > at && one.kind === "user_message");
+      assert.ok(message > at && rows[message]!.text === text, `the notice comes right before the message it was sent again: ${shown}`);
+      assert.ok(!rows.slice(0, at).some((one) => one.kind === "user_message" && one.text === text), `no row of the message before the notice: ${shown}`);    },
+  },
+  {
     id: "stop-ends-turn",
     title: "stop ends the turn; the run says why",
     async body(subject, t) {
@@ -965,7 +1006,8 @@ const CASES: readonly Case[] = [
 ];
 
 
-const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
+const STEERS_IN_TURN = "it places a message sent mid-turn in the turn in flight, its row taken in its submission's commit, so it never sends one as a turn of its own (message-resent-after-crash)";
+const CLI_NEVER_RERUNS ="a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
 
 /** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
 export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
@@ -1006,7 +1048,9 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
   const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");
-    const byFacts = ruledOut[entry.id];
+    // A harness that steers (any whose facts do not say steer false, as message-mid-turn-kept reads them) places a message
+    // in the turn in flight, its row taken in the commit of its submission: it never sends one as a turn of its own.
+    const byFacts = ruledOut[entry.id] ?? (entry.id === "message-resent-after-crash" && subject.facts?.steer !== false ? STEERS_IN_TURN : undefined);
     const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
     const onPostgres = storeUrl ? POSTGRES_PENDING[entry.id] : undefined;
     const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : onPostgres ? `on Postgres, ${onPostgres}` : undefined;

@@ -6,7 +6,7 @@
 // launcher hands the server every one, and a run's process those of its model's provider, never in an environment.
 import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
-import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
+import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
@@ -28,8 +28,6 @@ export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */
 export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
-/** A run's `effort`, passed to its child. */
-export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
 /** The model the server's keys give a run that names none (hostModel at the run's launch, from every key the server
  *  holds), passed to its child as its effort is: behind a gateway the run holds the gateway's key alone, never the key
  *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment (pi-durable-disk's
@@ -40,6 +38,7 @@ export const EFFORTS = ["low", "medium", "high"] as const;
 export type Effort = (typeof EFFORTS)[number];
 /** The thinking levels a revision or the host may name. Never off. */
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const TIERS = ["fast", "default", "strong"] as const;
 export type Tier = (typeof TIERS)[number];
 const TIER_ENV: Record<Tier, string> = { fast: "AGENT_MODEL_FAST", default: "AGENT_MODEL", strong: "AGENT_MODEL_STRONG" };
@@ -290,11 +289,10 @@ export function modelKeys(env: NodeJS.ProcessEnv, ref: string | undefined, tiers
   return [...new Set(providers.flatMap((provider) => PROVIDER_KEYS[provider] ?? []))];
 }
 
-/** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
- *  Never off. */
-export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThinkingLevel {
-  const level = [env[EFFORT_ENV], revision, env.AGENT_THINKING].find((name) => (THINKING_LEVELS as readonly unknown[]).includes(name));
-  return (level ?? "medium") as ModelThinkingLevel;
+/** `value` as a thinking level (THINKING_LEVELS, exactly), else undefined: a revision's `thinking` or the host's
+ *  `AGENT_THINKING` that names none is no level. A run's effort is its own, else these (runs-over-store.ts prepareLaunch). */
+export function thinkingLevel(value: unknown): ThinkingLevel | undefined {
+  return (THINKING_LEVELS as readonly unknown[]).includes(value) ? (value as ThinkingLevel) : undefined;
 }
 
 /** The helpers a faux module's reply gets, so it needs no import of its own. */
