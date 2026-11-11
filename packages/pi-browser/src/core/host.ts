@@ -88,13 +88,6 @@ export type Recording = { id: string; startedAt: string | null; durationS: numbe
 /** `downloading`: the browser is still writing it; it is listed so the caller can say so, and is not read. */
 export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null; downloading?: true };
 
-export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
-export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };
-export type SearchRequest = { query: string; n: number };
-/** `snippet`: an excerpt of the page the search provider chose, when it gives one; web_search bounds it before the model sees it. */
-export type SearchHit = { url: string; title: string | null; author?: string | null; published?: string | null; snippet?: string | null };
-export type SearchResult = { results: SearchHit[]; usage?: ToolUsage };
-
 /** What a session vault may keep of this provider's sessions. Absent: nothing (a browser the package cannot read, or one the host shares). */
 export type ProviderVault =
   | { kind: "cdp" }
@@ -124,8 +117,6 @@ export interface BrowserProvider {
   liveView?(ref: LeaseRef): Promise<LiveView | null>;
   recordings?: { list(ref: LeaseRef): Promise<Recording[]>; open(ref: LeaseRef, id: string): Promise<ReadableStream<Uint8Array>> };
   downloads?: { list(ref: LeaseRef): Promise<RemoteFile[]>; read(ref: LeaseRef, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>> };
-  fetch?(request: FetchRequest, signal?: AbortSignal): Promise<FetchResult>;
-  search?(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult>;
 }
 
 /** The host owns the file boundary for `browser_upload`: a path the model names is resolved here or refused. */

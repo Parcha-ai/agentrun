@@ -21,8 +21,6 @@ async function failures(b) {
     status: () => b.provider.status(ref, signal()),
     attach: () => b.provider.attach(ref, signal()),
     release: () => b.provider.release(ref, signal()),
-    fetch: () => b.provider.fetch({ url: "https://example.test/article", format: "markdown", proxies: false }, signal()),
-    search: () => b.provider.search({ query: "q", n: 3 }, signal()),
     "driver.connect": () => driver(target),
     "driver.snapshot": () => attached.snapshot(),
     "driver.run": () => attached.run({ code: "return 1" }),
@@ -37,7 +35,7 @@ async function failures(b) {
 
 test("every failure of the provider, driver and broker, echoing every secret, reaches the model redacted", async () => {
   const sentinels = makeSentinels();
-  const b = new FakeBackend({ sentinels: { ...sentinels, bbSessionId: "bbs-id" }, pages: sentinelPages(sentinels), fetches: { "https://example.test/article": "x" } });
+  const b = new FakeBackend({ sentinels: { ...sentinels, bbSessionId: "bbs-id" }, pages: sentinelPages(sentinels) });
   b.echo(true);
   const redact = createRedactor(() => hostRegistered(sentinels));
   const results = await failures(b);

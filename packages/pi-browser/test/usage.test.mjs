@@ -1,7 +1,7 @@
 // Pricing is money and has no integration path until a host composes the extension: the arithmetic is pinned here.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchUsage, LIST_PRICES, resolvePrices, searchUsage, sessionCharge, sessionPrice, startSpent, withEstimate } from "../dist/index.js";
+import { LIST_PRICES, resolvePrices, sessionCharge, sessionPrice, startSpent, withEstimate } from "../dist/index.js";
 
 const at = (s) => new Date(Date.UTC(2026, 9, 6, 12, 0, s)).toISOString();
 /** The meter bills to the picodollar, so sums are compared at that resolution. */
@@ -48,14 +48,6 @@ test("unpriced and invalid sessions record their seconds, charge nothing and say
   }
   const first = sessionCharge(startSpent(at(100)), at(50), resolvePrices());
   assert.deepEqual([first.spent.seconds, first.spent.chargedThrough], [0, at(100)]);
-});
-
-test("fetch and search are charged per call at list price, and fetch with proxies at its own", () => {
-  const prices = resolvePrices();
-  assert.equal(fetchUsage(prices, false).usage.cost.total, 0.001);
-  assert.equal(fetchUsage(prices, true).usage.cost.total, 0.004);
-  assert.equal(searchUsage(prices).usage.cost.total, 0.007);
-  assert.equal(searchUsage(resolvePrices({ searchUsd: 0.01 })).usage.cost.total, 0.01, "the host's plan wins");
 });
 
 test("a bill topped up to the minimum is exactly the minimum, at any millisecond: 60 s and $0.002 at $0.002 a minute", () => {

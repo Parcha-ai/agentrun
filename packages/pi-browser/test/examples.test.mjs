@@ -12,7 +12,6 @@ import { startSite } from "./fixtures/site.mjs";
 const PACKAGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXAMPLES = path.join(PACKAGE, "examples");
 const listed = () => fs.readdirSync(EXAMPLES).filter((name) => name.endsWith(".mjs")).sort();
-const NO_PDFTOTEXT = (() => { try { execFileSync("pdftotext", ["-v"], { stdio: "ignore" }); return false; } catch { return "needs poppler's pdftotext"; } })();
 
 test("the README's Demos section names every example and every example it names exists", () => {
   const readme = fs.readFileSync(path.join(PACKAGE, "README.md"), "utf8");
@@ -102,15 +101,6 @@ test("crash-and-resume: the first run dies by SIGKILL with its Chrome still up, 
   assert.equal(second.status, 0, second.err.slice(-1500));
   assert.match(second.out, /title: set before the crash/);
   assert.equal(box.chromes().length, 0, "the second run released the Chrome");
-});
-
-test("read-a-pdf extracts the text of a PDF the fetch service would not convert", { skip: NO_PDFTOTEXT, timeout: 60_000 }, async (t) => {
-  const box = sandbox(t);
-  await box.ready;
-  const run = await box.run("read-a-pdf.mjs");
-  assert.equal(run.status, 0, run.err.slice(-1500));
-  assert.match(run.out, /via: demo_fetch\n/);
-  assert.match(run.out, /Invoice 4471 is due/);
 });
 
 test("the README's no-key command runs in an empty environment and prints the fake page's snapshot", { timeout: 100_000 }, async (t) => {
