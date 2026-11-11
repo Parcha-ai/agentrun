@@ -18,7 +18,7 @@ import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.m
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, whenFree, withEnv } from "./support.mjs";
 import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
