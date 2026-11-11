@@ -4,10 +4,11 @@
 // webhooks-signing.test.mjs. Each case in the block below has a server (or a store) of its own, so they run a few at once; the
 // two first ones watch the process's unhandled rejections, so they run alone.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
-import { ATTEMPTS_KEPT } from "../dist/webhooks.js";
+import { ATTEMPTS_KEPT, Webhooks } from "../dist/webhooks.js";
 import { client, FAUX, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
   arriving, askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
@@ -18,6 +19,23 @@ import {
 /** How many cases run at once: each starts a server, a runner and its runs, so all of them at once would load a small
  *  machine past the runs' own deadlines. */
 const CASES_AT_ONCE = 4;
+
+/** `store` as a webhook sees it, its `slice`'s methods (`settings`, `channels` or `triggerSettings`) replaced by `over`'s:
+ *  each may wait, or throw (the write refused); the rest of the store is the store's own. */
+const seeing = (slice, over) => (store) => new Proxy(store, {
+  get: (target, name) => {
+    if (name === slice) return { ...target[slice], ...over(target[slice]) };
+    const value = Reflect.get(target, name, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
+/** Whether `promise` has settled yet, without waiting for it. */
+const settledYet = async (promise) => {
+  let done = false;
+  promise.then(() => (done = true), () => (done = true));
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  return done;
+};
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);
@@ -728,6 +746,165 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
     await log.when("condition=attempt_failed", "the store is busy");
     await hook.when(1, "the run.ended after the store's error");
+    assert.equal(hook.got.length, 1);
+  });
+
+  // From the outbound webhook's first store-held form: a PUT, a DELETE and a try's 410 change the webhook one after
+  // another, a DELETE leaves nothing to send, a PUT that fails keeps no secret, and one server alone sends.
+
+  test("a 410 that comes back while a PUT to another URL is still being written waits for it, and turns nothing off: the new setting stands", async (t) => {
+    let answerGone;
+    const gone = new Promise((resolve) => (answerGone = resolve));
+    const old = await receiver(t, () => gone.then(() => 410));
+    t.after(() => answerGone());
+    const fresh = await receiver(t);
+    const dir = await scratch(t);
+    // The store as the webhook sees it, its second write of the webhook's setting held until the test lets it through: the
+    // PUT is mid-write when the 410 comes back.
+    let letWrite;
+    const written = new Promise((resolve) => (letWrite = resolve));
+    let writes = 0;
+    const on = await webhookOn(t, dir, { retryMs: [0], wrap: seeing("settings", (settings) => ({ put: async (key, value) => (key === "webhook-out" && ++writes === 2 && (await written), settings.put(key, value)) })) });
+    await on.runs("run_1");
+    const webhooks = await on.open();
+    await webhooks.save({ url: old.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await old.when(1);
+    const moving = webhooks.save({ url: fresh.url });
+    answerGone();
+    // The 410's answer comes back while the PUT's write is held (turns of the event loop, each with its I/O, for the answer
+    // to be read): the try settles only once the PUT has landed, whichever comes first.
+    for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+    letWrite();
+    await moving;
+    await fresh.when(1);
+    const view = webhooks.view();
+    assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the PUT stands, on: the 410 was the old URL's");
+    assert.deepEqual([settingOf(dir).url, settingOf(dir).disabled], [fresh.url, undefined], "and the store holds it");
+    assert.equal(fresh.got[0].headers["webhook-id"], old.got[0].headers["webhook-id"], "the message goes on to the new URL");
+  });
+
+  test("a trigger's failure told again while its first write is still in flight answers only for a write that landed: the refused one unsaved, never queued, and the message in the store once", async (t) => {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    let release;
+    const released = new Promise((resolve) => (release = resolve));
+    let posts = 0;
+    // Every post of the webhook's messages held until released; the first is then refused.
+    const on = await webhookOn(t, dir, { retryMs: [60_000], wrap: seeing("channels", (channels) => ({ post: async (...args) => {
+      const n = ++posts;
+      await released;
+      if (n === 1) throw new Error("the store refused the write");
+      return channels.post(...args);
+    } })) });
+    const webhooks = await on.open();
+    await webhooks.save({ url: hook.url });
+    const failed = { trigger_id: "trg_1", name: "nightly", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
+    const first = webhooks.emitTrigger(failed, "k1");
+    const again = webhooks.emitTrigger(failed, "k1");
+    assert.deepEqual([await settledYet(first), await settledYet(again)], [false, false], "neither answers while no write of it has landed");
+    release();
+    assert.deepEqual(await Promise.all([first, again]), ["unsaved", "queued"], "each answers for its own write: the refused one is not counted as queued");
+    await hook.when(1);
+    await settled(dir);
+    assert.equal(outboxOf(dir).messages.filter((m) => m.type === "trigger.failed").length, 1, "one message");
+  });
+
+  test("a DELETE whose secret removal fails has dropped the queued messages first: a DELETE again finishes it, and a PUT after sends none of them", async (t) => {
+    const hook = await receiver(t, () => 503);
+    const dir = await scratch(t);
+    let refuseRemoval = false;
+    const on = await webhookOn(t, dir, { retryMs: [60_000], wrap: seeing("triggerSettings", (settings) => ({ removeScope: async (...args) => {
+      if (refuseRemoval) throw ((refuseRemoval = false), new Error("the store refused the write"));
+      return settings.removeScope(...args);
+    } })) });
+    await on.runs("run_1");
+    const webhooks = await on.open();
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await hook.when(1);
+    // Its first try answered 503: queued, its next try a minute away.
+    await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
+    assert.equal(outboxOf(dir).messages.filter((m) => m.status === "pending").length, 1);
+    refuseRemoval = true;
+    await assert.rejects(webhooks.remove(), /refused the write/);
+    assert.deepEqual(outboxOf(dir).messages.filter((m) => m.status === "pending"), [], "no message of the removed webhook is still to send");
+    await webhooks.remove();
+    assert.equal(webhooks.view().configured, false);
+    const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+    const live = db.prepare("SELECT scope FROM trigger_settings WHERE adapter = 'webhook-out' AND scope NOT LIKE 'retired:%'").all();
+    db.close();
+    assert.deepEqual(live, [], "the DELETE again took its secret");
+    const fresh = await receiver(t);
+    const again = await webhooks.save({ url: fresh.url });
+    assert.match(again.secret ?? "", /^whsec_/, "a new webhook, a new secret");
+    assert.deepEqual(outboxOf(dir).messages.filter((m) => m.status === "pending"), [], "and nothing of the old one goes to it");
+    assert.equal(fresh.got.length, 0);
+  });
+
+  test("a notice told while a DELETE is under way is never queued: once the DELETE has answered, nothing of the removed webhook is left to send", async (t) => {
+    const hook = await receiver(t, () => 503);
+    const dir = await scratch(t);
+    // The DELETE's drop of the queued messages held, so a notice comes while it is under way.
+    let reachedDrop;
+    const atDrop = new Promise((resolve) => (reachedDrop = resolve));
+    let letDrop;
+    const dropped = new Promise((resolve) => (letDrop = resolve));
+    let drops = 0;
+    const on = await webhookOn(t, dir, { retryMs: [60_000], wrap: seeing("channels", (channels) => ({ dropAll: async (...args) => {
+      if (++drops === 1) (reachedDrop(), await dropped);
+      return channels.dropAll(...args);
+    } })) });
+    await on.runs("run_late");
+    const webhooks = await on.open();
+    await webhooks.save({ url: hook.url });
+    const removed = webhooks.remove();
+    await atDrop;
+    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    letDrop();
+    await removed;
+    assert.equal(await told, "off", "told while the webhook was being removed: nothing to send it to");
+    assert.deepEqual(outboxOf(dir).messages.filter((m) => m.status === "pending").map((m) => m.id), [], "no message of the removed webhook is left to send");
+    assert.equal(hook.got.length, 0);
+  });
+
+  test("a PUT that makes a new secret for a webhook whose secret no longer opens, and fails to write the webhook, shows none and keeps none: the next PUT makes one and shows it", async (t) => {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const on = await webhookOn(t, dir);
+    // Saved under one key; read under another (its secret sealed under a key this server does not hold).
+    const before = await on.open();
+    await before.save({ url: hook.url });
+    await before.close();
+    let refuseWebhook = true;
+    const view = seeing("settings", (settings) => ({ put: async (key, value) => {
+      if (key === "webhook-out" && refuseWebhook) throw new Error("the store refused the write");
+      return settings.put(key, value);
+    } }))(on.store);
+    const webhooks = new Webhooks(view, randomBytes(32), () => undefined, { retryMs: [], privateTargets: true });
+    t.after(() => webhooks.close());
+    await webhooks.load();
+    assert.equal(webhooks.view().signing, "unreadable");
+    await assert.rejects(webhooks.save({ url: hook.url }), /refused the write/);
+    assert.equal(webhooks.view().signing, "unreadable", "the webhook as it was: the secret made for it is not kept");
+    refuseWebhook = false;
+    const again = await webhooks.save({ url: hook.url });
+    assert.match(again.secret ?? "", /^whsec_/, "the next PUT makes a secret and shows it");
+    assert.equal(again.view.signing, "sealed");
+    const ping = await webhooks.test();
+    assert.equal(ping.status_code, 200);
+    new Webhook(again.secret).verify(hook.got.at(-1).body, hook.got.at(-1).headers);
+  });
+
+  test("one server writes the webhook: a second server on the same data is refused before it reads or sends anything, and the first goes on sending", async (t) => {
+    const hook = await receiver(t);
+    const data = join(await scratch(t), "agents");
+    const first = await startWithRunner(t, { data, runner: false });
+    const api = client(first.baseUrl, first.token);
+    assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+    await assert.rejects(startWithRunner(t, { data, runner: false }));
+    assert.equal(hook.got.length, 0, "the refused server sent nothing");
+    assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200, "the first sends on");
     assert.equal(hook.got.length, 1);
   });
 });

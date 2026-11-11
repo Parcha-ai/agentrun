@@ -13,14 +13,16 @@ import type { TriggerSettings } from "./store/index.js";
 /** The store slice this layer needs (handed to each adapter's sealed settings). */
 type ServerSecretsStore = { readonly triggerSettings: Pick<TriggerSettings, "get" | "put" | "removeScope">; flush(): Promise<void> };
 
-/** The server's own secrets over the store: what it keeps beside the store (besideTheStore), and every adapter's sealed settings (now store rows), which are returned too, by adapter id,
- *  for the server to keep using. Loads each adapter's settings before it answers (awaited once at start), so the redaction
+/** The server's own secrets over the store: what it keeps beside the store (besideTheStore), the outbound webhook's
+ *  signing secret and each one it held before (adapter webhook-out, retired ones too, so a secret replaced or removed stays
+ *  on the list across restarts), and every adapter's sealed settings, store rows, which are returned too, by id, for the
+ *  server to keep using. Loads each adapter's settings before it answers (awaited once at start), so the redaction
  *  list is whole from the first use. A value that does not open is said to `say`. */
 export async function openServerSecretsOverStore(
   store: ServerSecretsStore,
   data: string,
   env: NodeJS.ProcessEnv,
-  adapters: readonly TriggerAdapter[],
+  adapters: readonly Pick<TriggerAdapter, "id" | "settings">[],
   say: (fields: Record<string, string>) => void = () => {},
 ): Promise<{ secrets: ServerSecrets; settings: Map<string, SealedSettingsOverStore> }> {
   // The server always has its seal key (seal-key.ts bootSealKey, at its start): no setting is ever kept in the clear.

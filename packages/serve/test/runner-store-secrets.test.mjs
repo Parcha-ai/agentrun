@@ -179,6 +179,7 @@ const PLANES = [
     return [pointer];
   }],
   ["the server's outbound webhook signing secret, in its spellings (trigger_settings, adapter webhook-out)", async (server) => {
+    // As the server makes it: minted at the first PUT, sealed in the store under the scope its setting names.
     const hooks = new Webhooks(server, SEAL_KEY, () => {});
     await hooks.load();
     const { secret } = await hooks.save({ url: "https://hooks.invalid/agentrun" });

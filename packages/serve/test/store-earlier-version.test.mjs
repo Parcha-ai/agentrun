@@ -63,12 +63,13 @@ const SHAPES = [
   ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
-test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, a leftover webhook config and outbox (no longer read), the kept idempotency answers and the learning usage ledger this version still keeps beside the store", async (t) => {
+test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, the kept idempotency answers and the learning usage ledger this version still keeps beside the store, and an earlier build's webhook config and outbox, which nothing reads", async (t) => {
   const dir = dataDir(t);
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   await store.close();
   // This version writes these beside its store, in the same format an earlier version did, so a directory holding them is
-  // this version's own, not an earlier version's: it opens.
+  // this version's own, not an earlier version's: it opens. The webhook's two files are an earlier build's, left unread
+  // (the webhook is in the store now): they refuse nothing.
   for (const name of [".token", ".server.json", "box-image.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"]) file(join(dir, name), "{}");
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();

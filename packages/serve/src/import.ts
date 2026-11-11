@@ -855,8 +855,8 @@ async function revisionFor(
  *  store rows (server-secrets-store.ts), opened with the seal key of `env`, which the caller has (a dry run over a store
  *  that keeps no secret has none, and does not ask); each signing secret's key in every spelling too. One pasted into a
  *  session is this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
- *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A webhook secret that does not
- *  open is said to `say`, once, naming the data directory: the import goes on, and does not cut it. */
+ *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A sealed value that does not
+ *  open is said to `say` (the webhook's secret once, naming the data directory): the import goes on, and does not cut it. */
 export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
   if (!sealKeyOf(env[SEAL_KEY_ENV])) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
@@ -1145,7 +1145,7 @@ export async function importCommand(
         temp,
         env: keyEnv,
         stored: keys ? keys.values() : {},
-        own: keyed ? await ownSecrets(store, dir!, keyEnv, say("webhook_secret")) : [],
+        own: keyed ? await ownSecrets(store, dir!, keyEnv, say("sealed_settings")) : [],
       };
       // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
       // keeps is.

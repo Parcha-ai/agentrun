@@ -150,6 +150,12 @@ export class Webhooks {
   private readonly sending = new Map<string, number>();
   private readonly stop = new AbortController();
   private closed = false;
+  /** What reads the webhook and then writes it (a PUT, a DELETE, a try's outcome and its 410), one after another: each
+   *  reads it as the last one left it, so a 410 never turns off a webhook a PUT set again meanwhile, and two first PUTs
+   *  never each show a secret the other replaced. */
+  private changing: Promise<unknown> = Promise.resolve();
+  /** A DELETE under way: no notice is queued meanwhile, so none slips past its drop of the queued messages. */
+  private removing = false;
 
   private readonly retryMs: readonly number[];
   private readonly privateTargets: boolean;
@@ -226,16 +232,21 @@ export class Webhooks {
     else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds no user or password: the receiver checks the signature" });
     else if ((await this.privateAt(url)) !== undefined) issues.push({ field: "url", reason: "invalid", message: PRIVATE_WORDS });
     if (issues.length) throw invalid(issues);
+    return this.change(() => this.saveNow(url!.href));
+  }
+
+  /** The PUT's change, once every change before it has landed: the webhook as the last one left it, then the new one. */
+  private async saveNow(href: string): Promise<{ created: boolean; view: ReturnType<Webhooks["view"]>; secret?: string }> {
     const was = this.config;
     const now = new Date().toISOString();
     // A new URL gets a new secret, and so does one whose secret does not open here (sealed under another key).
-    const rotates = !was || was.url !== url!.href || this.signingSecret() === undefined;
+    const rotates = !was || was.url !== href || this.signingSecret() === undefined;
     // A new secret is sealed under a scope of its own before the setting that names it is written: until that write lands,
     // the webhook is the one it was, its URL with its secret, and a try signs with that.
     const scope = rotates ? `${SERVER_SCOPE}:${randomBytes(8).toString("hex")}` : was!.secret_scope;
     const secret = rotates ? await this.secrets.mint(scope, SECRET_FIELD) : undefined;
     try {
-      await this.write({ url: url!.href, secret_at: rotates ? now : was!.secret_at, secret_scope: scope, updated_at: now });
+      await this.write({ url: href, secret_at: rotates ? now : was!.secret_at, secret_scope: scope, updated_at: now });
     } catch (error) {
       // A secret made here and never shown signs nothing: removed (retired, still cut), so the next PUT that needs one makes
       // one and shows it, and no one keeps a secret no one was given.
@@ -248,15 +259,34 @@ export class Webhooks {
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
 
-  /** DELETE: the webhook gone, its secret kept retired (cut from runs still), and its queued messages with it; the log of
-   *  attempts stays. */
-  async remove(): Promise<void> {
-    const was = this.config;
-    if (!was) return;
-    await this.store.settings.remove(WEBHOOK_SETTING);
-    this.config = undefined;
-    await this.secrets.remove(was.secret_scope);
-    await this.drop("the webhook was removed");
+  /** DELETE: the webhook gone, its queued messages with it, and its secret (retired: still cut from what a run says); the
+   *  log of attempts stays. In that order: shut to new notices, its queued messages dropped, the setting removed, then
+   *  every secret of the webhook, on every DELETE (none once gone), so a removal of a secret that failed is finished by
+   *  the next DELETE, and whatever fails, nothing of the removed webhook is left to send, to it or to a later one. */
+  remove(): Promise<void> {
+    return this.change(async () => {
+      if (this.config) {
+        this.removing = true;
+        try {
+          await this.drop("the webhook was removed", true);
+          await this.store.settings.remove(WEBHOOK_SETTING);
+          await this.store.flush();
+          this.config = undefined;
+          // A notice told just before the DELETE began, its write landing after the first drop: dropped too.
+          await this.drop("the webhook was removed", true);
+        } finally {
+          this.removing = false;
+        }
+      }
+      for (const scope of this.secrets.scopes()) await this.secrets.remove(scope);
+    });
+  }
+
+  /** `work`, once every change of the webhook asked for before it has settled, failed or not. */
+  private change<T>(work: () => Promise<T>): Promise<T> {
+    const done = this.changing.then(work, work);
+    this.changing = done.then(() => undefined, () => undefined);
+    return done;
   }
 
   /** GET .../deliveries: the last attempts, newest first. */
@@ -279,7 +309,8 @@ export class Webhooks {
     const waits = [...(seen?.waits ?? []), marker];
     const kept = waits.slice(-WAITS_KEPT);
     const config = this.config;
-    if (!config || config.disabled) {
+    // Off, or being removed (a DELETE under way): nothing is to be sent, so nothing is queued past its drop.
+    if (!config || config.disabled || this.removing) {
       // A wait seen while nothing is to be sent is noted here, never written: told again, it reads nothing.
       if (!ends) this.notices.set(run.run_id, { waits: kept });
       return "off";
@@ -309,7 +340,7 @@ export class Webhooks {
    *  failure told again, by a later server too, is the same message. Its trigger keeps whether it was queued. */
   async emitTrigger(failed: TriggerFailed, firingKey: string): Promise<Emitted> {
     if (this.closed) return "closed";
-    if (!this.config || this.config.disabled) return "off";
+    if (!this.config || this.config.disabled || this.removing) return "off";
     const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
     try {
       if (await this.store.channels.post({ id, channel: WEBHOOK_CHANNEL, moment: "trigger.failed", body: this.body("trigger.failed", failed), nextAt: Date.now() })) this.schedule(id, 0);
@@ -533,6 +564,15 @@ export class Webhooks {
       attempt.latency_ms = Math.round(performance.now() - started);
     }
     if (this.closed) return attempt;
+    // What the try found is settled against the webhook as it stands once every change asked for before it (a PUT, a
+    // DELETE, another try's 410) has landed: a 410 never turns off a webhook a PUT is setting again meanwhile.
+    return this.change(() => this.settleTry(id, how, now, post, config, failure, attempt));
+  }
+
+  /** A try's outcome written: the message's new state and the try, in one transaction; its next try armed; a 410 that
+   *  still names the webhook as it stands turns it off. */
+  private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, post: ChannelPostRow, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
+    if (this.closed) return attempt;
     attempt.error = failure ?? null;
     // The message as it stands now: a redelivery may have sent it while this try waited.
     const standingPost = (await this.store.channels.get(id).catch(() => post)) ?? post;
@@ -587,11 +627,13 @@ export class Webhooks {
     return attempt;
   }
 
-  /** Every queued message dropped, with `why` in the log. */
-  private async drop(why: string): Promise<void> {
+  /** Every queued message dropped, with `why` in the log. `strict`: a drop the store refuses throws (a DELETE then fails
+   *  before anything else of it is done); else it is let be, and a queued message's try finds the webhook off. */
+  private async drop(why: string, strict = false): Promise<void> {
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
-    const count = await this.store.channels.dropAll(WEBHOOK_CHANNEL, why).catch(() => 0);
+    const dropping = this.store.channels.dropAll(WEBHOOK_CHANNEL, why);
+    const count = strict ? await dropping : await dropping.catch(() => 0);
     if (count) this.say({ condition: "messages_dropped", count, reason: why });
   }
 
