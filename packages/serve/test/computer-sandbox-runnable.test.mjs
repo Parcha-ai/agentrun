@@ -96,18 +96,21 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
-test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: a type Daytona gives runs, one it does not is refused (409)", async (t) => {
+test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: daytona-gpu's H100 takes no Archil mount, and a type Daytona does not give is refused (409)", async (t) => {
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
-  const given = await saveAndStart(api, "gpu-given", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
-  assert.deepEqual([given.saved, given.refused], [[], []], JSON.stringify(given));
-  const said = await saveAndStart(api, "gpu-refused", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } } });
-  const words = /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100, /;
-  assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-  assert.match(said.saved[0][2], words);
-  assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-  assert.match(said.refused[0][2], words);
-  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  for (const [name, gpu, words] of [
+    // daytona-gpu's user is not root and it has no Archil client, and Mode 2's folder is an Archil mount.
+    ["gpu-unmounted", { type: "H100", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven/],
+    ["gpu-refused", { type: "T4", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100\b/],
+  ]) {
+    const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", gpu } });
+    assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.match(said.saved[0][2], words);
+    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.match(said.refused[0][2], words);
+    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  }
 });
 
 // A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a

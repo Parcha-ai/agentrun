@@ -268,7 +268,8 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
   const daytona = providerOf(view, "sandbox", "daytona").gpu;
-  assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.why], [["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], 8, true, true, "earth", { cpus: 16, memoryMb: 196608, diskMb: 524288 }, undefined]);
+  assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.mounts], [["H100"], 1, true, true, "earth", { cpus: 16, memoryMb: 102400, diskMb: 409600 }, []]);
+  assert.match(daytona.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which daytona-gpu cannot take: its user is not root and it has no Archil client");
   const modal = providerOf(view, "sandbox", "modal").gpu;
   assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, []]);
   assert.match(modal.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which Modal's GPU computers have not proven");
@@ -277,9 +278,10 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
 
   await routes.saveKeys("daytona", { DAYTONA_API_KEY: "good-d" });
   await routes.saveKeys("modal", { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" });
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), undefined);
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), "Daytona can't give this agent's computer its GPUs: gpu.type \"T4\" is not one this provider offers: H100, H200, RTX-PRO-6000, RTX-4090, RTX-5090, MI355X (Settings → Computers)");
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 9 } }), /gpu.count 9 is not a whole number from 1 to 8/);
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }), /^Daytona can't give this agent's computer its GPUs: a GPU computer here takes no archil mount: it is not proven/);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), "Daytona can't give this agent's computer its GPUs: gpu.type \"T4\" is not one this provider offers: H100 (Settings → Computers)");
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), /gpu.count 2 is not a whole number from 1 to 1/);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona" }), undefined, "a Daytona sandbox with no GPU is as before");
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), /^Modal can't give this agent's computer its GPUs: a GPU computer here takes no archil mount: it is not proven/);
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU is as before");
   const local = (await setup(t)).routes;
