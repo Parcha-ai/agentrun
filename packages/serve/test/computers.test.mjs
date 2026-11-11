@@ -226,6 +226,11 @@ test("a provider whose host command is not on this machine's PATH is not ready, 
   // On arm64 Linux, platform-tools has no build, and AgentRun's arm64 image carries none: the words say what it needs.
   assert.deepEqual(on(join(dir, "nowhere"), "linux", "arm64"), { "phone-harness": "this server's image has no adb for arm64 (Android platform-tools has no Linux build for arm64): Phone harness needs an x86-64 server" });
   assert.deepEqual(on(join(dir, "with"), "linux", "arm64"), {}, "an adb found there is used");
+  // On Windows platform-tools installs adb.exe: found by its extension there, and not on other platforms.
+  await mkdir(join(dir, "win"));
+  await writeFile(join(dir, "win", "adb.exe"), "MZ", { mode: 0o755 });
+  assert.deepEqual(on(join(dir, "win"), "win32"), {}, "adb.exe is adb on Windows");
+  assert.deepEqual(Object.keys(on(join(dir, "win"), "linux")), ["phone-harness"], "and no adb elsewhere");
   assert.match(hostCommandWhy("Phone harness", phone.hostCommand, "freebsd", "x64"), /: Phone harness needs a server where Android platform-tools runs \(linux-x64, darwin-x64, darwin-arm64, win32-x64\)$/);
   // The computer package's own registry names adb for the phone, and nothing else.
   assert.deepEqual(Object.keys(hostCommandRefusals(PROVIDERS, join(dir, "nowhere"), "linux", "x64")), ["phone-harness"]);

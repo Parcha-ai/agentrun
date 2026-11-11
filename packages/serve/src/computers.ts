@@ -78,16 +78,18 @@ export function hostCommandWhy(label: string, { command, from, builds }: HostCom
  *  words: what Settings → Computers, a run's start and the claim say for it. A command is there when a folder of `path`
  *  holds an executable file of its name. */
 export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "label" | "hostCommand">[], path: string | undefined, platform: string = process.platform, arch: string = process.arch): Readonly<Record<string, string>> {
+  // On Windows a program is its name with an executable extension (platform-tools installs adb.exe).
+  const named = (command: string): string[] => (platform === "win32" ? [command, ...[".exe", ".cmd", ".bat"].map((extension) => `${command}${extension}`)] : [command]);
   const found = (command: string): boolean =>
-    (path ?? "").split(delimiter).some((folder) => {
-      if (!folder) return false;
-      try {
-        accessSync(join(folder, command), constants.X_OK);
-        return statSync(join(folder, command)).isFile();
-      } catch {
-        return false;
-      }
-    });
+    (path ?? "").split(delimiter).some((folder) =>
+      folder !== "" && named(command).some((file) => {
+        try {
+          accessSync(join(folder, file), constants.X_OK);
+          return statSync(join(folder, file)).isFile();
+        } catch {
+          return false;
+        }
+      }));
   return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !found(provider.hostCommand.command) ? [[provider.id, hostCommandWhy(provider.label, provider.hostCommand, platform, arch)]] : [])));
 }
 
