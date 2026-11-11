@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
-const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, installDirOf, installMarkOf, installSettled } = await import("../dist/harness-install.js");
+const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, claimInstallsStopped, claimSettled, installDirOf, installForClaim, installMarkOf, installSettled } = await import("../dist/harness-install.js");
 const { CODEX_STANDIN_ENV, claudePins, codexPins } = await import("../dist/adapters.js");
 const { copyStandIn } = await import("../../run-adapters-codex/test/stand-in.mjs");
 /** Codex's stand-in confines its app-server with setpriv, and a platform with no Codex build has no binary to check. */
@@ -150,6 +150,37 @@ test("installSettled: another host's install (a runner in its own container on t
   rmSync(join(target, "whole"));
   writeFileSync(installMarkOf(target), JSON.stringify({ host: `${hostname()}-installer`, pid: 1, startedAt: Date.now() - 11 * 60_000 }));
   assert.equal(await installSettled(FAKE, target, PINS, { isAlive: () => true }), "none", "past the limit the mark is stale: the claim says it is not installed");
+});
+
+test("a claim's install is joined by every claim of the process that needs it: the one that started it stopping leaves it running for the others, and it lands once", async (t) => {
+  const target = join(scratch(t, "install-joined"), "harnesses", "fake");
+  const held = gate();
+  let installs = 0;
+  // A stand-in for npm: held at the gate, then the install lands whole; a stop of it ends it at once.
+  const install = async (_entry, dir, _pins, stop) => {
+    installs += 1;
+    await Promise.race([held.opened, new Promise((_, reject) => stop.addEventListener("abort", () => reject(new Error("stopped")), { once: true }))]);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "whole"), "");
+  };
+  // The first claim installs it itself.
+  const first = new AbortController();
+  const firstWait = installForClaim(FAKE, target, async () => PINS, { signal: first.signal, install });
+  firstWait.catch(() => undefined);
+  await until(() => existsSync(installMarkOf(target)), "the first claim's install has begun");
+  // A second claim of the same process: it does not wait on that install from outside; it reads it as none of another's,
+  // and joins it.
+  const second = new AbortController();
+  assert.equal(await claimSettled(FAKE, target, PINS, { pollMs: 5, signal: second.signal }), "none", "an install this process's claims run is joined, never waited on from outside");
+  const secondWait = installForClaim(FAKE, target, async () => PINS, { signal: second.signal, install });
+  // The first claim stops (its run cancelled): the install goes on for the second.
+  first.abort(new Error("the first run was cancelled"));
+  await assert.rejects(firstWait, /cancelled/);
+  held.open();
+  await secondWait;
+  assert.equal(installs, 1, "one install, never stopped and started again");
+  assert.ok(existsSync(join(target, "whole")), "it landed");
+  await claimInstallsStopped();
 });
 
 test("installSettled: a claim stopped while it waits stops waiting", async (t) => {
