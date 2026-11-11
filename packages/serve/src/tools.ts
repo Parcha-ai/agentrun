@@ -622,8 +622,10 @@ export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, 
 
 /** `mcp: true` at learn time (the end-of-run step's draft tools, a person's write): an MCP tool the revision grants by its
  *  own name may be named. Without it (the runtime's read at a call, learned-workflow.ts), none is: the run's MCP tools are
- *  its pin's, which the runtime reads apart and holds to the gate itself (#2424). */
-export type LearnedMcp = { readonly mcp?: boolean };
+ *  its pin's, which the runtime reads apart and holds to the gate itself (#2424). `approvers`: whether anyone can answer
+ *  an ask here (server-approvers.ts). Only then is an MCP tool set to ask offered: with no one, #2424 refuses the
+ *  learned call's ask at once, so offering it would only teach a workflow that never runs. Not said: no one. */
+export type LearnedMcp = { readonly mcp?: boolean; readonly approvers?: boolean };
 
 /** `granted` with each MCP server's wildcard (`mcp:<server>/*`) read as the tools its server lists now (`listed`, by the
  *  server's name: none for a server not saved), each `mcp:<server>/<tool>`, in place; every other name as it is, each
@@ -650,9 +652,9 @@ export const learnedDraftTools = (granted: readonly string[], permission: (name:
   const deniedBy: Record<string, DenyFrom> = {};
   const tools = learnedWorkflowTools(granted, plane, options).filter((name) => {
     const setting = permission(name);
-    // An MCP tool set to ask is offered: its learned_workflow call asks once, naming its MCP tools, before any node runs
-    // (#2424). A table tool set to ask is not: its call node can't wait for an approval.
-    if (setting === "allow" || (setting === "ask" && LEARNED_MCP_TOOL.test(name))) return true;
+    // An MCP tool set to ask is offered where someone can answer: its learned_workflow call asks once, naming its MCP
+    // tools, before any node runs (#2424). A table tool set to ask is not: its call node can't wait for an approval.
+    if (setting === "allow" || (setting === "ask" && options.approvers === true && LEARNED_MCP_TOOL.test(name))) return true;
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
