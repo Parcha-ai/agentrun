@@ -195,3 +195,19 @@ test("a re-ask whose answer keeps a note but still holds the broken draft does n
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 0], JSON.stringify(kept?.proposal));
   assert.deepEqual(kept.proposal.proposal.notes.map(({ file }) => file), ["retry-slowly.md"], "the first answer's note, not the failed repair's");
 });
+
+test("a learned skill that served 3 earlier runs of the agent, with no learned workflow of its name, gets its job asked for as a workflow draft in the next run's end-of-run prompt", async (t) => {
+  // Three earlier runs of the agent were offered the skill (their launches say so); run-1 is offered it too.
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt.includes("Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
+  assert.equal(prompt.split("has now served").length - 1, 1, "one line, once");
+});

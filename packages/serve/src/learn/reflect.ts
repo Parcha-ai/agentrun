@@ -5,6 +5,7 @@
 // wrote during the task counts. The same on every harness: every model writes markdown, and no tool is needed.
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
+import { SKILL_NAME } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -15,18 +16,24 @@ export const NOTE_BLOCK = "note";
  *  with four backticks so a ``` line inside does not close it. */
 export const SKILL_BLOCK = "skill";
 export const WORKFLOW_BLOCK = "workflow";
+/** How many earlier runs of an agent a learned skill has been given to before the host asks for its job as a workflow
+ *  draft (`draftFor`): a run proposes one only when it thinks to, and few do. */
+export const DRAFT_AFTER_RUNS = 3;
 /** A tool's name as the prompt may print it. */
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
  *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
- *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[] }): string {
-  const { dir, active, tools = [] } = options;
+ *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. `draftFor`, the
+ *  learned skills the run was given that have served DRAFT_AFTER_RUNS earlier runs with no learned workflow of their
+ *  name: the prompt gains one line asking for that job as a workflow draft. None when not given. */
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[] }): string {
+  const { dir, active, tools = [], draftFor = [] } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !TOOL_NAME.test(tool))) throw new Error("each tool must be a tool's name");
+  if (!Array.isArray(draftFor) || draftFor.some((name) => typeof name !== "string" || !SKILL_NAME.test(name))) throw new Error("each skill a draft is asked for must be a skill's name");
   const left = Math.max(0, INDEX_LINES - active);
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
@@ -81,6 +88,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "skill. A note holds its own lesson: never repeat another note's rule in it, so a retired rule stays retired.",
     "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
     "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
+    ...(draftFor.length ? [draftAsk(draftFor)] : []),
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
@@ -113,6 +121,14 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "````",
   ].join("\n");
 }
+
+/** The one line that asks for a workflow draft of a skill's job, by the skill's name. */
+const draftAsk = (names: readonly string[]): string => {
+  const listed = names.map((name) => `\`${name}\``).join(", ");
+  return names.length === 1
+    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps.`
+    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps.`;
+};
 
 /** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
  *  parseReflection's), and the whole answer again in the format. */
