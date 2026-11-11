@@ -345,7 +345,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[] } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const seeded = await deps.seedFor(entry.agent.id);
@@ -356,7 +356,11 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
   // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
   // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
   const { section, given } = learnedParts(seeded.seed, options);
-  return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+  // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
+  // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
+  // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+  const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
+  return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}) };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made

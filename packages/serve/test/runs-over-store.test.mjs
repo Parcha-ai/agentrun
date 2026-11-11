@@ -445,6 +445,24 @@ test("seedNotes counts the whole seed, so a seed over the budget has seedNotes a
   assert.ok(learning.seedNotes > learning.given.length, "the budget narrowed given below the whole seed's note count");
 });
 
+test("startRun records the learned skills the seed offers the run: each with its files and no host secret, none held by its size", async () => {
+  const store = await freshStore();
+  const seed = () => ({
+    ...learningSeed(),
+    skills: [
+      { name: "weekly-report", bytes: 10, files: { "SKILL.md": "---\nname: weekly-report\ndescription: d\n---\nSteps." } },
+      { name: "too-big", bytes: 999999 },
+      { name: "leaky", bytes: 10, files: { "SKILL.md": "---\nname: leaky\ndescription: d\n---\nUse secret-value-0001." } },
+    ],
+  });
+  const holds = { text: (t) => t, name: (n) => n, holds: (t) => t.includes("secret-value-0001") };
+  const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: seed() }), shown: () => holds }), entryOf(), { input: { content: "hi" } });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning.skills, ["weekly-report"]);
+  // A seed with no skill records none.
+  const plain = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" } });
+  assert.equal("skills" in readLaunchBody((await store.runs.launch(plain.id)).body).learning, false);
+});
+
 test("startRun records no learning for a non-learning run", async () => {
   const store = await freshStore();
   // The same deps, but the revision does not learn.

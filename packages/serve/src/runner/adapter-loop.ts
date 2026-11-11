@@ -913,7 +913,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context, now) : undefined;
         cliRecord = record;
-        const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map((tool) => ({
+        // Each tool the session runs on the host, the host's own and any its adapter adds (SessionIO.hostTool: a CLI's
+        // read_skill_file), the same way: a CLI's call on its record, so the run's Timeline shows it and its result.
+        const hosted = (tool: HostTool): HostTool => ({
           ...tool,
           // The rule before a side effect, on the host-tool path every adapter's calls take: after the call's intent, a
           // flush unless the tool is replay-safe, the call, then the beforeResult point. A throw there is the kernel's own
@@ -953,7 +955,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               throw error;
             }
           },
-        }));
+        });
+        const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
         // The session's model port, counting what it admitted and has not booked yet (a stop's booking comes once the
         // session's proxy sees its upstream end, which can be after pi went idle).
         const port = booking.models;
@@ -992,7 +995,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           for (const turn of booking.turns) given.add(turn);
           return booking.usd;
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, bookedCost };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, hostTool: hosted, bookedCost };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
         // MCP its adapter mounts on its proxy, each call asking the gate first (an ask parks the run, nothing sent).
         const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));

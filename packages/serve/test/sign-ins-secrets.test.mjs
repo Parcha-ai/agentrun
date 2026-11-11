@@ -39,7 +39,7 @@ test("rule 1: no browser route takes a credential in its body, so the plane regi
   // The browser plane's operations, by path: the sign-in forget, the run's browser read and its hand-back; and the browser
   // pick (a provider name, no credential) in the server's tool settings and in an agent's definition (tool_settings), an
   // inline run's definition (POST /runs) among them.
-  assert.deepEqual(found.operations.sort(), ["createAgent#browser", "createInlineRun#browser", "forgetSignIn", "getRunBrowser", "handBackRunBrowser", "importHome#browser", "putToolSettings#browser", "updateDefinition#browser"].sort(), "the browser plane's operations, all of them looked at");
+  assert.deepEqual(found.operations.sort(), ["createAgent#browser", "createInlineRun#browser", "forgetSignIn", "getRunBrowser", "handBackRunBrowser", "putToolSettings#browser", "updateDefinition#browser"].sort(), "the browser plane's operations, all of them looked at");
   assert.deepEqual(found.credentials, [], "no browser operation's body has a credential field");
   assert.deepEqual(found.anywhere, [], "no request body anywhere names a browser credential (a context, a profile, a sign-in ref)");
   // No secret body field, and no write route for the planted harness. The one registration is forgetting a sign-in: it
