@@ -146,10 +146,12 @@ test("a buffered row whose delivery throws once while its loop keeps running is 
 
 test("every buffered row is handed to the loop once before its delivered resolves, a later one too when an earlier one threw: a follow-up behind a failed answer is never held past it", { timeout: 30_000 }, async () => {
   const launched = defer();
+  const started = defer();
   const finish = defer();
   const tries = [];
   const inner = {
     start() {
+      started.resolve();
       return finish.promise.then(() => ({ state: "ended" }));
     },
     async command(command) {
@@ -171,9 +173,14 @@ test("every buffered row is handed to the loop once before its delivered resolve
     await dispatch.command(answer(21, "call-1"));
     await dispatch.command({ id: 22, runId: "run-1", kind: "steer", body: { content: "and one more thing" }, createdAt: 0, takenAt: null, refused: null, tries: 0 });
     launched.resolve();
-    await innerDeps.delivered;
-    assert.deepEqual(tries.slice(0, 2), [21, 22], "both rows were handed to the loop, in order, before its delivered resolved");
-    finish.resolve();
+    await started.promise;
+    try {
+      await innerDeps.delivered;
+      assert.deepEqual(tries.slice(0, 2), [21, 22], "both rows were handed to the loop, in order, before its delivered resolved");
+    } finally {
+      // The loop ends whatever was asserted, so its replay tries nothing more after this case.
+      finish.resolve();
+    }
     return run;
   });
   assert.deepEqual(seen, []);
