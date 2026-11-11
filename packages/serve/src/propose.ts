@@ -105,7 +105,10 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   }
   const given = [...fileGroups.values()];
   // The seed is read whatever the answer: a seed the folder does not hold fails the check.
-  const { snapshot, texts } = await seedAt(input.folder, input.seed, () => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file)] : []));
+  // And the skill of each draft's name, as the folder holds it: what the draft keeps as a workflow, for the grader.
+  const skillOf = (draft: string) => `${SKILLS_DIR}/${draft.split("/")[1]}/SKILL.md`;
+  const draftSkills = given.flat().filter(({ file }) => file.endsWith("/workflow.json")).map(({ file }) => skillOf(file));
+  const { snapshot, texts } = await seedAt(input.folder, input.seed, () => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file), ...draftSkills] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
   const { base, kept } = baseOf(snapshot);
   const held = new Set(base.files);
@@ -176,7 +179,11 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   const triggered = (input.turn.triggered ?? []).map(({ source, text }) => ({ source, text: shortMessage(redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY)) }));
   // How each kept draft's dry run went, for the grader: passed, or not run and why.
   const ran = Object.fromEntries(passing.filter(({ file }) => dryRuns[file]).map(({ file }) => [file, dryRuns[file]!]));
-  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), ...(Object.keys(ran).length ? { dryRuns: ran } : {}), asked, ...(triggered.length ? { triggered } : {}) };
+  // Each kept draft's skill as the folder holds it at the seed, unless the proposal gives that skill itself (the grader
+  // reads it there): the format the draft's answer keeps (#2412). Cut of the host's secrets, as what was said is.
+  const proposing = new Set(passing.map(({ file }) => file));
+  const drafted = passing.filter(({ file }) => file.endsWith("/workflow.json")).map(({ file }) => skillOf(file)).filter((file) => !proposing.has(file) && texts.has(file)).map((file) => ({ file, text: redactSecrets(texts.get(file)!, input.refuse, Number.POSITIVE_INFINITY) }));
+  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), ...(Object.keys(ran).length ? { dryRuns: ran } : {}), ...(drafted.length ? { drafted } : {}), asked, ...(triggered.length ? { triggered } : {}) };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
   const count = (suffix: string) => passing.filter(({ file }) => file.endsWith(suffix)).length;
   return { state: "proposed", notes: proposal.notes.length, skills: count("/SKILL.md"), workflows: count("/workflow.json"), ...(left.length ? { left } : {}) };

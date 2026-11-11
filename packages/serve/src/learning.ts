@@ -217,8 +217,9 @@ export const LEARNING_LABEL = "learning";
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
 /** A run's proposal: its notes, skill and drafts, each draft's dry run by its workflow.json's path (learn/skills.ts
- *  draftDryRun: passed, or not run and why), and what was said in the run. */
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; asked?: string[]; triggered?: Triggered[] };
+ *  draftDryRun: passed, or not run and why), the skill of each draft's name as the folder holds it at the seed
+ *  (`drafted`, its SKILL.md: shown to the grader beside the draft, never graded or merged), and what was said in the run. */
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; drafted?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */
 export type Triggered = { source: string; text: string };

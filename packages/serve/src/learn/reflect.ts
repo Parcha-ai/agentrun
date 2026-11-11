@@ -144,8 +144,8 @@ const describedLines = (described: readonly { readonly name: string; readonly do
 const draftAsk = (names: readonly string[]): string => {
   const listed = names.map((name) => `\`${name}\``).join(", ");
   return names.length === 1
-    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps.`
-    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps.`;
+    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format the skill gives: its last node writes it, and \`output\` names that node's text.`
+    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format its skill gives: its last node writes it, and \`output\` names that node's text.`;
 };
 
 /** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
