@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The learning bench (sprint LS-01): repeated jobs, learning off vs on, into one JSON results file
+// The learning bench: repeated jobs, learning off vs on, into one JSON results file
 // (learn-bench/results.schema.json, learning-bench/2). On demand and nightly; never on a PR. It calls real models and spends.
 //
 // A job is a folder under learn-bench/ (learn-bench/README.md): job.yaml (template?, parameters, grants, fakes, deny,
@@ -271,7 +271,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const looked = learns && kept.answered_at !== undefined;
   const work = costUnpriced ? null : looked ? usd(kept.job_cost_usd) : total;
   const reflect = looked ? usd(kept.look_back_usd) : total === null ? null : 0;
-  // The grade's cost as its learning says it; 0 with tokens counted is a usage with no price (LS-09): unknown, never $0.
+  // The grade's cost as its learning says it; 0 with tokens counted is a usage with no price: unknown, never $0.
   const gradeTokens = learning?.tokens?.grade;
   const counted = gradeTokens && typeof gradeTokens === "object" && Object.values(gradeTokens).some((n) => typeof n === "number" && n > 0);
   // A learning that ended with no grade run (dropped before it was proposed: empty, unparsed, the checks) graded nothing: 0.

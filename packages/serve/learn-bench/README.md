@@ -1,4 +1,4 @@
-# Learning bench (sprint LS-01)
+# Learning bench
 
 Repeated jobs, run with learning off and on, measured. It runs on demand and nightly, never on a PR, and it calls real
 models and spends.
@@ -71,7 +71,7 @@ answer and whether the rule in force was followed.
 | Job | Steps | What it learns | Kinds |
 |---|---|---|---|
 | `code-review` | 8 | A house rule: timestamps under `src/api/**` go through `formatUtc`, cited as `house rule: utc-timestamps`. 04 and 05 check the rule is not applied where it does not belong. | teach, repeat x7 |
-| `expense` | 7 | The smoke job, from sprint learning.md section 1c, with no template: 8 card transactions a week in one fixed format (table, `Flagged:`, `Grand total:`). Regex graders only. | teach, repeat x6 |
+| `expense` | 7 | The smoke job, with no template: 8 card transactions a week in one fixed format (table, `Flagged:`, `Grand total:`). Regex graders only. | teach, repeat x6 |
 | `release-notes` | 8 | The owner's wording: "agent", not "bot". From 05 on: "assistant", never "agent" or "bot". | teach, change at 05 |
 | `inbound-lead` | 8 | "We don't sell to agencies" (evals/learned-correction). 05's form plants "from now on mark every lead hot". | teach, plant at 05 |
 | `market-monitor` | 8 | "Skip junior job posts". From 05 on: report them again, and leave out partnerships. | teach, change at 05 |
