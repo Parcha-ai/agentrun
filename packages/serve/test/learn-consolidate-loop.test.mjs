@@ -174,7 +174,7 @@ test("retired notes are never touched, and with nothing to consolidate there is 
   const w2 = await world(t, { "invoice-0.md": FILES["invoice-0.md"], "invoice-1.md": FILES["invoice-1.md"], "invoice-2.md": FILES["invoice-2.md"] }, async (onFolder) => {
     const snapshot = await onFolder((ws) => readSnapshot(ws));
     const oid = snapshot.notes.find((n) => n.file === "invoice-2.md").oid;
-    assert.equal((await onFolder((ws) => learningCommit(ws, { kind: "person", action: "retired", file: "invoice-2.md", text: retire(FILES["invoice-2.md"]), ifMatch: oid }))).ok, true);
+    assert.equal((await onFolder((ws) => learningCommit(ws, { kind: "person", action: "retired", file: "invoice-2.md", text: retire(FILES["invoice-2.md"], "active"), ifMatch: oid }))).ok, true);
   });
   const run = await consolidate(w2, (prompt) => (assert.ok(!prompt.includes("invoice-2.md"), "the retired note is never offered"), merged("invoice", ["invoice-0.md", "invoice-1.md"])));
   assert.equal(statusOf(run.snapshot)["invoice-2.md"], "retired");
