@@ -31,7 +31,7 @@ import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { type ModelRef, type PinnedModel, providerModels, runModels } from "../model.js";
+import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
@@ -48,7 +48,9 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, webHostTools, webToolNames } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools, webToolNames } from "./adapter-run-spec.js";
+import { openTierProxies, type TierProxies } from "./adapters/pi.js";
+import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
@@ -275,15 +277,40 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
   // error and its Timeline row say which CLI said it.
+  // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
+  // lay chose the workflows, below): each on a proxy of its own beside the CLI session's (openTierProxies, pi's), on the
+  // session's booking, reached through the session's port with a `tier`. The CLI never sees them.
+  const tierRoutes = new Map<Tier, ModelRoute>();
   const adapter: typeof built = {
     ...built,
     open: async (spec, io) => {
       const session = await built.open(spec, { ...io, dir, cwd: scratch });
+      let tiers: TierProxies;
+      try {
+        tiers = await openTierProxies(tierRoutes, io.models, cut);
+      } catch (error) {
+        await session.close().catch(() => undefined);
+        throw error;
+      }
+      io.signal.addEventListener("abort", () => void tiers.close(), { once: true });
       const turnEnd = session.turnEnd.bind(session);
-      return Object.assign(session, { turnEnd: async () => {
-        const end = await turnEnd();
-        return end.error ? { ...end, error: `${name}: ${end.error}` } : end;
-      } });
+      const close = session.close.bind(session);
+      const port = session.port?.bind(session);
+      return Object.assign(session, {
+        turnEnd: async () => {
+          const end = await turnEnd();
+          return end.error ? { ...end, error: `${name}: ${end.error}` } : end;
+        },
+        close: async () => {
+          await close();
+          await tiers.close();
+        },
+        // The session's port; with a `tier`, that tier's proxy, while the session's own port is up (none once closed).
+        port: (label: string, tier?: string) => {
+          const own = port?.(label);
+          return tier === undefined || own === undefined ? own : tiers.port(label, tier);
+        },
+      });
     },
   };
 
@@ -298,8 +325,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // kernel runCap from these over the run's own sessions; the spec carries no beforeRequest of its own.
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
-    // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by.
-    modelOf: () => capModel,
+    // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by. A
+    // learned node's request on a tier's model (tierRoutes) is priced as that model.
+    modelOf: (id) => {
+      for (const tierRoute of tierRoutes.values()) if (tierRoute.model === id) return capModelOfRoute(tierRoute);
+      return capModel;
+    },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
   const cap = capUsd === undefined
@@ -360,7 +391,20 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
       webTools = await webHostTools(host, granted, ctx);
     }
-    if (learns) learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx });
+    if (learns) {
+      // A tier the learned workflows name that the host has a model of, routed as pi's are (learnedTierRoutes: the run's
+      // keys, pi's wires, since pi-ai's client sends these, never the CLI); one refused fails its node in its words.
+      const modelEnv = withModelKeys(deps.env, claimed);
+      const tiers = new Map<string, LearnedTier>();
+      for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
+        if ("why" in routed) tiers.set(tier, { why: routed.why });
+        else {
+          tierRoutes.set(tier, routed);
+          tiers.set(tier, { model: routed.model });
+        }
+      }
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers });
+    }
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
