@@ -18,7 +18,7 @@
 // serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
-import type { CdpSession, ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { checkGpu, type ComputerClient, type ComputerSettingKind, type GpuSpec, type Group, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
@@ -40,14 +40,36 @@ export type KindRegistry = {
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
- *  phone), the read-back of its mount (when mounted), its CDP connect (browser), and its release. */
+ *  phone), the read-back of its mount (when mounted), and its release. A browser is started by none: the claim gives
+ *  the run's browser tool its provider (`browser`), which opens each session at the tool's first call, and the release
+ *  lets go of any the tool left open. */
 export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
   readBack?(): Promise<Result<MountReadBack>>;
-  connect?(): Promise<CdpSession>;
+  readonly browser?: ClaimBrowser;
   release(): Promise<void>;
+};
+
+/** A browser computer's provider as the run's browser tool opens its sessions through it: each session one computer of
+ *  the provider's, made under the run's labels and the tool's tag (so a create whose answer was lost is found again),
+ *  its CDP URL read through the provider's connect at each attach (a secret: it goes only to the driver), and released
+ *  when the tool lets it go. Errors carry the provider's words, and its code. So the session's time is the time the
+ *  tool holds it, which is what the run's spend books. */
+export type ClaimBrowser = {
+  /** The provider's id: the session's price and its name. */
+  readonly provider: string;
+  /** The longest a session lives, in seconds. */
+  readonly maxLifetimeS: number;
+  /** Makes a session for `tag`, to live at most `lifetimeS`: its computer's id. */
+  open(tag: string, lifetimeS: number, signal?: AbortSignal): Promise<string>;
+  /** The sessions made for `tag`, by id. */
+  find(tag: string, signal?: AbortSignal): Promise<string[]>;
+  /** The session's CDP URL now. */
+  url(id: string): Promise<string>;
+  /** Ends the session; one already gone is ended. */
+  close(id: string): Promise<void>;
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one
@@ -79,10 +101,14 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
  *  NETWORK, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
 export const vendorNetworkOnly = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && network.every((one) => one === "open");
 
-/** Why a vendor-hosted computer is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the fix:
- *  the operator said no network at all, and the computer can't run without the vendor's. */
+/** Whether a provider's computers can't have no network: it declares its network forms and "none" isn't one (a cloud
+ *  phone, a hosted browser, Local Chrome). */
+export const needsNetwork = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && !network.includes("none");
+
+/** Why a computer that needs a network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the
+ *  fix: the operator said no network at all, and the computer can't run without one. */
 export const noNetworkRefusal = (label: string, kind: string): string =>
-  `This agent's computer is a ${label} ${kind}, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).`;
+  `This agent's computer is a ${label} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list.`;
 
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
@@ -93,9 +119,8 @@ export const noNetworkRefusal = (label: string, kind: string): string =>
  *  words here, at the start, where the claim would only fail to launch it. Asked here, not in resolveComputer: the claim
  *  has no such answer and launches it. Absent: not asked.
  *
- *  `boxAllow`: this server's allow setting (run-box.ts boxAllowOf). Under "none", a computer that runs only on the
- *  vendor's own network is refused (noNetworkRefusal), as the claim refuses it; under a list it runs open. Absent: not
- *  asked. */
+ *  `boxAllow`: this server's allow setting (run-box.ts boxAllowOf). Under "none", a computer whose provider makes no
+ *  "none" is refused (noNetworkRefusal), as the claim refuses it. Absent: not asked. */
 export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => true | string, boxAllow?: readonly string[] | "none"): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
   const resolved = await resolveComputer(setting, mode, registry, {
     keysOf: providerKeys(registry, keyOf),
@@ -108,7 +133,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   const why = mode === 1 && resolved.mounts && entry?.mounts.includes("bind") && answers ? answers(entry.id) : true;
   // It names the box whose probe said no (a refusal's details.box), as the box check did.
   if (why !== true) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${why.replace(/[.!?]+$/, "")}.`, box: entry!.id };
-  if (boxAllow === "none" && entry && vendorNetworkOnly(entry.network)) return { refused: noNetworkRefusal(entry.label, resolved.kind) };
+  if (boxAllow === "none" && entry && needsNetwork(entry.network)) return { refused: noNetworkRefusal(entry.label, resolved.kind) };
   return { ok: true };
 }
 
@@ -271,7 +296,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 /** The started computer as runTools takes it, or what it lacks, in words. */
 function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
   const groups = launched.groups as readonly Group[];
-  if (kind === "browser") return launched.connect ? { kind, connect: () => launched.connect!() } : "it gave no CDP connection";
+  // The run's browser tool opens a browser's sessions through its provider.
+  if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
   const { client } = launched;
   if (!client) return "it gave no computer protocol client";
   if (kind === "phone") return { kind, computer: { client }, groups };

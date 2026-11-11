@@ -10,6 +10,7 @@ import { inspect } from "node:util";
 import { AgentRun, AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunTimeout, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage } from "../dist/index.js";
 import { JSON_HEADERS, listener } from "./helpers.mjs";
 import { scrubberOf, secretsOf } from "../dist/scrub.js";
+import { OPERATIONS, resources } from "../dist/operations.generated.js";
 
 const KEY = `test-key-${randomBytes(12).toString("hex")}`;
 const json = (status, value, headers = {}) => [status, { ...JSON_HEADERS, ...headers }, JSON.stringify(value)];
@@ -265,9 +266,25 @@ test("a body cut after a 2xx is tried again for a GET and a download, and a POST
   assert.ok(!printed(started).includes(KEY));
 });
 
-test("an MCP sign-in has no method: it starts in the owner's browser, whose callback needs the cookie its start sets", () => {
+test("an MCP sign-in has no method: it starts in the owner's browser, whose callback needs the cookie its start sets; nor in any group has any operation only a browser or GitHub calls", () => {
+  // Every method of every group, each called once through a recording call: the operations the client has a method for,
+  // wherever the generator put them, so one that moves to another group or name (startMcpOAuth once came back as
+  // mcpServers.startMcpOauth) is still seen.
+  const sent = [];
+  const methods = Object.values(resources((id) => (sent.push(id), Promise.resolve()))).flatMap((member) => (typeof member === "function" ? [member] : Object.values(member)));
+  for (const method of methods) method("a", "b", "c", "d", "e");
+  assert.ok(methods.length > 50);
+  assert.equal(sent.length, methods.length, "each method sends one operation");
+  // The routes the server's document marks x-agentrun-browser-only: no method, each kept in the table, so a body bound
+  // for a secret one is still cut.
+  for (const id of ["startMcpOAuth", "connectGitHub", "gitHubCallback", "gitHubInstalled"]) {
+    assert.ok(!sent.includes(id), `${id} has a method`);
+    assert.ok(OPERATIONS[id], `${id} stays in the operation table`);
+  }
+  assert.equal(OPERATIONS.startMcpOAuth.secret, true, "the start is a secret route: a body bound for it is cut from the answer");
+  // GitHub's own signed delivery: no method, as no command.
+  assert.ok(!sent.includes("receiveHook_github"));
   const client = new AgentRun({ baseUrl: "https://agentrun.example.com/v2", apiKey: KEY });
-  assert.equal(client.mcpServers.oauthStart, undefined);
   assert.equal(typeof client.mcpServers.oauthClient, "function", "its public client document stays");
 });
 

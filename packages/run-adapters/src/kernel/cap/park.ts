@@ -6,7 +6,7 @@
 // follow-up in the server's words.
 import type { CapRefused } from "./admit.js";
 import { CAP_TOLERANCE } from "./price.js";
-import { CAP_REFUSAL_CODE, money, suggestedRaise } from "./words.js";
+import { CAP_REFUSAL_CODE, money, SPEND_CAP_REACHED, suggestedRaise } from "./words.js";
 
 const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
 /** A bound to a millionth, rounded up (never under what it bounds), as main's overshoot bound is (run-view.ts microUp);
@@ -26,7 +26,9 @@ export type Park =
 export function parkOf(refusal: CapRefused, capUsd: number): Park {
   if (refusal.forGood || !refusal.figures) return { outcome: "failed", error: refusal.message };
   const { spentUsd, needsUsd, leastCapUsd, boundUsd } = refusal.figures;
-  const words = refusal.message.startsWith(CAP_REFUSAL_CODE) ? refusal.message.slice(CAP_REFUSAL_CODE.length) : refusal.message;
+  // Its words without the refusal's code: a model request's ("spend_cap_reached (out of budget): ") or a paid step's
+  // ("spend_cap_reached: "), so a pause reads its sentence alone, whichever step was refused.
+  const words = [CAP_REFUSAL_CODE, `${SPEND_CAP_REACHED}: `].reduce((said, code) => (said.startsWith(code) ? said.slice(code.length) : said), refusal.message);
   return {
     outcome: "parked",
     pending: { kind: "budget", cap_usd: capUsd, spent_usd: micro(spentUsd), needs_usd: micro(needsUsd), least_cap_usd: leastCapUsd, suggested_cap_usd: suggestedRaise(capUsd, spentUsd, needsUsd), bound_usd: microUp(boundUsd ?? 0) },

@@ -93,12 +93,16 @@ export type GpuView = GpuCapability & { why?: string };
 export const NO_NETWORK_WORDS = "no network, so this server's allow-list isn't offered";
 /** A computer on the vendor's own network: open, which this server's allow-list doesn't reach. */
 export const VENDOR_NETWORK_WORDS = "the vendor's own network; this server's allow-list doesn't apply";
+/** A browser behind its own egress proxy (Local Chrome): every public host, unless the operator set a list. */
+export const OPERATOR_LIST_WORDS = "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts";
 
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
- *  makes "none" alone or "open" alone; none where the allow-list applies (Docker), or nothing is declared. */
+ *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where
+ *  the allow-list applies as it is (Docker), or nothing is declared. */
 export function networkWords(network: readonly string[] | undefined): string | undefined {
   if (network?.length === 1 && network[0] === "none") return NO_NETWORK_WORDS;
   if (network?.length === 1 && network[0] === "open") return VENDOR_NETWORK_WORDS;
+  if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
 }
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };

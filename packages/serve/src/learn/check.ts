@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { type DraftDryRun, draftProblems, type DraftReader, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -81,6 +81,9 @@ export type CheckInput = {
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
+  /** Each draft's dry run (skills.ts draftDryRun), by its workflow.json's path: one that failed is refused, rule
+   *  `workflow`, when the draft has no other problem. A draft with none given is checked without one. */
+  readonly dryRuns?: Readonly<Record<string, DraftDryRun>>;
   /** The skills' and drafts' files whose text in the run's seed has a status (a person retired it, or it waits for its
    *  owner's OK): a run never changes those. A draft's is its README.md. */
   readonly kept?: readonly string[];
@@ -148,6 +151,22 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
   return found ? undefined : text;
 }
 
+/** A skill's SKILL.md or a draft's README.md at `path`, its front matter read as YAML reads it (skills.ts frontValues:
+ *  its escapes decoded, the value a harness is served): a hidden character, a secret's shape or the host's value there
+ *  is refused as one in its text is, though the text as stored spells it in escapes. True when it found one. */
+function frontScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
+  const place = learnedPlace(path);
+  if (!place || place.kind === "workflow") return false;
+  let found = false;
+  for (const value of frontValues(text)) {
+    const hidden = hiddenCharacter(value);
+    if (hidden) found = (add("invisible_unicode", `its front matter, read as YAML reads it, holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
+    for (const kind of secretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
+    if (refused(value)) found = (add("secret_value", "its front matter, read as YAML reads it, holds a value the host named as secret", path), true);
+  }
+  return found;
+}
+
 /** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a
  *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
  *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
@@ -165,10 +184,14 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   const readmeOf = `${path.slice(0, path.lastIndexOf("/"))}/README.md`;
   if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("skill_status", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
   const text = textOf(path, change.bytes, refused, add);
-  if (text === undefined) return;
+  if (text === undefined || frontScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
-    for (const { rule, detail } of draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy)) add(rule, detail, path);
+    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy);
+    for (const { rule, detail } of problems) add(rule, detail, path);
+    // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.
+    const dry = input.dryRuns?.[path];
+    if (!problems.length && dry?.status === "failed") add("workflow", dry.detail ?? DRY_RUN_FAILED, path);
     return;
   }
   for (const reason of skillProblems(text, place.name)) add(place.kind === "skill" ? "skill" : "workflow", reason, path);
@@ -205,7 +228,8 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
   for (const change of changes) {
     if (change.path === INDEX_FILE) continue;
     nameScanned(change.path, refused, add);
-    if (change.bytes) textOf(change.path, change.bytes, refused, add);
+    const text = change.bytes ? textOf(change.path, change.bytes, refused, add) : undefined;
+    if (text !== undefined) frontScanned(change.path, text, refused, add);
   }
   return problems;
 }
