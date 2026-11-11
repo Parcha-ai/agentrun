@@ -359,7 +359,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do.
-    tools: [...tools.hostTools(withKindTools(granted, tools), undefined, results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
+    tools: [...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };
