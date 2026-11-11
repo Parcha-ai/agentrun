@@ -5,9 +5,11 @@ AgentRun runs as two kinds of process on one store:
 - **The server** serves the API and the console, sets the store up (it is the only one that migrates it), and records
   each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner beside itself
   (a single container, as on Render).
-- **A runner** claims runs from the store and runs them, many at once (`--loops`, default 300). Run as many runners as
-  you need; each one holds a run under a claim it renews every 10 s. A runner that stops hands its runs back at once, and
-  the runs of one that dies are claimed by another runner once their 30 s lease lapses.
+- **A runner** claims runs from the store and runs them, many at once (`--loops`, default `AGENTRUN_MAX_RUNS`, else as
+  many pi runs as its host's memory holds, as the server's `--max-runs`); the rest wait queued. Run as many runners as
+  you need; each one holds a run under a claim it renews every 10 s. A runner that stops lets each busy run finish its
+  turn for up to `--drain-timeout` (default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`, the image's server drain), then hands the rest back, and the runs of
+  one that dies are claimed by another runner once their 30 s lease lapses.
 
 Both come from one image, built from `packages/serve/docker/Dockerfile`, so a runner always knows the schema of the
 store its server set up. Run the server and the runners from the same image tag.
@@ -20,7 +22,7 @@ docker run --hostname server -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... age
   --data /data --listen server --port 7340 --drain-timeout 6s --no-runner
 
 # A runner: the same image, `runner` as its command, the same /data, a name of its own.
-docker run -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server runner --data /data --name runner-1 [--loops N]
+docker run -v agentrun-data:/data -e AGENTRUN_SEAL_KEY ... agentrun-server runner --data /data --name runner-1 [--loops N] [--drain-timeout D]
 ```
 
 The image's default command is the server with a runner beside it, for one container on its own.
@@ -33,6 +35,8 @@ What each takes, from its environment alone:
 | `AGENTRUN_STORE_URL` | optional | optional | A `postgres://` URL for a Postgres store. Unset, the store is SQLite in `/data`, and every process must share that one volume. It holds the database's password, so it is a secret: give it from an env file or a secret store, never written into a compose file or a command line. The launcher hands it to the process over a pipe and keeps it out of the process environment, so no run sees it. |
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
 | `AGENTRUN_STORE_POOL_SIZE` | optional | optional | The most connections this process's Postgres store holds at once (default `10`): a whole number from 1 to 1000; any other value stops the process at start, in words. Each process holds its own pool, plus one connection for renewing claims, and the server one more for its owner lock, so a server with a runner beside it holds up to twice the size plus three. Keep the sum over every server and runner below the database's `max_connections`. With the SQLite store the size has no effect, but a value that is no size still stops the start. |
+| `AGENTRUN_MAX_RUNS` | optional | optional | The most runs at once: the server's `--max-runs` and a runner's `--loops` when not given. Unset, as many pi runs as the host's memory holds. |
+| `AGENTRUN_DRAIN_TIMEOUT` | | optional | A runner's `--drain-timeout` when not given (`8s`, `500ms`, `1m`); unset, `6s`. Keep it plus 25 s below the grace a SIGKILL waits for. |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
@@ -59,8 +63,10 @@ A runner exits with:
 | 3 | The store's schema is one it does not know, or the store is not set up yet. Start the server first; run a runner of the server's release. |
 | 1 | Anything else. |
 
-On SIGTERM a runner stops its loops where they can resume and hands their runs back at once; a loop that does not stop is
-given up at 25 s. Give it 35 s before a SIGKILL.
+On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
+so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands
+their runs back. A loop that does not stop is given up 25 s after that, so with the default drain a runner is done
+within 31 s: give it 35 s before a SIGKILL, more with a longer drain. `--drain-timeout 0s` hands every run back at once.
 
 ## With Docker Compose: a server and two runners
 
