@@ -1,6 +1,6 @@
 // The provisioner: one per vendor. It makes, finds and ends computers; the daemon inside does the work.
 import type { MountKind, MountReadBack, MountSpec } from "./mount.js";
-import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult } from "./protocol.js";
+import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult, NetworkFence } from "./protocol.js";
 import type { Result } from "./result.js";
 import type { ScreenWatch, ScreenWatchHandlers, WatchOptions } from "./screen-watch.js";
 
@@ -26,6 +26,45 @@ export interface ComputerSpec {
 	 * refuses any other kind before a vendor call. An Archil token is never in a label, a read-back or an error.
 	 */
 	mount?: MountSpec;
+	/**
+	 * GPUs for the computer: a type the provider declares (capabilities().gpu.types, the vendor's own name, such as Modal's
+	 * "A100-80GB" or Daytona's "H100") and how many, 1 up to capabilities().gpu.max. check() refuses one the provider does
+	 * not declare in words before a vendor call; a provider that declares no gpu refuses any.
+	 */
+	gpu?: GpuSpec;
+}
+
+/** A computer's GPUs: one type, and how many of it. */
+export interface GpuSpec {
+	type: string;
+	count: number;
+}
+
+/**
+ * The GPUs a provider offers: the types it takes, by the vendor's own names, and the most one computer may have; and
+ * how a GPU computer differs from the provider's others, each stated where the vendor makes it so.
+ */
+export interface GpuCapability {
+	types: string[];
+	max: number;
+	/** A GPU computer's isolation, where it is not capabilities().isolation (Modal's GPUs run on gVisor only). */
+	isolation?: ComputerCapabilities["isolation"];
+	/** The vendor may end a GPU computer to free capacity, at any time. */
+	preemptible?: boolean;
+	/** A GPU computer's stop deletes it: nothing of it is kept (Daytona: no pause, no snapshot). */
+	stopDeletes?: boolean;
+	/** The one region a GPU computer runs in, whatever the provider's own (Daytona's "earth"). */
+	region?: string;
+	/** The size a GPU computer gets for each GPU (the vendor's defaults). */
+	perGpu?: { cpus: number; memoryMb: number; diskMb: number };
+	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: none yet proven on its GPU computers. */
+	mounts?: MountKind[];
+	/**
+	 * How init holds a GPU computer's programs off its network, where it is not the plain network namespace: on Modal's
+	 * gVisor, "userns-netns", one made inside a user namespace, as root there may not make one (measured). The fence holds
+	 * either way; each computer's hello reads back the one it got.
+	 */
+	fence?: NetworkFence;
 }
 
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
@@ -94,6 +133,8 @@ export interface ComputerCapabilities {
 	 * Absent: no vendor's agent runs beside the programs (Docker). A child daemon must declare it.
 	 */
 	vendorAgentPorts?: number[];
+	/** The GPUs spec.gpu may ask for. Absent: none, and check() refuses any spec.gpu. */
+	gpu?: GpuCapability;
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -135,6 +176,31 @@ export function checkLifetime(lifetimeMs: unknown, { lifetime, maxLifetimeMs }: 
 	return [];
 }
 
+/**
+ * The one GPU rule every provider's check() shares, with no vendor call: no spec.gpu is no refusal; one given is an
+ * object of a declared type (capabilities().gpu.types) and a whole count from 1 to capabilities().gpu.max; a provider
+ * that declares no gpu refuses any. With `mount`, the spec's as given, a GPU computer takes only the kinds gpu.mounts
+ * names, where it names them. Serve's claim and readiness read the same rule, so a refusal reads alike wherever it is met.
+ */
+export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabilities, "gpu">, mount?: unknown): Refusal[] {
+	if (gpu === undefined) return [];
+	const refuse = (message: string): Refusal[] => [{ field: "gpu", message }];
+	if (offered === undefined) return refuse("this provider offers no GPU: ask a provider that declares one (capabilities().gpu) for a GPU computer");
+	if (typeof gpu !== "object" || gpu === null || Array.isArray(gpu)) return refuse("gpu is { type, count }: a GPU type this provider declares, and how many");
+	const { type, count } = gpu as { type?: unknown; count?: unknown };
+	const types = offered.types.join(", ");
+	if (typeof type !== "string" || !offered.types.includes(type)) return refuse(`gpu.type ${JSON.stringify(type)} is not one this provider offers: ${types}`);
+	if (!Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > offered.max) {
+		return refuse(`gpu.count ${JSON.stringify(count)} is not a whole number from 1 to ${offered.max}, the most GPUs this provider gives one computer`);
+	}
+	// A mount that is not an object with a kind (null among them) is checkMount's refusal; nothing is read from it here.
+	const kind = typeof mount === "object" && mount !== null ? (mount as { kind?: unknown }).kind : undefined;
+	if (kind !== undefined && offered.mounts !== undefined && !offered.mounts.includes(kind as MountKind)) {
+		return refuse(`a GPU computer here takes no ${String(kind)} mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU`);
+	}
+	return [];
+}
+
 /** Why a spec is refused, in words, before any vendor call. */
 export interface Refusal {
 	field: string;
@@ -168,6 +234,8 @@ export interface ReadBackSpec {
 	kind?: ComputerKind;
 	/** What is mounted at /workspace, never a token; absent when nothing is. */
 	mount?: MountReadBack;
+	/** The GPUs the computer was given, as the vendor reports them (Daytona) or as create recorded them (Modal); absent: none. */
+	gpu?: GpuSpec;
 }
 
 /**
