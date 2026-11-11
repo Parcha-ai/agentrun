@@ -845,11 +845,21 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
   // has other work: this test keeps the process up meanwhile).
   const up = setInterval(() => {}, 1_000);
   t.after(() => clearInterval(up));
-  const net = { network: { lookup: () => new Promise(() => {}), fetch: async () => new Response("", { status: 404 }) } };
+  // The MCP server's own address check is answered (a public address); every lookup after it, its sign-in's endpoints',
+  // never is.
+  let lookups = 0;
+  const net = { network: { lookup: () => (lookups++ === 0 ? Promise.resolve(["192.0.2.10"]) : new Promise(() => {})), fetch: async () => new Response("", { status: 404 }) } };
   const store = await storeOn(t, key, net);
   await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
     assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
+    return true;
+  });
+  // The server's own name never answers: its address check says so, and nothing is sent.
+  const hung = await storeOn(t, key, { network: { lookup: () => new Promise(() => {}), fetch: async () => assert.fail("nothing is sent") } });
+  await assert.rejects(hung.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
+    assert.equal(error.code, "upstream_failed");
+    assert.match(error.message, /^Could not reach the MCP server at https:\/\/mcp\.example\.test \(DNS lookup timed out after \d+ s\)\.$/);
     return true;
   });
 });

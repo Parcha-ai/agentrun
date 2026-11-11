@@ -380,7 +380,8 @@ export class McpServersOverStore {
       at = await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
     } catch (error) {
       if (stop?.aborted || this.stopped.signal.aborted) throw error;
-      throw new ApiError("upstream_failed", `The MCP server did not answer within ${ADDRESS_CHECK_MS / 1000} s.`);
+      // Its address check outlived its time: a name lookup that never answered.
+      throw new ApiError("upstream_failed", `Could not reach the MCP server at ${url.origin} (DNS lookup timed out after ${ADDRESS_CHECK_MS / 1000} s).`);
     }
     if ("refused" in at) {
       if (at.unresolved) throw new ApiError("upstream_failed", `Could not reach the MCP server at ${url.origin} (ENOTFOUND).`);
