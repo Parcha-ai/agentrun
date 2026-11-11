@@ -14,7 +14,6 @@ import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun, withEnv 
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const busy = (dir, name = "never") => `Answer once ${join(dir, name)} exists.`;
 
 /** POST `body` to `path` under Idempotency-Key `key`, and return once the server holds it, still unanswered: a probe under
  *  the same key, with a body the route refuses before it does anything, is idempotency_mismatch only once the server has
@@ -132,7 +131,7 @@ test.skip("a run whose process fails at its start is never started again while i
 // SKIP (follow-up #2078): a harness module that does not load now fails the start with 500 instead of a run that fails
 test.skip("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {
   // A deadline of 2 s, and a store retry 10 s away: the run's end waits longer than a message may.
-  const { data, port, token, api } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, readyTimeoutMs: 2_000, carryBackRetry: { delaysMs: [10_000] } });
+  const { data, port, token, api } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
   const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -164,7 +163,7 @@ test.skip("a message that waits on a run's settle answers 503 at its deadline, n
 });
 
 test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {
-  const { api } = await serve(t, { faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, readyTimeoutMs: 1_000 });
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
   const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -191,7 +190,7 @@ test.skip("a run whose first message never landed before the server stopped: not
   await sleep(1_500);
   assert.deepEqual(said, [], "nothing of the run after the server stopped");
   process.stderr.write = write;
-  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 });
+  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" });
   t.after(() => two.close());
   const { last } = await follow(client(two.baseUrl, two.token), run.body.run_id, ["completed", "failed"]);
   assert.equal(last.status, "completed", JSON.stringify(last));
@@ -260,7 +259,7 @@ test("render.yaml generates the seal key, in a form the server takes: Render's r
 
 // SKIP (follow-up #2078): a cancel of a run waiting for input never settles it to cancelled
 test.skip("a cancel settles a run whose carry back cannot be written: cancelled, final, priced; the store gets it once it can", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555", timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50] }, settleRetryMs: 200 });
+  const { api, data } = await serve(t);
   // The run's request has answered (it asked the person and waits), so its cost is known when it is cancelled. A
   // request a cancel cuts reads unknown instead (spend-cap.test.mjs, "a run cancelled while its request answers ...").
   assert.equal((await api("POST", "/agents", agent("busy", { tools: ["ask_person"] }))).status, 201);

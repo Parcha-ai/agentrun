@@ -26,8 +26,8 @@ parameters:
   topics: { type: string, pattern: "^[^\\n]{0,500}$", description: "optional market keywords, comma-separated (\"payments orchestration, KYB\"): market news on them is in scope too" }
   channel: { type: string, pattern: "^([CG][A-Z0-9]{8,12}|[^@\\s]+@[^@\\s]+\\.[^@\\s]+)$", description: "where the digest goes, the one destination it is ever posted to: a Slack channel's id (C0123ABCD: in Slack, the channel's details, at the bottom) or an email address. Not a #name. Leave it out to have the digest returned only" }
   lookback_days: { type: integer, description: "how many days back a run looks; leave it out for 7, the weekly schedule's gap. Set it to your schedule's gap when you change cron (1 for daily), or runs repeat each other's items" }
-  cron: { type: string, default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" }
-  timezone: { type: string, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
+  cron: { type: string, format: cron, default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" }
+  timezone: { type: string, format: timezone, default: UTC, description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" }
 budget: { per_run_usd: 5.00 }
 learning: true
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.

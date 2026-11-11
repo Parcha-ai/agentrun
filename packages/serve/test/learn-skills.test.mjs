@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import { CAPS, checkProposal } from "../dist/learn/check.js";
-import { servedSkill } from "../dist/learn/skills.js";
+import { frontMatter, servedSkill } from "../dist/learn/skills.js";
 import * as words from "../dist/learning-words.js";
 import * as tools from "../dist/tools.js";
 import { added, baseOf, DRAFT_PATH, note, README_PATH, readme, richWorkflow, SEED, SKILL_PATH, skill, workflow } from "./learn-format-support.mjs";
@@ -257,19 +257,27 @@ test("a skill or a draft whose seed text has a status (a person retired it, or i
 
 test("a skill is laid with name and description alone in its front matter, whatever its file on main holds; its body as it is", () => {
   const laid = servedSkill(HOOKED);
-  assert.equal(laid, "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n1. Collect the tickets.\n");
+  assert.equal(laid, "---\nname: \"find-policies\"\ndescription: \"Find a store's refund and shipping policies\"\n---\n1. Collect the tickets.\n");
   assert.equal(servedSkill(skill({ description: "Use when: a case asks" })).split("\n")[2], 'description: "Use when: a case asks"');
 });
 
 test("a learned skill's description that wraps onto an indented line is served whole, on one line", () => {
   const served = servedSkill("---\nname: find-policies\ndescription: Find refund policies\n  and shipping policies\n---\nDo the job.\n");
-  assert.equal(served.split("\n")[2], "description: Find refund policies and shipping policies");
+  assert.equal(served.split("\n")[2], 'description: "Find refund policies and shipping policies"');
   assert.equal(servedSkill(served), served);
+  // A description holding quotes and a backslash: served twice is served once (OpenCode serves a laid skill again), and
+  // the value read back is the one written.
+  const original = 'Find "refund" policies under C:\\docs\\policies, or \'shipping\' ones';
+  const once = servedSkill(`---\nname: find-policies\ndescription: ${JSON.stringify(original)}\n---\nDo the job.\n`);
+  assert.equal(servedSkill(once), once, "serving is idempotent");
+  assert.equal(servedSkill(servedSkill(once)), once);
+  assert.equal(frontMatter(once).get("description"), original, "read back, the value is the original");
+  assert.equal(frontMatter(servedSkill(`---\nname: find-policies\ndescription: '${original.replace(/'/g, "''")}'\n---\nDo the job.\n`)).get("description"), original, "a single-quoted value reads back the same");
 });
 
 test("a skill whose plain name is followed by an indented comment keeps its name: the comment is no part of it", () => {
   const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
-  assert.equal(served.split("\n")[1], "name: find-policies");
+  assert.equal(served.split("\n")[1], 'name: "find-policies"');
 });
 
 // A call node's tool set to ask or deny (tool-gate.ts): the run would park or refuse it, so a learned draft never names
