@@ -514,6 +514,25 @@ test("the viewer's blur lifts the buttons it holds; Hand back lifts them before 
   assert.equal(sentAtGive, 4, "the up went before the hold was given");
 });
 
+test("a blur behind a slow input lifts a press still queued when it came: the press is sent, then its up, never left down", { timeout: 30_000 }, async (t) => {
+  const { row, watch } = await opened(t, { hold: fakeHold({ grant: true }) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  // The computer is slow to take input: a key is being sent, and a press waits behind it when the viewer loses focus.
+  const release = watch.blockInputs();
+  const first = watch.nextInput();
+  ws.sendJson(key("a"));
+  assert.deepEqual(await first, [{ type: "type", text: "a" }]);
+  ws.sendJson(press(0));
+  ws.sendJson({ type: "blur" });
+  await settled(ws);
+  release();
+  for (const deadline = Date.now() + 5_000; watch.state.inputs.length < 3 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(watch.state.inputs, [[{ type: "type", text: "a" }], [{ type: "move", at: [10, 20] }, { type: "down", button: "left" }], [{ type: "up", button: "left" }]], "the queued press, then its up");
+});
+
 test("a server-side grant through the hold (the run page's take-over, not this viewer's) is a new take: input queued under the take before it is never sent under it", { timeout: 30_000 }, async (t) => {
   const { row, watch, hold } = await opened(t, { hold: fakeHold({ grant: true }), limits: { maxQueuedInput: 4 } });
   const ws = await viewerOf(row);
@@ -649,6 +668,9 @@ test("the viewer's page holds a swipe to 1,000 ms as the computer does, and tell
   assert.match(computerViewerAssets.js, /Math\.min\(1000, Date\.now\(\) - from\.at\)/);
   assert.doesNotMatch(computerViewerAssets.js, /Math\.min\(5000/);
   assert.match(computerViewerAssets.js, /addEventListener\("blur", function \(\) \{ if \(holding\) raw\(\{ type: "blur" \}\); \}\)/);
+  // A button pressed on the screen is released wherever the mouse goes up: heard on the window, not the canvas alone.
+  assert.match(computerViewerAssets.js, /window\.addEventListener\("mouseup", function \(e\) \{\s*if \(input !== "desktop" \|\| !pressed\[e\.button\]\) return;/);
+  assert.doesNotMatch(computerViewerAssets.js, /canvas\.addEventListener\("mouseup"/);
 });
 
 test("a socket that closes mid-take ends the take away on the run's hold at once (not given), lets go of the button it held once, and leaves the agent's open ask open", { timeout: 30_000 }, async (t) => {

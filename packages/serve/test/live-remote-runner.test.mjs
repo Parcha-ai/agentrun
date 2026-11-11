@@ -99,6 +99,10 @@ test("the browser's hand-over on a runner on another host: a viewer's link on th
   assert.equal(handoverOf(link(REMOTE), "tag-1"), undefined, "no live host: loopback alone");
   assert.equal(handoverOf(link("elsewhere.test"), "tag-1", REMOTE), undefined, "a host the runner did not name");
   assert.equal(handoverOf(link("127.0.0.1"), "tag-1", REMOTE)?.host, undefined, "loopback still, with no host in its row");
+  // A live host given in mixed case is read in lower case, as a link's hostname reads it: its hand-over still holds.
+  const mixed = runnerLiveOf({ AGENTRUN_RUNNER_LIVE_HOST: "Runner-1.Example" }, KEY);
+  assert.equal(mixed.host, "runner-1.example");
+  assert.equal(handoverOf(link("Runner-1.Example"), "tag-1", mixed.host)?.host, "runner-1.example");
   const store = fakeLiveViewersStore();
   const claim = store.claim("run-3");
   assert.equal(await putLiveViewer(store, KEY, claim, handoverOf(link(REMOTE), "tag-1", REMOTE)), true);

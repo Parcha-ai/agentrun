@@ -53,9 +53,11 @@ export type RunnerLive = { readonly host: string; readonly bind: string; readonl
 /** The runner's live host, from its environment (AGENTRUN_RUNNER_LIVE_HOST, AGENTRUN_RUNNER_LIVE_BIND) and the seal key;
  *  undefined with none (or one that is not a host): its viewers answer on loopback, as on a server's own machine. */
 export function runnerLiveOf(env: { readonly AGENTRUN_RUNNER_LIVE_HOST?: string | undefined; readonly AGENTRUN_RUNNER_LIVE_BIND?: string | undefined }, sealKey: Buffer): RunnerLive | undefined {
-  const host = env.AGENTRUN_RUNNER_LIVE_HOST?.trim();
+  // Lower case, as a URL's hostname reads a DNS name and the server's runners' hosts are read (liveReachOf): one form for
+  // the links, the origins and the rows.
+  const host = env.AGENTRUN_RUNNER_LIVE_HOST?.trim().toLowerCase();
   if (!isLiveHost(host) || host === LOOPBACK) return undefined;
-  const bind = env.AGENTRUN_RUNNER_LIVE_BIND?.trim();
+  const bind = env.AGENTRUN_RUNNER_LIVE_BIND?.trim().toLowerCase();
   return { host, bind: bind && (isLiveHost(bind) || bind === "0.0.0.0") ? bind : host, key: proofKey(sealKey) };
 }
 

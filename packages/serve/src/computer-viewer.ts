@@ -184,18 +184,22 @@ const js = `"use strict";
   }
   function mods(e) { return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0); }
 
-  // A desktop: the mouse and the wheel.
+  // A desktop: the mouse and the wheel. A button pressed on the screen is released wherever the mouse goes up (the bar
+  // around it, the empty stage): the release is heard on the window, at the screen's nearest point.
+  var pressed = {};
   canvas.addEventListener("mousedown", function (e) {
     focusScreen();
     if (input !== "desktop") return;
     var p = point(e); if (!p) return;
     e.preventDefault();
+    pressed[e.button] = true;
     send({ type: "mouse", action: "down", x: p.x, y: p.y, button: e.button, buttons: e.buttons, clickCount: Math.max(1, Math.min(3, e.detail || 1)), modifiers: mods(e) });
   });
-  canvas.addEventListener("mouseup", function (e) {
-    if (input !== "desktop") return;
+  window.addEventListener("mouseup", function (e) {
+    if (input !== "desktop" || !pressed[e.button]) return;
+    delete pressed[e.button];
     var p = point(e); if (!p) return;
-    e.preventDefault();
+    if (e.target === canvas) e.preventDefault();
     send({ type: "mouse", action: "up", x: p.x, y: p.y, button: e.button, buttons: e.buttons, clickCount: Math.max(1, Math.min(3, e.detail || 1)), modifiers: mods(e) });
   });
   var moved = null, scheduled = false;

@@ -397,13 +397,22 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   };
 
   /** What this take pressed and has not released (the mapper's ups), let go once, in order behind the input before it,
-   *  whatever the hold says now: ups only lift. */
-  const liftHeld = (current: Viewer | null): Promise<void> => {
-    const ups = mapper.release();
-    if (ups.length === 0 || !current) return Promise.resolve();
+   *  whatever the hold says now: ups only lift. `queued`: the ups are read once the input queued before has run (a blur,
+   *  which leaves this take's queued input to be sent), so a press still queued then (behind a slow click) is mapped first
+   *  and lifted with the rest, never left down. Otherwise (a hand back, a take's end, which move the epoch so nothing queued
+   *  is mapped) they are read now. */
+  const liftHeld = (current: Viewer | null, queued = false): Promise<void> => {
+    // This take's mapper, even if a new take begins before the queue reaches the lift.
+    const held = mapper;
+    const now = queued ? undefined : held.release();
+    if (!current || (now && now.length === 0)) {
+      if (!current) held.release();
+      return Promise.resolve();
+    }
     // Sent even if the viewer went meanwhile: its watch takes them until it is closed.
     const lifted = current.chain.then(async () => {
-      await current.watch?.input(ups).catch(() => undefined);
+      const ups = now ?? held.release();
+      if (ups.length > 0) await current.watch?.input(ups).catch(() => undefined);
     });
     current.chain = lifted;
     return lifted;
@@ -577,7 +586,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (ack) acked(current);
       return ack?.();
     }
-    if (message.type === "blur") return void liftHeld(current);
+    if (message.type === "blur") return void liftHeld(current, true);
     if (message.type === "take" || message.type === "give") return void onHands(current, message.type);
     onInput(current, message);
   };
