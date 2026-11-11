@@ -10,8 +10,8 @@
 // is the run view's to read from the journal (the server's view layer, run-view.ts). These writers take it as `RunMoment`
 // and never recompute it; the coarse facts a row already holds (its state, its launch cap) they read from the store.
 import { randomBytes } from "node:crypto";
-import type { Revision } from "@parcha/pi-durable-agent";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { Revision } from "./agent-rows.js";
+import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";

@@ -3,7 +3,7 @@
 // stored commit (live/translate.ts), in commit order, each batch naming its commit's seq so a reader that comes back
 // resumes from it; and beside them, never inside a commit's batch, what the runner holds before pi stores it (the run's
 // run_live row: a running tool, a partial answer), in the same vocabulary.
-import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { RUN_RESUMED } from "../timeline/index.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { HeldState } from "../runner/loop-contract.js";
 import { FINAL_STATES, type RunState, type Store } from "../store/store.js";

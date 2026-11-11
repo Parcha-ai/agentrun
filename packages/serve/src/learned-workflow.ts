@@ -20,7 +20,7 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
-import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { sideRequests } from "./cap.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";

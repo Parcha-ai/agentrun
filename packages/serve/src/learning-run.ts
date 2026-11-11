@@ -4,8 +4,9 @@
 // labelled). The runner runs the end-of-run turn itself (runner/reflect-hook.ts).
 import { posix } from "node:path";
 import { INDEX_FILE } from "./learn/index.js";
-import { type AnalyticsFilter, type RunRow } from "@parcha/pi-durable-agent";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { RunRow } from "./agent-rows.js";
+import type { AnalyticsFilter } from "./store-reads/analytics.js";
+import type { TimelineEvent } from "./timeline/index.js";
 import { detailShown, LEARNED_DIR, type Learning, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, type Shown } from "./learning.js";
 import { type Reflect, reflects } from "./reflect-range.js";
 import type { NoteFiles } from "./usage.js";
