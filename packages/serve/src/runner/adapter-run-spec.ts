@@ -23,7 +23,7 @@ import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
-import { type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
+import { deniedText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
 import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
@@ -36,7 +36,7 @@ import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } fro
 import { layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
+import { LEARNED_MCP_ARGUMENTS, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
@@ -47,7 +47,7 @@ import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
-import { mcpForClaim } from "./mcp-run.js";
+import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
@@ -214,20 +214,43 @@ export function modelAskOf(pinned: { provider: string; modelId: string } | undef
  *  refresh): the same gate as the run's own calls, its settings read again from the store before each call node. */
 export type RunPermissions = { readonly policy: (tool: string) => Permission; readonly denyFrom: (tool: string) => SettingFrom; readonly refresh: () => Promise<void> };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
   const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root, approvers);
+  // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
+  let learned: readonly LearnedWorkflow[] = [];
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
     current = await storeSettings(store);
-    return gate.decide(call.tool, call.args);
+    const decision = await gate.decide(call.tool, call.args);
+    // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings, decided for the whole call
+    // before any node runs, never mid-run: one set to deny refuses the call in the gate's words, nothing sent; one set to
+    // ask asks for the call, up front, on the run's one card (a running workflow can't park mid-call: it is never run
+    // again after a crash), and the person's allow lets that call's MCP nodes run, and only that call's.
+    if ((call.tool as string) !== LEARNED_WORKFLOW_TOOL || decision !== "allow") return decision;
+    const tools = await mcpOf(call.args);
+    const denied = tools.find((tool) => gate.policy(tool) === "deny");
+    if (denied) return { deny: `The learned workflow ${String((call.args as { name?: unknown }).name)} was not run: ${deniedText(denied, undefined, gate.denyFrom(denied))}` };
+    return tools.some((tool) => gate.policy(tool) === "ask") ? "ask" : decision;
+  };
+  /** The MCP tools the learned workflow a learned_workflow call names can call; none for another call or workflow. */
+  const mcpOf = async (args: unknown): Promise<string[]> => {
+    const flow = learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
+    return flow ? learnedMcpTools(flow.workflow) : [];
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
   const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), refresh: async () => { current = await storeSettings(store); } };
-  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), permissions });
+  // What a learned_workflow call's card shows beside its own input: every MCP tool set to ask that the workflow can call,
+  // and that their arguments are decided while it runs, so the person sees what they approve.
+  const askedFor = async (tool: string, args: unknown): Promise<Record<string, unknown> | undefined> => {
+    if (tool !== LEARNED_WORKFLOW_TOOL) return undefined;
+    const asks = (await mcpOf(args)).filter((one) => gate.policy(one) === "ask");
+    return asks.length ? { mcp_calls: asks, mcp_arguments: LEARNED_MCP_ARGUMENTS } : undefined;
+  };
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -447,7 +470,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const handTools = tools.hostTools(withKindTools(granted, tools), results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions)).map((tool) => answersCut(tool, cut));
+  // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
+  gate.learn(workflows);
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, mcp)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -576,11 +601,15 @@ export async function learnedWorkflowHostTool(opts: {
   /** The run's gate's permissions (adapterRunGate): each call node's tool is held to them, as main holds it. */
   readonly permissions: RunPermissions;
   readonly ctx: HostToolCtx;
+  /** The claim's MCP (mcp-run.ts mcpForClaim), when its revision grants an MCP tool: its call nodes may name its tools by
+   *  catalog name, each run through the run's own MCP as the loop wraps it. */
+  readonly mcp?: Pick<ClaimMcp, "tools" | "catalogOf">;
 }): Promise<HostTool | undefined> {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh });
+  const mcpTools = (opts.mcp?.tools ?? []).map((one) => opts.mcp!.catalogOf(one.name)).filter((name): name is string => typeof name === "string");
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, mcpTools });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -690,7 +719,7 @@ export async function webHostTools(host: ToolHost, granted: readonly string[], c
   return tools;
 }
 
-async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, mcp?: ClaimMcp): Promise<AdapterRunSpec["session"]["tools"]> {
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. learned_workflow
   // binds below with no web tool, so a learned run with no web tool still lists it.
@@ -704,7 +733,7 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // the session's tools the harness is told of: its model nodes run on the session's proxied models (run.ledger.models),
   // each a request on the run's one route labelled learned_workflow. The agent's scoped keys (host.env) are its call
   // nodes'.
-  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx });
+  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, ...(mcp ? { mcp } : {}) });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal
