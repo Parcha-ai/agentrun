@@ -21,7 +21,7 @@ import { MODEL_KEYS } from "../dist/model.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { entriesOf, git, resnap, CLI_TOOLS_TODO } from "./learn-support.mjs";
-import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -267,7 +267,7 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
 });
 
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
+// SKIP (follow-up #2080): a learned node's request is not routed or booked as before on the runner
 test.skip("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());

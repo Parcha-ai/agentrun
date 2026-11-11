@@ -7,6 +7,7 @@
 // the snapshot and its bodies when main is the seed (no exec), else one read-only exec of the learning script at that
 // commit. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse (a
 // note holding a secret among them) is never kept anywhere.
+import type { DraftAsk } from "./learn/skills.js";
 import { join } from "node:path";
 import { type Change, checkProposal, type DraftDryRun, draftDryRun, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
@@ -89,7 +90,7 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  `skills/<name>/SKILL.md`; a draft at `workflows/<name>/workflow.json`, with the README.md the host writes from the
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
-export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">> }): Promise<Proposed> => {
+export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
   // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
   // answer's order; a draft is its two files, given together or not at all. A draft's `example:` line, by its
@@ -135,7 +136,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   if (leaky.length) return { state: "dropped", reason: "checker", problems: leaky };
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const dryRuns: Record<string, DraftDryRun> = {};
-  const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
+  const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.ask ? { ask: input.ask } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
   // The static checks first, every one (validateWorkflow with executeCode: false, draftProblems' refusal of code nodes,
   // caps, secrets): a draft they refuse is never dry-run, nor is any when they refuse the answer whole. Then each draft
   // left is dry-run on its example, else on a synthesized input (learn/skills.ts draftDryRun): every model and tool
