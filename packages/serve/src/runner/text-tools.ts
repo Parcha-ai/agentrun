@@ -101,19 +101,32 @@ export function callsOfText(said: string, tools: readonly Tool[] = []): { text: 
   const first = text.search(/<(?:function_calls|calls|invoke\b|parameter\b)/);
   const groups: { name?: string; args: Record<string, unknown> }[] = [];
   const current = () => groups[groups.length - 1] ?? (groups.push({ args: {} }), groups[0]!);
-  const token = /<invoke\s+name="([^"]+)"(\s*,\s*"arguments"\s*:\s*)?|<\/invoke>|<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([\s\S]*?)<\/(?:parameter|invoke)>|<([A-Za-z_][\w-]*)>([^<]*)<\/parameter>/g;
+  // A string is written unescaped, so a value may hold "</parameter>" itself (a file that writes this protocol, an
+  // example in a comment): a value ends at the closing tag that the call's next tag, or the reply's end, follows.
+  const token = /<invoke\s+name="([^"]+)"(\s*,\s*"arguments"\s*:\s*)?|<\/invoke>|<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([\s\S]*?)<\/(?:parameter|invoke)>(?=\s*(?:<parameter\s+name=|<\/?invoke\b|<\/function_calls>|<\/calls>|<[A-Za-z_][\w-]*>[^<]*<\/parameter>|$))|<([A-Za-z_][\w-]*)>([^<]*)<\/parameter>/g;
+  const block = first < 0 ? "" : text.slice(first);
   let closed = false;
-  for (const match of first < 0 ? [] : text.slice(first).matchAll(token)) {
+  // A call the reply did not finish (cut off, or a tag opened and never closed) is never run on what it holds so far:
+  // the reply is broken, and asked again.
+  let unfinished = false;
+  let end = 0;
+  for (const match of block.matchAll(token)) {
     const [whole, invoked, jsonArgs, key, isString, value, slipKey, slipValue] = match;
+    if (/<(?:invoke|parameter)\b/.test(block.slice(end, match.index))) unfinished = true;
+    end = match.index! + whole.length;
     if (invoked !== undefined) {
       groups.push({ name: invoked, args: {} });
       closed = false;
       if (jsonArgs) {
-        const object = objectAt(text.slice(first), match.index! + whole.length);
-        if (object !== undefined) {
+        const object = objectAt(block, end);
+        if (object === undefined) unfinished = true;
+        else {
+          end += object.length;
           try {
             Object.assign(groups[groups.length - 1]!.args, JSON.parse(object));
-          } catch {}
+          } catch {
+            unfinished = true;
+          }
         }
       }
     } else if (whole === "</invoke>") closed = true;
@@ -132,6 +145,8 @@ export function callsOfText(said: string, tools: readonly Tool[] = []): { text: 
       current().args[key] = valueOf(value!, isString);
     } else if (slipKey !== undefined && !["function_calls", "calls", "invoke", "parameter"].includes(slipKey) && !(slipKey in current().args)) current().args[slipKey] = valueOf(slipValue!, undefined);
   }
+  if (first >= 0 && /<(?:invoke|parameter)\b/.test(block.slice(end))) unfinished = true;
+  if (unfinished) return { text: text.trim(), calls: [], broken: true };
   for (const group of groups) {
     const name = group.name ?? nameOf(group.args, tools);
     if (name !== undefined) calls.push({ name, arguments: group.args });

@@ -145,3 +145,28 @@ test("a re-ask is paid out of the one request's hold: its output limit is what i
   await eventsOf(route.fetch, route.provider.origin);
   assert.equal(sent.length, 1, "no re-ask past the hold");
 });
+
+test("a string value may hold the protocol's own closing tags; a call the reply did not finish never runs", async () => {
+  const tools = [{ name: "write", parameters: { type: "object", properties: { path: {}, content: {} }, required: ["path", "content"] } }, { name: "read", parameters: { type: "object", properties: { path: {}, offset: {} }, required: ["path"] } }];
+  const content = 'const doc = "<parameter name=\\"x\\">1</parameter>\\n</invoke>";\nexport default doc;';
+  const written = `<function_calls>\n<invoke name="write">\n<parameter name="path" string="true">a.ts</parameter>\n<parameter name="content" string="true">${content}</parameter>\n</invoke>\n</function_calls>`;
+  assert.deepEqual(callsOfText(written, tools).calls, [{ name: "write", arguments: { path: "a.ts", content } }], "the whole value, its closing tags and all");
+  // Cut during a parameter, before the first one closes, and during an invoke's JSON arguments: broken, no call.
+  for (const cut of ['<function_calls>\n<invoke name="read">\n<parameter name="path" string="true">a.ts</parameter>\n<parameter name="offset" string="false">9', '<function_calls>\n<invoke name="read">\n<parameter name="path" string="true">a.t', '<invoke name="read", "arguments": {"path": "a.t']) {
+    assert.deepEqual(callsOfText(cut, tools), { text: cut, calls: [], broken: true }, cut);
+  }
+  // On the route: a reply its provider cut at the output limit runs no call even when what it holds reads whole; with
+  // nothing left of the hold it is not asked again, and it comes back as text with its own stop reason.
+  const sent = [];
+  const whole = '<function_calls>\n<invoke name="read">\n<parameter name="path" string="true">a.ts</parameter>';
+  const upstream = async (_url, init = {}) => {
+    sent.push(JSON.parse(String(init.body)));
+    const chunk = (delta, finish, usage) => `data: ${JSON.stringify({ id: "gen-1", object: "chat.completion.chunk", created: 0, model: "particle-ai/particle-1", choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}`;
+    return new Response([chunk({ role: "assistant", content: whole }, null), chunk({}, "length", { prompt_tokens: 100, completion_tokens: 256, total_tokens: 356 }), "data: [DONE]", "", ""].join("\n\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const route = await routeOf(MODEL, { OPENROUTER_API_KEY: KEY }, "default", undefined, upstream);
+  const events = await eventsOf(route.fetch, route.provider.origin);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(events.filter((event) => event.type === "content_block_start").map((event) => event.content_block.type), ["text"]);
+  assert.equal(events.find((event) => event.type === "message_delta").delta.stop_reason, "max_tokens");
+});

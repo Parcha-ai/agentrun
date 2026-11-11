@@ -201,7 +201,10 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 if (attempt === 1 && outputHeld !== undefined) heldUsd = priceOn(target, { ...part, output: outputHeld });
                 spentUsd += priceOn(target, part);
                 const said = (message.content ?? []).filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
-                const read = callsOfText(said, tools);
+                // A reply cut at its output limit may stop inside a call: a call block in it is never run, it is broken.
+                const cut = (event.reason ?? message.stopReason) === "length";
+                const parsed = callsOfText(said, tools);
+                const read = cut && (parsed.calls.length > 0 || parsed.broken) ? { text: said.trim(), calls: [], broken: true } : parsed;
                 if (read.broken && attempt < TEXT_TOOL_TRIES && outputHeld !== undefined) {
                   nextTokens = reaskTokens(target, part, heldUsd - spentUsd, outputHeld);
                   if (nextTokens > 0 && nextTokens >= part.output) {
