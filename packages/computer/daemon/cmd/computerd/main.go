@@ -13,6 +13,12 @@
 //	                    init, still root, refuses to start while another process holds uid, moves itself into a network
 //	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock and io_uring to
 //	                    every thread: its programs reach their own loopback and nothing else (internal/isolate)
+//	                    Where root may not make the network namespace itself (EPERM: no CAP_SYS_ADMIN, as on gVisor),
+//	                    init makes it inside a user namespace instead: it starts itself again as `computerd userns-init`
+//	                    in a user namespace that maps every id to itself and a network namespace, both its own; that init
+//	                    does all of the above but make the namespace, and this one keeps no capability, passes SIGTERM
+//	                    and SIGINT on, and ends with it (daemon.InitInUserNamespace). If neither can be made, init
+//	                    refuses to start, in words that name both. hello says which fence holds: "netns" or "userns-netns"
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
@@ -58,6 +64,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
 )
@@ -66,7 +73,7 @@ var version = "0.0.0-dev"
 
 func main() {
 	logger := log.New(os.Stderr, "computerd: ", log.LstdFlags)
-	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && len(os.Args) != 2) {
+	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && len(os.Args) != 2) {
 		usage()
 	}
 	switch os.Args[1] {
@@ -83,21 +90,23 @@ func main() {
 		if !ok {
 			os.Exit(2)
 		}
-		var dropped error
-		if opts.user != nil {
-			dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), daemon.Isolation{OwnNetwork: opts.ownNetwork})
-		} else {
-			dropped = daemon.Unprivileged()
+		os.Exit(runInit(opts, daemon.Isolation{OwnNetwork: opts.ownNetwork}, os.Args[2:], logger))
+	case daemon.UserNamespaceInitArg:
+		// The init InitInUserNamespace started, already in a user and a network namespace of its own.
+		args := os.Args[2:]
+		if len(args) < 2 || args[0] != "--started-in" || args[1] == "" {
+			logger.Printf("init: %s takes --started-in <network namespace> and then init's own arguments", daemon.UserNamespaceInitArg)
+			os.Exit(2)
 		}
-		if dropped != nil {
-			logger.Printf("init refuses to start: %v", dropped)
-			os.Exit(1)
+		opts, ok := initOptionsOf(logger, args[2:])
+		if !ok {
+			os.Exit(2)
 		}
-		var relay daemon.Egress
-		if opts.egress != "" {
-			relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+		if !opts.ownNetwork {
+			logger.Printf("init: %s runs only with --own-network among init's arguments", daemon.UserNamespaceInitArg)
+			os.Exit(2)
 		}
-		os.Exit(daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, logger))
+		os.Exit(runInit(opts, daemon.Isolation{OwnNetwork: true, StartedIn: args[1]}, args[2:], logger))
 	case "probe":
 		if diagnose, ok := diagnoseOf(logger, os.Args[2:]); !ok {
 			os.Exit(2)
@@ -131,6 +140,50 @@ func main() {
 		os.Exit(execrun.Guard())
 	default:
 		usage()
+	}
+}
+
+// runInit drops (Become with isolation, as --user asks, else Unprivileged), then serves until the computer ends, and
+// gives init's exit code; a drop that fails is said and init refuses to start (1). Where root may not make the network
+// namespace itself (isolate.ErrNoNetworkNamespace), init makes it inside a user namespace instead: it starts itself again
+// with args, init's own (daemon.InitInUserNamespace), and ends with that init.
+func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger *log.Logger) int {
+	var dropped error
+	if opts.user != nil {
+		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
+	} else {
+		dropped = daemon.Unprivileged()
+	}
+	if errors.Is(dropped, isolate.ErrNoNetworkNamespace) && isolation.StartedIn == "" {
+		self, err := os.Executable()
+		if err != nil {
+			logger.Printf("init refuses to start: %v, and cannot name its own program to start again inside a user namespace: %v", dropped, err)
+			return 1
+		}
+		logger.Printf("init: %v; making it inside a user namespace of its own", dropped)
+		return daemon.InitInUserNamespace(self, args, dropped, logger)
+	}
+	if dropped != nil {
+		logger.Printf("init refuses to start: %v", dropped)
+		return 1
+	}
+	var relay daemon.Egress
+	if opts.egress != "" {
+		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+	}
+	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), logger)
+}
+
+// fenceOf is how init fences its programs off the computer's network, as hello says it: "netns", a network namespace of
+// its own; "userns-netns", one made inside a user namespace of its own; "" with no network of its own.
+func fenceOf(isolation daemon.Isolation) string {
+	switch {
+	case !isolation.OwnNetwork:
+		return ""
+	case isolation.StartedIn != "":
+		return daemon.FenceUserNetwork
+	default:
+		return daemon.FenceNetwork
 	}
 }
 
@@ -220,7 +273,8 @@ type initOptions struct {
 	user     *account
 	// egress is the egress proxy's socket init relays to; empty is none.
 	egress string
-	// ownNetwork: init, as root, gives itself and its programs a network of their own (daemon.Isolation).
+	// ownNetwork: init, as root, gives itself and its programs a network of their own (daemon.Isolation), made inside a
+	// user namespace where root may not make it directly.
 	ownNetwork bool
 }
 

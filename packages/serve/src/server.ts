@@ -1132,7 +1132,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
    *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
-  const computerReady = async (setting: { kind: string; provider?: string }) =>
+  const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
     computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
