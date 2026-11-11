@@ -3,12 +3,13 @@
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
 // the kind's verdict alone: 0 when the provider passes the kind, 1 when it does not.
+import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
-import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../kinds.js";
+import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES } from "../kinds.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
 import { kindRunProblem } from "./kind.js";
 import type { CdpDialer } from "./cdp.js";
@@ -121,6 +122,10 @@ const DEFAULT_IMAGE = "debian:bookworm-slim";
 interface Target {
 	provider: ComputerProvider;
 	drifted?: () => Promise<ComputerProvider>;
+	/** What the provider declares of itself, for health.declared. */
+	declared?: readonly KindCapabilities[];
+	/** The provider built with planted secrets, for health.no-key-in-errors. */
+	planted?: ConformanceOptions["planted"];
 	/** The module's run folders for the mount cases: mountFor(kind). */
 	mountFor?: ConformanceOptions["mountFor"];
 	/** The module's image for a run that names none. */
@@ -138,7 +143,15 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
  * conformance() module is run when it has one, else its create() alone, given the CLI's options but the env (a provider
  * reads no environment), with no drifted twin.
  */
-async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule> }> {
+async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; declared?: readonly KindCapabilities[] }> {
+	const found = await moduleFor(name, cwd);
+	// What the provider file declares of itself (its CAPABILITIES; its descriptor once that lands), kept across the switch
+	// to its conformance module, for health.declared.
+	const declared = found.file.CAPABILITIES;
+	return { label: found.label, module: found.module, ...(Array.isArray(declared) ? { declared: declared as readonly KindCapabilities[] } : {}) };
+}
+
+async function moduleFor(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; file: Record<string, unknown> }> {
 	let label = name;
 	let module: Record<string, unknown>;
 	if (isProviderId(name)) {
@@ -153,7 +166,7 @@ async function conformanceModule(name: string, cwd: string): Promise<{ label: st
 			throw new Usage(`cannot load the provider module ${label}: ${(error as Error).message.split("\n")[0]}`);
 		}
 	}
-	if (typeof module.conformance === "function") return { label, module: await module.conformance() };
+	if (typeof module.conformance === "function") return { label, module: await module.conformance(), file: module };
 	if (typeof module.createProvider !== "function" && typeof module.create === "function") {
 		const create = module.create as (options: object) => ComputerProvider | Promise<ComputerProvider>;
 		return {
@@ -164,16 +177,20 @@ async function conformanceModule(name: string, cwd: string): Promise<{ label: st
 					return create(rest);
 				},
 			},
+			file: module,
 		};
 	}
-	return { label, module: module as Partial<ConformanceModule> };
+	return { label, module: module as Partial<ConformanceModule>, file: module };
 }
+
+/** A name of a module's ENV that holds a secret: an API key, a token, a token's secret. */
+const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
 
 /**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
  * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
  */
-async function load(label: string, module: Partial<ConformanceModule>, options: object): Promise<Target> {
+async function load(label: string, module: Partial<ConformanceModule>, options: object, declared?: readonly KindCapabilities[]): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
@@ -183,6 +200,18 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 	}
 	const target: Target = { provider };
 	if (typeof createDriftedProvider === "function") target.drifted = async () => (await createDriftedProvider(options)) as ComputerProvider;
+	// The provider file's own declaration; without it, the runner takes the kind registry's entry for the provider's id.
+	if (declared !== undefined) target.declared = declared;
+	// The same provider built with a planted value in each name of its ENV that holds a secret: a fresh one each time.
+	const secretNames = Object.values(module.ENV ?? {}).filter((name) => typeof name === "string" && SECRET_NAME.test(name));
+	if (secretNames.length > 0) {
+		target.planted = async () => {
+			const secrets = secretNames.map(() => `agentrun-planted-${randomBytes(12).toString("hex")}`);
+			const given = (options as { env?: ProviderEnv }).env ?? process.env;
+			const env: ProviderEnv = { ...given, ...Object.fromEntries(secretNames.map((name, i) => [name, secrets[i] as string])) };
+			return { provider: (await createProvider({ ...options, env })) as ComputerProvider, secrets };
+		};
+	}
 	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
 	if (conformanceImage !== undefined) {
 		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
@@ -217,8 +246,8 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	const options = { ...(io.providerOptions ?? {}), onNote: (note: { computer: string; note: string }) => providerNotes.push({ computer: note.computer, note: note.note }) };
 	let target: Target;
 	try {
-		const { label, module } = await conformanceModule(args.provider, cwd);
-		target = await load(label, module, options);
+		const { label, module, declared } = await conformanceModule(args.provider, cwd);
+		target = await load(label, module, options, declared);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {
@@ -238,6 +267,8 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
+		...(target.declared ? { declared: target.declared } : {}),
+		...(target.planted ? { planted: target.planted } : {}),
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),
 		...(onResult ? { onResult } : {}),
 		...(io.cdp ? { cdp: io.cdp } : {}),
