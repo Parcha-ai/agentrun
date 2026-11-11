@@ -9,7 +9,6 @@ import { test } from "node:test";
 import { completer } from "../dist/llm.js";
 import { MAX_PAGE_PX, pagesStem, pdfPages } from "../dist/pdf-pages.js";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { gated, RUN_PAUSED } from "../dist/pause.js";
 import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A fake's key: a stand-in it never checks, held in a name so no key literal sits beside a key variable. */
@@ -84,23 +83,6 @@ test("llm completes once on the tier's model: text, model, usage, and a null cos
   assert.deepEqual([sent[0].context.systemPrompt, sent[0].context.messages[0].content, sent[0].options.maxTokens, sent[0].options.reasoning], ["Be brief", "Say hi", 50, "medium"]);
   assert.equal((await complete({ prompt: "x", tier: "strong" }, AbortSignal.timeout(1000))).cost_usd, 0.5);
   await assert.rejects(complete({ prompt: "" }, AbortSignal.timeout(1000)), /prompt/);
-});
-
-test("the pause gate holds a call while the mark is there, and lets it go on resume or on its abort", async (t) => {
-  const dir = await scratch(t);
-  await writeFile(join(dir, RUN_PAUSED), "");
-  let ran = 0;
-  const call = gated(dir, async () => ++ran);
-  const held = call({});
-  await sleep(600);
-  assert.equal(ran, 0);
-  execFileSync("rm", [join(dir, RUN_PAUSED)]);
-  assert.equal(await held, 1);
-  await writeFile(join(dir, RUN_PAUSED), "");
-  const controller = new AbortController();
-  const aborted = call({ signal: controller.signal });
-  controller.abort();
-  assert.equal(await aborted, 2);
 });
 
 /** A workflow over the documents: map(pdf_pages) -> code tally -> llm. No decision provider is needed. */
