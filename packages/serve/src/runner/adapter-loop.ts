@@ -995,8 +995,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
          *  cache miss within that bound pauses the run at its next request instead. Undefined while it fits, with no cap, or
          *  with a spend unknown. */
         const overCap = async (): Promise<string | undefined> => {
+          // A run whose spec gives no cap (no runCap, or no cap's rule) has none to pass.
+          if (!spec.cap || !spec.runCap) return undefined;
           const cap = capNow();
-          if (cap === undefined || !spec.cap) return undefined;
+          if (cap === undefined) return undefined;
           let others = 0;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key) continue;
