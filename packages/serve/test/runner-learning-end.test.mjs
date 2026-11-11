@@ -228,11 +228,12 @@ test("the draft ask describes each tool a call node may run, by the server's own
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
 
-test("the draft ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate holds is not offered, and the run is asked its turn (LS-07)", async (t) => {
+test("the draft ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
   const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
   const takes = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
   const gives = { type: "object", properties: { id: { type: "string" } } };
-  const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:github/*": { permission: "allow" } };
+  // create_issue allowed, delete_issue denied, github's unset (ask: its learned_workflow call asks once, #2424).
+  const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:linear/delete_issue": { permission: "deny" } };
   const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, async (dir) => {
     const seed = await seedOf(dir, "agent-1");
     return runner(() => offered(seed.sha))(dir);
@@ -251,8 +252,8 @@ test("the draft ask describes each MCP tool a call node may run by its server's 
   const listed = prompt.slice(prompt.indexOf("What each tool a call node may run takes and gives:"), prompt.indexOf("A skill is how"));
   assert.ok(listed.includes(`- \`mcp:linear/create_issue\`: Create an issue in a team. Takes ${JSON.stringify(takes)}. Gives ${JSON.stringify(gives)}.`), listed || prompt.slice(0, 200));
   assert.ok(listed.includes('- `mcp:github/create_pull_request`: Open a pull request. Takes {"type":"object","properties":{"repo":{"type":"string"}}}.'), listed);
-  // Granted but held by its gate (unset: ask): no call node may run it, so it is not offered.
-  assert.ok(!prompt.includes("mcp:linear/delete_issue"), "delete_issue asks: not offered");
+  // Granted but denied by its gate: no call node may run it, so it is not offered.
+  assert.ok(!prompt.includes("mcp:linear/delete_issue"), "delete_issue is denied: not offered");
 });
 
 // A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives

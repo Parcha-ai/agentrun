@@ -49,21 +49,26 @@ test("the tools a draft may name are the agent's granted tools a workflow's call
 // its gate allows; the run's MCP pin is the runtime's to check at the call (there is none at proposal time).
 const mcpCall = (tool, label = "File it") => ({ node: "call", label, via: "tool", tool, args: { title: "{url}" }, out: "Page", as: "page", deadline_s: 30 });
 
-test("an MCP tool is on a draft's list when the agent's revision grants it: by its own name, or under its server's wildcard as the server lists its tools; the gate holds each as any tool (ask by default)", async () => {
+test("an MCP tool is on a draft's list when the agent's revision grants it, by its own name or under its server's wildcard as the server lists its tools, and its gate does not deny it: set to ask it is offered, since the learned_workflow call asks once (#2424); the runtime's own read admits none, its pin's tools come in apart", async () => {
   const { permissionOf } = await import("../dist/tool-gate.js");
+  const MCP = { mcp: true };
   // Granted by name: on the list. A wildcard names no tool until it is read against its server's listing.
-  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "mcp:linear/create_issue", "mcp:github/*"]), ["web_fetch", "mcp:linear/create_issue"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "mcp:linear/create_issue", "mcp:github/*"], undefined, MCP), ["web_fetch", "mcp:linear/create_issue"]);
+  // The runtime's read (learned-workflow.ts, at a call): no MCP tool here, the run's pin's come in apart.
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "mcp:linear/create_issue"]), ["web_fetch"]);
   const listed = (server) => (server === "github" ? ["create_pull_request", "list_pull_requests"] : []);
   assert.deepEqual(tools.mcpGrantsListed(["web_fetch", "mcp:github/*", "mcp:linear/create_issue", "mcp:gone/*"], listed), ["web_fetch", "mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"]);
   const granted = tools.mcpGrantsListed(["web_fetch", "mcp:github/*", "mcp:linear/create_issue"], listed);
-  // Unset, an MCP tool asks (a third-party catalog tool's default): held back, named with its setting.
-  const held = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"));
-  assert.deepEqual(held.tools, ["web_fetch"]);
-  assert.deepEqual(Object.keys(held.gated).sort(), ["mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"]);
-  // A server's wildcard set to allow allows each of its tools; one tool set to deny stays denied.
-  const settings = { "mcp:github/*": { permission: "allow" }, "mcp:github/list_pull_requests": { permission: "deny" }, "mcp:linear/create_issue": { permission: "allow" } };
-  const allowed = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, settings, "ask"));
-  assert.deepEqual([allowed.tools, allowed.gated], [["web_fetch", "mcp:github/create_pull_request", "mcp:linear/create_issue"], { "mcp:github/list_pull_requests": "deny" }]);
+  // Unset, an MCP tool asks (a third-party catalog tool's default): offered, since its learned_workflow call asks once.
+  const unset = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, MCP);
+  assert.deepEqual([unset.tools, unset.gated], [["web_fetch", "mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"], {}]);
+  // Denied (one tool, or its server's wildcard): refused, named with its setting.
+  const settings = { "mcp:github/*": { permission: "deny" }, "mcp:linear/create_issue": { permission: "allow" } };
+  const denied = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, settings, "ask"), undefined, undefined, MCP);
+  assert.deepEqual([denied.tools, denied.gated], [["web_fetch", "mcp:linear/create_issue"], { "mcp:github/create_pull_request": "deny", "mcp:github/list_pull_requests": "deny" }]);
+  // A table tool set to ask is still held back: its call node can't wait for an approval.
+  const table = tools.learnedDraftTools(["web_fetch"], () => "ask", undefined, undefined, MCP);
+  assert.deepEqual([table.tools, table.gated], [[], { web_fetch: "ask" }]);
 });
 
 test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate holds is refused in the gate's words", () => {
