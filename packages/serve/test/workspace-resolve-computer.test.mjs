@@ -212,16 +212,18 @@ test("a setting's image selects the provider's configuration of that image, whos
   assert.deepEqual(e2b.launched[0][1].configuration, PROVIDERS.find((one) => one.id === "e2b").capabilities.find((one) => one.kind === "desktop"));
 });
 
-test("Orgo's own descriptor: windows and macos launch their configuration with its os, no image launches the Linux desktop; another image is refused naming the three", async () => {
+test("Orgo's own descriptor: windows launches its configuration with its os, no image launches the Linux desktop; another image (macos too, until a server runs the janitor) is refused naming the two", async () => {
   const root = scratch();
-  for (const [image, os] of [["windows", "windows"], ["macos", "macos"], [undefined, undefined]]) {
+  for (const [image, os] of [["windows", "windows"], [undefined, undefined]]) {
     const side = claim(root);
     const resolved = await resolveComputer({ kind: "desktop", provider: "orgo", ...(image ? { image } : {}) }, 1, KINDS, side);
     await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
     const { configuration } = side.launched[0][1];
     assert.deepEqual([configuration.image, configuration.options.os], [image ?? "linux", os], String(image));
   }
-  assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image: "beos" }, 1, KINDS, claim(root))).refused, /^Orgo has no desktop image "beos"\. It offers the desktop images linux, windows, macos: pick one/);
+  for (const image of ["beos", "macos"]) {
+    assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image }, 1, KINDS, claim(root))).refused, new RegExp(`^Orgo has no desktop image "${image}"\\. It offers the desktop images linux, windows: pick one`));
+  }
 });
 
 test("an image the provider does not offer for the kind is refused before anything starts, in words naming the ones it offers", async () => {

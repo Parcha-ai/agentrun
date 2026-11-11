@@ -8,6 +8,7 @@ import { kindOf, serves } from "../dist/index.js";
 import { readPng } from "../dist/conformance/png.js";
 import { API, KEY, WORKSPACE } from "./fake-orgo.mjs";
 import { fakeOrgoDesktop, MACOS_LABELS, WINDOWS_HOME, WINDOWS_LABELS } from "./fake-orgo-desktop.mjs";
+import { until } from "./fake-image-docker.mjs";
 
 const orgo = await import("../dist/orgo.js");
 const desktop = await import("../dist/orgo-desktop.js");
@@ -68,8 +69,7 @@ test("Orgo desktops: create({ os }) builds the Windows or the macOS provider, da
 	assert.throws(() => create({ os: "windows", workspaceId: WORKSPACE }), /apiKey/);
 	assert.deepEqual(orgo.CAPABILITIES.slice(1), [
 		{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
-		{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"], image: "macos", options: { os: "macos" } },
-	], "each configuration names the image a setting selects it by, and the os create() builds it with");
+	], "each configuration names the image a setting selects it by, and the os create() builds it with; macOS is no configuration until a server runs the janitor (#2318)");
 	assert.equal(descriptor.ORGO_WINDOWS_IMAGE, "windows");
 	assert.equal(descriptor.ORGO_MACOS_IMAGE, "macos");
 });
@@ -216,6 +216,20 @@ test("Orgo Windows input: each action as Orgo's Windows calls take it; a down an
 		{ path: "drag", body: { start_x: 50, start_y: 50, end_x: 90, end_y: 70, button: "left" } },
 	]);
 	box.inputs.length = 0;
+	// A batch cancelled while it waits after a down lets go of the press: the next batch's click is that click alone,
+	// never a drag from the cancelled batch's down.
+	const cancel = new AbortController();
+	const waiting = client.call("input.actions", { actions: [{ type: "move", at: [60, 60] }, { type: "down" }, { type: "wait", ms: 5_000 }] }, { signal: cancel.signal });
+	await until(() => box.inputs.length === 1);
+	cancel.abort();
+	const aborted = (await waiting).value ?? (await waiting).error;
+	assert.ok(aborted.failed?.kind === "aborted" || aborted.code === "aborted", JSON.stringify(aborted));
+	assert.deepEqual(await act([{ type: "click", at: [80, 80] }]), { done: 1 });
+	assert.deepEqual(box.inputs, [
+		{ path: "mouse-move", body: { x: 60, y: 60 } },
+		{ path: "click", body: { x: 80, y: 80, button: "left" } },
+	], "no drag from the cancelled batch's down");
+	box.inputs.length = 0;
 	for (const [action, words] of [
 		[{ type: "click", at: [1, 1], count: 3 }, /triple/],
 		[{ type: "click", at: [1, 1], keys: ["shift"] }, /no keys held/],
@@ -289,8 +303,11 @@ test("Orgo desktops' exec.run: argv quoted word by word for PowerShell or the sh
 	assert.deepEqual([echoed.exitCode, echoed.timedOut, echoed.truncated], [0, false, false]);
 	const command = bashCalls(fake, ref.id).at(-1).body.command;
 	assert.match(command, /^& 'echo' 'it''s' '\$\(id\)' 'a;b'$/m, "every word single-quoted, a quote doubled");
-	assert.match(command, /^Set-Location -LiteralPath 'C:\\Users\\agent'$/m);
-	assert.match(command, /^Set-Item -LiteralPath 'Env:GREETING' -Value 'hi ''there'''$/m);
+	assert.match(command, /^Set-Location -LiteralPath 'C:\\Users\\agent' -ErrorAction Stop$/m);
+	assert.match(command, /^Set-Item -LiteralPath 'Env:GREETING' -Value 'hi ''there''' -ErrorAction Stop$/m);
+	// A folder that is not there runs nothing: the setup's catch exits 1 with PowerShell's words, before argv.
+	const nowhere = (await run({ argv: ["echo", "ran"], cwd: "C:\\missing" })).value;
+	assert.deepEqual([nowhere.exitCode, decode(nowhere.stdout), decode(nowhere.stderr)], [1, "", "Cannot find path 'C:\\missing' because it does not exist.\n"]);
 	assert.equal(bashCalls(fake, ref.id).at(-1).body.timeout, 10);
 	assert.deepEqual(decode((await run({ argv: ["warn", "oops"] })).value.stderr), "oops\n");
 	assert.equal((await run({ argv: ["exit", "7"] })).value.exitCode, 7);
@@ -436,6 +453,14 @@ test("Orgo desktops' live view: screen.watch frames are Orgo's PNGs, scaled by O
 	await client.call("input.actions", { actions: [{ type: "move", at: [400, 300] }] });
 	const moved = (await client.call("screen.watch", { after: 1, waitMs: 2_000, maxWidth: 640 })).value;
 	assert.deepEqual([moved.seq, moved.changed, moved.cursor], [2, true, [400, 300]]);
+	// The live view watches on a connection of its own (daemonWatch): it draws the cursor where the run's client moved
+	// it, the pointer being the computer's, not one client's.
+	const view = (await provider.connect(ref)).value.client;
+	const seen = (await view.call("screen.watch", { after: 0, waitMs: 0, maxWidth: 640 })).value;
+	assert.deepEqual(seen.cursor, [400, 300]);
+	await client.call("input.actions", { actions: [{ type: "move", at: [10, 20] }] });
+	const followed = (await view.call("screen.watch", { after: seen.seq, waitMs: 2_000, maxWidth: 640 })).value;
+	assert.deepEqual([followed.changed, followed.cursor], [true, [10, 20]], "a pointer-only move is a new frame on the live view's connection too");
 });
 
 test("the Orgo conformance module: COMPUTER_ORGO_OS picks the desktop and its image; a Windows desktop's drifted twin is one whose hello reports another version, which connect refuses", async () => {

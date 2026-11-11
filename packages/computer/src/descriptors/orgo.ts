@@ -19,12 +19,15 @@ export const MACOS_GROUPS: readonly Group[] = ["exec", "screen", "input.pointer"
 /**
  * Orgo's configurations, each naming the image an agent's setting selects it by and the create() options that build it
  * (KindCapabilities; serve passes the options to providerFor beside the keys'): the Linux desktop with computerd, then
- * Windows and macOS over Orgo's API.
+ * Windows over Orgo's API.
+ *
+ * macOS is not offered yet: a Mac has no end of Orgo's own and no daemon deadline, so only the janitor ends one, and a
+ * server does not run the janitor yet (#2318). create({ os: "macos" }) still builds the provider, for the conformance
+ * suite; no agent's setting can select it until the janitor runs.
  */
 export const ORGO_CONFIGURATIONS = [
 	{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {} },
 	{ kind: "desktop", groups: [...WINDOWS_GROUPS], image: ORGO_WINDOWS_IMAGE, options: { os: "windows" } },
-	{ kind: "desktop", groups: [...MACOS_GROUPS], image: ORGO_MACOS_IMAGE, options: { os: "macos" } },
 ] as const satisfies readonly KindCapabilities[];
 
 export const ORGO = defineProvider({
@@ -34,7 +37,7 @@ export const ORGO = defineProvider({
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.
 	mounts: [],
-	// The Linux desktop (no os, the default), then Windows and macOS (os "windows", "macos").
+	// The Linux desktop (no os, the default), then Windows (os "windows").
 	capabilities: ORGO_CONFIGURATIONS,
 	defaultImage: { desktop: ORGO_BASE_IMAGE },
 	load: () => import("../orgo.js"),

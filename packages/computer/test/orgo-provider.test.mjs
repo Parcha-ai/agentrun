@@ -65,9 +65,8 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 		[
 			{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], image: "linux", options: {} },
 			{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
-			{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"], image: "macos", options: { os: "macos" } },
 		],
-		"what a built provider declares, known without building one: the Linux desktop (the default), then Windows and macOS, each by its image and os (orgo-desktop.test.mjs)",
+		"what a built provider declares, known without building one: the Linux desktop (the default), then Windows, each by its image and os; no macOS until a server runs the janitor (#2318)",
 	);
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
 	assert.equal(orgo.fromEnv, undefined, "every setting is an option");

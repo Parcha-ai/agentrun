@@ -168,7 +168,15 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			if (call) {
 				const env = Object.fromEntries(lines.flatMap((line) => (line.startsWith("Set-Item -LiteralPath 'Env:") ? [psWords(line).map((w, i) => (i === 0 ? w.slice(4) : w))] : [])));
 				const cwd = lines.find((line) => line.startsWith("Set-Location -LiteralPath "));
-				return run(psWords(call.slice(2)), { cwd: cwd ? psWords(cwd)[0] : undefined, env, box });
+				const folder = cwd ? psWords(cwd)[0] : undefined;
+				// A folder named missing does not exist: Set-Location fails. Inside the setup's try with -ErrorAction Stop the
+				// catch exits 1 before argv runs; with no try, PowerShell's Continue would run argv where Orgo starts it.
+				if (folder !== undefined && /missing/i.test(folder)) {
+					const said = `Cannot find path '${folder}' because it does not exist.\n`;
+					if (lines.includes("try {") && cwd.endsWith("-ErrorAction Stop") && lines.some((line) => line.startsWith("} catch {"))) return ran(1, "", said);
+					return run(psWords(call.slice(2)), { cwd: undefined, env, box });
+				}
+				return run(psWords(call.slice(2)), { cwd: folder, env, box });
 			}
 			return ran(1, "", "the fake reads no such PowerShell\n");
 		}

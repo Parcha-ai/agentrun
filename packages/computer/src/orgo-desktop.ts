@@ -239,14 +239,18 @@ interface Ran {
 /**
  * The command that runs argv on this desktop, as Orgo's bash call takes it: on Windows a PowerShell call operator over
  * quoted words, whose exit is the program's own ($LASTEXITCODE), or 0 and 1 for a cmdlet; on macOS the words quoted for
- * the shell, through env for the variables. cwd and env are set first; argv is never a shell string.
+ * the shell, through env for the variables. cwd and env are set first; argv is never a shell string. A cwd or variable
+ * that cannot be set runs nothing: the command exits 1 with the error on stderr, as the shell's `cd … &&` does on macOS.
  */
 export function commandOf(os: OrgoDesktopOs, argv: readonly string[], { cwd, env }: { cwd?: string; env?: Record<string, string> } = {}): string {
 	if (os === "windows") {
+		const setup = [
+			...Object.entries(env ?? {}).map(([name, value]) => `Set-Item -LiteralPath ${psQuote(`Env:${name}`)} -Value ${psQuote(value)} -ErrorAction Stop`),
+			...(cwd === undefined ? [] : [`Set-Location -LiteralPath ${psQuote(cwd)} -ErrorAction Stop`]),
+		];
 		return [
 			"$ErrorActionPreference = 'Continue'",
-			...Object.entries(env ?? {}).map(([name, value]) => `Set-Item -LiteralPath ${psQuote(`Env:${name}`)} -Value ${psQuote(value)}`),
-			...(cwd === undefined ? [] : [`Set-Location -LiteralPath ${psQuote(cwd)}`]),
+			...(setup.length === 0 ? [] : ["try {", ...setup, "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"]),
 			`& ${argv.map(psQuote).join(" ")}`,
 			"$agentrunOk = $?; $agentrunCode = $LASTEXITCODE",
 			"if ($null -ne $agentrunCode) { exit $agentrunCode } elseif ($agentrunOk) { exit 0 } else { exit 1 }",
@@ -406,6 +410,11 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	readonly #maxLifetimeMs: number;
 	readonly #timeouts: OrgoDesktopTimeouts;
 	readonly #daemonVersion: string;
+	/**
+	 * Where the pointer is on each computer, as far as this provider moved it, shared by every client of that computer:
+	 * the run's input moves it, and the live view's own client (daemonWatch) draws the cursor there.
+	 */
+	readonly #pointers = new Map<string, Pointer>();
 	/** Each computer's extend in flight, by id: the next waits for it, so two never read the same old deadline. */
 	readonly #extending = new Map<string, Promise<unknown>>();
 
@@ -435,7 +444,9 @@ export class OrgoDesktopProvider implements ComputerProvider {
 
 	/** A client of the computer, opened: its screen read, its hello this provider's own version, or a refusal in words. */
 	async #open(ref: ComputerRef, signal?: AbortSignal): Promise<Result<{ client: OrgoDesktopClient; hello: HelloResult }>> {
-		const client = new OrgoDesktopClient(this.#rest, ref.id, this.#profile, this.#workspaceId, this.#timeouts.requestMs);
+		let pointer = this.#pointers.get(ref.id);
+		if (pointer === undefined) this.#pointers.set(ref.id, (pointer = {}));
+		const client = new OrgoDesktopClient(this.#rest, ref.id, this.#profile, this.#workspaceId, this.#timeouts.requestMs, pointer);
 		const hello = await client.open(this.#daemonVersion, signal);
 		if (!hello.ok) {
 			client.close();
@@ -677,6 +688,12 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		return daemonWatch(this, ref, handlers, options);
 	}
 
+	/**
+	 * A connection to a computer Orgo reads running; one that is not is refused, never woken by a first call. Once open,
+	 * the connection is the claim's own, on a computer its run holds: a call it makes reaches Orgo even if Orgo has since
+	 * suspended the computer, and waking it for the run's own input is what the run asked. The no-wake rule is for what
+	 * reads computers no run holds (list, the janitor, attach), which never wake one.
+	 */
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
@@ -814,7 +831,9 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
 		if (read.value.status === "deleted") return ok(undefined);
 		if (!this.#ours(read.value, ref.name)) return fail("not_found", `no Orgo ${this.#profile.os} computer of this provider is ${ref.name} (${ref.id}), so it is left as it is`);
-		return this.#delete(ref, signal);
+		const deleted = await this.#delete(ref, signal);
+		if (deleted.ok) this.#pointers.delete(ref.id);
+		return deleted;
 	}
 
 	/**
@@ -931,6 +950,11 @@ function orgoKey(key: Key, os: OrgoDesktopOs): string | undefined {
 /** One planned call to Orgo for one action: a path and a body, or a pause. */
 type Step = { path: string; body: Record<string, unknown> } | { waitMs: number };
 
+/** Where the pointer is on one computer, shared by its clients: undefined until a client has moved it. */
+export interface Pointer {
+	at?: [number, number] | undefined;
+}
+
 /**
  * The in-process client of one Orgo Windows or macOS desktop: each protocol method is one or more calls to Orgo's API.
  * Input batches run one at a time; a cancel stops a batch at the action it is on.
@@ -940,8 +964,16 @@ export class OrgoDesktopClient implements ComputerClient {
 	#hello: HelloResult | undefined;
 	/** The screen's size, the input space. */
 	#size: [number, number] = [0, 0];
-	/** Where the pointer is, as far as the provider moved it; undefined until it has. */
-	#pointer: [number, number] | undefined;
+	/**
+	 * Where the pointer is, as far as the provider moved it; undefined until it has. The computer's, shared with every
+	 * other client of it (the provider's #pointers): the live view's client draws the cursor where the run's moved it.
+	 */
+	get #pointer(): [number, number] | undefined {
+		return this.pointer.at;
+	}
+	set #pointer(at: [number, number] | undefined) {
+		this.pointer.at = at;
+	}
 	#held: { id: string; bytes: Buffer } | undefined;
 	#watchHeld: { id: string; bytes: Buffer } | undefined;
 	#watch: { seq: number; digest: string; read: number; frame?: { bytes: Buffer; frameWidth: number; frameHeight: number; width: number; height: number; cursor?: [number, number] } } = {
@@ -961,6 +993,7 @@ export class OrgoDesktopClient implements ComputerClient {
 		readonly profile: Profile,
 		readonly workspaceId: string,
 		readonly requestMs: number,
+		readonly pointer: Pointer = {},
 	) {}
 
 	/** The screen's size from a first screenshot, then the hello this client answers. */
@@ -1297,7 +1330,12 @@ export class OrgoDesktopClient implements ComputerClient {
 			if (this.#pressed !== undefined && !signal.aborted) await this.#release(signal);
 			return ok({ done: index, failed: { index, kind, message: `action ${index}: ${message}` } } satisfies InputActionsResult);
 		};
-		const cancelled = (index: number): Call => ok({ done: index, failed: { index, kind: "aborted", message: `action ${index}: the batch was aborted; actions ${index} on did not run` } } satisfies InputActionsResult);
+		// A cancelled batch lets go of a press it held: nothing is sent (the batch is aborted), and the next batch's up or
+		// click never turns it into a click or drag the cancelled one asked for.
+		const cancelled = (index: number): Call => {
+			this.#pressed = undefined;
+			return ok({ done: index, failed: { index, kind: "aborted", message: `action ${index}: the batch was aborted; actions ${index} on did not run` } } satisfies InputActionsResult);
+		};
 		const sendOrFail = async (index: number, step: { path: string; body: Record<string, unknown> }): Promise<Call | undefined> => {
 			const sent = await this.#send(step, signal);
 			if (sent.ok) return undefined;
