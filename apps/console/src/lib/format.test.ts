@@ -1,7 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clock, cost, markdown, runLabel, when } from "./format";
+import { clock, cost, costOfCap, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
+
+// A run's header says its cost beside its spend cap ("$0.0059 est. of $1.00"), so a raised cap shows; with no cap, the
+// cost alone. A cost that is not one figure keeps its words, the cap after them.
+describe("costOfCap", () => {
+  const est = (usd: number | null): Cost => ({ usd, basis: "estimate", charge_state: null, cap_usd: null });
+  it("says the cost of the cap, the cost as cost() says it", () => {
+    expect(costOfCap(est(0.0059), 1)).toBe("$0.0059 est. of $1.00");
+    expect(costOfCap(est(0.0059), 2.5)).toBe("$0.0059 est. of $2.50");
+    expect(costOfCap({ usd: 0.42, basis: "charge", charge_state: null, cap_usd: null }, 1)).toBe("$0.42 of $1.00");
+  });
+  it("with no cap, the cost alone", () => {
+    expect(costOfCap(est(0.0059), null)).toBe("$0.0059 est.");
+    expect(costOfCap(est(0.0059), undefined)).toBe("$0.0059 est.");
+  });
+  it("an unknown cost keeps its word, the cap after it, never $0 of a cap", () => {
+    expect(costOfCap(est(null), 1)).toBe("Unknown · cap $1.00");
+    expect(costOfCap(null, 1)).toBe("Unknown · cap $1.00");
+  });
+  it("a cost worded already (a workflow run's totals) takes the cap the same way", () => {
+    expect(costOfCap(null, 1, { text: "$0.0123" })).toBe("$0.0123 of $1.00");
+    expect(costOfCap(null, null, { text: "$0.0123" })).toBe("$0.0123");
+  });
+});
 
 // An unknown cost is never $0: the contract says "Null while unknown. A client shows null as unknown, never as $0."
 describe("cost", () => {
