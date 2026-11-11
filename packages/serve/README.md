@@ -770,6 +770,21 @@ computer is made with the GPUs asked.
   `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
   mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
 
+**A Daytona computer's snapshot.** The mount runs as root through the image's root helper and its pinned archil client,
+so a Daytona computer that mounts the run's folder must start from a snapshot of the computer package's
+`box/Dockerfile`; Daytona's default snapshot, whose user is not root, is refused before anything mounts. Build one in
+the organization of `DAYTONA_API_KEY` with Daytona's Python SDK (`pip install daytona`), which prints its name, a hash
+of the recipe:
+
+```sh
+DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints snapshot=agentrun-archil-<12 hex>
+```
+
+and name it in the server's environment, `AGENTRUN_DAYTONA_SNAPSHOT=agentrun-archil-<12 hex>` (the id or name of any
+Daytona snapshot), as `AGENTRUN_DOCKER_IMAGE` names Docker's image. Every Daytona computer is then made from it. Unset,
+it is Daytona's default snapshot, as before. A changed recipe is a new name, so build again after an upgrade that
+changes `box/`. The [Daytona box](#a-run-in-a-daytona-box) never reads it.
+
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
 phone and a browser never mount it.

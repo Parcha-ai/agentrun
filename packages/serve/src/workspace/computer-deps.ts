@@ -129,6 +129,11 @@ export function dockerVolumeOf(paths: DockerPaths): DockerComputerOptions | unde
   return { volume: { name: paths.paths.volume, root }, daemonCache: posix.join(root, DAEMON_CACHE_IN_VOLUME) };
 }
 
+/** The Daytona snapshot every Daytona computer is made from, by its id or name: one of box/Dockerfile, which an Archil
+ *  mount needs (the computer package's box/build-daytona.py builds it and prints its name). Unset, Daytona's default
+ *  snapshot, as the registry's defaultImage says. The Daytona box (AGENTRUN_BOXES=daytona) never reads it. */
+export const DAYTONA_SNAPSHOT_ENV = "AGENTRUN_DAYTONA_SNAPSHOT";
+
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
 
@@ -164,7 +169,8 @@ export interface ComputerDepsOptions {
 }
 
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
- *  owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox the package's recipe; any other provider's: its registry
+ *  owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox the package's recipe; Daytona's: the owner's
+ *  AGENTRUN_DAYTONA_SNAPSHOT when set; any other provider's, and Daytona's else: its registry
  *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
  *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network
  *  (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read from `env`) for a launch that names
@@ -172,11 +178,13 @@ export interface ComputerDepsOptions {
  *  Docker's alone. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
+  const snapshot = envValue(env, DAYTONA_SNAPSHOT_ENV)?.trim();
   // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
   const current = (): readonly string[] | "none" => boxAllowOf(env as NodeJS.ProcessEnv);
   const currentSet = (): boolean => boxAllowSetIn(env as NodeJS.ProcessEnv);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
     if (entry.id === "docker" && named !== undefined) return named;
+    if (entry.id === "daytona" && snapshot !== undefined) return snapshot;
     // Docker's sandbox: the package's own recipe, which serve builds (the registry gives Docker no default).
     if (entry.id === "docker" && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
     const image = entry.defaultImage?.[kind];
