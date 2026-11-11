@@ -3,17 +3,18 @@
 // raise. The money-parity checks against main's figures: a real catalog tiered model past its threshold holds and books at
 // the tier price (#1861), and a held step parks with the cap's figures and resumes on a raise.
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { sessionSpendOf } from "@parcha/agentrun-kernel";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -24,7 +25,9 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
-const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+// No case here is about the lease: each runs on the steady one (runner-support.mjs STEADY_LEASE), so a loaded box never
+// lapses a claim mid-run (its request sent twice, a run parked at its cap, a stop's wait hung, as the 1 s lease did).
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const GPT6 = builtinModels({}).getModel("openrouter", "openai/gpt-6-sol");
 const THRESHOLD = GPT6.cost.tiers[0].inputTokensAbove; // 272000

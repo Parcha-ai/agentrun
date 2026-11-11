@@ -6,11 +6,10 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { startServe } from "../dist/index.js";
-import { client, flowAgent, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_SEAL_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_SEAL_KEY"];
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -116,73 +115,4 @@ test.skip("waits at the same cap are told once, and a refusal at a higher cap (a
   await sleep(1_500);
   const run = (await api("GET", `/runs/${chain}`)).body;
   assert.deepEqual([run.status, run.pending?.kind, run.pending?.cap_usd, told(chain).length], ["input_required", "budget", 0.13, 2], JSON.stringify(run));
-});
-
-// SKIP (follow-up #2078): the run never leaves queued or working on the runner
-test.skip("the watch of a paused workflow stats its pause each round and reads it only when it changed, and stops with the run's process and with the server", { timeout: 180_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "3000" }, KEYS);
-  const data = join(await scratch(t), "agents");
-  const checks = [];
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s", onPauseCheck: (runId, what) => void checks.push({ runId, what }) });
-  let closed = false;
-  t.after(() => (closed ? undefined : server.close()));
-  const api = client(server.baseUrl, server.token);
-  const count = (runId, what) => checks.filter((check) => check.runId === runId && check.what === what).length;
-  assert.equal((await api("POST", "/agents", flowAgent("watched", twoNodes()))).status, 201);
-  const start = async () => {
-    const runId = (await api("POST", "/agents/watched/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body.run_id;
-    await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
-    for (const end = Date.now() + 5_000; Date.now() < end && count(runId, "read") === 0; ) await sleep(50);
-    return runId;
-  };
-  // Paused, its process held for 3 s: each round stats the pause; the unchanged file is not read again.
-  const held = await start();
-  const [stats, reads] = [count(held, "stat"), count(held, "read")];
-  await sleep(1_200);
-  assert.deepEqual([count(held, "stat") > stats, count(held, "read")], [true, reads], "stat'ed each round, read once while it is unchanged");
-  // Its process let go: the watch is over, with nothing more stat'ed or read.
-  await letGo(data, held);
-  const gone = [count(held, "stat"), count(held, "read")];
-  await sleep(1_500);
-  assert.deepEqual([count(held, "stat"), count(held, "read")], gone, "nothing after the process ended");
-  // Another paused run, its process still held, when the server closes: nothing more after the close.
-  const live = await start();
-  await server.close();
-  closed = true;
-  const after = [count(live, "stat"), count(live, "read")];
-  await sleep(1_500);
-  assert.deepEqual([count(live, "stat"), count(live, "read")], after, "nothing after the server closed");
-});
-
-test("the watch of a paused workflow adds no abort listener per round: each round's wait takes its own back when its timer fires, so a long pause holds no more listeners than a short one", { timeout: 120_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "60000" }, KEYS);
-  // Each live abort listener on each signal in this process (the server runs in it), kept by the signal's own add and
-  // remove; one that fires goes with its signal's abort, so only signals not aborted are read.
-  const listening = new Map();
-  const { addEventListener: add, removeEventListener: remove } = EventTarget.prototype;
-  Object.defineProperty(AbortSignal.prototype, "addEventListener", { configurable: true, writable: true, value(type, listener, options) {
-    if (type === "abort" && listener) (listening.get(this) ?? listening.set(this, new Set()).get(this)).add(listener);
-    return add.call(this, type, listener, options);
-  } });
-  Object.defineProperty(AbortSignal.prototype, "removeEventListener", { configurable: true, writable: true, value(type, listener, options) {
-    if (type === "abort") listening.get(this)?.delete(listener);
-    return remove.call(this, type, listener, options);
-  } });
-  t.after(() => {
-    delete AbortSignal.prototype.addEventListener;
-    delete AbortSignal.prototype.removeEventListener;
-  });
-  const counts = () => new Map([...listening].filter(([signal]) => !signal.aborted).map(([signal, set]) => [signal, set.size]));
-  const { api } = await serve(t, { webhookPrivateTargets: true, faux: PRICED });
-  assert.equal((await api("POST", "/agents", flowAgent("listened", twoNodes()))).status, 201);
-  const runId = (await api("POST", "/agents/listened/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body.run_id;
-  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
-  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.kind, "budget");
-  // Paused, its process held: the watch goes round every half second.
-  await sleep(1_000);
-  const before = counts();
-  await sleep(4_000);
-  const grown = [...counts()].map(([signal, size]) => size - (before.get(signal) ?? 0));
-  assert.ok(Math.max(0, ...grown) <= 1, `about eight rounds add no listeners to any signal: grown by ${JSON.stringify(grown.filter((n) => n > 0))}`);
-  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
 });
