@@ -143,6 +143,9 @@ export interface CallStartData {
   /** Written as the call reached its gate through a CLI's own MCP client, before any answer: nothing is sent until its
    *  agentrun.call.sent mark (KINDS.callSent). */
   readonly parked?: true;
+  /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
+   *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
+  readonly cwd?: string;
   /** When it was written (ms, the loop's clock): the Timeline dates the call's row by it. */
   readonly at?: number;
 }
