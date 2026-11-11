@@ -1,5 +1,5 @@
 // A faux model for the code-review package's agent: when the review skill is in its system prompt, it answers as the
-// skill's step 8 says, a short line and then one fenced json block of findings; otherwise it says the skill is missing.
+// skill's "Return" says, a short line and then one fenced json block of findings; otherwise it says the skill is missing.
 const textOf = (value) => (typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => (typeof part?.text === "string" ? part.text : "")).join("") : "");
 
 export const FINDINGS = {
@@ -21,7 +21,7 @@ export default function reply(context, faux) {
   // (`read` answers a long file a page at a time: the skill's own front matter, on its first page, says it was read.)
   const listed = /^- review: .*\((\S+\/review\/SKILL\.md)\)$/m.exec(system);
   if (listed && !read.includes("name: review\ndescription: Review a pull request")) return faux.message(faux.toolCall("read", { path: listed[1] }), { stopReason: "toolUse" });
-  const inlined = system.includes('<skill name="review">') && system.includes("**Return** exactly one fenced `json` block");
+  const inlined = system.includes('<skill name="review">') && system.includes("Exactly one fenced `json` block");
   if (!inlined && !listed) return faux.message("The review skill was not in my prompt.");
   return faux.message(`Reviewed the change.\n\n\`\`\`json\n${JSON.stringify(FINDINGS, null, 2)}\n\`\`\``);
 }

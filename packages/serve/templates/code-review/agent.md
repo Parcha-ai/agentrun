@@ -8,7 +8,7 @@ author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
 harness: [pi]
 model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
-effort: low
+effort: medium
 # A computer: this server's own place, its Docker box. bash runs there, from the run's work folder, and
 # reaches github.com (AGENTRUN_BOX_ALLOW's default list) with no key, so the skill clones a public repository at the PR's
 # head. read opens the skill's own files. bash runs only in a box: a server with none refuses the apply, saying so.

@@ -20,7 +20,7 @@ test("template validate checks a package folder as the server does", (t) => {
   const dir = join(mkdtempSync(join(tmpdir(), "agentrun-template-")), "code-review");
   t.after(() => rmSync(join(dir, ".."), { recursive: true, force: true }));
   cpSync(REVIEW, dir, { recursive: true });
-  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("version: 0.3.0", "version: 1.0").replace("effort: low", "effort: lots"));
+  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("version: 0.3.0", "version: 1.0").replace("effort: medium", "effort: lots"));
   const bad = validate(dir);
   assert.equal(bad.status, 1, bad.stdout);
   assert.equal(bad.stdout, "");

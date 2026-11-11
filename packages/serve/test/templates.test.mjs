@@ -62,7 +62,7 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.3.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 1 }, false]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.3.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "medium", { per_run_usd: 1 }, false]);
   assert.deepEqual(review.tools, ["read", "bash"], "a computer: bash for its read-only checkout, read for the skill's own files");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
@@ -97,7 +97,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run }"), /triggers\[0\] has no name/);
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - name: mine\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, agent_id: other }"), /target is a start_run with no agent_id/);
   await refused(({ edit }) => edit("${parameters.repo} with", "${parameters.repository} with"), /\$\{parameters\.repository\} names no parameter/);
-  await refused(({ edit }) => edit("effort: low", "effort: off"), /effort is one of/);
+  await refused(({ edit }) => edit("effort: medium", "effort: off"), /effort is one of/);
   await refused(({ edit }) => edit("computer: default", "computer: my-laptop"), /computer is default \(this server's own place\)/);
   await refused(({ edit }) => edit("tier: fast", "tier: cheap"), /model is \{tier: fast \| balanced \| strong/);
   await refused(({ edit }) => edit("tier: fast", "tier: constructor"), /model is \{tier: fast \| balanced \| strong/);
@@ -217,7 +217,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   meets("/agents/{agent_id}", "get", "200", agent);
   const { definition } = agent;
-  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 1, false, ["review"]], "definition.version is the revision number, never the package's");
+  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "medium", 1, false, ["review"]], "definition.version is the revision number, never the package's");
   assert.deepEqual([definition.place, definition.tools, definition.tool_settings], [{ mode: "sandbox", box: "docker" }, ["read", "bash"], undefined], "the docker box here and no GitHub MCP server: its read for the skill's files, bash for the checkout");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
   assert.match(definition.instructions, /clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
