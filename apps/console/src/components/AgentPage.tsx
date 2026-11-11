@@ -2,6 +2,7 @@ import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, ChevronRight, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { LatestRun } from "@/components/LatestRun";
 import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
@@ -140,6 +141,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
             {d.approvals === "never" && <Chip tone="warning" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template's pins, still hold.">Unattended</Chip>}
             <span className="flex-1" />
             <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))} title="Edit" className="max-sm:w-8 max-sm:shrink-0 max-sm:px-0"><Pencil aria-hidden /> <span className="max-sm:sr-only">Edit</span></Button>
+            <CodingAgentHandoff context={{ kind: "edit", agentId: agent.agent_id, revision: agent.revision }} label="Edit with your coding agent" iconOnPhone />
           </div>
         </div>
         {/* On a phone a long description is cut at two lines until the facts' line is opened, which shows it whole. */}
