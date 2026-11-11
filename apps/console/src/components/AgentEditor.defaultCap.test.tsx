@@ -41,6 +41,14 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: none, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value=""');
   });
 
+  it("says under the field the smallest cap a run can work under, linking to where the server's README works it out", () => {
+    const { host } = mount({ agent: capped });
+    const help = host.querySelector("#agent-max-cost")?.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ") ?? "";
+    expect(help).toMatch(/A run on Sonnet needs about \$0\.10 to take a few steps; under that it pauses before its next step/);
+    const link = [...host.querySelectorAll("a")].find((a) => a.textContent === "the smallest cap");
+    expect(link?.getAttribute("href")).toBe("https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md#spend-cap");
+  });
+
   it("is offered on a workflow agent as on an agentic one, and not on a new Decision agent, which starts with none", () => {
     const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');

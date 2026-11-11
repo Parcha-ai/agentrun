@@ -21,8 +21,6 @@ export const toolUsage = (usd: number, state: PriceState = "priced"): ToolUsage 
   state,
 });
 
-export const fetchUsage = (prices: PriceTable, proxied: boolean): ToolUsage => toolUsage(proxied ? prices.fetchProxiedUsd : prices.fetchUsd);
-export const searchUsage = (prices: PriceTable): ToolUsage => toolUsage(prices.searchUsd);
 
 type Spent = SessionRecord["spent"];
 /** Integer picodollars, so a bill reads as its decimal amount (0.002, not 0.0019999999999999996). */
