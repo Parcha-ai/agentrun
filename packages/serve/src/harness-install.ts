@@ -437,6 +437,10 @@ export const installHoldOf = (dir: string): string => `${installMarkOf(dir)}.hol
 /** How young a hold that cannot be read is still taken as held (none is ever written part way: one left unreadable is a
  *  copy cut short, or a file of another's that this bound lets go of in time). */
 const HOLD_WRITING_MS = 10_000;
+/** How long past the install's timeout another host's hold is still taken as held: its npm's own timer starts after the
+ *  hold is taken, then npm is given its grace to stop and to exit once killed (runNpm). A minute covers what comes
+ *  before npm starts. */
+const HOLD_STOP_MS = 60_000 + NPM_STOP_GRACE_MS + NPM_KILLED_WAIT_MS;
 
 type Hold = { readonly host: string; readonly pid: number; readonly startedAt: number; readonly token: string };
 
@@ -451,7 +455,8 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
 }
 
 /** Takes the hold on installs into `dir` for this process: its token when it holds it now, undefined while another
- *  installer does (its process alive, when it names this host; within INSTALL_TIMEOUT_MS, when another host's). The hold
+ *  installer does: its process alive, when it names this host, whatever its age (its npm may still be stopping); within
+ *  INSTALL_TIMEOUT_MS and the time npm takes to stop (HOLD_STOP_MS), when another host's, whose process can't be asked. The hold
  *  is written whole beside its place and linked into it, which fails when a hold is there, so no reader sees one part
  *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
  *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
@@ -474,7 +479,7 @@ export async function takeHold(dir: string, { isAlive = alive, host = hostname()
       if (!judged) continue;
       const held = await readHold(at);
       const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
-        ? Date.now() - held.startedAt <= timeoutMs && (held.host !== host || isAlive(held.pid))
+        ? held.host === host ? isAlive(held.pid) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
         : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;
       if (live) return undefined;
       // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very
