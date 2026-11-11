@@ -293,8 +293,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   // handed over, else the one in the data directory, checked against what the store records. It seals the live-viewer
   // tokens the browser writes.
   // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
-  // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
-  const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
+  // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…). The harness table goes with no faux model
+  // too (a test behind a faux gateway): without it the runner starts the real CLI, never the test's faux harness.
+  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }) };
   let seal;
   try {
     seal = await bootSealKey(store, data, { role: "runner" });
