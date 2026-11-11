@@ -87,6 +87,24 @@ test("installSettled: while the server's install runs it waits for it, and reads
   assert.ok(!existsSync(installMarkOf(target)), "the mark goes once the install is in");
 });
 
+test("installSettled: an install that lands between its look at the tree and its read of the mark reads installed, never none", async (t) => {
+  const target = join(scratch(t, "install-lands"), "harnesses", "fake");
+  mkdirSync(join(target, ".."), { recursive: true });
+  writeFileSync(installMarkOf(target), JSON.stringify({ host: hostname(), pid: process.pid, startedAt: Date.now() }));
+  // Its first look finds the tree not whole; the install then lands (the tree whole, its mark gone) before the mark is read.
+  let looks = 0;
+  const landing = { ...FAKE, lacking: (dir, pins) => {
+    if (looks++ === 0) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "whole"), "");
+      rmSync(installMarkOf(target), { force: true });
+      return "its CLI";
+    }
+    return FAKE.lacking(dir, pins);
+  } };
+  assert.equal(await installSettled(landing, target, PINS, { pollMs: 5 }), "installed");
+});
+
 test("an install's mark is there from its start, before it reads its pins or what is installed: a claim made as it starts waits for it", async (t) => {
   const target = join(scratch(t, "install-start"), "harnesses", "fake");
   const pinsGiven = gate();
