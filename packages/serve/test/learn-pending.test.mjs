@@ -177,7 +177,7 @@ test("a pending note waits until a person acts on it: a retire takes it out of t
   const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
   const retired = await api("POST", "/agents/buyer/learning/files/paperdepot24-first.md/retire", undefined, { "if-match": etag });
   assert.equal(retired.status, 200, JSON.stringify(retired.body));
-  assert.match(git(repo, ["show", "main:paperdepot24-first.md"]), /\norigin: you\nstatus: retired\n---\n/);
+  assert.match(git(repo, ["show", "main:paperdepot24-first.md"]), /\norigin: you\nstatus: retired\nretired_from: pending\n---\n/);
   assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
   assert.deepEqual(git(repo, ["log", "-1", "--format=%s", "main"]), "learning: retired by a person: paperdepot24-first.md");
   assert.equal((await savedOf(data, runId)).learning.state, "merged");

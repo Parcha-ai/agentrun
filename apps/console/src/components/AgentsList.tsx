@@ -68,13 +68,13 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
           <span className="mt-1.5 line-clamp-2 block font-mono text-small leading-relaxed text-muted-foreground">{a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}</span>
         </span>
       </button>
-      {/* The footer: its chips on the left, each on one line, wrapping as whole chips onto more rows there (the first row
-          centred on the actions: a 20px chip in 6px above and below is the 32px button's height); its three actions on the
-          right, on the first row, never shrunk. The chips' area grows from nothing but never below its widest chip: when
-          that chip and the actions do not fit side by side (a narrow card), the actions drop to a row of their own, at the
-          right. Every card's footer reads the same whatever its chips. */}
-      <div data-testid="agent-card-footer" className="mt-auto flex flex-wrap items-start gap-x-2 gap-y-1 pt-4">
-        <div data-testid="agent-card-chips" className="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1.5 py-1.5">
+      {/* The footer: its chips on the left, each on one line, in one row (centred on the actions: a 20px chip in 6px
+          above and below is the 32px button's height); its three actions on the right, three fixed squares, never shrunk.
+          The chips' area starts at its chips' own row: when that row and the actions do not fit side by side, the actions
+          drop to a row of their own, at the right, and the chips keep their row. Only a row wider than the whole card
+          wraps, as whole chips. Nothing in it is wider than the card (min-w-0). */}
+      <div data-testid="agent-card-footer" className="mt-auto flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1 pt-4">
+        <div data-testid="agent-card-chips" className="flex min-w-0 flex-auto flex-wrap items-center gap-x-2 gap-y-1.5 py-1.5">
           <Chip className="shrink-0 whitespace-nowrap">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</Chip>
           {a.runs && <Chip className="shrink-0 whitespace-nowrap">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</Chip>}
           {waiting > 0 && (
