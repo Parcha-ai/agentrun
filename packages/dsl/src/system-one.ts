@@ -28,8 +28,6 @@ export type SystemOneResult = {
 
 export const SYSTEM_ONE_LIMITS = { maxChoiceOptions: 240, minScoreLevels: 2, maxScoreLevels: 10 } as const;
 
-export const SYSTEM_ONE_DEFAULT_MODEL = "jev-latest";
-
 const CRITERIA = "criteria";
 
 export type CompiledQuestions = Record<string, SystemOneQuestion>;

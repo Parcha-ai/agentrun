@@ -18,7 +18,7 @@ const FIELDS: { name: "diskId" | "region" | "s3Url" | "image"; label: string; pl
   { name: "diskId", label: "Disk id" },
   { name: "region", label: "Region" },
   { name: "s3Url", label: "S3 URL", placeholder: "https://" },
-  { name: "image", label: "Image", placeholder: "Archil's default (recommended)" },
+  { name: "image", label: "Image", placeholder: "serve's default, Debian with git 2.47 (recommended)" },
 ];
 type Fields = Record<(typeof FIELDS)[number]["name"], string>;
 const fieldsOf = (v: Archil): Fields => ({ diskId: v.diskId ?? "", region: v.region ?? "", s3Url: v.s3Url ?? "", image: v.image ?? "" });
