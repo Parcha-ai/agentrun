@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { DESKTOP_TOOL_DEFS, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
-import type { TurnOrigin } from "./learning-run.js";
+import type { TurnOrigin } from "./reflect-range.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
