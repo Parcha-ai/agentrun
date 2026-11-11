@@ -270,10 +270,10 @@ export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learning
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; asked: string[] }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; asked: string[] }> {
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-  if (revision?.kind !== "agentic") return { tools: [], gated: {}, asked: [] };
+  if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {}, asked: [] };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
   const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
@@ -283,8 +283,10 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const approvals = body.approvals === "never" ? "never" : "ask";
   // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
   const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
-  const { tools, gated, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
-  return { tools, gated, asked };
+  // `deniedBy`: where each deny was set (the agent's tool settings, the server's, a default), which a left-out draft's
+  // words name.
+  const { tools, gated, deniedBy, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
+  return { tools, gated, deniedBy, asked };
 }
 
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
@@ -292,14 +294,14 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
 async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[] }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
-    const { tools, gated, asked } = await draftTools(deps, input.runId);
+    const { tools, gated, deniedBy, asked } = await draftTools(deps, input.runId);
     // #2424's card rule (learnedAskFits): a draft whose ask-set MCP tools would not all show on its approval card is refused.
     const { learnedAskFits } = await import("../learned-workflow.js");
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ask: { asked, fits: learnedAskFits } });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits } });
     } finally {
       await folder.end();
     }

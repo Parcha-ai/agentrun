@@ -391,3 +391,31 @@ test("a run whose learned workflow fails is still asked its end-of-run turn", as
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
 });
+
+// Walk 6 on #2479: a draft calling an MCP tool a deny holds is left out in words that name where the deny was set: the
+// agent's own tool settings ("for this agent"), or the server's ("on this server"), never the server for both.
+test("a run's workflow draft calling an MCP tool set to deny is left out naming where the deny was set: the agent's tool settings, or the server's (LS-07)", async (t) => {
+  const flow = {
+    v: 2, name: "file-ticket",
+    schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+    input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" },
+    root: { node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{title}" }, out: "R", as: "r", deadline_s: 30 },
+  };
+  const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-ticket\n---\ndescription: Files a ticket; use when asked to file one\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
+  const DENY = { "mcp:linear/create_issue": { permission: "deny" } };
+  for (const [where, place] of [["agent", "for this agent"], ["server", "on this server"]]) {
+    const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue"], ...(where === "agent" ? { toolSettings: DENY } : {}), learning: true }, async (dir) => {
+      const seed = await seedOf(dir, "agent-1");
+      return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+    }, async (server) => {
+      await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], prices: { create_issue: 0.01 } });
+      if (where === "server") await saveToolSettings(server, DENY);
+    });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+    await w.ended();
+    const kept = await w.server.learning.proposal("run-1");
+    assert.equal(kept?.proposal?.workflows, 0, JSON.stringify(kept?.proposal));
+    const details = (kept.proposal.left ?? []).map(({ detail }) => detail);
+    assert.ok(details.includes(`This workflow's call node calls mcp:linear/create_issue, which is set to deny ${place}. (the call node at /root)`), `${where}: ${JSON.stringify(details)}`);
+  }
+});
