@@ -1312,8 +1312,8 @@ of that slice, and the live conformance file waits for a key (below).
   - The first init stays PID 1 with no capability and no_new_privs set. It passes SIGTERM and SIGINT on and ends with
     the init that serves, so the sandbox lives as long as that one does.
   - Declared: `gpu.fence: "userns-netns"`. Read back: hello's `fence` on every connect, which the drift check requires
-    to be one of the two. Create notes it when it is `userns-netns`, and the conformance report's `daemon.fence` records
-    it.
+    to be one of the two. Create notes it when it is `userns-netns`, and the conformance report records it under the GPU
+    computer's own name and role (`daemons[].fence`).
   - Proven in Docker. In `test/docker/modal-commands.docker.test.mjs`, a root container with Docker's default
     capabilities and no seccomp profile stands in for gVisor:
     - `--own-network` falls back and serves;
@@ -2219,11 +2219,16 @@ core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · moun
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
-daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
-undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
-case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
-ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
-report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
+daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
+group, status, reason?, undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under
+its line with what the case found. A computer's `role` is `"shared"` for the run's computer, which the cases that need
+none of their own share, else the id of the case that made it. `daemons` holds each computer's first `hello`, one entry
+per computer in the order they answered (empty when none did), so computers of one run that differ are kept apart: a GPU
+computer's `fence` is not the run's computer's. The text report prints each as `daemon <computer> (<role>): computerd
+<version> <os>/<arch> · fence <fence>` above the verdict. `computerNotes` (`[{ computer, role, note }]`, absent when
+empty) holds every note a `create` returned beside its ref, such as a probe target that accepted and sent nothing back,
+naming the computer and its role, in the order they came; the text report prints each as `note <computer> (<role>):
+<words>` above the verdict, so a run that passes Core never hides one. Notes an
 `attach` returns are not carried: cases call `attach` on the provider directly, so the runner never sees them.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
