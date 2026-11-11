@@ -51,7 +51,7 @@ const mcpCall = (tool, label = "File it") => ({ node: "call", label, via: "tool"
 
 test("an MCP tool is on a draft's list when the agent's revision grants it, by its own name or under its server's wildcard as the server lists its tools, and its gate does not deny it: set to ask it is offered, since the learned_workflow call asks once (#2424); the runtime's own read admits none, its pin's tools come in apart", async () => {
   const { permissionOf } = await import("../dist/tool-gate.js");
-  const MCP = { mcp: true };
+  const MCP = { mcp: true, approvers: true };
   // Granted by name: on the list. A wildcard names no tool until it is read against its server's listing.
   assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "mcp:linear/create_issue", "mcp:github/*"], undefined, MCP), ["web_fetch", "mcp:linear/create_issue"]);
   // The runtime's read (learned-workflow.ts, at a call): no MCP tool here, the run's pin's come in apart.
@@ -62,6 +62,12 @@ test("an MCP tool is on a draft's list when the agent's revision grants it, by i
   // Unset, an MCP tool asks (a third-party catalog tool's default): offered, since its learned_workflow call asks once.
   const unset = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, MCP);
   assert.deepEqual([unset.tools, unset.gated], [["web_fetch", "mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"], {}]);
+  // With no one to answer an ask (the server's accounts off, server-approvers.ts), the learned call's ask is refused at
+  // once (#2424): an MCP tool set to ask is held back, as a table tool's is. Not said: no one, so none is offered.
+  for (const options of [{ mcp: true, approvers: false }, { mcp: true }]) {
+    const lone = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, options);
+    assert.deepEqual([lone.tools, Object.keys(lone.gated).sort()], [["web_fetch"], ["mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"]], JSON.stringify(options));
+  }
   // Denied (one tool, or its server's wildcard): refused, named with its setting.
   const settings = { "mcp:github/*": { permission: "deny" }, "mcp:linear/create_issue": { permission: "allow" } };
   const denied = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, settings, "ask"), undefined, undefined, MCP);

@@ -256,6 +256,26 @@ test("the draft ask describes each MCP tool a call node may run by its server's 
   assert.ok(!prompt.includes("mcp:linear/delete_issue"), "delete_issue is denied: not offered");
 });
 
+test("with no one to answer an ask (the store's approvers row: the server's accounts off), the draft ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
+  const { writeApprovers } = await import("../dist/server-approvers.js");
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/*"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    await writeApprovers(server.settings, false);
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+    await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue in a team", input_schema: { type: "object" } }] });
+    await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object" } }] });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt, "the run was asked its end-of-run turn");
+  assert.ok(prompt.includes("- `mcp:linear/create_issue`: Create an issue in a team."), prompt.slice(prompt.indexOf("What each tool"), prompt.indexOf("A skill is how")));
+  assert.ok(!prompt.includes("mcp:github/create_pull_request"), "github's tool asks, and no one can answer: not offered");
+});
+
 // A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives
 // nothing new to look back on: it is not asked its end-of-run turn (no model request), and its learning is dropped
 // `empty` in said.onlyWorkflow's words, at no cost. Any other tool, or a learned workflow that fails, is asked as before.
