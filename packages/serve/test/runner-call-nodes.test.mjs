@@ -258,3 +258,71 @@ test("the net: an llm call whose answer costs more than its hold fails in the ca
   assert.equal(row.state, "failed", JSON.stringify({ state: row.state, summary: row.summary }));
   assert.match(await row.journalText(), /its answer cost \$[\d.]+, above the \$[\d.]+ it held before it ran/, "the call's failure in the cap's words");
 });
+
+test("a call node's hold is taken only once the driver has admitted its effect: a runner that dies at the write of its hold never leaves a hold the next claim counts beside running the call again", async (t) => {
+  // The stores' clock is real time plus `skew`, so the dead runner's claim is run out by moving it, never by waiting.
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-call-crash-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const second = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const runners = [];
+  // Runner A's last write never comes back while the case runs; once it is done (runner B holds the run under a later
+  // claim, so nothing A does now lands) it fails, so A's claim unwinds and its proxies close.
+  let unstick = () => {};
+  t.after(async () => {
+    unstick();
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const store of [real, second, server]) await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // The call is priced (its hold, callHoldOf, reads its tier's model: armed) and the next flush is its hold's, made
+  // durable before anything is sent; that flush lands and runner A dies there. What it made durable is what B finds.
+  let armed = false;
+  let died = false;
+  let diedNow;
+  const dead = new Promise((resolve) => (diedNow = resolve));
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "flush") return async (...args) => {
+      await target.flush(...args);
+      if (!armed || died) return;
+      died = true;
+      runners[0].kill();
+      diedNow();
+      await new Promise((_, reject) => (unstick = () => reject(new Error("runner A died at this write"))));
+    };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const origin = wordsOrigin(["CALL-ONE"], 10);
+  // maxTokens 10: the call holds 10 output tokens at $100 a million, what its answer of 10 output tokens books.
+  const providerOf = () => ({
+    modelId: "faux-priced", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"n"}`,
+    policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: (_model, usage) => (usage.output ?? 0) * 100 / 1e6, fetch: origin.fetch,
+    get capModel() { if (!died) armed = true; return PRICED; },
+  });
+  await server.agents.create({ id: "agent-1", name: "Calls" }, { id: "rev-1", kind: "workflow", body: { workflow: boundedCall("CALL-ONE", 10), tools: ["llm"] } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runners.push(startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf })), name: "runner-a", ...TIMING }));
+  await dead;
+  assert.deepEqual(origin.counts, { "CALL-ONE": 0 }, "runner A died before the call was sent");
+  // Runner A's claim runs out; runner B takes the run over.
+  skew += TIMING.leaseMs + 60_000;
+  runners.push(startRunner({ store: second, createLoop: createWorkflowLoop(workflowSpecOf({ store: second, providerOf })), name: "runner-b", ...TIMING }));
+  const from = Date.now();
+  let row;
+  for (;;) {
+    row = await server.runs.get("run-1");
+    if (!["running", "queued"].includes(row.state) && row.runner === null) break;
+    if (Date.now() - from > 30_000) assert.fail(`the run never left running: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+    await sleep(20);
+  }
+  const holds = await paidRequestsOf(server);
+  // A's hold kept before the admission was counted cut by B beside B's own hold and its sent request: $0.002 for one
+  // $0.001 call. Held only inside the admission, A's hold is the admitted effect's: B never runs it again (the driver
+  // refuses an admitted effect it cannot know), and the run counts that one hold.
+  assert.equal(holds.length, 1, `one hold, never a dead runner's beside a second: ${JSON.stringify(holds.map((hold) => hold.model))}`);
+  assert.equal(eight(row.costUsd ?? 0), eight(PER_ANSWER), `the call counted once: ${JSON.stringify({ state: row.state, costUsd: row.costUsd, summary: row.summary })}`);
+  assert.ok(origin.counts["CALL-ONE"] <= 1, `sent at most once: ${JSON.stringify(origin.counts)}`);
+});
