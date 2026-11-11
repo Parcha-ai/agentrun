@@ -100,8 +100,8 @@ export interface LearningLoopDeps {
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
   /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
-   *  already holds is settled alone (takenOnMain). None: main is taken to hold none of them. */
-  mainTexts?(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
+   *  already holds is settled alone (takenOnMain). */
+  mainTexts(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
 }
@@ -408,7 +408,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           // refusal of everything else the run learned.
           const notePaths = graded.verdict.items.flatMap((item) => (!item.keep ? [] : item.note ? [item.note.file] : proposal.notes.some(({ file }) => file === item.file) ? [item.file] : []));
           let onMain: Readonly<Record<string, string>> = {};
-          if (notePaths.length && learning.mainTexts) {
+          if (notePaths.length) {
             try {
               onMain = await learning.mainTexts(ws, notePaths);
             } catch (error) {
