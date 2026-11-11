@@ -14,6 +14,9 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
+/** How late a transaction's deadline timer may fire before the lateness counts as the process held up by other work,
+ *  given back to the transaction (Connection.transaction). */
+const STALL_MS = 50;
 
 /** A value SQLite takes or gives back (Chord's SqliteValue). */
 export type SqliteValue = null | number | bigint | string | Uint8Array;
@@ -300,7 +303,19 @@ export class Connection implements SqliteDatabase, StoreConnection {
       let timer: NodeJS.Timeout | undefined;
       const left = until !== undefined ? Math.max(0, until - Date.now()) : deadlineMs;
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new StoreDeadline(deadlineMs)), left);
+        // Counted from its begin, the deadline is the time this process could run: its timer fired late when other work
+        // held the event loop (a harness binary hashed, or a command run synchronously), and a statement answered
+        // meanwhile waits behind the timer. That time was no statement's, so the deadline moves by it, and the
+        // transaction ends as its own work does. Counted from its call (a lease's), it stays the wall clock's.
+        const arm = (ms: number) => {
+          const due = Date.now() + ms;
+          timer = setTimeout(() => {
+            const late = Date.now() - due;
+            if (until === undefined && late >= STALL_MS) return arm(late);
+            reject(new StoreDeadline(deadlineMs));
+          }, ms);
+        };
+        arm(left);
       });
       let value: T;
       try {

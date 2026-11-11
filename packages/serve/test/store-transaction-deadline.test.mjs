@@ -56,3 +56,19 @@ test("a transaction that ends before its deadline commits, and the calls queued 
   assert.equal(await read, 1, "the read behind the transaction sees its commit");
   assert.deepEqual(order, ["first work done", "read"]);
 });
+
+test("a transaction open while other work holds the process's event loop past its deadline commits: only time the process could run counts", { timeout: 30_000 }, async (t) => {
+  const db = await scratchConnection(t);
+  const held = db.connection.transaction(async (tx) => {
+    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('held', '1', 1)" });
+    // Other work of the process (a binary hashed or a command run synchronously) holds its event loop while this
+    // transaction's next statement is answered: the deadline's timer fires late, after that answer.
+    setImmediate(() => {
+      const until = Date.now() + 900;
+      while (Date.now() < until);
+    });
+    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('held-2', '1', 1)" });
+  }, { deadlineMs: 300 });
+  await held;
+  assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM settings WHERE key IN ('held', 'held-2')")).n), 2, "both statements are kept");
+});
