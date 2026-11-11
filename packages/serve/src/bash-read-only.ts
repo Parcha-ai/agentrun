@@ -69,6 +69,12 @@ export function bashPolicyOf(toolSettings: unknown): string | undefined {
 //   attaches a textconv, external diff or filter driver), a bare repository only when named (safe.bareRepository,
 //   which git reads from command-line config, never a repository's own), no transport at all, and no signature program;
 // - GIT_PAGER and PAGER cat, no prompt, no optional lock (status leaves the index unwritten) and no lazy fetch.
+// The config needs git 2.43 (attr.tree; safe.bareRepository is 2.38), and an older git ignores what it does not know,
+// so a shell under a policy runs with a prelude (policyPrelude) defining `git` as a function that runs git only at 2.43
+// or later and otherwise refuses, in words, before anything runs: fail closed, never a read with half the lock-down. A
+// stock serverless exec image has git 2.34 (archil.ts), so a read-only agent there gets no git until its image has a
+// newer one. The model cannot step around the function: the policy refuses `command`, a path to a program, `$`,
+// `unset` and every program but git by name.
 // What config cannot turn off: diff.external (an empty value makes git diff fail; git has no unset on the command
 // line). It needs a repository's own config, which the policy never lets a command write and safe.bareRepository keeps
 // a planted repository from supplying.
@@ -108,6 +114,18 @@ export function policyEnv(policy: string | undefined): Readonly<Record<string, s
     GIT_CONFIG_COUNT: String(POLICY_GIT_CONFIG.length),
     ...Object.fromEntries(POLICY_GIT_CONFIG.flatMap(([key, value], n) => [[`GIT_CONFIG_KEY_${n}`, key], [`GIT_CONFIG_VALUE_${n}`, value]])),
   };
+}
+
+/** The oldest git that holds the whole lock-down (attr.tree). */
+export const POLICY_GIT_FLOOR = "2.43";
+// `git version` at the floor or later: 2.43-2.49, 2.50-2.99, 2.100 and up, 3 and up.
+const GIT_AT_FLOOR = `"git version 2.4"[3-9]*|"git version 2."[5-9][0-9]*|"git version 2."[1-9][0-9][0-9]*|"git version "[3-9]*|"git version "[1-9][0-9]*`;
+const GIT_FUNCTION = `git() { case "$(command git version 2>/dev/null)" in ${GIT_AT_FLOOR}) command git "$@" ;; *) echo "git refused: this agent's bash policy needs git ${POLICY_GIT_FLOOR} or later to keep a repository's config from running a program, and this shell has $(command git version 2>/dev/null || echo no git); nothing ran." >&2; return 126 ;; esac; }`;
+
+/** What a shell under bash policy `policy` runs before the command, on a line of its own: `git` as a function that runs
+ *  git only at POLICY_GIT_FLOOR or later. Empty without a policy. POSIX sh, for bash and the sh fallback alike. */
+export function policyPrelude(policy: string | undefined): string {
+  return policy === undefined ? "" : `${GIT_FUNCTION}\n`;
 }
 
 /** The programs a read-only command may run. */

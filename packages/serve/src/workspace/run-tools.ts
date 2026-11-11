@@ -14,7 +14,7 @@
 //
 // The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. Under a bash policy
 // (`bashPolicy`, the revision's tool_settings.bash.policy) it adds the policy's (bash-read-only.ts policyEnv): git's
-// config locked down. TMPDIR is .agentrun/tmp in
+// config locked down, and a prelude that runs git only where git holds the whole lock-down (policyPrelude). TMPDIR is .agentrun/tmp in
 // the run's folder, and bash's full output goes to .agentrun/output/<id> there; the run's end sweeps both.
 //
 // The computer's check: `check` is the mount check attach takes (attach.ts MountCheck), which the caller builds with
@@ -38,7 +38,7 @@ import type { AttachableComputer, MountCheck } from "./attach.js";
 import { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
-import { policyEnv } from "../bash-read-only.js";
+import { policyEnv, policyPrelude } from "../bash-read-only.js";
 import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
 import { type ClaimBrowser, type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
@@ -140,7 +140,9 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   await attached.mkdir(TMP_DIR);
   // Under a bash policy (an agent's tool_settings.bash.policy), what the policy adds: git's config locked down.
   const env = { ...shellEnv({ tmpdir: `${cwd}/${TMP_DIR}`, ...(mounted === undefined ? { home: cwd } : {}) }), ...policyEnv(options.bashPolicy) };
-  const fileEnv = piEnv(attached, { cwd, aliases: names.slice(1), env, defaultTimeoutS: maxExecS });
+  // And a prelude: git run only where it holds the whole lock-down (policyPrelude).
+  const prelude = policyPrelude(options.bashPolicy);
+  const fileEnv = piEnv(attached, { cwd, aliases: names.slice(1), env, defaultTimeoutS: maxExecS, ...(prelude ? { prelude } : {}) });
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
@@ -151,7 +153,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
     // attached. The kind's ports beside them.
-    hands: { ...handsOf(attached, { maxExecS, env, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
+    hands: { ...handsOf(attached, { maxExecS, env, ...(prelude ? { prelude } : {}), ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
     shell,
     kinds,
     without,

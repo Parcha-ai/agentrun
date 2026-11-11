@@ -14,7 +14,7 @@ import { readBackOf } from "@parcha/agentrun-computer";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { answerText } from "../dist/workspace/executors.js";
 import { runHands } from "../dist/workspace/run-tools.js";
-import { bashPolicyOf, POLICY_GIT_CONFIG, policyEnv, readOnlyReason } from "../dist/bash-read-only.js";
+import { bashPolicyOf, POLICY_GIT_CONFIG, POLICY_GIT_FLOOR, policyEnv, policyPrelude, readOnlyReason } from "../dist/bash-read-only.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { realProcesses } from "./workspace-fake-processes.mjs";
 
@@ -70,8 +70,10 @@ test("a read-only bash call's environment carries git's lock-down; a run with no
 
 test("a hostile repository config (core.fsmonitor, core.pager, a textconv driver) and a planted bare repository run nothing under the read-only policy; the same reads run them with no policy", async (t) => {
   const git = spawnSync("git", ["version"], { encoding: "utf8" });
+  if (git.status !== 0) return t.skip(`no git here: ${git.error}`);
+  // Below the floor the policy's git refuses every call: nothing runs either way, and the reads say why.
   const [major, minor] = (git.stdout.match(/(\d+)\.(\d+)/) ?? []).slice(1).map(Number);
-  if (git.status !== 0 || major < 2 || (major === 2 && minor < 43)) return t.skip(`git 2.43 or later (attr.tree) is needed: ${git.stdout || git.error}`);
+  const atFloor = major > 2 || (major === 2 && minor >= 43);
   const { dir, root } = scratch();
   // The program the hostile config names, outside the run's folder: each run appends a line to its mark.
   const evil = join(dir, "evil.sh");
@@ -101,13 +103,48 @@ test("a hostile repository config (core.fsmonitor, core.pager, a textconv driver
   const said = [];
   for (const command of reads) said.push(await bash(locked, command));
   assert.equal(existsSync(mark), false, `nothing the config names ran under the policy:\n${said.join("\n---\n")}`);
-  assert.match(said[1], /\+two/, "git diff still reads the change");
-  assert.match(said[4], /cannot use bare repository/, "the planted bare repository is refused");
-  assert.equal((await bash(locked, "cd repo && git var GIT_PAGER")).trim(), "cat", "the pager git would use is cat");
+  if (atFloor) {
+    assert.match(said[1], /\+two/, "git diff still reads the change");
+    assert.match(said[4], /cannot use bare repository/, "the planted bare repository is refused");
+    assert.equal((await bash(locked, "cd repo && git var GIT_PAGER")).trim(), "cat", "the pager git would use is cat");
+  } else {
+    for (const one of said) assert.match(one, /git refused: this agent's bash policy needs git 2\.43 or later/, one);
+  }
 
   // The control: the same reads with no policy run the hostile config's program, so the test reads a real hole.
   const plain = await hands(root);
   for (const command of reads) await bash(plain, command);
   assert.ok(existsSync(mark) && readFileSync(mark, "utf8").includes("ran"), "with no policy the hostile config's program runs");
   assert.equal((await bash(plain, "cd repo && git var GIT_PAGER")).trim(), evil, "with no policy the hostile pager is git's");
+});
+
+test("under a policy git runs only at 2.43 or later: an older git (a stock serverless exec image's 2.34) is refused in words and runs nothing, under bash and the sh fallback alike", (t) => {
+  assert.equal(POLICY_GIT_FLOOR, "2.43");
+  assert.equal(policyPrelude(undefined), "", "no policy: no prelude");
+  const { dir } = scratch();
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const ran = join(dir, "RAN");
+  const cases = [
+    ["git version 2.34.1", false], ["git version 2.39.3 (Apple Git-146)", false], ["git version 2.42.0", false], ["git version 2.4.1", false], ["git version 2.19.1", false], ["git version 1.9.0", false],
+    ["git version 2.43.0", true], ["git version 2.47.1", true], ["git version 2.50.0", true], ["git version 2.100.0", true], ["git version 3.0.0", true],
+  ];
+  const shells = ["sh", "bash"].filter((shell) => spawnSync(shell, ["-c", "true"]).status === 0);
+  if (!shells.length) return t.skip("no sh or bash here");
+  for (const [version, runs] of cases) {
+    // A git that says `version` and records every other call.
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nif [ "$1" = version ]; then echo '${version}'; exit 0; fi\necho "$@" >> '${ran}'\necho read\n`);
+    chmodSync(join(bin, "git"), 0o755);
+    for (const shell of shells) {
+      rmSync(ran, { force: true });
+      const out = spawnSync(shell, ["-c", `${policyPrelude("read-only")}git log -1 | head -1`], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" });
+      if (runs) {
+        assert.equal(out.stdout, "read\n", `${shell}, ${version}: ${out.stderr}`);
+        assert.equal(readFileSync(ran, "utf8"), "log -1\n", `${shell}, ${version}: the arguments reach git as given`);
+      } else {
+        assert.equal(existsSync(ran), false, `${shell}, ${version}: git never ran`);
+        assert.match(out.stderr, new RegExp(`git refused: this agent's bash policy needs git 2\\.43 or later .* this shell has ${version.replace(/[().]/g, "\\$&")}; nothing ran\\.`), `${shell}, ${version}`);
+      }
+    }
+  }
 });
