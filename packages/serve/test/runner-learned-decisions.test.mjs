@@ -24,6 +24,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { spentOverStore } = await import("../dist/store-reads/cap.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -103,14 +104,17 @@ async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd } = {}
   for (const key of await sessions.keys()) records[key] = await sessions.read(key);
   const timeline = await runTimeline(server, RUN, ctx, { settled: true });
   const sent = existsSync(jevCalls) ? readFileSync(jevCalls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
-  return { row, records, timeline, sent };
+  // What the runs list shows for this run while it is still going or paused (store-reads/runs.ts: spentOverStore over its
+  // journal, the end not written yet), read over the same journal.
+  const listed = await spentOverStore(server, RUN, ctx);
+  return { row, records, timeline, sent, listed };
 }
 
 const turnsUsd = (records) => (records ?? []).filter((record) => record.kind === "runner.turn").reduce((sum, record) => sum + (record.data.bookedUsd ?? record.data.usd ?? 0), 0);
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
 test("a pi run's learned judge is answered by the faux Jev on the key its claim was handed: booked on the run's decisions, and in the run's cost", { timeout: 120_000 }, async (t) => {
-  const { row, records, timeline, sent } = await learnedJudgeRun(t);
+  const { row, records, timeline, sent, listed } = await learnedJudgeRun(t);
   assert.equal(row.state, "ended", JSON.stringify(row));
   const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === LEARNED_WORKFLOW_TOOL);
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
@@ -122,6 +126,7 @@ test("a pi run's learned judge is answered by the faux Jev on the key its claim 
   near(turnsUsd(decisions), JEV_USD, "booked at what Jev reported");
   const model = Object.entries(records).filter(([key]) => key !== "decisions").reduce((sum, [, list]) => sum + turnsUsd(list), 0);
   near(row.costUsd, model + JEV_USD, "the run's cost counts its decision beside its model requests");
+  near(listed, model + JEV_USD, "the cost the runs list shows while it runs or is paused counts it too, from the same records");
 });
 
 test("with jev denied on the agent, its claim hands no Jev key, the learned judge is refused in the gate's words, and nothing reaches Jev", { timeout: 120_000 }, async (t) => {
@@ -135,9 +140,10 @@ test("with jev denied on the agent, its claim hands no Jev key, the learned judg
 });
 
 test("a capped pi run whose learned decision reports no cost saves its cost unknown: the cap's hold is never read as what the decision charged", { timeout: 120_000 }, async (t) => {
-  const { row, records, sent } = await learnedJudgeRun(t, { noUsage: true, capUsd: 1 });
+  const { row, records, sent, listed } = await learnedJudgeRun(t, { noUsage: true, capUsd: 1 });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(sent.length, 1, "the decision was sent and answered");
   assert.deepEqual((records.decisions ?? []).map((record) => record.kind), ["runner.request", "runner.turn"], JSON.stringify(records.decisions));
   assert.equal(row.costUsd, null, `an unknown charge leaves the run's cost unknown, never its hold: ${JSON.stringify(row)}`);
+  assert.equal(listed, null, "and the cost listed while it runs or is paused is unknown too");
 });
