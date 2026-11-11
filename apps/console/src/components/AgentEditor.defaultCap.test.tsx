@@ -82,20 +82,22 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(sent[0]?.max_cost_usd).toBeUndefined();
   });
 
-  it("0 typed on an agent with no cap sends none (nothing to clear, so no new revision); 0 on a capped agent clears it", async () => {
+  // 0 on an agent with no cap is no change at all (0 is none): Save stays off and nothing is sent.
+  it("0 typed on an agent with no cap sends nothing (nothing to clear, so no new revision); 0 on a capped agent clears it", async () => {
     const sent: Record<string, unknown>[] = [];
     const bare = { ...capped, definition: { ...capped.definition, max_cost_usd: undefined } };
     const onSave = async (fields: Record<string, unknown>) => { sent.push(fields); return null; };
     const a = mount({ agent: bare, onSave });
-    a.type("0");
-    await a.save();
-    a.type("$0");
-    await a.save();
+    for (const zero of ["0", "$0"]) {
+      a.type(zero);
+      // Nothing to save: the button reads Saved and there is no Save revision to click.
+      expect(a.host.textContent, zero).not.toContain("Save revision");
+    }
     roots.splice(0).forEach((u) => u()); document.body.innerHTML = "";
     const b = mount({ agent: capped, onSave });
     b.type("0");
     await b.save();
-    expect(sent.map((s) => ["max_cost_usd" in s, s.max_cost_usd])).toEqual([[false, undefined], [false, undefined], [true, 0]]);
+    expect(sent.map((s) => ["max_cost_usd" in s, s.max_cost_usd])).toEqual([[true, 0]]);
   });
 
   it("a currency sign with no number is refused under the field, never read as empty: a saved cap is not cleared", async () => {

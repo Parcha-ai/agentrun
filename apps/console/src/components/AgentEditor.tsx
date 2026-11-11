@@ -122,7 +122,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // own tool settings, else the definition's), with approvals as the form shows them and the tools as a set (a harness
   // switch and back can reorder them, never change them).
   const saves = (x: AgentFields): Record<string, unknown> => {
-    const def: Record<string, unknown> = agent ? { ...editBody(agent, x, "").definition } : { ...x };
+    // The cap and the workflow as Save sends them: "2.50" is the saved 2.5, and reformatted JSON is the same workflow.
+    // Text that doesn't parse stays as typed (a change: Save says why it can't send it).
+    const { maxCostText, workflowText, ...fields } = x;
+    const cap = capOf(maxCostText), parsed = parsedWorkflow(workflowText);
+    const sent: AgentFields & Record<string, unknown> = { ...fields, maxCost: cap.ok ? cap.value ?? 0 : maxCostText, ...(workflowText !== undefined ? { workflowSent: parsed !== undefined ? parsed : workflowText } : {}) };
+    const def: Record<string, unknown> = agent ? { ...editBody(agent, sent, "").definition } : { ...sent };
     delete def.version;
     if (def.tool_settings && !Object.keys(def.tool_settings).length) delete def.tool_settings;
     return { ...def, tools: [...((def.tools as string[] | undefined) ?? [])].sort(), approvals: x.approvals ?? d?.approvals ?? "ask" };
@@ -174,6 +179,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // Picking a harness: a new agent whose tools are untouched takes that harness's tools. Otherwise the tools it doesn't
   // run here come off at once, before any save, and are held: a switch back ticks them again.
   const toolOpts = { mcpHarnesses: caps.mcpHarnesses, workflow };
+  // A place off the box (the runner) takes the box's tools (bash) off the held ones too: a later switch back to a harness
+  // never ticks a tool the place now refuses.
+  const leavePlace = (place: { mode?: string }) => {
+    if (place.mode === "sandbox") return;
+    const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
+    setHeld((h) => h.filter((t) => !sandboxOnly.has(t)));
+  };
   const pickHarness = (harness: string) => {
     if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place) }); setHeld([]); return; }
     const next = toolsOnSwitch(harness, f.tools ?? [], held, caps.tools, toolOpts);
@@ -216,7 +228,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setSaving(false); setProblem(p);
     if (p) return;
     // Saved, the form as it was sent is the saved one (an edit made while the save was under way stays unsaved).
-    setNote(""); setHeld([]);
+    // The held tools are the saved harness's to give back no more; a switch made while the save was under way keeps its own.
+    setNote(""); if (formNow.current.harness === sent.harness) setHeld([]);
     setBase(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(sent) : sent);
     if (unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
@@ -332,6 +345,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   const place = placeOfComputer(computer);
                   const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
                   set({ computer, place, ...(place.mode === "runner" ? { tools: (f.tools ?? []).filter((t) => !sandboxOnly.has(t)) } : {}) });
+                  leavePlace(place);
                 }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
@@ -340,7 +354,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
               <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []}
-                onChange={(next) => set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) })} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+                onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
 

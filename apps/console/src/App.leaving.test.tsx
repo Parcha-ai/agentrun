@@ -128,6 +128,13 @@ describe("App, leaving the agent editor with unsaved changes", () => {
     await page.click(page.button(/^Sign out$/));
     expect(confirms).toEqual([LEAVE, LEAVE]);
     await page.wait(() => asked.slice(before).includes("POST /v2/auth/sign-out"), "the sign-out is sent");
+    // This server refuses it (the fixture answers 404): the editor stays, and its edits are still guarded.
+    await page.wait(() => !!page.host.textContent?.includes("Not signed out"), "the failed sign-out is said");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+    answer = false;
+    await page.click(page.sidebar("Agents"));
+    expect(confirms).toEqual([LEAVE, LEAVE, LEAVE]);
+    expect(location.hash).toBe("#/agents/calc/edit");
   });
 
   it("asks before Sign out everywhere too; Cancel keeps the editor and the edit, and sends no sign-out", async () => {

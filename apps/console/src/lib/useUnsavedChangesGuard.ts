@@ -36,14 +36,17 @@ export function useUnsavedChangesGuard(dirty: boolean): { asking: boolean; stay:
     stay: () => setHeld(null),
     leave: () => {
       if (held === null) return;
-      // The move the person chose goes past the hold: nothing holds again on this page (its hold is set only when it turns
+      setHeld(null);
+      // A sign-out (`to` null) keeps the hold: one that lands takes the whole console away, hold and all; one that fails
+      // leaves this page as it was, its edits still guarded.
+      if (held.to === null) { held.replay?.(); return; }
+      // A move the person chose goes past the hold: nothing holds again on this page (its hold is set only when it turns
       // dirty), and the move takes the page away.
       holder = null;
-      setHeld(null);
-      if (!held.replay) { if (held.to !== null) location.hash = held.to; return; }
+      if (!held.replay) { location.hash = held.to; return; }
       // A move the router is still taking back (its address not yet back on this page's) is made again only once it is
       // back: a step counted from the entry it is leaving would land past the one the person asked for.
-      if (held.to !== null && location.hash !== here.current) window.addEventListener("hashchange", held.replay, { once: true });
+      if (location.hash !== here.current) window.addEventListener("hashchange", held.replay, { once: true });
       else held.replay();
     },
   };

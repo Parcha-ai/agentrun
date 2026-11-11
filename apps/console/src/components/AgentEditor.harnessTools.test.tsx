@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps, type Revision } from "./AgentEditor";
 import { PerHarness } from "./ToolSettings";
 import { type Agent, toolOffers, toolsOnSwitch } from "@/lib/agentForm";
+import { placesOf } from "@/lib/place";
 
 // The agent editor's tools follow the harness: what it shows ticked, and what Save sends, is what the chosen harness runs
 // on this server (capabilities' tools[].harnesses; features.mcp_client.harnesses for MCP grants), said before any save.
@@ -159,5 +160,69 @@ describe("Settings → Tools: a harness this server can't run", () => {
     expect(codex.textContent).toBe("codex: not offered here");
     expect(codex.getAttribute("title")).toBe("codex needs OPENAI_API_KEY.");
     expect(lines.find((l) => l.textContent?.startsWith("pi:"))!.textContent).not.toContain("not offered");
+  });
+});
+
+// Review findings on the held tools and the Save flag: a place off the box takes its tools off the held ones too; a save
+// keeps a switch made while it was under way; a cap or a workflow written another way is no change.
+describe("AgentEditor: what a switch holds, and what counts as a change", () => {
+  const boxed = { ...caps, tools: toolOffers([{ name: "read", available: true, harnesses: ALL }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]),
+    places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "docker", available: true }] } }) };
+  function mountWith(a: Agent, c: EditorCaps, onSave: (f: Record<string, unknown>) => Promise<null> = async () => null) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditor, { agent: a, revisions, caps: c, step: "settings", onSave } as never)));
+    const click = (sel: string) => act(() => { host.querySelector<HTMLElement>(sel)!.click(); });
+    const step = (label: string) => act(() => { [...host.querySelectorAll<HTMLButtonElement>("ol button")].find((b) => b.textContent?.includes(label))!.click(); });
+    const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Save revision|Saving…|Saved)/.test(b.textContent?.trim() ?? ""))!;
+    const type = (sel: string, value: string) => act(() => {
+      const el = host.querySelector(sel) as HTMLTextAreaElement | HTMLInputElement;
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return { host, click, step, saveButton, type };
+  }
+
+  it("bash held by a switch to Claude is not ticked again on Pi once the place moved to the runner", () => {
+    const t = mountWith(agent({ definition: { version: 1, name: "boxed", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], place: { mode: "sandbox", box: "docker" } } }), boxed);
+    t.click('input[name="harness"][value="claude-agent"]');
+    t.step("Computer");
+    t.click('input[name="place"][value="runner"]');
+    t.step("Settings");
+    t.click('input[name="harness"][value="pi"]');
+    t.step("Tools");
+    expect(t.host.querySelector<HTMLInputElement>('input[value="bash"]')?.checked ?? false).toBe(false);
+  });
+
+  it("a switch made while a save is under way keeps what it holds: back on Pi, ask_person is ticked again", async () => {
+    let answer: (v: null) => void = () => {};
+    const t = mountWith(agent(), caps, () => new Promise<null>((r) => { answer = r; }));
+    t.step("Context");
+    t.type("#agent-instructions", "Do it now.");
+    await act(async () => { t.saveButton().click(); });
+    t.step("Settings");
+    t.click('input[name="harness"][value="claude-agent"]');
+    await act(async () => { answer(null); });
+    t.click('input[name="harness"][value="pi"]');
+    t.step("Tools");
+    expect(t.host.querySelector<HTMLInputElement>('input[value="ask_person"]')!.checked).toBe(true);
+  });
+
+  it("a cap written another way (2.50 for 2.5) or a workflow reformatted is no change: Save stays off", () => {
+    const capped = mountWith(agent({ definition: { ...agent().definition, max_cost_usd: 2.5 } }), caps);
+    capped.type("#agent-max-cost", "2.50");
+    expect(capped.saveButton().disabled).toBe(true);
+    capped.type("#agent-max-cost", "3");
+    expect(capped.saveButton().disabled).toBe(false);
+    act(() => root?.unmount());
+    const wf = { version: 1, root: { node: "chain", steps: [] } };
+    const flow = mountWith({ ...agent(), kind: "workflow", definition: { version: 1, name: "Flow", skills: [], tools: [], workflow: wf } }, caps);
+    flow.step("Workflow");
+    expect(flow.host.querySelector("textarea"), "the workflow's JSON").toBeTruthy();
+    // The saved workflow, written on one line instead of the editor's indented form.
+    flow.type("textarea", JSON.stringify(wf));
+    expect(flow.saveButton().disabled).toBe(true);
+    flow.type("textarea", JSON.stringify({ ...wf, version: 2 }));
+    expect(flow.saveButton().disabled).toBe(false);
   });
 });
