@@ -46,7 +46,7 @@ const serveAt = process.argv.indexOf("--serve");
 const serveDir = resolve(serveAt > 0 ? process.argv[serveAt + 1] : join(dirname(fileURLToPath(import.meta.url)), ".."));
 const dist = (file) => pathToFileURL(join(serveDir, "dist", file)).href;
 const TE = await import(dist("template-eval.js"));
-const { applyBodyOf, compiled } = await import(dist("templates.js"));
+const { applyBodyOf, filledPins } = await import(dist("templates.js"));
 // yaml as serve resolves it, so a frozen copy outside the repo reads job.yaml with serve's own parser.
 const { parseDocument } = await import(pathToFileURL(createRequire(join(serveDir, "package.json")).resolve("yaml")).href);
 
@@ -586,12 +586,13 @@ export function render(results) {
 }
 
 /** The pins a job's apply fills set on this server first, as the template eval sets them (serverPins). */
-async function serverPins(api, pkg, job) {
+export async function serverPins(api, pkg, job) {
   const { parameters } = applyBodyOf(pkg, { parameters: job.parameters, grants: job.grants });
-  const { unkept } = compiled(pkg, parameters, { mcp: pkg.mcp, defaultTools: [], grants: [], pins: false });
-  if (!unkept.length) return;
+  // Each pin the job's parameters fill whole (filledPins: one with an empty argument is no pin), as the template eval's.
+  const pins = filledPins(pkg.mcp, parameters).filter(({ empty }) => !empty.length);
+  if (!pins.length) return;
   const settings = ok("reading the server's tool settings", await api("GET", "/settings/tools"));
-  for (const { tool, pin } of unkept) settings[tool] = { ...(settings[tool] ?? {}), pin };
+  for (const { tool, pin } of pins) settings[tool] = { ...(settings[tool] ?? {}), pin };
   ok("pinning the job's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 
