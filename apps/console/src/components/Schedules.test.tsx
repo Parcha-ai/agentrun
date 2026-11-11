@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage, type ScheduleView } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
-import { pick, picker } from "@/test/picker";
+import { pick, picker, valueOf } from "@/test/picker";
 
 // Schedules (serve's trigger/1): the list, the form that makes or edits one with the server's 422 under the field it
 // names, and one schedule's page: pause, resume, edit, delete, run now (once per click), and its firings.
@@ -96,17 +96,21 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, min
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   const field = (name: string) => host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
-  // The agent and the every's unit are pickers (picked by their names); every other field is typed into.
-  const PICKERS: Record<string, string> = { agent: "Agent", everyUnit: "Unit" };
+  // The agent, the every's unit and the zone are pickers (picked by their names); a cron line is typed as a custom line
+  // (ScheduleWhen); every other field is typed into.
+  const PICKERS: Record<string, string> = { agent: "Agent", everyUnit: "Unit", timezone: "Time zone" };
   const set = async (name: string, value: string) => {
     if (PICKERS[name]) return pick(picker(host, PICKERS[name])!, value);
-    const el = field(name);
+    if (name === "cron" && !field("cron")) await pick(picker(host, "Runs")!, "custom");
+    await type(field(name), value);
+  };
+  const type = async (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const choose = async (kind: string) => { await act(async () => { (host.querySelector(`input[name="kind"][value="${kind}"]`) as HTMLInputElement).click(); }); };
   const issue = (field: string) => host.querySelector(`[data-issue="${field}"]`)?.textContent ?? null;
-  return { host, went, button, click, set, choose, issue, settle, text: () => host.textContent ?? "" };
+  return { host, went, button, click, set, type, choose, issue, settle, text: () => host.textContent ?? "" };
 }
 
 describe("the schedules list", () => {
@@ -164,7 +168,8 @@ describe("a new schedule", () => {
     const t = await open(server().v2, { trigger: null });
     const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name || l.control!.getAttribute("aria-label")]));
     // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
-    expect(named).toMatchObject({ Name: "name", "Cron line": "cron", "Time zone": "timezone", Agent: "Agent", "Each run is asked": "content" });
+    // So are the schedule's shape and its zone (ScheduleWhen's and ZonePicker's fields).
+    expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", Agent: "Agent", "Each run is asked": "content" });
   });
   it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
     const t = await open(server().v2, { trigger: null });
@@ -178,11 +183,13 @@ describe("a new schedule", () => {
     expect(unit.id).toBe("schedule-every-unit");
     expect(unit.id).not.toBe(every.control!.id);
   });
-  it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
+  it("sends the schedule picked in words as its cron line in its zone, the agent, the input and the cap, then opens it", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: null });
     await t.set("name", "nightly triage");
-    await t.set("cron", "30 1 * * *");
+    // No cron line to type: every day, at 01:30.
+    await pick(picker(t.host, "Runs")!, "daily");
+    await t.type(t.host.querySelector<HTMLInputElement>('[data-schedule-when] input[type="time"]')!, "01:30");
     await t.set("timezone", "America/Los_Angeles");
     await t.set("agent", "triage");
     await t.set("content", "Triage last night's issues.");
@@ -481,7 +488,10 @@ describe("editing a schedule", () => {
   it("opens with its fields, and saves only what changed", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: "trg_1", edit: true });
-    expect((t.host.querySelector('[name="cron"]') as HTMLInputElement).value).toBe("30 1 * * *");
+    // Its cron line read back in words: every day at 01:30, in its own zone.
+    expect(valueOf(picker(t.host, "Runs")!)).toBe("daily");
+    expect(t.host.querySelector<HTMLInputElement>('[data-schedule-when] input[type="time"]')!.value).toBe("01:30");
+    expect(valueOf(picker(t.host, "Time zone")!)).toBe("America/Los_Angeles");
     expect((t.host.querySelector('[name="maxCost"]') as HTMLInputElement).value).toBe("2");
     await t.set("maxCost", "3");
     await t.click(/^Save changes$/);

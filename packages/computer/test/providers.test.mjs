@@ -174,8 +174,9 @@ test("every registry module exports NETWORK beside MOUNT: the network forms its 
 		assert.equal(new Set(module.NETWORK).size, module.NETWORK.length, `${id}'s NETWORK names each form once`);
 		if (module.NETWORK.includes("allow")) lists.push(id);
 	}
-	// Which provider takes this server's allowlist, read from the registry alone: Docker, through the egress proxy.
-	assert.deepEqual(lists, ["docker"]);
+	// Which provider takes this server's allowlist, read from the registry alone: Docker and Local Chrome, each through its
+	// egress proxy.
+	assert.deepEqual(lists, ["docker", "local"]);
 });
 
 test("providerFor() names the known ids for an id it does not know", async () => {
