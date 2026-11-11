@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
@@ -27,7 +28,8 @@ import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/in
 
 /** A catalog name of an MCP tool: `mcp:<server>/<tool>`. A server name has no `_`, so `mcp__<server>__<tool>` splits one way. */
 export const MCP_NAME = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_-]{1,64})$/;
-/** The longest answer the model reads whole; the rest is filed in the run's work/ (monid's rule). */
+/** The longest answer the model reads whole; past it, the rest is filed in the run's work/ as lines read pages through
+ *  (filed-answer.ts). Within the host's result bound (HOST_RESULT_MAX_CHARS), so every harness passes it whole. */
 export const MCP_CLIP = 60_000;
 /** The most of one upstream answer read. */
 export const MAX_RESPONSE = 4 * 1024 * 1024;
@@ -275,25 +277,35 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     return upstream;
   };
 
-  /** The model's text of `result`: its text blocks joined, its structured content when it has no text; past MCP_CLIP, or
-   *  with blocks that are not text, the whole result is filed in the run's evidence/mcp/<server>/, through its Workspace
-   *  (never through a link), and the text says where. `clean` scrubs every credential the call's server took or sent. */
+  /** The model's text of `result`: its text blocks and its embedded text resources (GitHub's get_file_contents answers a
+   *  file as one) joined, its structured content when it has neither. Past MCP_CLIP, its start and the rest filed in the
+   *  run's evidence/mcp/<server>/ as readable lines, through its Workspace (never through a link), the text saying where
+   *  and the read offset that goes on (filed-answer.ts), so read pages through it with no shell. With blocks that are
+   *  neither (an image, a blob), the whole result is filed there as JSON, and the text says where. `clean` scrubs every
+   *  credential the call's server took or sent. */
   const textOf = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<string> => {
-    const blocks = Array.isArray(result.content) ? (result.content as { type?: unknown; text?: unknown }[]) : [];
-    const texts = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string);
+    const blocks = Array.isArray(result.content) ? (result.content as { type?: unknown; text?: unknown; resource?: { uri?: unknown; mimeType?: unknown; text?: unknown } }[]) : [];
+    const texts = blocks.flatMap((block) => {
+      if (block?.type === "text" && typeof block.text === "string") return [block.text];
+      const resource = block?.type === "resource" ? block.resource : undefined;
+      if (typeof resource?.text !== "string") return [];
+      const about = [typeof resource.uri === "string" ? resource.uri : "", typeof resource.mimeType === "string" ? `(${resource.mimeType})` : ""].filter(Boolean).join(" ");
+      return [`[resource${about ? ` ${about}` : ""}]\n${resource.text}`];
+    });
     let text = clean(texts.join("\n\n"));
     if (!text && result.structuredContent !== undefined) text = clean(JSON.stringify(result.structuredContent));
     const other = blocks.length - texts.length;
     if (text.length <= MCP_CLIP && other === 0) return text;
-    const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
+    const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+    if (other === 0) return filedAnswer(() => workspaceAt(options.work()), `evidence/mcp/${server}`, name, text, MCP_CLIP);
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}`, clean(JSON.stringify(result)));
+      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}.json`, clean(JSON.stringify(result)));
     } catch (error) {
       // The Workspace's code and the port's line for it, never the error's message, which names paths.
       return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
     }
-    return `${head}the whole answer is in the run's files at evidence/mcp/${server}/${name}]`;
+    return `${head}the whole answer is in the run's files at evidence/mcp/${server}/${name}.json]`;
   };
 
   /** The call itself, to a server whose address is the pinned one. A gate's decision or a paid call's hold goes around
