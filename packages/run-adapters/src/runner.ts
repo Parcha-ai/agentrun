@@ -80,7 +80,10 @@ export type BeforeRequest = (request: {
 /** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
  *  one a raise could, its figures (what the cap counted as taken, what the request needs at the least, the least cap that
  *  sends it): what the run's end is decided from (the kernel cap's parkOf). */
-export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number } };
+export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number };
+  /** The refusal's code, from a host that gives one (a spend cap's: `spend_cap_reached`): carried on the error that ends
+   *  the node (HarnessRunError.refusal), so a reader knows the refusal by it, never by its words. */
+  code?: string };
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. */
@@ -160,7 +163,7 @@ export interface ModelPortOptions {
   /** A note the host has for the session's next main-model request, taken by the call (ModelPort.note). */
   note?: (model: string, request?: NoteRequest) => string | undefined;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
-  stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
+  stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string) => Error;
 }
 
 /** A session's booking of paid model requests: the adapter's model port, and what it has counted. */
@@ -296,8 +299,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let admitting: Promise<unknown> = Promise.resolve();
   // A paid request whose cost couldn't be recorded stops the booking itself, whether or not the host gave it a stop.
   let failed: Error | undefined;
-  const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
-    options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
+  const end = (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string): Error =>
+    options.stop ? options.stop(reason, message, code) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }), ...(code === undefined ? {} : { refusal: code }) });
   const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, noted, inputTokensMaxWithoutNote, host }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
     const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
@@ -307,7 +310,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
       ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(feeUsd === undefined ? {} : { feeUsd }), ...(paid ? { paid } : {}), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }) });
-    if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
+    if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse, typeof verdict.code === "string" ? verdict.code : undefined);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
     // What a cache miss adds to the hold: kept beside it, so a request that never answers counts at both (sessionSpendOf).
     const bound = hold !== undefined && verdict && "boundUsd" in verdict ? heldFigure(verdict.boundUsd) : undefined;
@@ -536,8 +539,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     // A stop with no drain (drainMs 0) lets nothing run on, announced or not.
     const announced = new Set<string>();
     let immediate = false;
-    const failure = (reason: HarnessRunError["reason"], message?: string) =>
-      new HarnessRunError(reason, turnsSoFar(), submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
+    const failure = (reason: HarnessRunError["reason"], message?: string, code?: string) =>
+      new HarnessRunError(reason, turnsSoFar(), submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }), ...(code === undefined ? {} : { refusal: code }) });
 
     const controller = new AbortController();
     let rejectStopped!: (error: unknown) => void;
@@ -566,7 +569,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       onEvent: (event) => emit(event),
       stopped: () => stopped,
       draining: () => (draining ? failure("aborted", "harness node pausing: no new paid request") : undefined),
-      stop: (reason, message) => { stop(failure(reason, message)); return stopped!; },
+      stop: (reason, message, code) => { stop(failure(reason, message, code)); return stopped!; },
     });
 
     const submit: HostTool = {
