@@ -743,13 +743,13 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
 /** The end's cost and metrics: what every model request of the run cost (the booking) plus what its decisions and its
  *  call nodes' paid requests cost (the decision cap, the paid tools), one spend for the run. Unknown (no figure) once any
  *  part is unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined, journal: JournalReads | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined, journalOf: (() => JournalReads) | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
   if (!booking) return {};
   const model = booking.spentUsd();
   // A decision's cost is what its booking says it charged (bookedSpend over the decisions session's records, as the pi and
   // CLI specs read it): one its provider reported no cost for is unknown, never the hold the cap counts it at
   // (decisionCap.spentUsd, which stays the cap's own figure). With no journal to read, any decision is unknown.
-  const decision = !decisionCap ? 0 : journal ? bookedSpend((await journalEntries(journal, BACKGROUND_CONTEXT)) as never, "decisions").usd : null;
+  const decision = !decisionCap ? 0 : journalOf ? bookedSpend((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never, "decisions").usd : null;
   const paid = paidTools ? paidTools.spentUsd() : 0;
   return model === null || decision === null || paid === null ? {} : { costUsd: model + decision + paid };
 }
