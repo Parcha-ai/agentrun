@@ -49,13 +49,22 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-/** A gateway on loopback that answers OpenAI's Responses API with `text`, and records every request body. */
+/** A gateway on loopback that answers OpenAI's Responses API with `text`, and records each model request's body
+ *  (`seen`: every POST to /responses). Anything else that reaches its port is no model request: a host's loopback prober
+ *  (a keyless `GET /`, as codex-run's and opencode-run's gateways pass over) is kept apart (`stray`), answered 404, and
+ *  never counted as one. */
 async function responsesGateway(t, text) {
   const seen = [];
+  const stray = [];
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    seen.push({ path: req.url, body: JSON.parse(body || "{}") });
+    if (req.method !== "POST" || !new URL(req.url, "http://gateway").pathname.endsWith("/responses")) {
+      stray.push(`${req.method} ${req.url} (${req.headers["user-agent"] ?? "no user agent"})`);
+      res.writeHead(404).end();
+      return;
+    }
+    seen.push({ path: req.url, at: Date.now(), body: JSON.parse(body || "{}") });
     const events = [
       { type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta: text },
       { type: "response.completed", response: { id: "resp_0", object: "response", status: "completed", usage: { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 0 } } } },
@@ -65,7 +74,7 @@ async function responsesGateway(t, text) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { seen, origin: `http://127.0.0.1:${server.address().port}` };
+  return { seen, stray, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
 /** A run of `harness` stored with its launch (`launch`: more of its body, as the server writes it), and a runner whose
@@ -220,7 +229,8 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   const { row, messages, dir, computers } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   assert.deepEqual(messages.map((message) => [message.role, message.text]), [["person", "Say hello."], ["model", "Hello from OpenCode."]]);
-  assert.equal(gateway.seen.length, 1, "one model request, through the session's proxy to the gateway");
+  // Each model request said, so a second one names what it re-sent and whether the run was claimed again (its epoch).
+  assert.equal(gateway.seen.length, 1, `one model request, through the session's proxy to the gateway: ${JSON.stringify(gateway.seen.map((one) => ({ at: one.at, input: one.body.input?.map((item) => item.role ?? item.type) })))} epoch ${row.epoch}; not model requests: ${JSON.stringify(gateway.stray)}`);
   assert.equal(gateway.seen[0].body.model, "openai/gpt-5", "the gateway's own name for the model, as main sends it there");
   const sent = JSON.stringify(gateway.seen[0].body.input);
   assert.ok(sent.includes("Answer briefly."), "the revision's instructions are in the session's system prompt");

@@ -154,6 +154,22 @@ describe("agents", () => {
     expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
   });
 
+  it("makes a learned workflow an agent through its promote route, the name percent-encoded, as same-origin JSON with an empty body under its Idempotency-Key; its warnings show on the new agent's next read", async () => {
+    const warnings = [{ code: "no_model_key", message: "No key for its model yet." }];
+    const made = { agent_id: "check-refunds", revision: "rv1", revisions: 1, kind: "workflow", archived_at: null, warnings, definition: { version: 1, name: "check-refunds", workflow: {} } };
+    const { fn, calls } = fakeFetch((c) => (c.init?.method === "POST" ? json(201, made) : new Response(JSON.stringify({ ...made, warnings: undefined }), { status: 200, headers: { "content-type": "application/json", etag: '"rv1"' } })));
+    const v2 = createClient({ fetch: fn });
+    const answer = await v2.promoteWorkflow("refunds", "check refunds", "key-1");
+    expect(answer).toMatchObject({ agent_id: "check-refunds", kind: "workflow" });
+    expect(`${calls[0].init?.method} ${calls[0].url}`).toBe("POST /v2/agents/refunds/learning/workflows/check%20refunds/promote");
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
+    expect(calls[0].init?.body).toBe("{}");
+    expect(new Headers(calls[0].init?.headers).get("idempotency-key")).toBe("key-1");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    const read = await v2.getAgent("check-refunds");
+    expect(read.agent.warnings).toEqual(warnings);
+  });
+
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
     const v2 = createClient({ fetch: fn });
