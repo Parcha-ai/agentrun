@@ -4,11 +4,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fetchPage } from "../dist/web-fetch-direct.js";
 import { network } from "./fixtures/fake-network.mjs";
-import { answerFlow, client, follow, runDir, scratch, serve } from "./support.mjs";
+import { answerFlow, client, follow, journalOf, scratch, serve } from "./support.mjs";
 
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 
@@ -76,26 +75,20 @@ test("a URL on a port other than 80 or 443 is refused before its host is looked 
   assert.deepEqual(looked, [], "no lookup for a port it refuses");
 });
 
-/** What each web_fetch call of run `runId` was answered, parsed, from its released store. */
+/** What each web_fetch call of run `runId` was answered, parsed, from its journal in the store (support.mjs journalOf). */
 function pagesOf(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY id").all()
-      .flatMap((row) => JSON.parse(row.record).model ?? [])
-      .filter((message) => message.role === "toolResult" && message.toolName === "web_fetch")
-      .map((message) => {
-        const text = (message.content ?? []).map((c) => c.text ?? "").join("");
-        // pi-durable 1.1 reads a result's `content`, 1.2 and later its `output`: a result missing either reads empty there.
-        assert.notEqual(text, "", "web_fetch's result reached the model empty");
-        return JSON.parse(text);
-      });
-  } finally {
-    db.close();
-  }
+  return journalOf(data, runId)
+    .flatMap((entry) => entry.model ?? [])
+    .filter((message) => message.role === "toolResult" && message.toolName === "web_fetch")
+    .map((message) => {
+      const text = (message.content ?? []).map((c) => c.text ?? "").join("");
+      // pi-durable 1.1 reads a result's `content`, 1.2 and later its `output`: a result missing either reads empty there.
+      assert.notEqual(text, "", "web_fetch's result reached the model empty");
+      return JSON.parse(text);
+    });
 }
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("an agentic run's web_fetch, in its own process: every hostile target refused (ok false, never dialled), the public page answered", async (t) => {
+test("an agentic run's web_fetch: every hostile target refused (ok false, never dialled), the public page answered", async (t) => {
   const log = join(await scratch(t), "dialled.txt");
   const saved = process.env.FAUX_WEB_LOG;
   process.env.FAUX_WEB_LOG = log;

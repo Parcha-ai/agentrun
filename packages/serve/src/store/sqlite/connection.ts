@@ -5,6 +5,7 @@
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { runnableDeadline } from "../deadline.js";
 import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
@@ -14,42 +15,6 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
-/** How often an open transaction's deadline looks at the process's event loop, and how far past its look a look may
- *  come before the gap counts as the process held up (runnableDeadline). */
-const TICK_MS = 50;
-const STALL_MS = 50;
-
-/** Calls `expire` once `ms` of the time this process could run have passed, counted from now on the monotonic clock
- *  (performance.now: the host's clock set forward or back is never counted). A look every TICK_MS measures the event
- *  loop: a gap more than STALL_MS past its look was the process held up by other work (a harness binary hashed, a
- *  command run synchronously, the machine holding the process), wherever in the transaction it fell, before its
- *  deadline or across it, and is not counted. A wait of the transaction's own (a call awaited inside it) leaves the
- *  loop free, so it counts in full and is refused on time. Answers its clear. */
-function runnableDeadline(ms: number, expire: () => void): () => void {
-  const start = performance.now();
-  let last = start;
-  let held = 0;
-  const look = () => {
-    const now = performance.now();
-    const gap = now - last - TICK_MS;
-    if (gap > STALL_MS) held += gap;
-    last = now;
-    return now;
-  };
-  const ticks = setInterval(look, TICK_MS);
-  let timer: NodeJS.Timeout | undefined;
-  const check = () => {
-    const left = ms - (look() - start - held);
-    if (left <= 0) return expire();
-    timer = setTimeout(check, Math.ceil(left));
-  };
-  timer = setTimeout(check, ms);
-  return () => {
-    clearInterval(ticks);
-    clearTimeout(timer);
-  };
-}
-
 /** The interactive transactions open in this process, on any of its connections: each with where it was opened and when
  *  it began. A transaction's StoreDeadline, and a begin's StoreBusy, name them in their stack (never their message, which
  *  an answer may carry), so a log says who held the store: the deadline's own transaction, or another of this process's
@@ -361,12 +326,12 @@ export class Connection implements SqliteDatabase, StoreConnection {
       const deadline = new Promise<never>((_, reject) => {
         const expire = () => reject(holderNamed(new StoreDeadline(deadlineMs), { opened }));
         // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
-        // it. Counted from its begin, it is the time this process could run (runnableDeadline): while other work held
+        // it. Counted from its begin, it is the time this process could run (store/deadline.ts runnableDeadline): while other work held
         // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
         if (until !== undefined) {
           const timer = setTimeout(expire, Math.max(0, until - Date.now()));
           clear = () => clearTimeout(timer);
-        } else clear = runnableDeadline(deadlineMs, expire);
+        } else clear = runnableDeadline(deadlineMs, expire).clear;
       });
       let value: T;
       try {

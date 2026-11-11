@@ -351,11 +351,17 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // Under a fake docker (fixtures/fake-docker.mjs), a box command that asked for sudo fails the test: the stand-in refused
   // it, and noted it here.
   const dockerState = process.env.FAKE_DOCKER_STATE;
-  t.after(async () => {
-    // The runner releases its claims and closes its store handle before the server's directory goes.
+  // The whole start stopped, as the CLI's stop stops it (a restart's first half): the runner first, which lets each run
+  // it holds go where the next runner takes it up (runner.ts close: released, no backoff), then the server. Once.
+  let stopping;
+  const stop = () => (stopping ??= (async () => {
     if (closeRunner) await closeRunner();
     await store.close().catch(() => {});
     await server.close();
+  })());
+  t.after(async () => {
+    // The runner releases its claims and closes its store handle before the server's directory goes.
+    await stop();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
     // ENOTEMPTY (and a hook that throws skips the rest, their closes among them, so the file hangs).
@@ -367,7 +373,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, store, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
+  return { ...server, data, store, stop, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
@@ -525,6 +531,40 @@ export function storeRun(data, runId) {
   } finally {
     db.close();
   }
+}
+
+/** Run `runId`'s journal entries, in order, as the server's store keeps them (pi_entries), each its parsed record: what
+ *  a test read from a run's own database file before the one store, with its `id` and `conversationId`. Read-only,
+ *  beside the server that writes it. */
+export function journalOf(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    return db.prepare("SELECT id, conversation_id, record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => ({ ...JSON.parse(String(row.record)), id: Number(row.id), conversationId: Number(row.conversation_id) }));
+  } finally {
+    db.close();
+  }
+}
+
+/** Run `runId`'s paid tool calls as its runner books them on the run's one ledger (the paid-tools session's runner.request
+ *  and runner.turn records, run-cap.ts paidCalls), in the words main's records used: each request's hold as an
+ *  `agentrun.tool_started` mark (`tool`, `charged_by`, `call`, `heldUsd`) and its settle as an `agentrun.tool_cost` charge
+ *  (`usd`; none when unknown). A hold given back unused (nothing sent) has no charge. */
+export function paidCallsOf(data, runId) {
+  const entries = journalOf(data, runId);
+  const requests = new Map();
+  const out = [];
+  for (const entry of entries) {
+    const d = entry.data ?? {};
+    const key = `${entry.conversationId}:${d.turn}`;
+    if (entry.kind === "runner.request" && typeof d.model === "string" && d.model.startsWith("paid:")) {
+      const label = { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(d.charged_by ? { charged_by: d.charged_by } : {}), ...(d.call ? { call: d.call } : {}) };
+      requests.set(key, label);
+      out.push({ kind: "agentrun.tool_started", ...label, heldUsd: d.heldUsd });
+    } else if (entry.kind === "runner.turn" && requests.has(key) && d.givenBack !== true) {
+      out.push({ kind: "agentrun.tool_cost", ...requests.get(key), ...(typeof d.usd === "number" ? { usd: d.usd } : {}) });
+    }
+  }
+  return out;
 }
 
 /** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
@@ -760,5 +800,31 @@ export async function writtenJson(file, reaching, { ms = 55_000, read } = {}) {
     const value = await jsonIn(file, read);
     if (value !== null) return value;
     assert.ok(Date.now() < end, reaching);
+  }
+}
+
+/** The server's log from now until the test ends: every line written to this process's stderr, where a run's harness
+ *  lines go on the runner (adapters.ts harnessLog), runs having no process or process.log of their own. `text()` reads
+ *  what was written so far. */
+export function serverLog(t) {
+  const chunks = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    chunks.push(String(chunk));
+    return write.call(process.stderr, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  return { text: () => chunks.join("") };
+}
+
+/** Run `runId`'s launch body as the store keeps it (run_launch.body): what the server resolved for the run before it
+ *  existed (its first input, cap, the tools' plane, ...), the per-run serve.json of before the one store. */
+export function launchOf(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    const row = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+    return row ? JSON.parse(String(row.body)) : undefined;
+  } finally {
+    db.close();
   }
 }

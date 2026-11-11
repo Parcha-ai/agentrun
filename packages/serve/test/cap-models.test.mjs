@@ -294,10 +294,10 @@ test("pi under a cap: a model serve has no price for is refused, a model the cat
 });
 
 // The provider overhead table's figures, pinned here so a change to the table is a change to this test: Anthropic's tool-use
-// prompt with a forced tool (pi's context does not say how a tool is chosen, so the dearer is taken) and its per-image
-// maximum, Chat Completions' tool figure, and the assumed allowance for every kind without a documented one.
+// prompt with a forced tool (pi's context does not say how a tool is chosen, so the dearer is taken), the largest per-image
+// maximum (OpenAI's, for an image of unread size on a model of no known provider), Chat Completions' tool figure, and the assumed allowance for every kind without a documented one.
 const ANTHROPIC_TOOLS = 804;
-const ANTHROPIC_IMAGE = 4_784;
+const OPENAI_IMAGE = 73_800;
 const COMPLETIONS_TOOLS = 804;
 const ASSUMED_TOOLS = 2_048;
 const tool = { name: "lookup", description: "Look a thing up.", parameters: { type: "object", properties: {} } };
@@ -316,7 +316,9 @@ async function sentUnder(api, ctx, tokens) {
 
 test("pi's input adds what its provider adds server-side, from the model proxy's own table: an Anthropic model with tools and an image is held at the same figure", async () => {
   const ctx = { tools: [tool], messages: [{ role: "user", content: [{ type: "text", text: "What is this?" }, image], timestamp: 0 }] };
-  const tokens = bound(ctx) + ANTHROPIC_TOOLS + ANTHROPIC_IMAGE;
+  // The image (a size its header does not give) at the largest per-image maximum, its model ("m") being of no provider
+  // whose rule is known, in place of its base64's bytes.
+  const tokens = bound(ctx) + ANTHROPIC_TOOLS + OPENAI_IMAGE - image.data.length;
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 1.001), true, "sent within its bound plus the overhead");
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 0.999), false, "refused past it: the overhead is counted");
 });
