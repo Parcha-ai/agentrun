@@ -276,6 +276,43 @@ test("deny of a waiting tool call writes a deny command with the note", async ()
   assert.equal(rows[0].body.note, "nope");
 });
 
+for (const [ending, words] of [["stop", "withdrawn when its run was stopped"], ["cancel", "canceled with its run"]]) {
+  test(`an answer to a waiting call after the run was given a ${ending} is 409 ${ending === "stop" ? "withdrawn" : "canceled"}, nothing written: the ${ending} comes first, so the call never runs`, async () => {
+    for (const decision of ["allow", "deny"]) {
+      const store = await freshStore();
+      const id = await queuedRun(store);
+      await sendCommand(store, id, { kind: ending, body: {} });
+      await assert.rejects(
+        () => approve(store, moment({ approvalIds: new Set(["call-1"]) }), "call-1", decision),
+        (e) => e.code === "not_continuable" && e.message === `The tool call call-1 was already ${words}.` && e.extra.details.reason === "already_answered",
+        decision,
+      );
+      assert.deepEqual((await commandsOf(store, id)).map((row) => row.kind), [ending], `${decision}: no answer written`);
+    }
+  });
+}
+
+test("an answer whose write lands just after a stop's is 409 withdrawn: the stop is read first, so the call never runs", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  // The stop is written between the answer's check and its own write.
+  const racing = {
+    runs: store.runs,
+    agents: store.agents,
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+    command: async (runId, command) => {
+      if (command.kind === "approve") await store.command(runId, { kind: "stop", body: {} });
+      return store.command(runId, command);
+    },
+  };
+  await assert.rejects(
+    () => approve(racing, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.message === "The tool call call-1 was already withdrawn when its run was stopped.",
+  );
+  assert.deepEqual((await commandsOf(store, id)).map((row) => row.kind), ["stop", "approve"], "the stop is read first: its end refuses the answer");
+});
+
 test("approve of a call the run never had is 404, nothing written", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
