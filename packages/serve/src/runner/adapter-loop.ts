@@ -1211,16 +1211,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           return rest;
         };
-        // The typical cost is of the harness's own answered requests at what they cost: never a request the host sent beside
-        // them, one a crash cut (booked at its hold and bound, the worst case), one never sent, given back, owed or stopped.
+        // The typical cost is of the harness's own main-model answers at what they cost: never a request the host sent beside
+        // them (`host`), nor the harness's own side call on a smaller model (`side`, a title request), nor one a crash cut
+        // (booked at its hold and bound, the worst case), one never sent, given back, owed or stopped.
         const claimRecords = await writer.read();
         const claimHosts = sessionSpendOf(claimRecords).hosts;
+        /** The turns of requests that are no main-model request of the harness's own: read from the records, then each
+         *  admitted side call's (its ticket's turn), so a live answer's cost is judged the same as a restart's. */
+        const notOwn = new Set<number>(claimHosts.keys());
+        for (const record of claimRecords) {
+          const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
+          if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
+        }
         const wrapUp: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number } } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
             const own = typeof data.usd === "number" && data.usd > 0 && !data.cut && !data.unsent && !data.givenBack && !data.estimated && !data.stopped && data.rule !== "owed";
-            return own && (data.turn === undefined || !claimHosts.has(data.turn)) ? [data.usd as number] : [];
+            return own && (data.turn === undefined || !notOwn.has(data.turn)) ? [data.usd as number] : [];
           }),
           restUsd: await restOf(),
         };
@@ -1235,6 +1243,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The model session's requests in flight, at what is held for each (as the cap reads a flight); unknown gives none.
           const inFlight = bookingNow?.heldUsd();
           const capUsd = capNow();
+          // One request at a time carries it: while one offered it waits for its admission, an overlapping request is not
+          // offered it too (its admission tells it, or a refusal or a dropped note gives it back: below).
+          if (wrapUp.offered) return undefined;
           if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const note = noteFor(
             { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
@@ -1255,7 +1266,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (event.type === "request_start") await deps.flush();
             // The run's own priced answers, the typical cost the wrap-up is worked out by (a request the host sent beside
             // the harness's own is not one of them).
-            if (event.type === "request_end" && event.host === undefined && typeof event.usage.usd === "number" && event.usage.usd > 0 && !event.usage.estimated && !event.usage.cut && !event.usage.givenBack) wrapUp.costs.push(event.usage.usd);
+            if (event.type === "request_end" && event.host === undefined && !notOwn.has(event.turn) && typeof event.usage.usd === "number" && event.usage.usd > 0 && !event.usage.estimated && !event.usage.cut && !event.usage.givenBack) wrapUp.costs.push(event.usage.usd);
           },
         });
         bookingNow = booking;
@@ -1360,15 +1371,33 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               mcpStale = false;
               await mcp.fresh();
             }
+            // The wrap-up this request carries, taken off the offer now: its admission tells it; a refusal (the throw below)
+            // or a dropped note leaves it untold, to be offered to a later request.
+            const offer = (request as { noted?: boolean }).noted ? wrapUp.offered : undefined;
+            if (offer) wrapUp.offered = undefined;
             const ticket = await port.beforeRequest(request);
             unbooked += 1;
-            wrapUp.restUsd = await restOf();
-            // The wrap-up is told once a request carrying it is admitted with it (never one that went without the note's
-            // bytes): the server's row, once per run, before the request leaves.
-            if ((request as { noted?: boolean }).noted && ticket && !(ticket as { noteDropped?: true }).noteDropped && wrapUp.offered && !toldAt(wrapUp.offered.capUsd)) {
-              const { words, leftUsd, capUsd } = wrapUp.offered;
+            // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
+            if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
+            // What follows is the wrap-up's own bookkeeping, after the request was admitted and its hold booked: it never fails
+            // the request (a throw here would leave it admitted and never sent, read as cut at its worst case).
+            try {
+              wrapUp.restUsd = await restOf();
+            } catch (error) {
+              wrapUp.restUsd = null;
+              console.warn(`[runner] the run's other sessions' spend was not read; no wrap-up until it is: ${said(error)}`);
+            }
+            // Told once a request carrying it is admitted with it (never one that went without the note's bytes): the server's
+            // row, once per cap, made durable before the request leaves, so a machine lost after it never tells that cap twice.
+            if (offer && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldAt(offer.capUsd)) {
+              const { words, leftUsd, capUsd } = offer;
               toldCaps.push(capUsd);
-              await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words, leftUsd, capUsd } as unknown as JsonValue }), context);
+              try {
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words, leftUsd, capUsd } as unknown as JsonValue }), context);
+                await deps.flush();
+              } catch (error) {
+                console.warn(`[runner] the wrap-up's row was not written (the note went with the request): ${said(error)}`);
+              }
             }
             return ticket;
           },
