@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, answered, call, clientOwnerSession, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const json = { "content-type": "application/json" };
@@ -88,7 +88,7 @@ async function setup(t, harness) {
   const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const run = async (id) => {
-    { const made = await server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra })); assert.equal(made.status, 201, JSON.stringify(made.body)); }
+    await answered(server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra })), 201);
     const started = await server.api("POST", `/agents/${id}/runs`, { input: { content } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     return started.body.run_id;
@@ -101,7 +101,7 @@ const answerOf = async (api, runId) => (await api("GET", `/runs/${runId}`)).body
 for (const harness of HARNESSES) {
   test(`${harness}: mcp:fake/* set to deny refuses the call, and the MCP server sees nothing`, { timeout: 240_000 }, async (t) => {
     const { api, fake, run } = await setup(t, harness);
-    assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "deny" } })).status, 200);
+    await answered(api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "deny" } }), 200);
     const runId = await run(`deny-${harness}`);
     const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
     assert.equal(last.status, "completed");
@@ -133,7 +133,7 @@ for (const harness of HARNESSES) {
 
   test(`${harness}: mcp:fake/* set to allow runs the call once with no one asked`, { timeout: 240_000 }, async (t) => {
     const { api, fake, run } = await setup(t, harness);
-    assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "allow" } })).status, 200);
+    await answered(api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "allow" } }), 200);
     const runId = await run(`allow-${harness}`);
     const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
     assert.equal(last.status, "completed");
