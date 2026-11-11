@@ -2,7 +2,7 @@
 // never in the run's local folder on the runner's machine. A pi run through the runner, its dispatch and the spec builder,
 // with the server's Archil settings saved (the disk is the Archil fake), the faux browser and a scripted model: the model
 // calls browser_read, then read on the path browser_read named. The run's read opens the page's text, and the file is on
-// the disk and not on this machine. The model's third request carries read's answer: the test waits for that request, never
+// the disk and not on this machine. browser_downloads, which copies by a local path, is not offered. The model's third request carries read's answer: the test waits for that request, never
 // for time.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -95,6 +95,11 @@ test("a Mode 2 run's browser_read files the page on the run's disk, and the run'
   assert.ok(read && !read.isError, `the run's read opens what browser_read filed: ${JSON.stringify(read)}`);
   const onDisk = disk.files.get(`${KEY}/${FILED}`);
   assert.ok(onDisk, `the page is on the run's disk, under the run's key: ${[...disk.files.keys()].join(", ")}`);
-  assert.ok(read.text.includes(Buffer.from(onDisk).toString("utf8").split("\n").at(-1).trim().slice(0, 40)), `the read is that file: ${read.text.slice(0, 400)}`);
+  const page = Buffer.from(onDisk).toString("utf8").split("\n\n").slice(1).join("\n\n").trim();
+  assert.ok(page.length > 0 && read.text.includes(page.slice(0, 60)), `the read is that file's page: ${read.text.slice(0, 400)}`);
+  // browser_downloads copies by a local path, which no Mode 2 read finds: it is not offered; browser_upload, which chooses
+  // from the run's Workspace, is.
+  const offered = (requests[0].tools ?? []).map((tool) => tool.name);
+  assert.ok(!offered.includes("browser_downloads") && offered.includes("browser_upload"), `offered: ${offered.join(", ")}`);
   assert.equal(existsSync(join(runFolder(dir, AGENT, RUN), FILED)), false, "and nothing of it in the run's local folder on this machine");
 });

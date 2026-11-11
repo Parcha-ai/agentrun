@@ -11,7 +11,7 @@ export {
   relativePath, relativeSegments, runFolder, runKey, scratchFolder,
 } from "./paths.js";
 export type { Place } from "./place.js";
-export { localWorkspace, workspaceAt } from "./local.js";
+export { localFolderOf, localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
 export {
