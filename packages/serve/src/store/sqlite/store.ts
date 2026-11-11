@@ -944,7 +944,7 @@ class SqliteStore implements Store {
       stamp: async (name) => {
         const at = clock();
         const row = await db.get<{ url: string; auth: string; credential_changed_at: number | null; token_until: number | null; read_at: number }>(`SELECT url, auth, credential_changed_at, token_until, ${at.sql} AS read_at FROM mcp_servers WHERE name = ?`, ...at.params, name);
-        return row && { url: row.url, auth: row.auth, credentialChangedAt: row.credential_changed_at === null ? null : Number(row.credential_changed_at), tokenLeftMs: row.token_until === null ? null : Number(row.token_until) - Number(row.read_at) };
+        return row && { url: row.url, auth: row.auth, credentialChangedAt: row.credential_changed_at === null ? null : Number(row.credential_changed_at), tokenLeftMs: row.token_until === null ? null : Number(row.token_until) - Number(row.read_at), tokenUntil: row.token_until === null ? null : Number(row.token_until) };
       },
       pin: async (runId) => {
         const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);

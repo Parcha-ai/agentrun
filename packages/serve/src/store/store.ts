@@ -635,6 +635,9 @@ export interface McpServerStamp {
   readonly auth: string;
   readonly credentialChangedAt: number | null;
   readonly tokenLeftMs: number | null;
+  /** Its access token's end as the store stamped it (token_until, the store's clock): a refresh by any claim moves it, so a
+   *  claim that opened the row at one end knows the token it holds is not the row's once this differs. */
+  readonly tokenUntil: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */

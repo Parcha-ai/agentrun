@@ -3399,7 +3399,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A local install (listening on loopback, reached at no address off it) is the one server an MCP server's URL may be on
   // loopback for: anywhere else, loopback is this machine's other services (mcp-oauth.ts mcpServerAt).
   const publicHost = options.publicUrl === undefined ? null : (URL.parse(options.publicUrl)?.hostname.replace(/^\[|\]$/g, "") ?? "");
-  const localInstall = isLoopback(host) && (publicHost === null || isLoopback(publicHost));
+  // And no proxy it is told to trust: a server that takes forwarded requests is reached from off this machine, whatever it
+  // listens on, so it is no local install.
+  const localInstall = isLoopback(host) && (publicHost === null || isLoopback(publicHost)) && !options.trustedProxies?.length;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the

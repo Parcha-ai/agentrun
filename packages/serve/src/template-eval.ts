@@ -17,7 +17,7 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
-import { MCP_SERVER_NAME } from "./mcp-probe.js";
+import { MCP_SERVER_NAME, shownUrl } from "./mcp-probe.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
@@ -859,7 +859,7 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   }
 }
 /** Whether the server's MCP server `name` is still this eval's fake at `url`. */
-const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === url, () => false);
+const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === shownUrl(url), () => false);
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. */

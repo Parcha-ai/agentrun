@@ -44,7 +44,7 @@ import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
-import { boundTool, credentialInQuery, credentialInQueryWords, type McpTool } from "../mcp-probe.js";
+import { boundTool, credentialInQuery, credentialInQueryWords, type McpTool, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
@@ -141,7 +141,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   let released = false;
   /** What each pinned server's entry was opened from (its row's url, auth and credential time, and an OAuth token's end
    *  on this claim's clock), which check() compares the row's stamp with. */
-  const stamps = new Map<string, { url: string; auth: string; changedAt: number | null; end?: number }>();
+  const stamps = new Map<string, { url: string; auth: string; changedAt: number | null; end?: number; until?: number | null }>();
   /** The servers check() found removed: nothing (a github_app token's refresh among it) puts their entry back. */
   const gone = new Set<string>();
   /** The opens check() started, by server: concurrent calls share one. */
@@ -263,7 +263,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const readAt = now();
     const end = set.expires_at ? Date.parse(set.expires_at) : Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS;
     const left = (): number => (row.tokenLeftMs === null ? end - now() : row.tokenLeftMs - (now() - readAt));
-    stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt, end: readAt + left() });
+    // The token's end as the store stamped it, for the per-call check: another claim's refresh moves it (stamp.tokenUntil).
+    const until = (await store.mcp.stamp(name))?.tokenUntil ?? null;
+    stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt, end: readAt + left(), until });
     if (left() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
     // Another claim's refresh left this row and it is still due: never refreshed from here once more.
     if (again) return entry(left() > 0 ? { headers: bearer(set) } : { unopened: UNUSABLE.silent }), { awaited: false };
@@ -373,10 +375,10 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const changed = !was || gone.has(name) || was.url !== stamp.url || was.auth !== stamp.auth || was.changedAt !== stamp.credentialChangedAt;
     // The token's end by the store's clock (tokenLeftMs), else as this claim opened it.
     const left = stamp.tokenLeftMs ?? (was?.end !== undefined ? was.end - now() : null);
-    // And the token this claim holds, by its own end: another claim's refresh moves the row's end (not its credential's
-    // change time), so the row may have a fresh token while this claim still holds the one about to expire.
-    const heldLeft = was?.end !== undefined ? was.end - now() : null;
-    const due = stamp.auth === "oauth" && ((left !== null && left <= REFRESH_MARGIN_MS) || (heldLeft !== null && heldLeft <= REFRESH_MARGIN_MS));
+    // And whether the row still holds the token this claim opened: another claim's refresh moves the row's token end (not
+    // its credential's change time), so the row has a fresh token while this claim holds the one about to expire.
+    const moved = stamp.auth === "oauth" && was?.until !== undefined && stamp.tokenUntil !== was.until;
+    const due = moved || (stamp.auth === "oauth" && left !== null && left <= REFRESH_MARGIN_MS);
     if (!changed && !due) return;
     let going = reopening.get(name);
     if (!going) {
@@ -408,7 +410,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     // anything sent; the URL is never named, its credential with it.
     const inQuery = credentialInQuery(url);
     if (inQuery) throw new McpClaimRefused(`The MCP server ${server} can't be used: ${credentialInQueryWords(inQuery)} Nothing was sent.`);
-    if (auth === "github_app" && !githubMcpUrl(url, githubMcpOrigin)) throw new McpClaimRefused(`The MCP server ${server} (${url}) can't be used: ${GITHUB_MCP_ONLY}. Nothing was sent.`);
+    if (auth === "github_app" && !githubMcpUrl(url, githubMcpOrigin)) throw new McpClaimRefused(`The MCP server ${server} (${shownUrl(url)}) can't be used: ${GITHUB_MCP_ONLY}. Nothing was sent.`);
   };
   const stored = await store.mcp.pin(claim.runId);
   if (stored) {

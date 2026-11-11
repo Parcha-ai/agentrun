@@ -9,7 +9,7 @@
 // a run's launch calls.
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
-  type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
+  type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
@@ -183,9 +183,10 @@ export class McpServersOverStore {
    *  auth type and the URL's origin stay the same. */
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark) {
     nameOf(name);
-    const { url, auth, prices } = this.admit(body, true);
-    const send = await this.reached(auth.type, url, stop);
     const was = await this.store.mcp.server(name);
+    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
+    const { url, auth, prices } = this.admit({ ...body, ...(body.url !== undefined ? { url: savedOrGiven(body.url, was?.url) } : {}) }, true);
+    const send = await this.reached(auth.type, url, stop);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
     // its credentialMark), else the one read here. The write compares it in its own statement, after the listing's wait.
     const against = checkedAgainst !== undefined ? checkedAgainst : credentialMark(was);
@@ -299,7 +300,8 @@ export class McpServersOverStore {
   async oauthStart(name: string, body: Record<string, unknown>): Promise<{ authorization_url: string }> {
     nameOf(name);
     const issues = unknownFields(body, ["url", "scopes", "client_id", "client_secret"]);
-    const url = urlOf(body.url, issues);
+    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
+    const url = urlOf(savedOrGiven(body.url, (await this.store.mcp.server(name))?.url), issues);
     const { scopes, client_id, client_secret } = body;
     if (scopes !== undefined && !scopesValid(scopes)) issues.push({ field: "scopes", reason: "invalid", message: SCOPE_LIST });
     for (const [field, text] of [["client_id", client_id], ["client_secret", client_secret]] as const)
@@ -436,7 +438,8 @@ export class McpServersOverStore {
     const listedAt = new Date(row.listedAt ?? row.updatedAt).toISOString();
     return {
       name,
-      url: row.url,
+      // Its origin, the path and query held as a secret (shownUrl): the whole URL is only ever sent to the server itself.
+      url: shownUrl(row.url),
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...listed,
       // Each priced tool's price in USD a call, as the owner saved them, on every read.

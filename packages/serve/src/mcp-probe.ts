@@ -136,6 +136,20 @@ export function credentialInQuery(url: string | URL): string | undefined {
   return parsed ? [...parsed.searchParams.keys()].find(credentialQueryName) : undefined;
 }
 
+/** An MCP server's URL as every read shows it: its origin, and "/…" for a path or query, which is held as a secret (a
+ *  provider may put a key in either: Zapier's /mcp/<key>/sse, a ?token= no list names). The whole URL is used only to call
+ *  the server. A body that sends this back unchanged for a saved server means its saved URL (savedOrGiven). */
+export function shownUrl(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return "(not a URL)";
+  return `${parsed.origin}/${parsed.pathname !== "/" || parsed.search ? "…" : ""}`;
+}
+
+/** A body's URL for saved server `saved`: its saved URL when the body sent back the shown one (shownUrl), else as given. */
+export function savedOrGiven(given: unknown, saved: string | undefined): unknown {
+  return saved !== undefined && typeof given === "string" && given === shownUrl(saved) ? saved : given;
+}
+
 /** What a URL with a credential in its query says, wherever it is refused. */
 export const credentialInQueryWords = (name: string) => `${name} in the URL's query looks like a credential; send it as a header instead (Headers).`;
 
@@ -295,7 +309,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
     if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not answer within ${REQUEST_MS / 1000} s.`);
     return upstream(`Could not reach the MCP server at ${url.origin}${causeCode(error) ? ` (${causeCode(error)})` : ""}.`);
   }
-  if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
+  if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${shownUrl(url.href)} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
   // The listing's own limit when it was the one that ran out, else one request's.
   if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
