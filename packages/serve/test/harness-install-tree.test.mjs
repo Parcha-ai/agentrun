@@ -96,3 +96,16 @@ test("takers over one stale hold: exactly one holds it, and the hold left is its
     assert.throws(() => readFileSync(installHoldOf(dir)), { code: "ENOENT" }, "its own release lets it go");
   }
 });
+
+test("a hold whose installer on this host is still alive is held past the install's timeout: only its stop lets another install start", async (t) => {
+  const dir = join(scratch(t, "hold-overdue"), "harnesses", "fake");
+  mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
+  // An install started long ago, its npm still running (killed at its own timeout, then given its grace to exit).
+  const overdue = Date.now() - 60 * 60_000;
+  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 4242, startedAt: overdue, token: "running" }));
+  assert.equal(await takeHold(dir, { host: "this-host", isAlive: () => true }), undefined, "its installer is alive: held");
+  assert.equal(JSON.parse(readFileSync(installHoldOf(dir), "utf8")).token, "running", "the hold is still its installer's");
+  // Another host's installer can't be asked: past the bound (the timeout and npm's stop), its hold is taken over.
+  const token = await takeHold(dir, { host: "another-host", isAlive: () => assert.fail("another host's process is never asked") });
+  assert.equal(typeof token, "string", "another host's hold past the bound: taken over");
+});
