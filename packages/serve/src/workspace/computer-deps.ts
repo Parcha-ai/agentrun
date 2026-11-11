@@ -154,6 +154,9 @@ export interface ComputerDepsOptions {
   /** This machine's Docker daemon, asked when a Docker launch fails (docker-daemon.ts dockerDaemonCheck over `env`
    *  unless given; none under --faux, whose launch is its own). */
   readonly daemon?: ComputerForClaimDeps["daemon"];
+  /** Why this machine cannot run a provider's computers, by its id (computers.ts hostCommandRefusals over this process's
+   *  PATH): the claim refuses such a computer before it rents anything. Absent: not asked. */
+  readonly hostWhy?: Readonly<Record<string, string>>;
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
   readonly openComputerView?: OpenComputerView;
   /** --faux's computers (faux-computers.ts), in place of the computer package's: their kind registry, key table, launch
@@ -319,6 +322,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     // Under --faux, its launch makes the computer, with its key table: no provider of the package is built.
     ...(faux ? { keyTable: faux.keyTable, launch: (entry, spec) => faux.launch(entry as never, spec) } : {}),
     ...(options.answers ? { answers: options.answers } : {}),
+    ...(options.hostWhy ? { hostWhy: (provider: string): string | undefined => (Object.hasOwn(options.hostWhy!, provider) ? options.hostWhy![provider] : undefined) } : {}),
     ...(options.daemon ? { daemon: options.daemon } : faux ? {} : { daemon: dockerDaemonOf(env) }),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
   };

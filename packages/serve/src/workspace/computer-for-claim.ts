@@ -114,6 +114,10 @@ export interface ComputerForClaimDeps {
    *  the OS's version and its architecture): the run's caller says it on the run's timeline. A browser session, made
    *  by the run's tool, is never told. Absent: nothing is said. */
   readonly onConnected?: (said: ComputerSaid) => void;
+  /** Why this machine cannot run a provider's computers, by its provider id (computers.ts hostCommandRefusals: the
+   *  phone's adb not on PATH), in words that say how to fix it, or undefined: refused with code computer_unavailable
+   *  before anything is rented. Absent: not asked. */
+  readonly hostWhy?: (provider: string) => string | undefined;
   /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
    *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
   readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
@@ -345,6 +349,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   if (resolved.kind === "none") return { computer: undefined, release: noop };
   const refusedKind = deps.refuseKind?.(resolved.kind);
   if (refusedKind) throw unavailable(refusedKind);
+  // The program its provider runs on this machine (the phone's adb) is checked before anything is rented.
+  const hostRefusal = resolved.provider ? deps.hostWhy?.(resolved.provider) : undefined;
+  if (hostRefusal) throw unavailable(`This agent's computer is a ${resolved.kind} on ${resolved.provider}, and this runner cannot run it: ${hostRefusal.replace(/[.!?]+$/, "")}.`);
 
   // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
   // start fails after it was minted.
