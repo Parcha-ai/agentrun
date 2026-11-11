@@ -6,7 +6,7 @@
 //   - a hold that cannot be read is held while it is young and taken over once it is old, never an error;
 //   - takers over one stale hold: one holds it; a release lets go of its own hold alone.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -40,7 +40,7 @@ test("a package linked into the tree, then replaced at the same path by an insta
   // The install: a whole package in place of the link, at the same path.
   const staging = join(tree, "node_modules", ".probe-new");
   pkg(staging, "probe", "installed");
-  rmSync(home);
+  unlinkSync(home);
   renameSync(staging, home);
   assert.equal(inTree(tree, "probe"), realpathSync(join(home, "index.js")), "read as it is now: the install's own file");
 });

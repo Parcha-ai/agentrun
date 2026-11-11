@@ -20,7 +20,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
-import { thinkingFor } from "../adapters.js";
+import { standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -189,7 +189,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // the run's timeline as it starts, its root made first (a CLI run's root is its record's, which the loop would make once
   // the session opens), so the row shows while it waits. First, before the run's MCP claim: its OAuth tokens are read
   // after a wait that may outlive them. A stop of the run ends its wait at once; an install that fails fails the run in the
-  // install's own words.
+  // install's own words. A test's stand-in that runs in place of the CLI (adapters.ts standsIn) loads nothing installed:
+  // its claim waits for an install that runs, as any claim does, but starts none of its own.
   if (entry.installs && entry.pins) {
     const installs = entry.installs;
     const pins = entry.pins;
@@ -204,7 +205,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     const settled = await (deps.installSettled ?? claimSettled)(installs, dir, await pins(), { ...(waitOn ? { signal: waitOn } : {}), onWait: () => void ((waited = true), say()) });
     // The install it waited for failed: the run fails in its words. An earlier one that failed before this claim is tried again.
     if (typeof settled === "object" && waited) throw new HarnessUnavailable(settled.failed, "install");
-    if (settled !== "installed") {
+    if (settled !== "installed" && !standsIn(name, deps.env ?? {})) {
       await say();
       const lock = deps.harnessLocks?.[name];
       await (deps.installForClaim ?? installForClaim)(installs, dir, pins, { ...(lock ? { lock } : {}), ...(waitOn ? { signal: waitOn } : {}) }).catch((error: unknown) => {
