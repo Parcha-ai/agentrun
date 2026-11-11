@@ -16,7 +16,7 @@ const { callsOf, journalRecords, messagesOf } = await import("../dist/runner/jou
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { deniedText } = await import("../dist/runner/loop-contract.js");
-const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
+const { deniedText: setToDenyText, STOPPED_WHILE_WAITING } = await import("../dist/refusal-words.js");
 /** A lease no stall of a loaded machine outlasts: no case here is about the lease. On a short one (600 ms) a stall of the
  *  box while the call ran let the claim lapse unrenewed, the runner took the run back, and the reopened session ended the
  *  cut call interrupted, never done. */
@@ -169,8 +169,12 @@ function refusingCli(tool, said) {
   };
 }
 
+/** The run's record as a reader reads it with the run at `row`. */
+const recordAt = (server, row) => journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+
 /** A CLI run of `refusingCli` on `tool`, its spec's gate `gate`: its row once it rests at `state`, its record and what the
- *  model was handed. `meanwhile(server)`: what the test does once the run parks (answers its ask), before it rests again. */
+ *  model was handed. `meanwhile(server, row)`: what the test does once the run parks at `row` (answers its ask), before it
+ *  rests again. */
 async function refusedRun(t, { gate, state = "ended", meanwhile }) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
@@ -192,12 +196,8 @@ async function refusedRun(t, { gate, state = "ended", meanwhile }) {
     const now = await opened.server.runs.get("run-1");
     return now.state === want && now.runner === null && now;
   }, `the run ${want} and released`, 10_000);
-  if (meanwhile) {
-    await rested("parked");
-    await meanwhile(opened.server);
-  }
-  const row = await rested(state);
-  const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  if (meanwhile) await meanwhile(opened.server, await rested("parked"));
+  const records = await recordAt(opened.server, await rested(state));
   return { ran, said, records };
 }
 
@@ -228,6 +228,33 @@ test("a CLI call parked on its ask and denied with a note is on the record when 
   assert.deepEqual(ran, [], "never run");
   assert.deepEqual(said, [{ text: words, isError: true }], "the model is handed the deny");
   assert.deepEqual(refusedCall(records), { calls: [["call-1", "lookup", "refused"]], outputs: [words] });
+});
+
+/** The call starts on the record, in order: each one's call id and whether it was written parked. */
+const startsOf = (records) => records.entries.filter((entry) => entry.kind === KINDS.callStart).map((entry) => [entry.data.callId, entry.data.parked === true]);
+
+test("a CLI call parked on its ask is on the record while it waits, its start marked parked as an MCP call's at its door is; the allow runs it once under that one start (#2371)", async (t) => {
+  let waiting;
+  const { ran, said, records } = await refusedRun(t, {
+    gate: () => "ask",
+    meanwhile: async (server, row) => {
+      waiting = await recordAt(server, row);
+      await sendCommand(server, "run-1", { kind: "approve", body: { approval: "call-1" } });
+    },
+  });
+  assert.deepEqual(callsOf(waiting).map((call) => [call.callId, call.tool, call.status]), [["call-1", "lookup", "pending"]], "the parked call shows while it waits");
+  assert.deepEqual(startsOf(waiting), [["call-1", true]], "its start, marked parked");
+  assert.ok(callsOf(waiting)[0]?.startEntry < Number(waiting.entries.find((entry) => entry.kind === KINDS.ask).id), "the call's start reads before its ask");
+  assert.deepEqual(ran, [{ q: "x" }], "run once, once allowed");
+  assert.deepEqual(said.map((result) => result.text), ["found"], "the model is handed its result");
+  assert.deepEqual(callsOf(records).map((call) => [call.callId, call.tool, call.status]), [["call-1", "lookup", "done"]]);
+  assert.deepEqual(startsOf(records), [["call-1", true]], "one start for the call: the one written while it waited");
+});
+
+test("a CLI call parked on its ask that a stop withdraws reads not run on the record, as a parked MCP call does, and never runs (#2371)", async (t) => {
+  const { ran, said, records } = await refusedRun(t, { gate: () => "ask", state: "stopped", meanwhile: (server) => sendCommand(server, "run-1", { kind: "stop" }) });
+  assert.deepEqual([ran, said], [[], []], "never run, nothing handed to the model");
+  assert.deepEqual(refusedCall(records), { calls: [["call-1", "lookup", "refused"]], outputs: [STOPPED_WHILE_WAITING] });
 });
 
 test("a pi-style run (the adapter keeps its own record) gets no call or message entries from the loop", async (t) => {
