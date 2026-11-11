@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { bulletOf, fold, hasVersionSection, loadFragments, movedPython, ownVersionPackages, parseFragment, releaseRace, stalePython, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
+import { bulletOf, fold, hasVersionSection, loadFragments, movedPython, ownVersionPackages, parseFragment, previousRelease, releaseCommit, sectionDate, stalePython, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
 
 const exec = promisify(execFile);
 const script = join(dirname(fileURLToPath(import.meta.url)), 'changes.mjs');
@@ -173,116 +173,6 @@ test("an edit of a held package's Unreleased is still refused: appended by hand,
   assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
 }));
 
-/** The release PR that folds, merges main, then folds a late fragment in a second commit: `late` is a fragment main gained after the first fold. */
-async function foldInTwoBatches(root, git, first, late) {
-  await git('branch', '-M', 'main');
-  await heldTree(root, git, first);
-  await git('checkout', '-q', '-b', 'release');
-  await fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
-  await git('add', '-A'); await git('commit', '-q', '-m', 'fold');
-  await git('checkout', '-q', 'main');
-  for (const [name, text] of Object.entries(late)) await writeFile(join(root, 'changes', name), text);
-  await git('add', '-A'); await git('commit', '-q', '-m', 'a late fragment lands on main');
-  await git('checkout', '-q', 'release');
-  await git('merge', '-q', '--no-edit', 'main');
-  return fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
-}
-
-test("a held package's changelog folded in two commits (a late fragment that sorts earlier) is the single fold's text, and passes the check", () => repo(async (root, git) => {
-  await foldInTwoBatches(root, git,
-    { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.'), 'pi-transport-tests-leave-no-sleeper.md': fragment('@parcha/pi-transport', 'ci', 'No sleeper.') },
-    { 'pi-transport-placer.md': fragment('@parcha/pi-transport', 'feature', 'Placer.') });
-  // The single fold's order: kind, then file name: placer, record-stream (features), then no-sleeper (ci).
-  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n- No sleeper.\n`);
-  assert.deepEqual(await unreleasedEdits(root, 'main'), { fold: true, edited: [] });
-  // The same three in one fold give the same text.
-  await repo(async single => {
-    await heldPackage(single, heldLog);
-    for (const [name, kind, body] of [['record-stream', 'feature', 'Record stream.'], ['tests-leave-no-sleeper', 'ci', 'No sleeper.'], ['placer', 'feature', 'Placer.']]) {
-      await writeFile(join(single, `changes/pi-transport-${name}.md`), fragment('@parcha/pi-transport', kind, body));
-    }
-    await fold(single, '0.1.0-beta.15', '2026-10-20');
-    assert.equal(await readFile(join(single, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n- No sleeper.\n`);
-  });
-}));
-
-test("a second fold keeps a held changelog's earlier text where it was: only this release's run is rebuilt", () => repo(async (root, git) => {
-  await foldInTwoBatches(root, git,
-    { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.') },
-    { 'pi-transport-placer.md': fragment('@parcha/pi-transport', 'breaking', 'Placer.') });
-  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n`, 'the held entry stays first');
-}));
-
-/** The same for published changelogs: the release folds, main takes `late` fragments, the release merges main and folds again. */
-async function foldPublishedInTwoBatches(root, git, first, late) {
-  await git('branch', '-M', 'main');
-  for (const [name, text] of Object.entries(first)) await writeFile(join(root, 'changes', name), text);
-  await git('add', '-A'); await git('commit', '-q', '-m', 'fragments');
-  await git('checkout', '-q', '-b', 'release');
-  await fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
-  await git('add', '-A'); await git('commit', '-q', '-m', 'fold');
-  await git('checkout', '-q', 'main');
-  for (const [name, text] of Object.entries(late)) await writeFile(join(root, 'changes', name), text);
-  await git('add', '-A'); await git('commit', '-q', '-m', 'late fragments land on main');
-  await git('checkout', '-q', 'release');
-  await git('merge', '-q', '--no-edit', 'main');
-  return fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
-}
-
-test("a published changelog folded in two commits (a late fix that sorts between two earlier ones) is the single fold's text, in the root and in a package", () => repo(async (root, git) => {
-  const both = (name, kind, body) => ({ [`${name}.md`]: fragment('repo, @parcha/pi-vision', kind, body) });
-  await foldPublishedInTwoBatches(root, git,
-    { ...both('recording-validator-fixes', 'fix', 'Validator fixes.'), ...both('viewer-skip-temp-blobs', 'fix', 'Skip temp blobs.'), ...both('docs-look', 'docs', 'Look docs.'), ...both('feature-find', 'feature', 'Find.') },
-    both('recording-spaces-fix', 'fix', 'Spaces fix.'));
-  // One fold's order: the section's own earlier bullet, then feature, fix (by file name), docs.
-  const bulletsOf = text => text.slice(text.indexOf('## 0.1.0-beta.16'), text.indexOf('## 0.1.0-beta.12')).split('\n').filter(line => line.startsWith('- '));
-  const order = ['- Existing root bullet.', '- Find.', '- Spaces fix.', '- Validator fixes.', '- Skip temp blobs.', '- Look docs.'];
-  assert.deepEqual(bulletsOf(await readFile(join(root, 'CHANGELOG.md'), 'utf8')), order);
-  assert.deepEqual(await unreleasedEdits(root, 'main'), { fold: true, edited: [] });
-  // The same fragments folded once in a fresh repo give the same changelogs.
-  await repo(async single => {
-    for (const [name, kind, body] of [['recording-validator-fixes', 'fix', 'Validator fixes.'], ['viewer-skip-temp-blobs', 'fix', 'Skip temp blobs.'], ['docs-look', 'docs', 'Look docs.'], ['feature-find', 'feature', 'Find.'], ['recording-spaces-fix', 'fix', 'Spaces fix.']]) {
-      await writeFile(join(single, `changes/${name}.md`), fragment('repo, @parcha/pi-vision', kind, body));
-    }
-    await fold(single, '0.1.0-beta.16', '2026-10-18');
-    for (const file of ['CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md']) assert.equal(await readFile(join(root, file), 'utf8'), await readFile(join(single, file), 'utf8'), file);
-  });
-}));
-
-test("a published changelog hand-edited between the two folds is not rebuilt: the edit stays and the late bullet goes at the end of the section", () => repo(async (root, git) => {
-  await git('branch', '-M', 'main');
-  await writeFile(join(root, 'changes/a-fix.md'), fragment('repo', 'fix', 'A fix.'));
-  await git('add', '-A'); await git('commit', '-q', '-m', 'fragments');
-  await git('checkout', '-q', '-b', 'release');
-  await fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
-  await writeFile(join(root, 'CHANGELOG.md'), (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace('- A fix.\n', '- A fix.\n- Written by hand.\n'));
-  await git('add', '-A'); await git('commit', '-q', '-m', 'fold, and a hand edit');
-  await git('checkout', '-q', 'main');
-  await writeFile(join(root, 'changes/0-late.md'), fragment('repo', 'feature', 'Late feature.'));
-  await git('add', '-A'); await git('commit', '-q', '-m', 'a late fragment lands on main');
-  await git('checkout', '-q', 'release');
-  await git('merge', '-q', '--no-edit', 'main');
-  await fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
-  assert.match(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), /- A fix\.\n- Written by hand\.\n- Late feature\.\n/);
-}));
-
-test("a held changelog hand-edited between the two folds is not rebuilt: the late bullet is appended after it, and the check refuses the edit", () => repo(async (root, git) => {
-  await git('branch', '-M', 'main');
-  await heldTree(root, git, { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.') });
-  await git('checkout', '-q', '-b', 'release');
-  await fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
-  await writeFile(join(root, heldPath), `${await readFile(join(root, heldPath), 'utf8')}- Written by hand.\n`);
-  await git('add', '-A'); await git('commit', '-q', '-m', 'fold, and a hand edit');
-  await git('checkout', '-q', 'main');
-  await writeFile(join(root, 'changes/pi-transport-placer.md'), fragment('@parcha/pi-transport', 'breaking', 'Placer.'));
-  await git('add', '-A'); await git('commit', '-q', '-m', 'a late fragment lands on main');
-  await git('checkout', '-q', 'release');
-  await git('merge', '-q', '--no-edit', 'main');
-  await fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
-  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Record stream.\n- Written by hand.\n- Placer.\n`);
-  assert.deepEqual((await unreleasedEdits(root, 'main')).edited, [heldPath]);
-}));
-
 test("a fragment deleted for another package does not excuse an edit of a held changelog, and a published changelog is never excused by one", () => repo(async (root, git) => {
   await heldTree(root, git, { 'vision.md': fragment('@parcha/pi-vision', 'fix', 'Vision fix.') });
   await rm(join(root, 'changes/vision.md'));
@@ -365,6 +255,118 @@ test('a second fold of the same version appends to its section', () => repo(asyn
   const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
   assert.equal(log.match(/## 0\.1\.0-beta\.13/g).length, 1);
   assert.match(log, /- One\.\n- Two\.\n\n## 0\.1\.0-beta\.12/);
+}));
+
+// A release's tag carries the fragments of pull requests that merged after its release pull request's fold. The release workflow folds
+// them at the tag into the archives; the next release's fold puts them into that release's section on main.
+const sectionOf = (text, version) => text.slice(text.indexOf(`## ${version}`)).split(/\n(?=## )/)[0];
+const emptyVision = '# Changelog\n\n## Unreleased\n';
+/** Release 0.1.0-beta.13 folded on main, then two pull requests that merged before its tag: the tag carries their fragments. */
+async function taggedWithLateFragments(root, git) {
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), emptyVision);
+  await writeFile(join(root, 'changes/early.md'), fragment('repo', 'feature', 'Early.'));
+  await commitAll(git, 'main before the release');
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  await commitAll(git, 'the release pull request');
+  await writeFile(join(root, 'changes/a-late.md'), fragment('repo, @parcha/pi-vision', 'fix', 'Late.'));
+  await writeFile(join(root, 'changes/b-late-vision.md'), fragment('@parcha/pi-vision', 'fix', 'Late vision.'));
+  await commitAll(git, 'two pull requests the queue merged before the tag');
+  await git('tag', 'v0.1.0-beta.13');
+}
+
+test("the release workflow's fold at the tag puts what the tag carries into the tag's version, and the next release's fold writes that same section on main", () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  // At the tag, as release.yml runs it: the version's date is the root section's, and every fragment there is this release's.
+  assert.equal(sectionDate(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), '0.1.0-beta.13'), '2026-10-20');
+  const atTag = await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.deepEqual([atTag.folded, atTag.shipped], [2, []]);
+  const published = {};
+  for (const file of ['CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md']) published[file] = sectionOf(await readFile(join(root, file), 'utf8'), '0.1.0-beta.13');
+  assert.equal(published['CHANGELOG.md'], '## 0.1.0-beta.13 (2026-10-20)\n\n- Existing root bullet.\n- Early.\n- Late.\n');
+  assert.equal(published['packages/pi-vision/CHANGELOG.md'], '## 0.1.0-beta.13 (2026-10-20)\n\n- Late.\n- Late vision.\n');
+  // The workflow does not commit: main still holds the two fragments. The next pull requests and the next release's fold.
+  await git('checkout', '-q', 'HEAD', '--', '.');
+  await writeFile(join(root, 'changes/next.md'), fragment('repo, @parcha/pi-vision', 'feature', 'Next.'));
+  await commitAll(git, 'a pull request after the tag');
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  const next = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual([next.folded, next.shipped, next.previous], [3, ['a-late.md', 'b-late-vision.md'], '0.1.0-beta.13']);
+  assert.deepEqual(await loadFragments(root), []);
+  for (const file of Object.keys(published)) assert.equal(sectionOf(await readFile(join(root, file), 'utf8'), '0.1.0-beta.13'), published[file], `${file} says for 0.1.0-beta.13 what its archives said`);
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Next.\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing root bullet.\n- Early.\n- Late.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Next.\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Late.\n- Late vision.\n', 'the earlier section is made below the new one');
+  assert.deepEqual((await unreleasedEdits(root, base.trim())).edited, [], 'the release pull request passes the check: no Unreleased section is edited');
+}));
+
+test("a late fragment's own section is made under the release's, never from what Unreleased holds, and the next fold dates both", () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  // pi-vision was held at the tag and is published now: its Unreleased entry is the next release's, not the earlier one's.
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Held until now.\n');
+  await commitAll(git, 'an entry pi-vision kept while held');
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Held until now.\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Late.\n- Late vision.\n');
+}));
+
+test("a held package's late fragment joins its Unreleased in the fold's order with the rest, and passes the check", () => repo(async (root, git) => {
+  await heldPackage(root, heldLog);
+  await taggedWithLateFragments(root, git);
+  await writeFile(join(root, 'changes/a-held-late.md'), fragment('@parcha/pi-transport', 'fix', 'Held late.'));
+  await commitAll(git, 'a held fragment that merged before the tag');
+  await git('tag', '-d', 'v0.1.0-beta.13');
+  await git('tag', 'v0.1.0-beta.13');
+  await writeFile(join(root, 'changes/z-held-next.md'), fragment('@parcha/pi-transport', 'breaking', 'Held next.'));
+  await commitAll(git, 'a held fragment after the tag');
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Held next.\n- Held late.\n`, 'breaking before fix, one run');
+  assert.deepEqual(await unreleasedEdits(root, base.trim()), { fold: true, edited: [] });
+}));
+
+test('a fragment is the earlier release\'s only when its tag carried that exact file: a reused name with new text is the new release\'s', () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  await writeFile(join(root, 'changes/b-late-vision.md'), fragment('@parcha/pi-vision', 'fix', 'Reworded after the tag.'));
+  await commitAll(git, 'a fragment changed after the tag');
+  const previous = await previousRelease(root, '0.1.0-beta.14');
+  assert.deepEqual([previous.tag, previous.version, [...previous.carried.keys()]], ['v0.1.0-beta.13', '0.1.0-beta.13', ['a-late.md', 'b-late-vision.md']]);
+  assert.equal(await previousRelease(root, '0.1.0-beta.13'), null, 'the tag being folded is never its own previous release');
+  const result = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual(result.shipped, ['a-late.md']);
+  assert.match(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.14 \(2026-10-25\)\n\n- Reworded after the tag\.\n\n## 0\.1\.0-beta\.13 \(2026-10-20\)\n\n- Late\.\n$/);
+}));
+
+test('a late fragment whose release has no dated section in the root changelog is refused, and nothing is written', () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  await writeFile(join(root, 'CHANGELOG.md'), rootLog);
+  await commitAll(git, 'the root changelog lost the section');
+  await assert.rejects(fold(root, '0.1.0-beta.14', '2026-10-25'), /CHANGELOG\.md has no dated section for 0\.1\.0-beta\.13, whose tag v0\.1\.0-beta\.13 carried a-late\.md, b-late-vision\.md/);
+  assert.equal((await loadFragments(root)).length, 2);
+}));
+
+test('a fold given the previous release (as the preflight refolds a tag outside the repository) places its fragments as the repository\'s fold does', () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  await writeFile(join(root, 'changes/next.md'), fragment('repo', 'feature', 'Next.'));
+  await commitAll(git, 'a pull request after the tag');
+  const previous = await previousRelease(root, '0.1.0-beta.14');
+  await repo(async elsewhere => {
+    for (const path of ['CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md', 'changes/a-late.md', 'changes/b-late-vision.md', 'changes/next.md']) await writeFile(join(elsewhere, path), await readFile(join(root, path), 'utf8'));
+    assert.deepEqual((await fold(elsewhere, '0.1.0-beta.14', '2026-10-25', { previous })).shipped, ['a-late.md', 'b-late-vision.md']);
+    await fold(root, '0.1.0-beta.14', '2026-10-25');
+    for (const path of ['CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md']) assert.equal(await readFile(join(elsewhere, path), 'utf8'), await readFile(join(root, path), 'utf8'), path);
+  });
+}));
+
+test('the command line folds at the date the root changelog already gives the version, else today', () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  const run = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--fold', '0.1.0-beta.13'], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.13 \(2026-10-20\)\n/);
+  assert.equal(sectionDate('# Changelog\n\n## 0.1.0-beta.12, 2026-10-09\n', '0.1.0-beta.12'), '2026-10-09');
+  assert.equal(sectionDate(rootLog, '0.1.0-beta.99'), undefined);
 }));
 
 test('a fragment naming two packages folds into each changelog once', () => repo(async root => {
@@ -468,42 +470,21 @@ const bump = async (root, version) => {
 const commitAll = async (git, message) => { await git('add', '-A'); await git('commit', '-q', '-m', message); };
 const withVersion = async (root, git) => { await bump(root, '0.1.0-beta.13'); await commitAll(git, 'versions'); };
 
-test('releaseRace: a version bump beside a fragment the fold did not see is refused, naming it', () => repo(async (root, git) => {
+test('releaseCommit: a version bump is the release, with only the README in changes/ or beside a fragment the fold did not see', () => repo(async (root, git) => {
   await withVersion(root, git);
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await bump(root, '0.1.0-beta.14');
+  assert.deepEqual(await releaseCommit(root, base.trim()), { release: true, bumped: ['dsl', 'pi-vision'] });
   await writeFile(join(root, 'changes/late.md'), fragment('repo', 'fix', 'Late.'));
-  await commitAll(git, 'a late fragment');
-  const { stdout: base } = await git('rev-parse', 'HEAD');
-  await bump(root, '0.1.0-beta.14');
-  assert.deepEqual(await releaseRace(root, base.trim()), { release: true, bumped: ['dsl', 'pi-vision'], unfolded: ['late.md'] });
+  assert.deepEqual(await releaseCommit(root, base.trim()), { release: true, bumped: ['dsl', 'pi-vision'] }, 'a late fragment is the release workflow\'s to fold at the tag');
 }));
-test('releaseRace: a bump with only the README in changes/ is the release', () => repo(async (root, git) => {
-  await withVersion(root, git);
-  const { stdout: base } = await git('rev-parse', 'HEAD');
-  await bump(root, '0.1.0-beta.14');
-  assert.deepEqual(await releaseRace(root, base.trim()), { release: true, bumped: ['dsl', 'pi-vision'], unfolded: [] });
-}));
-test('releaseRace: a pull request with fragments and no version change is untouched, also when it adds a package', () => repo(async (root, git) => {
+test('releaseCommit: a pull request with fragments and no version change is not a release, also when it adds a package', () => repo(async (root, git) => {
   await withVersion(root, git);
   const { stdout: base } = await git('rev-parse', 'HEAD');
   await writeFile(join(root, 'changes/normal.md'), fragment('repo', 'fix', 'Normal.'));
   await mkdir(join(root, 'packages/new'));
   await writeFile(join(root, 'packages/new/package.json'), JSON.stringify({ name: '@parcha/new', version: '0.0.1' }));
-  assert.deepEqual(await releaseRace(root, base.trim()), { release: false, bumped: [], unfolded: [] });
-}));
-test('releaseRace: in the merge queue the base holds an earlier pull request\'s fragment, and the release on it is refused', () => repo(async (root, git) => {
-  await withVersion(root, git);
-  const { stdout: main } = await git('rev-parse', 'HEAD');
-  // The release pull request: folded and bumped on main as it was.
-  await git('checkout', '-q', '-b', 'release');
-  await bump(root, '0.1.0-beta.14');
-  await commitAll(git, 'release');
-  // The queue's base moved: an earlier pull request added a fragment.
-  await git('checkout', '-q', '-b', 'queue-base', main.trim());
-  await writeFile(join(root, 'changes/earlier.md'), fragment('repo', 'fix', 'Earlier.'));
-  await commitAll(git, 'earlier pull request');
-  const { stdout: groupBase } = await git('rev-parse', 'HEAD');
-  await git('merge', '-q', '--no-ff', '-m', 'merge group', 'release');
-  assert.deepEqual((await releaseRace(root, groupBase.trim())).unfolded, ['earlier.md']);
+  assert.deepEqual(await releaseCommit(root, base.trim()), { release: false, bumped: [] });
 }));
 // A package on its own version line: @parcha/agentrun, published at its manifest's version.
 const ownPackage = async (root, git, version) => {
@@ -527,7 +508,7 @@ test('a package on its own version line: bumping it beside a fragment is an ordi
   await writeFile(join(root, 'changes/start.md'), fragment('repo', 'fix', 'Start.'));
   await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
   await setVersion(root, '0.3.1');
-  assert.deepEqual(await releaseRace(root, base), { release: false, bumped: [], unfolded: [] });
+  assert.deepEqual(await releaseCommit(root, base), { release: false, bumped: [] });
   assert.deepEqual(await staleOwnVersions(root, base), []);
 }));
 test('a package on its own version line that changes a file it publishes and keeps its version is stale; its tests, a bump or a new package are not', () => repo(async (root, git) => {
@@ -545,7 +526,7 @@ test('a package on its own version line that changes a file it publishes and kee
   await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
   assert.deepEqual(await staleOwnVersions(root, base), ['agentrun']);
 }));
-test('the command line fails a release commit that carries a fragment, and passes the release and an ordinary change', () => repo(async (root, git) => {
+test('the command line passes a release commit that carries a fragment (the merge queue put a pull request ahead of it), the release alone and an ordinary change', () => repo(async (root, git) => {
   await withVersion(root, git);
   const { stdout: base } = await git('rev-parse', 'HEAD');
   await mkdir(join(root, 'scripts'));
@@ -554,9 +535,8 @@ test('the command line fails a release commit that carries a fragment, and passe
   await writeFile(join(root, 'changes/normal.md'), fragment('repo', 'fix', 'Normal.'));
   assert.equal(local().status, 0, local().stderr);
   await bump(root, '0.1.0-beta.14');
-  const fail = local();
-  assert.equal(fail.status, 1);
-  assert.match(fail.stderr, /release commit carries unfolded fragments: normal\.md; refold on current main/);
+  const beside = local();
+  assert.equal(beside.status, 0, beside.stderr);
   await rm(join(root, 'changes/normal.md'));
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);
@@ -604,17 +584,17 @@ const behind = async (root, git) => {
   await commitAll(git, 'pi-vision came in behind the workspace');
   return (await git('rev-parse', 'HEAD')).stdout.trim();
 };
-test('releaseRace: a package that moves to the workspace version the base already holds is catching up, not a release', () => repo(async (root, git) => {
+test('releaseCommit: a package that moves to the workspace version the base already holds is catching up, not a release', () => repo(async (root, git) => {
   const base = await behind(root, git);
   await writeFile(join(root, 'changes/catch-up.md'), fragment('@parcha/pi-vision', 'fix', 'Catch up.'));
   const path = join(root, 'packages/pi-vision/package.json');
   await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.13' }));
-  assert.deepEqual(await releaseRace(root, base), { release: false, bumped: [], unfolded: [] });
+  assert.deepEqual(await releaseCommit(root, base), { release: false, bumped: [] });
   // A move to any other version is still a bump.
   await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.14' }));
-  assert.deepEqual(await releaseRace(root, base), { release: true, bumped: ['pi-vision'], unfolded: ['catch-up.md'] });
+  assert.deepEqual(await releaseCommit(root, base), { release: true, bumped: ['pi-vision'] });
 }));
-test('the command line passes a package catching up to the workspace version beside a fragment, and still fails a release of every package with one', () => repo(async (root, git) => {
+test('the command line passes a package catching up to the workspace version beside a fragment, and a release of every package with one', () => repo(async (root, git) => {
   const base = await behind(root, git);
   await mkdir(join(root, 'scripts'));
   await copyScript(root);
@@ -624,13 +604,12 @@ test('the command line passes a package catching up to the workspace version bes
   await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version: '0.1.0-beta.13' }));
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);
-  // The release: the root and every package at the next version, with the fragment unfolded.
+  // The release: the root and every package at the next version, with the fragment unfolded (the release workflow folds it at the tag).
   await setRoot(root, '0.1.0-beta.14');
   await bump(root, '0.1.0-beta.14');
-  assert.deepEqual(await releaseRace(root, base), { release: true, bumped: ['dsl', 'pi-vision'], unfolded: ['catch-up.md'] });
-  const fail = local();
-  assert.equal(fail.status, 1);
-  assert.match(fail.stderr, /release commit carries unfolded fragments: catch-up\.md; refold on current main/);
+  assert.deepEqual(await releaseCommit(root, base), { release: true, bumped: ['dsl', 'pi-vision'] });
+  const release = local();
+  assert.equal(release.status, 0, release.stderr);
 }));
 
 // The Python client, parcha-agentrun: python/pyproject.toml's version is a line of its own, as @parcha/agentrun's is.

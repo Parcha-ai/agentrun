@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
-import { hasVersionSection, loadFragments, ownVersionPackages, unreleasedSection } from './changes.mjs';
+import { changelogPaths, fold, hasVersionSection, loadFragments, ownVersionPackages, previousRelease, sectionDate, unreleasedSection } from './changes.mjs';
 import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
@@ -98,11 +98,47 @@ export async function checkReleaseAudit(root, counts, now = Date.now()) {
   assert.deepEqual(blocking, [], 'High dependency advisories block publication');
 }
 
+/**
+ * Refuses a working tree that is not the tagged commit plus the release workflow's fold of `version` (node scripts/changes.mjs --fold):
+ * the only changes are the fragments the tag carried, deleted, and changelogs, and every changelog is exactly what that fold writes,
+ * recomputed here from the tag's own changelogs, manifests and fragments. The fragments a tag carries belong to pull requests that
+ * merged after the release pull request's fold; their code is in the tag, so the archives' changelogs list them. Returns their names.
+ */
+export async function checkReleaseTree(root, tag, version) {
+  const git = async args => (await exec('git', args, { cwd: root, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  const ref = `refs/tags/${tag}`;
+  const date = sectionDate(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), version);
+  assert.ok(date, `CHANGELOG.md has no dated section for ${version}`);
+  const scratch = await mkdtemp(join(tmpdir(), 'agentrun-release-fold-'));
+  try {
+    // What the fold reads, as the tag has it: the changelogs, the package manifests (held or published), and changes/.
+    const paths = (await git(['ls-tree', '-r', '--name-only', ref, '--', 'CHANGELOG.md', 'changes', 'packages'])).split('\n')
+      .filter(path => path === 'CHANGELOG.md' || /^changes\/[^/]+$/.test(path) || /^packages\/[^/]+\/(?:package\.json|CHANGELOG\.md)$/.test(path));
+    for (const path of paths) {
+      await mkdir(dirname(join(scratch, path)), { recursive: true });
+      await writeFile(join(scratch, path), await git(['show', `${ref}:${path}`]));
+    }
+    const carried = (await loadFragments(scratch)).map(fragment => fragment.file);
+    await fold(scratch, version, date, { previous: await previousRelease(root, version) });
+    const strays = (await git(['status', '--porcelain', '--untracked-files=all'])).split('\n').filter(Boolean).filter(line => {
+      const [code, path] = [line.slice(0, 2).trim(), line.slice(3)];
+      return !((code === 'D' && carried.includes(path.slice('changes/'.length)) && path.startsWith('changes/')) || (code === 'M' && paths.includes(path) && path.endsWith('CHANGELOG.md')));
+    });
+    assert.deepEqual(strays, [], 'Release source must be the tagged commit plus the changelog fold (node scripts/changes.mjs --fold); nothing else may differ');
+    const text = path => readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    const differs = [];
+    for (const path of await changelogPaths(root)) if (await text(join(root, path)) !== await text(join(scratch, path))) differs.push(path);
+    assert.deepEqual(differs, [], `These changelogs are not the fold of ${tag}'s fragments into ${version}; run node scripts/changes.mjs --fold ${version} on the tag and change nothing else`);
+    return carried;
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
 export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   const workspace = await json(join(root, 'package.json'));
   assert.match(workspace.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'Only an explicit beta version can be released');
   assert.equal(tag, `v${workspace.version}`, 'Tag must match the exact workspace version');
-  // The release folds the changes/ fragments into the changelogs first (node scripts/changes.mjs --fold <version>).
+  // The release workflow folds the changes/ fragments its tag carries into the changelogs first (node scripts/changes.mjs --fold <version>),
+  // uncommitted, so the archives it verifies and publishes carry them.
   const unfolded = await loadFragments(root);
   assert.deepEqual(unfolded.map(fragment => fragment.file), [], 'Unfolded changelog fragments remain in changes/; run node scripts/changes.mjs --fold');
   assert.ok(hasVersionSection(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), workspace.version), `CHANGELOG.md has no section for ${workspace.version}`);
@@ -117,7 +153,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   if (checkGit) {
     commit = await command('git', ['rev-parse', 'HEAD'], root);
     assert.equal(await command('git', ['rev-parse', `refs/tags/${tag}^{commit}`], root), commit, 'Release tag must identify the checked-out source');
-    assert.equal(await command('git', ['status', '--porcelain'], root), '', 'Release source must be committed and clean');
+    await checkReleaseTree(root, tag, workspace.version);
     if (process.env.GITHUB_ACTIONS === 'true') checkReleaseDispatch(tag, commit, process.env);
   }
   const receipt = await json(join(root, '.release/verification.json'));
