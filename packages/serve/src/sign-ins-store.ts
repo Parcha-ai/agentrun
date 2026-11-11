@@ -4,10 +4,10 @@
 // clear. Only the owner reads a sign-in's name ("default") and state. A run gets the pointer only at its launch, over its
 // secrets' pipe (E2's run path), and its served output is cut by every handed pointer (E3's readers).
 //
-// Forgetting a sign-in moves its pointer into a sealed tombstone (kept only to cut it from what a run it was handed shows),
-// and is refused while a running run holds the pointer's hash in its sign_in_handed list. The forget is one store
-// transaction, which is the per-agent lock a launch shares: the store's one writer serializes it with the launch that
-// writes sign_in_handed.
+// Forgetting a sign-in moves its pointer into a sealed tombstone (every one kept, only to cut it from what a run it was
+// handed shows and from what its agent learned), and is refused while a running run holds the pointer's hash in its
+// sign_in_handed list. The forget is one store transaction, which is the per-agent lock a launch shares: the store's one
+// writer serializes it with the launch that writes sign_in_handed.
 import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
 import { type SecretMeta, signInSecretMeta } from "./sign-ins-secrets.js";
@@ -244,7 +244,7 @@ export type Forgotten = { provider: string; at_vendor: "deleted" | "not_deleted"
 /** Forgets the agent's live sign-in for the provider. In one store transaction (the lock a launch shares): refused with
  *  SignInHandedTo while a running run holds this pointer's hash in its sign_in_handed (or, when the pointer does not open,
  *  while any running run was handed a sign-in at all — any such run may hold it); otherwise the sealed pointer moves to a
- *  tombstone (the newest kept) and the live row goes. The vendor's object is then deleted, best effort (what failed is
+ *  tombstone (every one kept) and the live row goes. The vendor's object is then deleted, best effort (what failed is
  *  said; this server no longer points to it either way). SignInMissing when the agent has no sign-in for the provider. */
 export async function forgetSignIn(
   store: SignInsStore,
