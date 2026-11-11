@@ -21,8 +21,14 @@
 import { createHash } from "node:crypto";
 import { HOST_PHASE } from "./timeline/index.js";
 
-/** How long a person's time lasts at most before it expires: an unanswered ask, and a take-over with no input. Its worth of session time is held up front. */
+/** How long a person's time lasts at most before it expires: an unanswered ask, a take-over with no input, and a run that
+ *  waits for its person's answer with its browser kept open. Its worth of session time is held up front. The default of
+ *  the server setting PERSON_WAIT_ENV. */
 export const PERSON_HOLD_MS = 15 * 60_000;
+/** The server setting for that window, in whole minutes (1 to 360; anything else keeps the 15-minute default): how long a
+ *  run waiting for its person keeps its browser open, how long an agent's hand-over ask waits, and how long a take-over
+ *  lasts with no input. One setting for all three, so they never drift apart. */
+export const PERSON_WAIT_ENV = "AGENTRUN_BROWSER_PERSON_WAIT_MIN";
 /** How long a take-over outlasts its viewer. */
 export const PERSON_AWAY_MS = 2 * 60_000;
 /** Under `--faux` only (the tests, beside the fake browser's own FAUX_BROWSER_LOG): the two windows above, in ms, `<hold>,<away>`. */
@@ -533,16 +539,27 @@ export function personHands(options: {
         }
         held.push(tag);
       }
-      let lapse: (words: string) => void = () => {};
-      const lapsed = new Promise<string>((resolve) => (lapse = resolve));
+      let settle: (words: string) => void = () => {};
+      const lapsed = new Promise<string>((resolve) => (settle = resolve));
+      // The wait ends once: at its window, when a session it keeps ends, or at the cap (each with its timeline row, so the
+      // person sees why the browser went), or by the answer (drop: no row, the run goes on).
+      let over = false;
+      const end = (words: string, row: string) => {
+        if (over) return;
+        over = true;
+        settle(words);
+        void note(HOST_PHASE, { summary: row, at: now() }).catch(() => undefined);
+      };
+      const lapse = (words: string) => end(words, words === WAIT_SESSION_GONE ? BROWSER_GONE_WHILE_WAITING : `The browser was released while the run waited for you: ${words}`);
       const entry = { tags: new Set(held), lapse };
       waits.set(user, entry);
-      bound = timers.set(() => lapse(waitExpired(holdMs)), Math.max(0, expiresAt - now()));
+      bound = timers.set(() => end(waitExpired(holdMs), releasedAfterWait(holdMs)), Math.max(0, expiresAt - now()));
       // A session let go while its hold was being admitted: told before this wait was there to hear it.
       if (held.some((tag) => ended.has(tag))) lapse(WAIT_SESSION_GONE);
       return {
         lapsed,
         drop: () => {
+          over = true;
           if (waits.get(user) === entry) waits.delete(user);
           letGo();
         },
@@ -574,5 +591,17 @@ export function personHands(options: {
  *  tests' (FAUX_PERSON_MS_ENV). */
 export function personWindows(env: NodeJS.ProcessEnv, faux: boolean): { holdMs: number; awayMs: number } {
   const [hold, away] = (faux ? env[FAUX_PERSON_MS_ENV] ?? "" : "").split(",").map(Number);
-  return { holdMs: hold && hold > 0 ? hold : PERSON_HOLD_MS, awayMs: away && away > 0 ? away : PERSON_AWAY_MS };
+  return { holdMs: hold && hold > 0 ? hold : personWaitMs(env), awayMs: away && away > 0 ? away : PERSON_AWAY_MS };
 }
+
+/** The person's window from the server setting PERSON_WAIT_ENV, in ms: whole minutes from 1 to 360, else the default. */
+export function personWaitMs(env: NodeJS.ProcessEnv): number {
+  const raw = env[PERSON_WAIT_ENV]?.trim();
+  const minutes = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return minutes >= 1 && minutes <= 360 ? minutes * 60_000 : PERSON_HOLD_MS;
+}
+
+/** The timeline row when a run's wait for its person ends at its window and its browser is let go. */
+export const releasedAfterWait = (holdMs: number): string => `The browser was released after ${Math.round(holdMs / 60_000) || 1} min waiting for you`;
+/** The timeline row when a browser the run kept open for its person ended before their answer (its provider ended it). */
+export const BROWSER_GONE_WHILE_WAITING = "The browser session ended while the run waited for you";

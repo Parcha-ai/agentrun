@@ -62,7 +62,8 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
 }
 
 const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off" }>): boolean =>
-  !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer));
+  !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer))
+  && (prev.state !== "none" || (next.state === "none" && prev.ended?.at === next.ended?.at));
 
 /** A screen that closed with its run: `none`, of the same kind, the agent's. */
 const closed = (from: ScreenView | RunComputer): ScreenView | null => (from.state === "off" ? null : from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent" });
@@ -144,8 +145,17 @@ function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | unde
   if (screen?.state === "signed_out") return "Signed out: sign in to watch.";
   if (kind === "sandbox") return "A sandbox has no screen. What the agent runs in it is on the timeline.";
   if (machine?.state === "failed") return `The ${kind} didn't start.${machine.why ? ` ${machine.why}` : ""}`;
+  // Let go while the run waited for its person: said, with when, and that a new one opens when the run goes on. Never
+  // "waiting for the browser" here: nothing is opening one until the person answers.
+  if (opens && screen?.state === "none" && screen.ended) return `${screen.ended.why} (${clock(screen.ended.at)}). A new browser opens when the run goes on.`;
   if (opens) return kind === "browser" ? "Waiting for the browser. The agent's page shows here once it opens one." : `Waiting for the ${kind}. Its screen shows here once it is up.`;
   return `The ${kind} closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`;
+}
+
+/** An ISO time as the page's local clock, `HH:MM`, or the text itself when it doesn't parse. */
+function clock(at: string): string {
+  const when = new Date(at);
+  return Number.isNaN(when.getTime()) ? at : `at ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 /** The served viewer as the iframe's src: resolved against this page's origin (it is a same-origin path, its token in the

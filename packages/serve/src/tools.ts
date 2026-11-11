@@ -529,14 +529,19 @@ const browserTool: ToolEntry = {
     // (live, or held for a hand-over), the run waits for the answer in its claim, so the session, its live viewer and its
     // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
     // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
-    // the cap for that time, the run parks (its release lets the browser go).
+    // the cap for that time, the run parks (its release lets the browser go). While it waits, pi-browser's idle release
+    // keeps its hands off those sessions (keepForPerson): the person's window (AGENTRUN_BROWSER_PERSON_WAIT_MIN), not the
+    // browser's few-minute idle window, decides when the browser goes.
     host.personWait?.(async (harness, callId, since) => {
       if (refused) return undefined;
       const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
       const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
       if (!open.length) return undefined;
+      const keeps = open.map((tag) => browser.keepForPerson(tag));
+      const letGo = () => { for (const keep of keeps.splice(0)) keep(); };
       const waited = await hands.wait(callId, open, since);
-      return "refused" in waited ? undefined : waited;
+      if ("refused" in waited) { letGo(); return undefined; }
+      return { lapsed: waited.lapsed, drop: () => { waited.drop(); letGo(); } };
     });
     host.beforeRelease(async (harness) => {
       try {

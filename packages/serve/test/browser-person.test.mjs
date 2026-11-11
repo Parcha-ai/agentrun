@@ -3,7 +3,7 @@
 // The run's journal, the cap, the gates and the clock are fakes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { personHands } from "../dist/browser-person.js";
+import { personHands, personWaitMs, personWindows, releasedAfterWait } from "../dist/browser-person.js";
 import { browserAsk, handBackTarget, waitingAsk } from "../dist/browser-commands.js";
 import { scratch } from "./support.mjs";
 
@@ -1175,6 +1175,51 @@ test("a wait in the claim taken up again (a re-claim) keeps its first start: its
   const taken = held.taken;
   assert.deepEqual(await person.wait("call-8", ["ar-run-36-2"], clock.now() - holdMs), { refused: "the person did not answer within 15 minutes, the bound a browser hand-over waits" }, "past its bound: refused, nothing held");
   assert.equal(held.taken, taken);
+});
+
+test("a wait that ends at its window writes the timeline row that says so; one the answer ends writes none", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 20 * 60_000;
+  const rows = [];
+  const note = async (kind, data) => void rows.push([kind, data.summary]);
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note, timers: clock.timers, holdMs, now: clock.now, personTime: async () => ({ drop: () => {} }) });
+  t.after(() => person.close());
+  const answered = await person.wait("call-10", ["ar-run-40-1"]);
+  await clock.tick(5 * 60_000);
+  answered.drop();
+  await clock.tick(holdMs);
+  assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [], "an answer before the window: no row");
+  const waited = await person.wait("call-11", ["ar-run-40-2"]);
+  await clock.tick(holdMs);
+  await waited.lapsed;
+  // The run parks, and its release lets the session go after the row: that release writes no second row.
+  person.sessionEnded("ar-run-40-2");
+  waited.drop();
+  assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [["agentrun.phase", "The browser was released after 20 min waiting for you"]]);
+});
+
+test("a wait whose session its provider ends writes that row, once", async (t) => {
+  const root = await scratch(t);
+  const rows = [];
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async (kind, data) => void rows.push([kind, data.summary]), personTime: async () => ({ drop: () => {} }) });
+  t.after(() => person.close());
+  const waited = await person.wait("call-12", ["ar-run-41-1"]);
+  person.sessionEnded("ar-run-41-1");
+  person.sessionEnded("ar-run-41-1");
+  assert.match(await waited.lapsed, /let go/);
+  waited.drop();
+  assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [["agentrun.phase", "The browser session ended while the run waited for you"]]);
+});
+
+test("AGENTRUN_BROWSER_PERSON_WAIT_MIN sets the person's window in whole minutes, 1 to 360; anything else keeps 15", () => {
+  assert.equal(personWaitMs({}), 15 * 60_000);
+  assert.equal(personWaitMs({ AGENTRUN_BROWSER_PERSON_WAIT_MIN: "30" }), 30 * 60_000);
+  assert.equal(personWaitMs({ AGENTRUN_BROWSER_PERSON_WAIT_MIN: " 1 " }), 60_000);
+  assert.equal(personWaitMs({ AGENTRUN_BROWSER_PERSON_WAIT_MIN: "360" }), 360 * 60_000);
+  for (const bad of ["0", "361", "2.5", "-3", "ten", ""]) assert.equal(personWaitMs({ AGENTRUN_BROWSER_PERSON_WAIT_MIN: bad }), 15 * 60_000, bad);
+  assert.equal(personWindows({ AGENTRUN_BROWSER_PERSON_WAIT_MIN: "25" }, false).holdMs, 25 * 60_000, "the one window for the wait, the ask and the take-over");
+  assert.equal(releasedAfterWait(25 * 60_000), "The browser was released after 25 min waiting for you");
 });
 
 test("a session let go while a wait's hold is being admitted still ends the wait", async (t) => {
