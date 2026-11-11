@@ -5,7 +5,7 @@
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
+import { learnedSecretShapes, redactSecrets, valueMatcher } from "./secrets.js";
 import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
@@ -105,7 +105,7 @@ type Add = (rule: Rule, detail: string, path?: string) => void;
 /** No secret's shape or the host's values in a file's name: a writer picks its files' names, and they reach main, the
  *  index and the logs. */
 function nameScanned(path: string, refused: (text: string) => boolean, add: Add): void {
-  for (const kind of secretShapes(path)) add("secret_shape", `its name holds text shaped like a secret (${kind})`, path);
+  for (const kind of learnedSecretShapes(path)) add("secret_shape", `its name holds text shaped like a secret (${kind})`, path);
   if (refused(path)) add("secret_value", "its name holds a value the host named as secret", path);
 }
 
@@ -143,7 +143,7 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
   let found = false;
   const hidden = hiddenCharacter(text);
   if (hidden) found = (add("invisible_unicode", `it holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see, at character ${hidden.at}`, path), true);
-  for (const kind of secretShapes(text)) found = (add("secret_shape", `it holds text shaped like a secret (${kind})`, path), true);
+  for (const kind of learnedSecretShapes(text)) found = (add("secret_shape", `it holds text shaped like a secret (${kind})`, path), true);
   if (refused(text)) found = (add("secret_value", "it holds a value the host named as secret", path), true);
   return found ? undefined : text;
 }
