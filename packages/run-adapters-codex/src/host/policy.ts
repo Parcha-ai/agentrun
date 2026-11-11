@@ -628,8 +628,13 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
     },
-    usageOf: search ? (text): CodexUsage | undefined => {
+    usageOf: search ? (text, body): CodexUsage | undefined => {
       const usage = usageOf(text);
+      // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
+      // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
+      // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
+      const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
+      if (usage && body && !offered) return { ...usage, webSearches: 0 };
       return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
     } : usageOf,
     filtered,
