@@ -19,7 +19,7 @@ import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
-import { launchBody, type RunLaunch } from "./run-launch.js";
+import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
@@ -348,26 +348,32 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; gradeModel?: string } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "", ...grade };
-  // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
-  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
-  // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
-  // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
-  // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-  const { section, given } = learnedParts(seeded.seed, options);
-  // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
-  // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
-  // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
-  const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
-  // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
-  // agent's impact counts a run as started from, beside its notes and skills.
-  const workflows = chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-  return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...grade };
+  // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
+  // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...grade };
+  try {
+    // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
+    const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
+    // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
+    // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
+    // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
+    const { section, given } = learnedParts(seeded.seed, options);
+    // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
+    // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
+    // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+    const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
+    // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
+    // agent's impact counts a run as started from, beside its notes and skills.
+    const workflows = chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...grade };
+  } catch {
+    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
+  }
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
