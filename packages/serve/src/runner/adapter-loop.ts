@@ -760,7 +760,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session idle with no wait taking messages yet: whether the last turn ended on a question to the person, read
     // first. It is an await, so a wait may start meanwhile: every path below is chosen after it, with nothing awaited
     // between that choice and the message's placing.
-    const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const reopenedBefore = reopen;
+    const endedOnAsk = session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const askedLast = !reopenedBefore && endedOnAsk;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
     // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
@@ -770,8 +772,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && session.state === "idle") {
       const theSession = session;
-      // The answer to a wait in the claim: the row's waiting summary goes in its commit.
-      const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
+      // The answer to an ask: the row's waiting summary goes in its commit, for a wait in the claim and for a question a
+      // reopened run parked on (its journal holds its earlier end, so its claim reads as reopened). Left until the end
+      // commit, the answer's turn reads running, held and "Waiting for your reply", and the server tells that ask again.
+      const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(reopen === waitTurn || endedOnAsk ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
         await cliRecord?.person(text);

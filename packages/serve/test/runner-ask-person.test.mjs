@@ -51,11 +51,11 @@ const driveAsk = ({ body }) => {
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
  *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
  *  returned. */
-async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream }) {
+async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream, drive = driveAsk }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const gw = await startFauxGateway({ call: driveAsk, text: "done" });
+  const gw = await startFauxGateway({ call: drive, text: "done" });
   let runner;
   t.after(async () => {
     await runner?.close().catch(() => {});
@@ -143,6 +143,56 @@ test("resume: the answer to a parked question clears the row's waiting summary i
   t.after(() => release());
   const { row, server } = await askRun(t, { tools: ["ask_person"], upstream });
   assert.deepEqual([row.state, row.summary], ["parked", "Waiting for your reply"], "parked on its question, the row saying so");
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await held;
+  const during = await server.runs.get(RUN);
+  assert.equal(during.state, "running", "the answer's turn runs");
+  assert.notEqual(during.runner, null, "in its claim");
+  assert.equal(during.summary, null, `the waiting summary went with the answer's take, never left to the end: ${JSON.stringify(during.summary)}`);
+  release();
+  const ended = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer ends the run");
+  assert.equal(ended.summary, null);
+});
+
+// Issue 2230, the runner's half: any answer to an ask clears the row's waiting summary in its take, not only an in-claim
+// wait's or a first claim's. A run that ended, was reopened by a follow-up and then parked on a question holds its earlier
+// end in its journal, so the answer's claim reads as reopened and its steer takes the reopened path: that take clears the
+// summary too.
+test("resume after a follow-up: a reopened run that parks on its question has its waiting summary cleared by the answer's take", async (t) => {
+  const FOLLOW_UP = "Now ask me which region.";
+  // The model asks only on the follow-up's turn: the first input is answered, and the answer's turn says "done".
+  const drive = ({ body }) => {
+    const lastUser = (body?.messages ?? []).findLast((message) => message.role === "user");
+    const asked = JSON.stringify(lastUser?.content ?? "").includes(FOLLOW_UP);
+    return (body?.tools ?? []).some((tool) => tool?.name === "ask_person") && asked ? { name: "ask_person", input: { question: QUESTION } } : undefined;
+  };
+  let hold;
+  const held = new Promise((resolve) => (hold = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let holding = true;
+  // The answer's model request waits until the row is read: the answer is taken, its turn running.
+  const upstream = async (url, init) => {
+    const sent = typeof init?.body === "string" ? init.body : init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "";
+    if (holding && sent.includes("us-west-2")) {
+      holding = false;
+      hold();
+      await released;
+    }
+    return globalThis.fetch(url, init);
+  };
+  t.after(() => release());
+  const { row, server } = await askRun(t, { tools: ["ask_person"], upstream, drive });
+  assert.equal(row.state, "ended", `the first input is answered and the run ends: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  await server.runs.reopen(RUN, { kind: "steer", body: { text: FOLLOW_UP } });
+  const parked = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "parked" && now.runner === null && now;
+  }, "the follow-up's turn asks and the run parks on its question");
+  assert.equal(parked.summary, "Waiting for your reply", "parked on its question, the row saying so");
   await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
   await held;
   const during = await server.runs.get(RUN);

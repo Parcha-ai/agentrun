@@ -19,7 +19,6 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
 const { webhook } = await import("../dist/trigger-webhook.js");
 const { Webhooks } = await import("../dist/webhooks.js");
-const { SEAL_KEY_ENV } = await import("../dist/tool-keys.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -179,9 +178,10 @@ const PLANES = [
     await server.signIns.forget(AGENT, "steel", {});
     return [pointer];
   }],
-  ["the server's outbound webhook signing secret, in its spellings (sealed beside the store)", async (_server, dir) => {
-    const hooks = new Webhooks(dir, { [SEAL_KEY_ENV]: SEAL_KEY.toString("base64") }, () => {});
-    const { secret } = hooks.save({ url: "https://hooks.invalid/agentrun" });
+  ["the server's outbound webhook signing secret, in its spellings (trigger_settings, adapter webhook-out)", async (server) => {
+    const hooks = new Webhooks(server, SEAL_KEY, () => {});
+    await hooks.load();
+    const { secret } = await hooks.save({ url: "https://hooks.invalid/agentrun" });
     await hooks.close();
     const key = Buffer.from(secret.slice("whsec_".length), "base64");
     return [secret, secret.slice("whsec_".length), key.toString("hex")];

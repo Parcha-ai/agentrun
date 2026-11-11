@@ -11,7 +11,7 @@
 // The store records the key's fingerprint (an HMAC of a fixed label under the key: never the key, nor a hash of it alone),
 // and every process that opens the store (the server, a runner, the `import` command) checks the key it holds against it
 // (bootSealKey). A store whose secrets were sealed with another key is refused, in words, and no key is ever made over
-// sealed secrets, in the store or beside it in the data directory: a lost key file is not replaced by a new one. A store
+// sealed secrets in the store: a lost key file is not replaced by a new one. A store
 // with no fingerprint takes a key that opens every value it keeps sealed, or any key when it keeps none. The server's
 // start makes a key and records it (and the import's, which sets a data directory up as the server does); a runner reads
 // one and checks it, and never makes or records one. Several data directories in one process each keep their own key.
@@ -22,7 +22,6 @@ import { unseal } from "@parcha/pi-durable-agent";
 import type { Store } from "./store/index.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { handedSecret, holdSealKey } from "./secrets.js";
-import { webhookKeptIn, webhookSecretIn } from "./webhooks.js";
 
 /** The seal key's own directory in the data directory, and its file there. */
 export const SEAL_KEY_DIR = "seal";
@@ -163,7 +162,7 @@ function recordedIn(value: unknown): string | null | undefined {
 const sameText = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** What a store holds that names its key: the fingerprint it records, and, with none recorded, the values it keeps
- *  sealed and those its data directory keeps sealed beside it (each a check of whether a key opens it). */
+ *  sealed (each a check of whether a key opens it). */
 type StoreSeal = { readonly fingerprint: string | null | undefined; readonly sealed: ReadonlyArray<(key: Buffer) => boolean> };
 
 /** The store slice the check reads and writes. */
@@ -178,17 +177,11 @@ function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
   }
 }
 
-/** The value data directory `dataDir` keeps sealed beside the store, under the same key: the outbound webhook's signing
- *  secret (webhooks.ts), as a check of whether a key opens it. */
-function sealedBeside(dataDir: string): Array<(key: Buffer) => boolean> {
-  return webhookKeptIn(dataDir) ? [(key) => "secret" in (webhookSecretIn(dataDir, key) ?? {})] : [];
-}
-
-async function storeSealOf(store: SealKeyStore, dataDir: string): Promise<StoreSeal> {
+/** Every secret is kept in the store (the outbound webhook's too, a trigger_settings row): its sealed values are all. */
+async function storeSealOf(store: SealKeyStore): Promise<StoreSeal> {
   const fingerprint = recordedIn(await store.settings.get(SEAL_KEY_SETTING));
   if (fingerprint !== undefined) return { fingerprint, sealed: [] };
-  const rows = (await store.sealedSecrets.all()).map((row) => (key: Buffer) => opensUnder(key, row.sealed, row.aad));
-  return { fingerprint, sealed: [...rows, ...sealedBeside(dataDir)] };
+  return { fingerprint, sealed: (await store.sealedSecrets.all()).map((row) => (key: Buffer) => opensUnder(key, row.sealed, row.aad)) };
 }
 
 const holdsSecrets = (seal: StoreSeal) => seal.fingerprint !== undefined || seal.sealed.length > 0;
@@ -224,7 +217,7 @@ export interface BootSealKeyOptions {
 }
 
 async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | undefined, role: SealKeyRole, write: boolean): Promise<SealKey | undefined> {
-  const kept = await storeSealOf(store, dataDir);
+  const kept = await storeSealOf(store);
   const dir = join(dataDir, SEAL_KEY_DIR);
   const file = join(dir, SEAL_KEY_FILE);
   let seal: SealKey | undefined;

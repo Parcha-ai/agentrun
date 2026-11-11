@@ -63,7 +63,7 @@ const SHAPES = [
   ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
-test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, and the webhook config, its outbox, the kept idempotency answers and the learning usage ledger this version still keeps beside the store", async (t) => {
+test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, a leftover webhook config and outbox (no longer read), the kept idempotency answers and the learning usage ledger this version still keeps beside the store", async (t) => {
   const dir = dataDir(t);
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   await store.close();

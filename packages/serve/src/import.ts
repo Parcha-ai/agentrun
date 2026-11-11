@@ -26,7 +26,6 @@ import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { bootSealKey, SealKeyRefused, withSealKey } from "./seal-key.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
-import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { journalEntries } from "./runner/journal-reader.js";
@@ -852,17 +851,14 @@ async function revisionFor(
 }
 
 /** The secrets this server made and keeps, by value: its API token and its sign-in sessions' secret (still files beside the
- *  store), its webhook's signing secret (`whsec_...`; webhooks.ts) and every value a trigger source keeps sealed, as store
- *  rows (server-secrets-store.ts), opened with the seal key of `env`, which the caller has (a dry run over a store that
- *  keeps no secret has none, and does not ask); each signing secret's key in every spelling too. One pasted into a
+ *  store), and its webhook's signing secret (`whsec_...`; webhooks.ts) and every value a trigger source keeps sealed, as
+ *  store rows (server-secrets-store.ts), opened with the seal key of `env`, which the caller has (a dry run over a store
+ *  that keeps no secret has none, and does not ask); each signing secret's key in every spelling too. One pasted into a
  *  session is this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
  *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A webhook secret that does not
- *  open is said to `say`: the import goes on, and does not cut it. */
+ *  open is said to `say`, once, naming the data directory: the import goes on, and does not cut it. */
 export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
-  const key = sealKeyOf(env[SEAL_KEY_ENV]);
-  if (!key) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
-  const webhook = webhookSecretIn(data, key);
-  if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
+  if (!sealKeyOf(env[SEAL_KEY_ENV])) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
 }
 

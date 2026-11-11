@@ -2,14 +2,14 @@
 // secret, and every value a trigger source keeps sealed (sealed-settings-store.ts). Each source is added as a reader, so a
 // secret made or rotated since is in the list at once. With the host's, they are the one list a server never shows
 // (server.ts serverSecrets): what a run shows, what learning keeps, what the server answers and what an import writes are
-// cut of it; none of them assembles its own. The trigger settings are store rows (server-secrets-store.ts); what stays
-// beside the store in the data directory is read here (besideTheStore), by the server and by a runner that shares it.
+// cut of it; none of them assembles its own. The trigger settings and the outbound webhook's secret are store rows
+// (server-secrets-store.ts); what stays beside the store in the data directory is read here (besideTheStore), by the
+// server and by a runner that shares it.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TOKEN_FILE } from "./files.js";
 import { SESSION_SECRET_FILE } from "./owner.js";
 import { secretForms } from "./standard-webhooks.js";
-import { webhookSecretIn } from "./webhooks.js";
 
 export class ServerSecrets {
   private readonly sources = new Map<string, () => readonly string[]>();
@@ -44,15 +44,12 @@ const fileIn = (data: string, name: string): string => {
 };
 
 /** The server's own secrets data directory `data` keeps beside the store: the owner's API token and the sign-in session
- *  secret (files the CLI and the console's sign-in read), and the outbound webhook's signing secret, opened with the
- *  server's seal key `key` (a secret that does not open is left out). Each file is read until it is there, then kept: they
- *  are made once, and a redaction reads the list often. */
-export function besideTheStore(data: string, key: Buffer): ServerSecrets {
+ *  secret (files the CLI and the console's sign-in read). Each file is read until it is there, then kept: they are made
+ *  once, and a redaction reads the list often. */
+export function besideTheStore(data: string): ServerSecrets {
   const secrets = new ServerSecrets();
   const read = new Map<string, string>();
   const kept = (name: string) => read.get(name) || (read.set(name, fileIn(data, name)), read.get(name)!);
   secrets.add("files", () => [kept(TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
-  const webhook = webhookSecretIn(data, key);
-  secrets.add("webhook", () => (webhook && "secret" in webhook ? [webhook.secret] : []));
   return secrets;
 }
