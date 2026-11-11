@@ -22,6 +22,11 @@ import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, 
 import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 
+/** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
+ *  takeover's note, its computer's hold, the learning seed it laid): read past when a claim asks whether the run's root ends
+ *  on its end (a fresh reopen). */
+const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold"]);
+
 /** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
 const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
@@ -659,6 +664,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  Also set while the run waits in its claim on the person's answer to its question (waitInClaim): their message is sent
    *  the same way, as the claim's next turn, and `placed` wakes the wait once it is sent. */
   let reopen: { sent?: Promise<void>; placed?: () => void } | undefined;
+  /** A reopen of a run whose session is still new (a person stopped it before its first input was sent): resolved once the
+   *  person's message is placed as that first input. The claim waits on it, never sending the input they stopped, however
+   *  late the runner hands the message over. */
+  let firstInputPlaced: Promise<void> | undefined;
   /** The tool hosts' holds while the run waits in its claim on the person's answer (HostLifecycle.personWait): dropped
    *  once the wait is over, whichever way it ends. */
   let waitHolds: PersonWait[] = [];
@@ -1432,14 +1441,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // its session recovers that turn as any open turn.
         if (restarts === 0) {
           const rootId = root.id;
-          // Read before this claim's own writes (foundEntries): the computer's show-up or a takeover's note after the end
-          // is no turn of the follow-up's.
-          const endsRoot = foundEntries.at(-1)?.kind === KINDS.end;
+          // Read before this claim's own writes (foundEntries), and past the bookkeeping any claim writes on the root before
+          // its turn (its session's key, a phase row, a takeover's note, the computer's hold, the learning seed it laid):
+          // none of them is a turn of the follow-up's.
+          const endsRoot = foundEntries.findLast((entry) => !CLAIM_BOOKKEEPING.has(entry.kind))?.kind === KINDS.end;
           const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
           if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
           // A session still new (a person stopped the run before its first input was sent): the follow-up is its first
           // input, and the input the person stopped is never sent.
-          if (endsRoot && !inFlight && (session!.state === "idle" || session!.state === "new")) reopen = {};
+          firstInputPlaced = undefined;
+          if (endsRoot && !inFlight && session!.state === "idle") reopen = {};
+          else if (endsRoot && !inFlight && session!.state === "new") {
+            const mine: { sent?: Promise<void>; placed?: () => void } = {};
+            firstInputPlaced = new Promise<void>((resolve) => (mine.placed = resolve));
+            reopen = mine;
+          }
         }
         opened();
         await reportHeld(harness, root.id);
@@ -1526,6 +1542,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A steer handed over waits on the session's readiness (resolved above) before it sends: one turn of the event loop
           // lets it get there.
           await new Promise<void>((resolve) => setImmediate(resolve));
+          // A session still new: the message is the run's first input, and nothing else may be sent first. A row the
+          // runner reads on a later poll is waited for (or the run's stop, park or loss).
+          if (firstInputPlaced && !reopen.sent) {
+            const lost = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
+            await Promise.race([firstInputPlaced, stopping, parking, harness.closed.then(() => undefined, () => undefined), lost]);
+          }
           const sent = reopen.sent;
           reopen = undefined;
           if (sent) {
@@ -1535,9 +1557,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         // A claim that starts a turn (the input, a recovery, a follow-up) waits for that turn's end: state is the session as
         // open found it, and a CLI adapter reads idle once its turn is sent, so state read after a send says nothing.
-        const placed = followedUp || session!.state !== "idle";
-        if (followedUp) {
-          // The follow-up is the turn this claim runs.
+        // A reopen of a session still new whose message was never placed (the run stopped, parked or was lost meanwhile):
+        // nothing is sent, least of all the input the person stopped.
+        const firstUnplaced = firstInputPlaced !== undefined && !followedUp;
+        const placed = followedUp || (session!.state !== "idle" && !firstUnplaced);
+        if (followedUp || firstUnplaced) {
+          // The follow-up is the turn this claim runs, or there is none.
         } else if (session!.state === "new") {
           // A trigger's first input is its origin's (the launch's), never written as the person's.
           if (spec.inputOrigin) await record?.input(spec.input, spec.inputOrigin);

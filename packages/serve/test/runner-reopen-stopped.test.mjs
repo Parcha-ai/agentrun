@@ -214,7 +214,7 @@ test("a person's stop while the run waits on its harness's install, then a messa
   assert.equal(origin.requests.length, 0, "nothing was asked before the stop");
   await message(server, await momentOverStore(server, RUN), "Do this instead.");
   await settled(server, "ended");
-  assert.equal(origin.requests.length, 1, `one turn, the message's: ${origin.requests.length} requests`);
+  assert.equal(origin.requests.length, 1, `one turn, the message's: ${origin.requests.length} requests: ${JSON.stringify(origin.requests.map((body) => body.messages)).slice(0, 600)}`);
   const asked = JSON.stringify(origin.requests[0].messages);
   assert.ok(asked.includes("Do this instead.") && !asked.includes("First question."), `the message, never the stopped input: ${asked.slice(0, 400)}`);
 });
