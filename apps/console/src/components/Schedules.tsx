@@ -126,7 +126,7 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
  *  in. These stand in for the page's three buttons, which show once there is a trigger. */
 function FirstTrigger({ go }: { go: (hash: string) => void }) {
   const kinds = [
-    { Icon: CalendarClock, name: "Schedule", what: "At the times you set: a cron line, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
+    { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
     { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
     { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
   ];
@@ -450,7 +450,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
               </Field>
             )}
             {draft.kind === "cron" && (
-              <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The zone the cron line runs in.">
+              <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The time zone this schedule runs in.">
                 <ZonePicker name="timezone" label="Time zone" className="w-full" value={draft.timezone} onChange={set("timezone")} />
               </Field>
             )}

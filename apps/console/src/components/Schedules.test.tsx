@@ -157,6 +157,8 @@ describe("the schedules list", () => {
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
     expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
     expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    expect(panel.textContent).toContain("At the times you set: every day or week at a time, every few minutes or hours, or once.");
+    expect(panel.textContent).not.toMatch(/cron/i);
     // Each is on the page once: the header's three show when there is a trigger.
     for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
@@ -169,6 +171,14 @@ describe("a new schedule", () => {
     // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
     // So are the schedule's shape and its zone (ScheduleWhen's and ZonePicker's fields).
     expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", Agent: "Agent", "Each run is asked": "content" });
+  });
+  it("says the schedule and its zone in plain words, with no cron or zone-database terms", async () => {
+    const t = await open(server().v2, { trigger: null });
+    expect(t.text()).toContain("The time zone this schedule runs in.");
+    // The custom line's own field too, once picked.
+    await pick(picker(t.host, "Runs")!, "custom");
+    expect(t.host.querySelector('input[aria-label="Custom schedule"]')).toBeTruthy();
+    expect(t.text()).not.toMatch(/cron line|IANA|cron expression|crontab/i);
   });
   it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
     const t = await open(server().v2, { trigger: null });

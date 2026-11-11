@@ -154,7 +154,7 @@ describe("the form's body", () => {
   });
   it("says what is missing or not a number, under the field the server would name, and checks nothing else", () => {
     expect(bodyOf(draft({ kind: "cron", cron: "", agentId: "", content: " ", maxCost: "" })).issues).toEqual({
-      "source.cron": "A cron line is needed.", "target.agent_id": "Pick an agent.", "target.input": "Say what each run is asked.", "target.max_cost_usd": "A cost cap is needed: every run a schedule starts is capped.",
+      "source.cron": "Pick when it runs.", "target.agent_id": "Pick an agent.", "target.input": "Say what each run is asked.", "target.max_cost_usd": "A cost cap is needed: every run a schedule starts is capped.",
     });
     expect(bodyOf(draft({ kind: "every", every: "five", maxCost: "two" })).issues).toEqual({ "source.every_s": "A number is needed.", "target.max_cost_usd": "A number is needed." });
     expect(bodyOf(draft({ kind: "at", at: "" })).issues).toEqual({ "source.at": "A time is needed." });

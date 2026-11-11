@@ -276,7 +276,7 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
   const issues: Record<string, string> = {};
   let source: ScheduleInput["source"];
   if (d.kind === "cron") {
-    if (!d.cron.trim()) issues["source.cron"] = "A cron line is needed.";
+    if (!d.cron.trim()) issues["source.cron"] = "Pick when it runs.";
     source = { kind: "schedule", cron: d.cron.trim(), timezone: d.timezone.trim() || browserZone() };
   } else if (d.kind === "at") {
     const at = instantKept(d.at, d.read?.at);

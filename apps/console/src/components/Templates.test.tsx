@@ -390,7 +390,7 @@ describe("applying a template", () => {
     expect(valueOf(picker(when, "Schedule")!)).toBe("weekly");
     expect(valueOf(picker(when, "Day of the week")!)).toBe("1");
     expect(when.querySelector<HTMLInputElement>('input[type="time"]')!.value).toBe("08:00");
-    expect(when.querySelector('input[aria-label="Cron line"]')).toBeNull();
+    expect(when.querySelector('input[aria-label="Custom schedule"]')).toBeNull();
     const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
     expect(valueOf(picker(zone, "Time zone")!)).toBe("America/New_York");
     expect((await optionsOf(picker(zone, "Time zone")!)).map((o) => o.value)).toContain("Europe/Madrid");
