@@ -7,7 +7,7 @@
 // is in, and says which disk a token is accepted on (`accepts`), as Archil decides it. Nothing leaves this process.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentDiskOf, ARCHIL_SETTINGS_KEY, diskNameOf, loadArchilSettings, saveArchilSettings, serverIdOf, storeAgentDisk } from "../dist/archil-settings.js";
+import { agentDiskOf, ARCHIL_SETTINGS_KEY, diskNameOf, forgetAgentDisk, loadArchilSettings, saveArchilSettings, serverIdOf, storeAgentDisk } from "../dist/archil-settings.js";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "../dist/archil-routes.js";
 import { ApiError } from "../dist/errors.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
@@ -322,4 +322,35 @@ test("a removal marks the disk removing before it counts the live runs, and a re
   assert.equal(posts(env.control, `/api/disks/${own.disk}/users`).length, 0, "nothing minted on it");
   const fresh = await claimOf(env, { agentId: "agent-a", runId: "run-new" });
   assert.notEqual(fresh.disk, own.disk, "a new disk");
+});
+
+test("one agent's disk removals are taken in turn, and each touches the stored row only while it names its own disk: a disk stored since is never forgotten or overwritten", async (t) => {
+  const env = await setup(t);
+  const routes = createArchilRoutes({ store: env.store, sealKey: Buffer.alloc(32), env: { ARCHIL_API_KEY: API }, control: { baseUrl: env.control.baseUrl, fetch: env.control.fetch } });
+  const own = await claimOf(env, { agentId: "agent-a" });
+  const NEWER = "dsk-000000000000beef";
+  // Two removals at once: the second counts nothing until the first is done.
+  let release;
+  const gate = new Promise((done) => { release = done; });
+  const counted = [];
+  const first = archilRoute(routes, "deleteAgentArchil", { agent: { ...agentOf("agent-a", { archived: true }), liveOn: async (disk) => (counted.push(`first ${disk}`), await gate, 0) } });
+  const second = archilRoute(routes, "deleteAgentArchil", { agent: { ...agentOf("agent-a", { archived: true }), liveOn: async (disk) => (counted.push(`second ${disk}`), 0) } });
+  await new Promise((done) => setTimeout(done, 20));
+  assert.deepEqual(counted, [`first ${own.disk}`], "the second waits for the first");
+  release();
+  assert.deepEqual((await first).removed, { disk_id: own.disk });
+  assert.deepEqual(await second, { on: true, archil_disk: null, removed: null }, "the second finds the disk gone, and nothing to remove");
+  assert.deepEqual(counted, [`first ${own.disk}`]);
+
+  // A disk stored while a removal ran (a run's, after the old row went): the removal's refusal does not put its own back.
+  const again = await claimOf(env, { agentId: "agent-a", runId: "run-2" });
+  const replacing = { ...agentOf("agent-a", { archived: true }), liveOn: async () => (await storeAgentDisk(env.store, "agent-a", { diskId: NEWER }), 1) };
+  await assert.rejects(archilRoute(routes, "deleteAgentArchil", { agent: replacing }), (error) => error instanceof ApiError && error.code === "precondition_failed");
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: NEWER }, "the newer disk kept, not overwritten");
+  assert.ok(env.control.disks.has(again.disk), "nothing deleted on the refusal");
+  // forgetAgentDisk forgets only the disk it names.
+  await forgetAgentDisk(env.store, "agent-a", again.disk);
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: NEWER });
+  await forgetAgentDisk(env.store, "agent-a", NEWER);
+  assert.equal(await agentDiskOf(env.store, "agent-a"), undefined);
 });

@@ -82,9 +82,10 @@ export async function storeAgentDisk(store: { settings: Pick<Settings, "put"> },
   await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, ...(disk.removing ? { removing: true } : {}) });
 }
 
-/** Forgets agent `agentId`'s disk: its next run that uses it makes a new one. */
-export async function forgetAgentDisk(store: { settings: Pick<Settings, "remove"> }, agentId: string): Promise<void> {
-  await store.settings.remove(agentDiskKey(agentId));
+/** Forgets agent `agentId`'s disk `diskId`, only while the agent's stored disk is still that one: its next run that uses
+ *  it makes a new one, and a disk stored since (a run's, after an earlier removal) is kept. */
+export async function forgetAgentDisk(store: { settings: Pick<Settings, "get" | "remove"> }, agentId: string, diskId: string): Promise<void> {
+  if ((await agentDiskOf(store, agentId))?.diskId === diskId) await store.settings.remove(agentDiskKey(agentId));
 }
 
 /** The settings key of this server's id. */

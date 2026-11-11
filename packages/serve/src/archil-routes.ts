@@ -97,6 +97,8 @@ const statusOf = (error: unknown): number | undefined => {
 export function createArchilRoutes(options: ArchilRoutesOptions) {
   const { store, sealKey, env = {} } = options;
   const control = (settings: ArchilSettings, key: string) => ({ region: settings.region, key: () => key, ...(options.control?.baseUrl ? { baseUrl: options.control.baseUrl } : {}), ...(options.control?.fetch ? { fetch: options.control.fetch } : {}) });
+  /** Each agent's disk removal in flight, settled either way: the next one of that agent waits for it. */
+  const removals = new Map<string, Promise<void>>();
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store);
@@ -189,8 +191,30 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
    *  decides when it is done. A launch's disk is never stored on the agent, so it is never reached here.
    *  The disk is marked removing before its live runs are counted: from then on no launch takes it and no claim mounts it
    *  (server.ts launchDiskOf, run-disk.ts runDiskOf), so a run launched while the count runs is refused, never started on
-   *  a disk being deleted. A refusal, or a delete Archil does not do, leaves the disk the agent's as it was. */
-  async function removeAgentDisk(agent: RemovingAgent, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
+   *  a disk being deleted. A refusal, or a delete Archil does not do, leaves the disk the agent's as it was.
+   *  One agent's removals are taken in turn, and each changes the agent's stored row only while it still names the disk
+   *  that removal is deleting, so a disk a run stored since is never forgotten. */
+  function removeAgentDisk(agent: RemovingAgent, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
+    const before = removals.get(agent.id) ?? Promise.resolve();
+    const turn = before.then(() => removeAgentDiskNow(agent, signal));
+    const settled = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    removals.set(agent.id, settled);
+    void settled.then(() => {
+      if (removals.get(agent.id) === settled) removals.delete(agent.id);
+    });
+    return turn;
+  }
+
+  /** The disk row put back as the agent's, when it is still this removal's (marked removing, naming `diskId`). */
+  async function giveBack(agentId: string, diskId: string): Promise<void> {
+    const now = await agentDiskOf(store, agentId);
+    if (now?.diskId === diskId && now.removing) await storeAgentDisk(store, agentId, { diskId });
+  }
+
+  async function removeAgentDiskNow(agent: RemovingAgent, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
     const settings = await loadArchilSettings(store);
     const disk = settings === undefined ? undefined : await agentDiskOf(store, agent.id);
     if (settings === undefined || disk === undefined) return { ...(await agentView(agent.id)), removed: null };
@@ -206,10 +230,10 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
         throw new ApiError("upstream_failed", `Archil did not remove the agent's disk ${disk.diskId}: ${describe(error).split(key).join("[the key]")}`);
       }
     } catch (error) {
-      await storeAgentDisk(store, agent.id, { diskId: disk.diskId });
+      await giveBack(agent.id, disk.diskId);
       throw error;
     }
-    await forgetAgentDisk(store, agent.id);
+    await forgetAgentDisk(store, agent.id, disk.diskId);
     return { ...(await agentView(agent.id)), removed: { disk_id: disk.diskId } };
   }
 
