@@ -60,6 +60,17 @@ for (const [what, offered, given] of [["skill", { skills: ["weekly-report"] }, l
   });
 }
 
+test("a run resumed on a second claim keeps what its first claim laid: the resume finds the skill there and lays none again, and the run still counts on the after side", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, { id: "r1", start: T0, seconds: 10 });
+  await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20 });
+  for (const [id, at] of [["r3", T0 + 1_000_000], ["r4", T0 + 2_000_000]]) await run(store, clock, { id, start: at, seconds: 40, learning: start({ skills: ["weekly-report"] }), extra: [laid(["weekly-report"]), laid([])], kept: lookedBack(at, 30) });
+  const { impact } = await reads.agentLearningOverStore(store, "agent-1");
+  assert.ok(impact, "the skill its first claim laid counts");
+  assert.equal(impact.after.runs, 2);
+});
+
 test("a skill a run was offered but its claim did not lay (over the budget, a name the revision holds) does not put it on the after side", async (t) => {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });

@@ -165,8 +165,8 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
       startedAt: new Date(run.startedAt).toISOString(), endedAt: run.endedAt === null ? null : new Date(run.endedAt).toISOString(),
       costUsd: run.costUsd, importedFrom: run.importedFrom, archivedAt: run.archivedAt === null ? null : new Date(run.archivedAt).toISOString(),
     } as unknown as RunRow);
-    // What its claim laid of the skills and workflows it was offered (the newest learningLaid entry): the run started from
-    // those alone.
+    // What its claims laid of the skills and workflows it was offered (every learningLaid entry, laidOf): the run started
+    // from those alone.
     const laid = end && (started?.skills?.length || started?.workflows?.length) ? laidOf(await runEntries(store, run.id, BACKGROUND_CONTEXT)) : undefined;
     learnings.set(run.id, end ? impactLearningOf(end, started, laid) : null);
   }
@@ -175,11 +175,20 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
 
 /** What a run's claim laid of its learning seed: the learned skills and workflows it was given, by name. */
 type Laid = { readonly skills: readonly string[]; readonly workflows: readonly string[] };
-/** The newest learningLaid entry of a run's journal (its last claim's lay); none laid when it has none. */
+/** What every claim of a run laid, from its learningLaid entries, each name once: a resumed claim finds an earlier
+ *  claim's skill folders there already and lays none of them again, though the run still has them. None laid when it has
+ *  no entry. */
 export function laidOf(entries: readonly EntryLike[]): Laid {
-  const data = (entries.findLast((entry) => entry.kind === KINDS.learningLaid)?.data ?? {}) as { skills?: unknown; workflows?: unknown };
   const names = (list: unknown) => (Array.isArray(list) ? list.filter((name): name is string => typeof name === "string") : []);
-  return { skills: names(data.skills), workflows: names(data.workflows) };
+  const skills = new Set<string>();
+  const workflows = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind !== KINDS.learningLaid) continue;
+    const data = (entry.data ?? {}) as { skills?: unknown; workflows?: unknown };
+    for (const name of names(data.skills)) skills.add(name);
+    for (const name of names(data.workflows)) workflows.add(name);
+  }
+  return { skills: [...skills], workflows: [...workflows] };
 }
 
 /** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
