@@ -98,8 +98,7 @@ async function gateway(t, answers) {
   return { seen, outputs, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
-// SKIP (follow-up #2080): a paid call the cap refuses does not pause the run as before on the runner
-test.skip("opencode: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends the request after it on", { timeout: 120_000 }, async (t) => {
+test("opencode: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends the request after it on", { timeout: 120_000 }, async (t) => {
   // The model calls monid's run, then (its next request refused, the run paused, its cap raised) answers. The stand-in
   // runs on a real gateway, so serve runs no faux module, faux monid's among them: nothing here may reach monid, and
   // what says the call was not sent is the result the model reads and a cost with no monid charge in it.
@@ -133,7 +132,7 @@ test.skip("opencode: a paid call the cap refuses for room pauses the run, its re
   assert.equal(Math.round(done.cost.usd * 1e6) / 1e6, 0.00024, JSON.stringify(done.cost));
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
+// SKIP (#2430): the person's message after a stopped turn answers 409 until a person's stop ends the turn, not the run.
 test.skip("claude-agent: a turn stopped between a refused paid call and its next request leaves no pause behind: the person's next message runs, never refused for the call they moved on from", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   const signal = join(await scratch(t), "held");

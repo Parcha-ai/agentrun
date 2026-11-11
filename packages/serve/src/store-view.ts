@@ -11,8 +11,7 @@ import { structuredAnswer } from "./answer-json.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
-import { MIN_SECRET } from "./learn/secrets.js";
-import { handedValuesOf, launchOf } from "./handed-values.js";
+import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
   momentOf,
@@ -23,11 +22,11 @@ import {
   type RunView,
   type RunViewMeta,
   type SignInReader,
-  type State,
   type Status,
   approvalOf,
   asksOf,
   answersOf,
+  activePauseOf,
   budgetOf,
   browserPending,
   type ComputerAsk,
@@ -278,13 +277,14 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
 
-  // The run's cap as it stands: its newest raise's (the agentrun.raise entries the runner's loop holds it to, adapter-loop
-  // capNow), else its launch's; a raise taken shows in the run's cost.cap_usd and its budget card, never the old cap.
+  // The run's cap as it stands, through the one reader the runner's gate reads too (capNowOf): a raise taken shows in the
+  // run's cost.cap_usd and its budget card, never the old cap.
   const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
   const meta: RunViewMeta = { ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  const pause = activePauseOf(records.entries);
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
   const paused = pausedOf(runRow, records.entries);
@@ -331,6 +331,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     // The cap pause's words, so the moment reads paused for a store budget park (the write half's raiseCap/sendMessage read
     // moment.paused/pausedWords); the file path's turns-based pausedAt gives nothing over the store.
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
+    // The park's own id: a raise's answer names the follow-up the runner sends for this pause (raiseFollowUpId).
+    ...(budget?.kind === "budget" && pause !== undefined ? { pause } : {}),
     meta,
   };
   // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
