@@ -40,6 +40,7 @@ import type {
 	ComputerRef,
 	ComputerSpec,
 	CreatedComputer,
+	NetworkForm,
 	NetworkPolicy,
 	NetworkSpec,
 	Refusal,
@@ -61,6 +62,8 @@ const END_MS = 10_000;
 
 /** A browser takes no mount. */
 export const MOUNT: readonly MountKind[] = [];
+/** The network a local browser runs on: public addresses only, through its egress proxy; it cannot be closed or narrowed. */
+export const NETWORK: readonly NetworkForm[] = ["open"];
 
 /** The one configuration it offers: a browser with a CDP target. No live view: a person watching runs it headed. */
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp"] }];
@@ -123,7 +126,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 		return {
 			kind: "browser",
 			lifetime: "janitor",
-			network: ["open"],
+			network: [...NETWORK],
 			isolation: "host",
 			os: "linux",
 			daemon: "none",

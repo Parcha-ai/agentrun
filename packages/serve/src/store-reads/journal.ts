@@ -13,7 +13,7 @@ import { redactedAnswer } from "../key-refusal.js";
 import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
-import { KINDS } from "../runner/journal-kinds.js";
+import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 
@@ -61,9 +61,12 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
-      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text.
+      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
+      // a crash cut, written with no output, reads in the words its model was given (endedAnswer: the kernel's interrupted
+      // text), as pi's own interrupted result does, never an empty failure.
       const failed = data.status !== undefined && data.status !== "done";
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content: data.output ?? "", ...(failed ? { isError: true } : {}), ...timestamp }] };
+      const content = data.output === undefined && data.status === "interrupted" ? endedAnswer("", { status: "interrupted" }).text : (data.output ?? "");
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...timestamp }] };
     }
     return entry;
   });
