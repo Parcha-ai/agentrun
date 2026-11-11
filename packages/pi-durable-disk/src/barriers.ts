@@ -47,7 +47,7 @@ export const BARRIERS = {
     site: "serve/src/paid-calls.ts",
     status: "active",
     proof: null,
-    why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
+    why: "a paid tool call's hold (paid calls and monid), before the call is sent",
   },
   browserSessionOpen: {
     store: "run-journal",
