@@ -199,15 +199,6 @@ test("the run's computer of an earlier claim is released before this claim's is 
   await answer.release();
 });
 
-test("the runner's start sweeps each provider's computers past their deadline, once", async () => {
-  const { sweepComputers } = await import("../dist/workspace/index.js");
-  const record = { created: [], released: [], options: [], existing: [{ ref: { id: "late", name: "late" }, labels: { "agentrun.box": "1" }, deadline: new Date(1) }, { ref: { id: "fresh", name: "fresh" }, labels: { "agentrun.box": "1" }, deadline: new Date(Date.now() + 60_000) }] };
-  const swept = await sweepComputers([fakeProvider(scratch(), record, [])], { "agentrun.box": "1" });
-  assert.equal(swept.length, 1);
-  assert.equal(swept[0].swept.ok, true, JSON.stringify(swept));
-  assert.deepEqual(record.released, [["late", "delete"]]);
-});
-
 async function refusal(setting, options) {
   const { record, run } = await claim(setting, options);
   const error = await run().then(() => undefined, (thrown) => thrown);

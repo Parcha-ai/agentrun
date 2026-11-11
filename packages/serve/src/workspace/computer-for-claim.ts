@@ -10,8 +10,8 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
-import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
+import type { ComputerProvider, ComputerSpec, MountReadBack, Result } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -200,18 +200,6 @@ async function providerLaunch(
       await release();
     },
   };
-}
-
-/** The runner's start: every computer of `providers` with all of `labels` whose deadline (its agentrun.computer.deadline
- *  label) has passed is ended, once (the janitor's sweep), each provider apart. A provider whose vendor ends its own
- *  computers answers its refusal in words; nothing throws. */
-export async function sweepComputers(providers: readonly ComputerProvider[], labels: Readonly<Record<string, string>>, now: Date = new Date()): Promise<{ readonly provider: string; readonly swept: Result<Swept> }[]> {
-  const out: { provider: string; swept: Result<Swept> }[] = [];
-  for (const provider of providers) {
-    const swept = await sweep(provider, { labels: { ...labels }, now }).catch((error: unknown): Result<Swept> => ({ ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } }));
-    out.push({ provider: provider.id, swept });
-  }
-  return out;
 }
 
 /** The run's computer for this claim, started and registered; `{ computer: undefined }` for none. Throws with code

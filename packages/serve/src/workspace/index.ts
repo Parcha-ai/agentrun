@@ -38,6 +38,7 @@ export {
   claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DAEMON_CACHE_IN_VOLUME, DOCKER_HOST_ADDRESSES_ENV,
   type DockerComputerOptions, dockerHostAddressesOf, dockerVolumeOf,
 } from "./computer-deps.js";
-export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, sweepComputers, type ViewEnd } from "./computer-for-claim.js";
+export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, type ViewEnd } from "./computer-for-claim.js";
+export { JANITOR_EVERY_MS, type JanitorDeps, type ProviderSweep, startJanitor, sweepServerComputers } from "./computer-janitor.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
 export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";

@@ -4,9 +4,10 @@
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
  *  its own store handle (role runner), and the runner's dispatch (dispatch.ts) for each claimed run — pi on the kernel's
  *  adapter loop, a learning run on the learning loop. `env`: the runs' environment (runEnv of this process's, unless a
- *  caller hands its own: the template eval's in-process server, its faux's). Returns the runner and a close() that
- *  stops it and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, env }: { loops?: number; env?: NodeJS.ProcessEnv } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+ *  caller hands its own: the template eval's in-process server, its faux's). `janitor`: run the computer janitor too
+ *  (workspace/computer-janitor.ts), as the CLI's start asks. Returns the runner and a close() that stops both and closes
+ *  its store. */
+export async function runnerBeside(dataDir: string, { loops, env, janitor }: { loops?: number; env?: NodeJS.ProcessEnv; janitor?: boolean } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -37,5 +38,8 @@ export async function runnerBeside(dataDir: string, { loops, env }: { loops?: nu
   const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}) });
-  return { runner, close: async () => { await runner.close(); await store.close(); seal.release(); } };
+  // The computer janitor over the same computers, when the start asks for it: never under --faux.
+  const { startJanitor } = await import("../workspace/computer-janitor.js");
+  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => void process.stderr.write(`agentrun-serve runner: ${line}\n`) }) : undefined;
+  return { runner, close: async () => { await swept?.close(); await runner.close(); await store.close(); seal.release(); } };
 }

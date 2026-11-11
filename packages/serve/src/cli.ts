@@ -337,7 +337,8 @@ if (!values["no-runner"]) {
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
+    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux).
+    runnerProc = await runnerBeside(data, { env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
