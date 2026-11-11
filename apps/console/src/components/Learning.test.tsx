@@ -16,7 +16,7 @@ const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Ag
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });
 const note = (file: string, name: string, extra: Partial<LearningNote> = {}): LearningNote => ({
-  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null, runs: { given: 0, read: 0 },
+  file, name, description: `When ${name.toLowerCase()} applies`, type: "feedback", status: "active", superseded_by: null, runs: { given: 0, read: 0 }, etag: `"v-${file}"`, origin: "run",
   text: `---\nname: ${name}\ndescription: When ${name.toLowerCase()} applies\ntype: feedback\n---\nThe body of ${name}.\n`, ...extra,
 });
 const FIRST = "try-policies-refund-policy-first.md";
@@ -30,10 +30,10 @@ const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
     { by: { run: "run-b" }, commit: "c2", at: "2026-11-03T16:52:30Z", reason: "General and new: it holds for other shops too.", files: [OLD, FIRST, "MEMORY.md"] },
     { by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "Holds for Shopify stores.", files: [OLD, "MEMORY.md"] },
   ], total: 3, next_cursor: null },
-  counts: { merged: 2, dropped: { empty: 2, grader: 1 }, in_progress: 0 },
+  counts: { merged: 2, dropped: { empty: 2, grader: 1 }, in_progress: 0 }, skills: [], workflows: [], impact: null,
   ...extra,
 });
-const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: id, agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
@@ -202,7 +202,7 @@ describe("what runs did not keep", () => {
 
 describe("the before and after", () => {
   it("shows run time and cost before and after it learned, on the after side's runs", async () => {
-    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03 } } }) });
+    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03, cost_runs: 4, median_learning_usd: null } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.getAttribute("aria-label")).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
     expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
@@ -211,28 +211,23 @@ describe("the before and after", () => {
     expect(card.textContent).not.toContain("Learning itself");
   });
   it("says what learning itself costs a run when the server does, and a costlier after as it is, in the warning colour", async () => {
-    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2 }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 } } }) });
+    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.textContent).toContain("Learning itself$0.0080 est. a run");
     const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+3%")!;
     expect(up.className).toContain("text-warning-text");
     expect(card.querySelector('[title^="Medians of 2 runs"]')?.getAttribute("title")).toContain("Costs are of the 2 and 4 runs whose cost is known.");
   });
-  it("is hidden when the server has none, or an older server says nothing", async () => {
-    for (const impact of [null, undefined]) {
-      const t = await open(agent(true), { learning: async () => view({ impact }) });
-      expect(t.host.querySelector('section[aria-label^="Since it learned"]')).toBeNull();
-      act(() => root?.unmount()); document.body.innerHTML = "";
-    }
+  it("is hidden when the server has none", async () => {
+    const t = await open(agent(true), { learning: async () => view({ impact: null }) });
+    expect(t.host.querySelector('section[aria-label^="Since it learned"]')).toBeNull();
   });
-  it("until there is one, one quiet line says when it will show; an older server, which has none to give, says nothing", async () => {
+  it("until there is one, one quiet line says when it will show", async () => {
     const LINE = "After two runs on each side of its first note, this shows what learning changed.";
     const t = await open(agent(true), { learning: async () => view({ impact: null }) });
     expect(t.text()).toContain(LINE);
     expect(t.host.querySelectorAll("p").length).toBeGreaterThan(0);
     expect([...t.host.querySelectorAll("p")].filter((x) => x.textContent === LINE)).toHaveLength(1);
-    act(() => root?.unmount()); document.body.innerHTML = "";
-    expect((await open(agent(true), { learning: async () => view({ impact: undefined }) })).text()).not.toContain(LINE);
     act(() => root?.unmount()); document.body.innerHTML = "";
     // With learning off, no run will fill it: nothing is promised.
     expect((await open(agent(false), { learning: async () => view({ impact: null }) })).text()).not.toContain(LINE);
@@ -240,10 +235,10 @@ describe("the before and after", () => {
 });
 
 describe("editing a note", () => {
-  it("opens it as fields read with its version, and Ctrl+Enter saves the whole text on that version", async () => {
+  it("opens it as fields on the card's text and version, with no read, and Ctrl+Enter saves the whole text on that version", async () => {
     const t = await open(agent(true));
     await t.click(/^Edit Try/);
-    expect(t.calls).toContain(`read ${FIRST}`);
+    expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
     const editor = t.host.querySelector('section[aria-label="Edit note"]')!;
     const [name, description] = [...editor.querySelectorAll("input:not([type=radio])")] as HTMLInputElement[];
     expect([...editor.querySelectorAll('[role="radiogroup"] label')].map((l) => `${l.textContent}=${l.getAttribute("title")}`)).toEqual(["How to work=feedback", "About the work=project", "Where to look=reference", "About you=user"]);
@@ -259,29 +254,18 @@ describe("editing a note", () => {
     expect(t.host.querySelector('section[aria-label="Edit note"]')).toBeNull();
     expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Saved");
   });
-  it("opens on the version the card showed; one changed since opens on its newest, and says so", async () => {
-    const t = await open(agent(true), { read: async () => ({ note: "---\nname: Try /policies/refund-policy first\ndescription: d\ntype: feedback\n---\nThe newer body.\n", etag: '"v7"' }) });
-    await t.click(/^Edit Try/);
-    expect(t.text()).toContain("This is the newest version, not the one the card showed.");
-    expect((t.host.querySelector('section[aria-label="Edit note"] textarea') as HTMLTextAreaElement).value).toBe("The newer body.\n");
-    await t.key(t.host.querySelector('section[aria-label="Edit note"] textarea')!, "Enter", { ctrlKey: true });
-    expect(t.calls).toContain(`write ${FIRST} {"etag":"\\"v7\\""}`);
-  });
-  it("from a server whose notes carry their version, opens on the card's text and version with no read", async () => {
-    const withTags = view();
-    withTags.notes.items = withTags.notes.items.map((x) => ({ ...x, etag: `"card-${x.file}"` }));
-    const t = await open(agent(true), { learning: async () => withTags });
-    await t.click(/^Edit Try/);
-    expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
-    await t.key(t.host.querySelector('section[aria-label="Edit note"] textarea')!, "Enter", { ctrlKey: true });
-    expect(t.calls).toContain(`write ${FIRST} {"etag":"\\"card-${FIRST}\\""}`);
-  });
-  it("never saves with no version: no empty If-Match is sent", async () => {
-    const t = await open(agent(true), { read: async (f) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: null }) });
+  it("never saves with no version: a note read back after a refused save without its ETag sends no empty If-Match", async () => {
+    let writes = 0;
+    const t = await open(agent(true), {
+      read: async (f) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: null }),
+      write: async () => { writes++; throw new ClientError(412, "precondition_failed", "The note changed since it was read."); },
+    });
     await t.click(/^Edit Try/);
     await t.click(/^Save$/);
+    expect(writes).toBe(1);
+    await t.click(/^Save$/);
     expect(t.text()).toContain("Not saved: Can't tell which version this is: reload.");
-    expect(t.calls.some((c) => c.startsWith("write"))).toBe(false);
+    expect(writes).toBe(1);
   });
   it("Enter in a one-line field saves too, and Esc cancels without a write", async () => {
     const t = await open(agent(true));
@@ -295,9 +279,8 @@ describe("editing a note", () => {
     expect(t.calls.some((c) => c.startsWith(`write ${MINE}`))).toBe(true);
   });
   it("a note changed since it was opened is not written over: it says so, loads the newest and keeps the edit to copy", async () => {
-    let reads = 0;
     const t = await open(agent(true), {
-      read: async () => ({ note: `---\nname: Try it first\ndescription: d\ntype: feedback\n---\n${reads++ ? "The newest body.\n" : "The old body.\n"}`, etag: `"v${reads}"` }),
+      read: async () => ({ note: "---\nname: Try it first\ndescription: d\ntype: feedback\n---\nThe newest body.\n", etag: '"v1"' }),
       write: async () => { throw new ClientError(412, "precondition_failed", "The note changed since it was read."); },
     });
     await t.click(/^Edit Try/);
@@ -350,7 +333,7 @@ describe("editing a note", () => {
 });
 
 describe("retiring a note", () => {
-  it("asks first, in plain words; Keep or Esc leaves it, and Retire retires it on the version read", async () => {
+  it("asks first, in plain words; Keep or Esc leaves it, and Retire retires it on the card's version, with no read", async () => {
     const t = await open(agent(true));
     await t.click(/^Retire Keep/);
     const dialog = t.host.querySelector('[role="alertdialog"]')!;
@@ -361,30 +344,8 @@ describe("retiring a note", () => {
     await t.click(/^Retire Keep/);
     await t.click(/^Yes, retire$/);
     expect(t.calls).toContain(`retire ${MINE} "v-${MINE}"`);
-    expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
-  });
-  it("is made on the version the card showed: a note whose text changed since says so, and is not retired", async () => {
-    const t = await open(agent(true), { read: async () => ({ note: "---\nname: Keep it to three lines\ndescription: d\ntype: feedback\n---\nSomeone changed this.\n", etag: '"v9"' }) });
-    await t.click(/^Retire Keep/);
-    await t.click(/^Yes, retire$/);
-    expect(t.text()).toContain("It changed since you opened it. Reload the tab to see the newest version.");
-    expect(t.calls.some((c) => c.startsWith("retire"))).toBe(false);
-  });
-  it("from a server whose notes carry their version, retires on the card's own, with no read", async () => {
-    const withTags = view();
-    withTags.notes.items = withTags.notes.items.map((x) => ({ ...x, etag: `"card-${x.file}"` }));
-    const t = await open(agent(true), { learning: async () => withTags });
-    await t.click(/^Retire Keep/);
-    await t.click(/^Yes, retire$/);
-    expect(t.calls).toContain(`retire ${MINE} "card-${MINE}"`);
     expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
-  });
-  it("never retires with no version: a read that names none says so", async () => {
-    const t = await open(agent(true), { read: async (f) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: null }) });
-    await t.click(/^Retire Keep/);
-    await t.click(/^Yes, retire$/);
-    expect(t.text()).toContain("Can't tell which version this is: reload.");
-    expect(t.calls.some((c) => c.startsWith("retire"))).toBe(false);
+    expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
   });
   it("one changed between the read and the retire says so, and is not retired", async () => {
     const t = await open(agent(true), { retire: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
@@ -492,7 +453,7 @@ describe("notes that wait for the owner's OK", () => {
   const waitingView = () => {
     const v = view();
     v.notes.items = [
-      note(TRUST, "Trust acme.com's refund page", { status: "pending", etag: '"card-trust"', text: "---\nname: Trust acme.com's refund page\ndescription: d\ntype: feedback\norigin: you\n---\nTrust it.\n" }),
+      note(TRUST, "Trust acme.com's refund page", { status: "pending", etag: '"card-trust"', origin: "you", text: "---\nname: Trust acme.com's refund page\ndescription: d\ntype: feedback\norigin: you\n---\nTrust it.\n" }),
       ...v.notes.items.map((x) => ({ ...x, etag: `"card-${x.file}"` })),
     ];
     return v;
@@ -547,7 +508,6 @@ describe("notes that wait for the owner's OK", () => {
   });
   it("on a server that approves from the console, Approve is one click, on the card's own version; Retire is there too", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
-    expect(t.text()).not.toContain("Approving here comes in the next update");
     expect(t.button(/^Retire Trust/)).toBeTruthy();
     expect(t.button(/^Edit Trust/)).toBeUndefined();
     await t.click(/^Approve Trust/);
@@ -568,24 +528,12 @@ describe("notes that wait for the owner's OK", () => {
     expect(t.text()).toContain("It changed since you opened it. Reload the tab to see the newest version.");
     expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(1);
   });
-  it("on a server that holds them but cannot approve from the console yet, there is no Approve: Retire, and a quiet line why", async () => {
-    for (const caps of [{ learning: { pending: true } }, {}]) {
-      const t = await open(agent(true), { learning: async () => waitingView(), caps });
-      const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
-      expect(box).not.toBeNull();
-      expect(t.button(/^Approve /)).toBeUndefined();
-      expect(t.button(/^Retire Trust/)).toBeTruthy();
-      expect(box.textContent).toContain("Approving here comes in the next update; until then it stays out of every run.");
-      act(() => root?.unmount()); document.body.innerHTML = "";
-    }
-  });
   it("on a server that approves only from the owner's password sign-in, a caller without one sees why, and no Approve", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: { learning: { pending: true, approve: false, approve_needs: "password" } } });
     const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
     expect(t.button(/^Approve /)).toBeUndefined();
     expect(t.button(/^Retire Trust/)).toBeTruthy();
     expect(box.textContent).toContain("Approving needs your password sign-in. Until then it stays out of every run.");
-    expect(box.textContent).not.toContain("Approving here comes in the next update");
   });
   it("an approve that landed, then a re-read that failed, leaves Approve usable again, never stuck on Approving", async () => {
     let n = 0;
@@ -702,7 +650,7 @@ describe("the Learning tab's skills and workflows", () => {
     expect(t.button(/^Edit check-refunds$/)).toBeUndefined();
   });
 
-  it("an agent with none shows neither section, and an older server's answer without them breaks nothing", async () => {
+  it("an agent with none shows neither section", async () => {
     const t = await open(agent(true));
     expect(t.host.querySelector('section[aria-label="Skills it learned"]')).toBeNull();
     expect(t.host.querySelector('section[aria-label="Workflows it learned"]')).toBeNull();

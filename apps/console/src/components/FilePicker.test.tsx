@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 type Pending = { file: File; progress: (f: number) => void; signal: AbortSignal; resolve: (f: UploadedFile) => void; reject: (e: unknown) => void };
 const made = (name: string, n: number): UploadedFile => ({ file_id: `019a0000-0000-7000-8000-00000000000${n}`, path: name, size_bytes: 3, content_type: "text/plain", sha256: "a".repeat(64), status: "ready" });
 
-function open(limits: UploadLimits = {}) {
+function open(limits?: UploadLimits) {
   const pending: Pending[] = [];
   const removed: string[] = [];
   const upload: Upload = (file, progress, signal) => new Promise((resolve, reject) => { pending.push({ file, progress, signal, resolve, reject }); });
@@ -60,6 +60,14 @@ describe("FilePicker", () => {
     expect(page.pending.map((p) => p.file.name)).toEqual(["one.txt", "two.txt"]);
     expect(page.text()).toContain("big.bin is 11 B: this server takes files up to 10 B.");
     expect(page.text()).toContain("three.txt is not added: a run names at most 2 files here.");
+  });
+
+  it("with no largest upload (null), takes a file of any size and says only the most files", () => {
+    const page = open({ max_upload_bytes: null, max_files_per_run: 2 });
+    expect(page.text()).toContain("(up to 2 files)");
+    page.pick(file("big.bin", 4096));
+    expect(page.pending.map((p) => p.file.name)).toEqual(["big.bin"]);
+    expect(page.text()).not.toContain("this server takes files up to");
   });
 
   it("says a refusal the server gives in its words, with the file's name, and drops the file", async () => {

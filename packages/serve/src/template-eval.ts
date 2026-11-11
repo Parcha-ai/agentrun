@@ -17,10 +17,10 @@ import { Compile } from "typebox/schema";
 import { parseDocument } from "yaml";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
-import { MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, type Package, PackageError, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, type Package, PackageError, packageView, readPackage } from "./templates.js";
 import { isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -918,18 +918,17 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
 }
 
 /** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
- *  them (deploy/walk.md): until the store cutover an agent's own pin is not kept (AGENT_LAYER_PINS), and the apply makes a
- *  pinned write the server does not pin deny, so a case that grants one could never reach its fake. The server's pin
- *  then holds the call to the case's own target, as it does in production. Another server's (--server) settings are its
- *  owner's, left as they are: there an unpinned write stays deny and its case says so. */
+ *  them (deploy/walk.md): the server's pin holds the call to the case's own target beside the agent's own, as it does in
+ *  production. Another server's (--server) settings are its owner's, left as they are: there the agent's own pin alone
+ *  holds the write. */
 async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
-  const { unkept } = compiled(pkg, parameters, { mcp: pkg.mcp, defaultTools: [], grants: [], pins: false });
-  if (!unkept.length) return;
+  const pins = filledPins(pkg.mcp, parameters).filter(({ empty }) => !empty.length);
+  if (!pins.length) return;
   const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
-  for (const { tool, pin } of unkept) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
+  for (const { tool, pin } of pins) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
   expectOk("pinning the case's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 
