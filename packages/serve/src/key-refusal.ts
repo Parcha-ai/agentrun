@@ -182,10 +182,14 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
  *  the text. */
 const LOOPBACK_TAIL = /^url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
 const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?[^\s,;:)\x22\x27\]]*/gi; // key-gate: loopback-rule replaces any loopback address in a run error
-const LOOPBACK_BARE = /(?<![\w.\/-])(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)(?![\w.-])/gi; // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
+// A bare one: its port, then its path when one follows, up to the first space, quote or closing mark, or a full stop
+// that ends a sentence (one followed by a space or the text's end, which stays). A port followed by any other full stop,
+// a letter, a digit or a dash names no address of the host's, so it is kept.
+const LOOPBACK_BARE = /(?<![\w.\/-])(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)(?:\/[^\s,;:)\x22\x27\]]*?(?=[\s,;:)\x22\x27\]]|\.(?:\s|$)|$))?(?![\w-])(?!\.(?!\s|$))/gi; // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
 
 /** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes (tried at the last "url:" only), and
- *  any other, with a scheme or bare with its port, becomes "a local address". */
+ *  any other, with a scheme or bare with its port (and its path), becomes "a local address"; a sentence's full stop after a
+ *  bare one stays. */
 export function withoutLoopback(text: string): string {
   let at = -1;
   for (const found of text.matchAll(/url:/gi)) at = found.index;
