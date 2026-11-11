@@ -642,14 +642,18 @@ export function startRunner(options: RunnerOptions): Runner {
       // taking a dead runner's runs over, is one transaction, not 300.
       const sentAt = clock.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
-      // A run whose untaken stop row has tries failed to apply that stop before: its claim only ends it (endRetried). Either
-      // source of tries counts: a refused stopped end (endRefused, released running) or a failed resume (resumeFailed's
-      // store.retry, released parked). One read of those claims' rows, made only when the batch has a released run.
-      const released = claims.filter((claim) => claim.from === "running" || claim.from === "parked");
-      const rows = released.length ? await store.commandsOf(released.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
+      // A claim whose run must only end, with no loop (endRetried), so no turn, model request or tool runs on it:
+      // - a run stopped or cancelled while still queued: it never started, so nothing of it starts now, not even its first
+      //   input (a loop started first would send that input before the stop reached it);
+      // - a run whose untaken stop row has tries, which failed to apply that stop before. Either source of tries counts: a
+      //   refused stopped end (endRefused, released running) or a failed resume (resumeFailed's store.retry, released
+      //   parked).
+      // One read of those claims' rows, made only when the batch has a queued or a released run.
+      const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
+      const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
         const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
-        if (stop && stop.tries > 0 && !closed && !killed && !runs.has(claim.runId)) {
+        if (stop && (claim.from === "queued" || stop.tries > 0) && !closed && !killed && !runs.has(claim.runId)) {
           const ending = endRetried(claim, stop);
           endings.add(ending);
           void ending.finally(() => endings.delete(ending));

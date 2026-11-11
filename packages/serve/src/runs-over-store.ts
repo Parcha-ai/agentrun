@@ -227,31 +227,58 @@ function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false):
 /** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
  *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
  *  run could not resume) answers nothing, so the person may answer again. */
-async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
+async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny"; at: number } | undefined> {
   const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
-  return row && { decision: row.kind === "approve" ? "allow" : "deny" };
+  return row && { decision: row.kind === "approve" ? "allow" : "deny", at: row.id };
 }
+
+/** The run's first stop or cancel row its runner has not taken yet, written before row `before` (any, with none given).
+ *  The runner reads a run's rows in order and stops at it: a row after it is never acted on, and the stopped end refuses
+ *  it. */
+async function endingAhead(store: RunsStore, runId: string, before = Number.POSITIVE_INFINITY): Promise<"stop" | "cancel" | undefined> {
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.takenAt === null && command.id < before);
+  return row?.kind as "stop" | "cancel" | undefined;
+}
+
+/** The refusal of an answer that a stop or cancel written before it withdrew: its call never runs. */
+const withdrawnBy = (id: string, ending: "stop" | "cancel"): ApiError => alreadyAnswered(id, ending === "cancel" ? "canceled" : "withdrawn");
 
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
  *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
  *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
  *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
- *  person's words, carried on the command for the run's gate. */
+ *  person's words, carried on the command for the run's gate. An answer behind a stop or cancel the runner has not taken
+ *  yet would never run (the runner stops at that row, and the stopped end refuses what follows): it is 409, withdrawn (or
+ *  canceled with its run), whether the stop was there before it or its write landed just after the stop's. */
 export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
   const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
     if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
-  const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
-  if (given) return settle(given);
+  const taken = moment.answeredApprovals?.[id];
+  if (taken) return settle(taken);
+  const sent = await sentAnswer(store, moment.id, id);
+  if (sent) {
+    const ending = await endingAhead(store, moment.id, sent.at);
+    if (ending) throw withdrawnBy(id, ending);
+    return settle(sent);
+  }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
+  const before = await endingAhead(store, moment.id);
+  if (before) throw withdrawnBy(id, before);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
+  let written: number;
   try {
-    await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+    written = (await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body })).id;
   } catch (error) {
     const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
     if (!won) throw error;
-    settle(won);
+    const ending = await endingAhead(store, moment.id, won.at);
+    if (ending) throw withdrawnBy(id, ending);
+    return settle(won);
   }
+  // A stop written between the check above and this write is read first: this answer never runs.
+  const ending = await endingAhead(store, moment.id, written);
+  if (ending) throw withdrawnBy(id, ending);
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
