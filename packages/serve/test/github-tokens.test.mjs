@@ -226,6 +226,41 @@ test("the token that lists a github_app server's tools comes from the first inst
   assert.deepEqual(server.github.revoked, [listing[0].token, listing[1].token], "both scouts revoked");
 });
 
+test("the listing token tries each installation that covers a repository until one gives a token: the first's narrowed mint refused, or GitHub not answering for it, leaves the second to give it", { timeout: 60_000 }, async (t) => {
+  const { server, entry } = await connectedForListing(t);
+  const { installations, failures, app } = server.github;
+  installations.set(778, { account: "other", suspended_at: null, repositories: ["other/gadgets"] });
+  assert.equal((await deliver(server.baseUrl, app.webhook_secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } })).status, 200);
+  const listedWith = async (fails, words) => {
+    Object.assign(failures, fails);
+    const before = listingTokens(server).length;
+    const preview = await server.api("POST", "/settings/mcp-servers/preview", entry);
+    assert.equal(preview.status, 200, `${words}: ${JSON.stringify(preview.body)}`);
+    const narrowed = listingTokens(server).slice(before).filter((token) => token.repositories);
+    assert.deepEqual(narrowed.map((token) => [token.installation, token.repositories]), [[778, ["gadgets"]]], `${words}: the second installation's token lists`);
+    delete failures.mint;
+    delete failures.repositories;
+  };
+  // acme's installation covers acme/widgets, but GitHub refuses its narrowed token (a suspended App's 403, not a limit).
+  await listedWith({ mint: (installation, asked) => (installation === 777 && asked.repositories ? { status: 403, message: "This installation has been suspended" } : undefined) }, "the first's narrowed mint refused");
+  // GitHub answers 503 for acme's repositories, and other's answers.
+  await listedWith({ repositories: (installation) => (installation === 777 ? 503 : undefined) }, "GitHub not answering for the first");
+  // With GitHub not answering for every installation, the listing is still github_failed, to try again.
+  failures.repositories = 503;
+  const refused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  assert.deepEqual([refused.status, refused.body.error?.code], [502, "github_failed"], JSON.stringify(refused.body));
+  delete failures.repositories;
+  // The first covers a repository but its narrowed token is refused, and the second covers none: the refusal is the
+  // answer, never "none covers a repository", which would send the owner to add one already selected.
+  installations.get(778).repositories = [];
+  failures.mint = (installation, asked) => (installation === 777 && asked.repositories ? { status: 403, message: "This installation has been suspended" } : undefined);
+  const mintRefused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  const words = JSON.stringify(mintRefused.body);
+  assert.notEqual(mintRefused.status, 200, words);
+  assert.match(words, /GitHub gave no token for the App's installation on acme/, "the narrowed mint's refusal");
+  assert.doesNotMatch(words, /covers a repository|covers no repository/, words);
+});
+
 test("GitHub not answering the listing's read of an installation's repositories (a 503, a 429) is 502 github_failed, \"GitHub didn't answer: try again\", never github_not_connected: a preview, a save and a refresh each, and nothing stored changes", { timeout: 60_000 }, async (t) => {
   const { server, entry } = await connectedForListing(t);
   assert.equal((await server.api("PUT", "/settings/mcp-servers/gh", entry)).status, 200);

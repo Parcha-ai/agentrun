@@ -752,11 +752,14 @@ this server's run folder says why there. The save checks the shape, and only a s
 and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
 computer is made with the GPUs asked.
 
-- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
-  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
-  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
-  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
-  its network allowlist, are not yet proven live.
+- **Daytona** gives one `H100`, the GPU of its GPU snapshot `daytona-gpu` (the computer package's `DAYTONA_GPU`:
+  `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
+  made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
+  deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
+  run on one can be cut short. The Daytona org needs GPU credits. It takes no mount (`mounts: []`: the snapshot's user
+  is not root and has no Archil client), so it can't hold the run's folder from Archil: in Mode 2 this server refuses a
+  Daytona sandbox with a `gpu`, and `GET /v2/computers` says why in Daytona's `gpu.why`. In Mode 1 a sandbox runs on
+  Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -2770,9 +2773,33 @@ so the cap stays exact. A request is refused only when what is left cannot buy i
 tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
 where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
-a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
-server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
-the proxy measures each request's body. A request in flight holds what it was admitted at until it answers, so requests
+a token of less than one byte), each image counted at what its model's provider bills it by its size in place of its
+base64's bytes, plus what the provider adds server-side (a tool-use prompt), from the same table the model proxy of
+claude-agent, codex and opencode uses; there the proxy measures each request's body. On a route straight to Anthropic
+(`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
+token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
+gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
+that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
+
+**The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
+step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
+answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
+screenshots, then the answer), spending about $0.04 in all:
+
+| Cap mode | Route | First request needs | Five-step run needs | Each further step |
+| --- | --- | --- | --- | --- |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| `expected` (the default) | Either | as `strict` | as `strict` until #2504 lands | as `strict` until #2504 lands |
+
+In `strict` mode every step's whole input is priced at the cache-write price. The `expected` row is today's: the runner
+does not yet price a step from what the previous request read from the cache, as `expected` is described above, so it
+prices like `strict` until #2504 lands. Once it does, a five-step run in `expected` mode needs about $0.06 by either route,
+and about $0.007 a further step. A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
+`packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).
