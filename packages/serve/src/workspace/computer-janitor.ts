@@ -30,6 +30,9 @@ import { providerKeys } from "./resolve-computer.js";
 export const JANITOR_EVERY_MS = 10 * 60_000;
 /** The longest close() waits for a sweep it cut: a vendor call that ignores the cut is left to finish on its own. */
 export const JANITOR_CLOSE_MS = 5_000;
+/** The longest one provider's sweep may take: past it the sweep is cut and left, said as a timeout, and the next provider
+ *  is swept, so a stuck vendor (a Docker command has no timeout of its own) never stops the others or later sweeps. */
+export const JANITOR_PROVIDER_MS = 5 * 60_000;
 
 export interface JanitorDeps {
   /** The store: whose runs a computer's run label names, and the phone provider's ledger. */
@@ -44,6 +47,8 @@ export interface JanitorDeps {
   readonly everyMs?: number;
   /** The longest close() waits for a sweep it cut. Default JANITOR_CLOSE_MS. */
   readonly closeMs?: number;
+  /** The longest one provider's sweep may take. Default JANITOR_PROVIDER_MS. */
+  readonly providerMs?: number;
   /** The clock a computer's deadline is read by. Default Date.now. */
   readonly now?: () => number;
 }
@@ -98,10 +103,27 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
   };
 }
 
+/** `work` given a signal cut at `ms` (or with `signal`), answered at the cut whether or not `work` heeds it: a call that
+ *  ignores it is left to finish on its own, and the answer is a timeout (or aborted) in words. */
+async function bounded(ms: number, signal: AbortSignal | undefined, work: (cut: AbortSignal) => Promise<Result<Swept>>): Promise<Result<Swept>> {
+  const timer = AbortSignal.timeout(ms);
+  const cut = signal ? AbortSignal.any([signal, timer]) : timer;
+  let stop: () => void = () => {};
+  const given = new Promise<Result<Swept>>((resolve) => {
+    stop = () => resolve(timer.aborted ? { ok: false, error: { code: "timeout", message: `its sweep took longer than ${ms / 1000} s and was left` } } : { ok: false, error: { code: "aborted", message: "the sweep was cut" } });
+    cut.addEventListener("abort", stop, { once: true });
+  });
+  try {
+    return await Promise.race([work(cut), given]);
+  } finally {
+    cut.removeEventListener("abort", stop);
+  }
+}
+
 /** One sweep of every provider this server can list: each provider whose keys it has and whose computers the janitor
  *  ends, its computers past their deadline that are this server's and unheld ended. A provider that fails is answered
  *  in its words; nothing throws. */
-export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now">, signal?: AbortSignal): Promise<ProviderSweep[]> {
+export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "providerMs">, signal?: AbortSignal): Promise<ProviderSweep[]> {
   const { store, computers } = deps;
   const at = (deps.now ?? Date.now)();
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
@@ -119,7 +141,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
       // A vendor that ends its own computers needs no janitor.
       if (provider.capabilities().lifetime !== "janitor") continue;
-      out.push({ provider: entry.id, swept: await sweep(thisServers(provider, store, byHash), { now: new Date(at), ...(signal ? { signal } : {}) }) });
+      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash), { now: new Date(at), signal: cut })) });
     } catch (error) {
       out.push({ provider: entry.id, swept: { ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } } });
     }

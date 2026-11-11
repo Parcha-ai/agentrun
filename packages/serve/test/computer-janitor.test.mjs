@@ -123,6 +123,14 @@ test("a key that can't be read fails that provider alone: the others are swept (
   assert.deepEqual(orgo.released, [["mine-late", "delete"]]);
 });
 
+test("a provider whose sweep is stuck is cut at its bound and said as a timeout, and the next provider is still swept (review)", async () => {
+  const stuck = provider("docker", theThree(), { hanging: true });
+  const orgo = provider("orgo", theThree());
+  const swept = await sweepServerComputers({ store: store(), computers: computers([stuck, orgo], { DOCKER_KEY: "k", ORGO_KEY: "k" }), now: () => NOW, providerMs: 50 });
+  assert.deepEqual(swept.map(({ provider, swept }) => [provider, swept.ok ? "ok" : swept.error.code]), [["docker", "timeout"], ["orgo", "ok"]]);
+  assert.deepEqual(orgo.released, [["mine-late", "delete"]]);
+});
+
 test("closing the janitor never waits on a stuck vendor call past its bound (review)", async () => {
   const stuck = provider("docker", theThree(), { hanging: true });
   const janitor = startJanitor({ store: store(), computers: computers([stuck], { DOCKER_KEY: "k" }), env: {}, log: () => {}, closeMs: 50, now: () => NOW });
