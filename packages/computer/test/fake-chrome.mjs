@@ -102,6 +102,8 @@ server.listen(0, "127.0.0.1", async () => { // key-gate: loopback-rule a test's 
 	const proxy = flag("proxy-server");
 	if (proxy) {
 		const probe = { metadata: await through(proxy, "169.254.169.254:80"), loopback: await through(proxy, `127.0.0.1:${port}`) }; // key-gate: denylist a refused test target
+		// For a browser made with a list: a name on it, one off it, and loopback on a port a list takes.
+		Object.assign(probe, { listed: await through(proxy, "listed.example:443"), unlisted: await through(proxy, "unlisted.example:443"), loopback443: await through(proxy, "127.0.0.1:443") }); // key-gate: loopback-rule a refused test target on a listed port
 		writeFileSync(join(profile, "probe.json"), JSON.stringify(probe));
 	}
 	writeFileSync(join(profile, "DevToolsActivePort"), `${port}\n${path}`);

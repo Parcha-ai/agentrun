@@ -60,7 +60,7 @@ test("capabilities: a browser on this host, open to public addresses, CDP only, 
 	const caps = provider().capabilities();
 	assert.deepEqual(
 		{ kind: caps.kind, isolation: caps.isolation, network: caps.network, daemon: caps.daemon, groups: caps.groups, lifetime: caps.lifetime, release: caps.release },
-		{ kind: "browser", isolation: "host", network: ["open"], daemon: "none", groups: ["cdp"], lifetime: "janitor", release: ["delete"] },
+		{ kind: "browser", isolation: "host", network: ["open", "allow"], daemon: "none", groups: ["cdp"], lifetime: "janitor", release: ["delete"] },
 	);
 	assert.equal(caps.maxLifetimeMs, 24 * 60 * 60_000);
 	const entry = PROVIDERS.find((one) => one.id === "local");
@@ -71,6 +71,14 @@ test("check refuses what a local browser does not take, and a start as root, in 
 	assert.deepEqual(provider().check(SPEC), []);
 	const refused = provider().check({ image: "ubuntu", lifetimeMs: 0, network: "none", cpus: 2 });
 	assert.deepEqual(refused.map((r) => r.field).sort(), ["cpus", "image", "lifetimeMs", "network"]);
+	// A list of names and CIDRs is taken; an empty one, a host that is not a name, and "none" are refused in words.
+	assert.deepEqual(provider().check({ ...SPEC, network: { allow: ["example.com", "*.example.org", "8.8.8.0/24"] } }), []);
+	// A listed range the fence refuses (loopback, private) is refused at check: a list never opens the fence.
+	for (const [network, words] of [[{ allow: [] }, /needs at least one name or CIDR/], [{ allow: ["not a host"] }, /not a name/], ["none", /"open" or \{ allow/], [{ allow: ["127.0.0.0/8"] }, /covers addresses the egress proxy refuses/], [{ allow: ["10.0.0.0/8"] }, /covers addresses the egress proxy refuses/]]) { // key-gate: loopback-rule ranges the fence refuses, refused at check
+		const said = provider().check({ ...SPEC, network });
+		assert.deepEqual(said.map((r) => r.field), ["network"], JSON.stringify(network));
+		assert.match(said[0].message, words);
+	}
 	const root = provider({ uid: 0 }).check(SPEC);
 	assert.equal(root.length, 1);
 	assert.match(root[0].message, /does not start Chrome as root/);
@@ -155,6 +163,29 @@ test("create starts Chrome headless with a fresh profile, a loopback debugging p
 	assert.ok((await p.release(made.value, "delete")).ok, "a release of a browser already gone is done");
 	assert.equal((await p.connect(made.value)).error.code, "not_found");
 	assert.deepEqual((await p.list({})).value, []);
+});
+
+test("a browser made with an allowlist: its proxy reaches only the listed hosts, the public-address fence holds for them too, and its network reads back as the list", async () => {
+	const p = provider();
+	const allow = ["listed.example", "8.8.8.0/24"];
+	const made = await p.create({ ...SPEC, network: { allow } });
+	assert.ok(made.ok, made.ok ? "" : made.error.message);
+	const { id } = made.value;
+	const dir = files(p, id);
+	assert.deepEqual(json(join(dir, "browser.json")).allow, allow, "the list the supervisor gives its proxy");
+	await until("the fake Chrome's probe", () => existsSync(join(dir, "profile", "probe.json")));
+	const probe = json(join(dir, "profile", "probe.json"));
+	assert.match(probe.unlisted, /^HTTP\/1\.1 403 .*unlisted\.example is not on this box's network list/, "a host off the list is refused by name, before any lookup");
+	assert.doesNotMatch(probe.listed, /not on this box's network list/, "a listed name passes the list (and then meets its lookup)");
+	assert.match(probe.metadata, /^HTTP\/1\.1 403 /, "a cloud's metadata address is still refused");
+	assert.match(probe.loopback, /^HTTP\/1\.1 403 /, "this machine's loopback is refused");
+	assert.match(probe.loopback443, /^HTTP\/1\.1 403 /, "loopback on a port a list takes is refused too");
+	assert.deepEqual((await p.list({ "agentrun.run": "run-1" })).value.map((one) => one.network), [{ allow }]);
+	assert.deepEqual((await p.attach({ id })).value.spec.network, { allow });
+	assert.deepEqual((await p.network(made.value)).value, { allow });
+	assert.deepEqual((await p.network(made.value, { allow: [...allow].reverse() })).value, { allow }, "the same list, in another order, is the same");
+	assert.equal((await p.network(made.value, "open")).error.code, "refused", "the list is set when the browser starts");
+	assert.ok((await p.release(made.value, "delete")).ok);
 });
 
 test("the deadline ends the browser though the process that made it is gone: a crashed run leaves no Chrome", async () => {
