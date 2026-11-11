@@ -567,6 +567,9 @@ test("a decision's hold is kept only once the driver has admitted its request: a
   assert.ok(asked.length <= 1, `asked at most once: ${asked.length}`);
   assert.ok((ended.costUsd ?? 0) <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
   if (asked.length === 1) assert.deepEqual([ended.state, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], ["ended", 0.4], `asked by runner B, booked at what it charged: ${JSON.stringify(ended)}`);
+  // Not asked: runner A's write admitted the request, so runner B took the run over and escalated it, asked and never
+  // answered, never a takeover that simply failed.
+  else assert.deepEqual([ended.state, ended.outcome, ended.epoch > 1], ["ended", "escalated", true], `runner B escalates the decision runner A admitted: ${JSON.stringify(ended)}`);
 });
 
 test("a decision its provider refuses unbilled (rate limited) charged nothing: its hold is booked at $0, and the run's cost says $0", async (t) => {
