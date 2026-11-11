@@ -24,6 +24,7 @@
     "receiveHook": "A sender fires it with a request signed by the trigger's secret and no token; the CLI sends the server's token, so it has no command.",
     "putMcpPrivateHosts": "Allowing private-network hosts for MCP servers' sign-ins takes the owner's password session in the console; the server refuses every token on it.",
     "restoreLearningFile": "Restoring a retired learning file takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
+    "promoteLearnedWorkflow": "Making a learned workflow an agent of its own takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
     "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command."
   },
   "commands": {

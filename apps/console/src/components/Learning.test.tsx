@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string) => Promise<Agent> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -67,6 +67,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     learningLog: async (_id: string, cursor: string) => { calls.push(`log after ${cursor}`); return (fake.log ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
+    promoteWorkflow: async (_id: string, name: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name); },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -1214,5 +1215,68 @@ describe("the Learning tab's per-note run counts", () => {
     expect(first).toContain("Given to 0 runs");
     expect(first).not.toContain("Read in");
     expect(first).not.toContain("Used in");
+  });
+});
+
+describe("the Learning tab's Make this an agent", () => {
+  const README = "workflows/check-refunds/README.md";
+  const OWNER = { learning: { pending: true, approve: true } };
+  const flows = (status: "active" | "pending" | "retired") => view({
+    skills: [{ name: "find-policies", file: "skills/find-policies/SKILL.md", description: "Find a store's policies", status: "active", run: "run-b", bytes: 92, etag: '"skill-v1"' }],
+    workflows: [{ name: "check-refunds", file: "workflows/check-refunds/workflow.json", readme: README, description: "Checks a store's refund window", status, run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+  } as Partial<AgentLearning>);
+  const WORDS = "Make it an agent? It makes a new agent that runs the steps of check-refunds on their own, with no agent loop, under this agent's tool settings, approvals and cap. check-refunds stays here, unchanged.";
+
+  it("shows only on an active workflow, to the owner signed in: never on one that waits or was retired, on a skill, to a token, or on an archived agent", async () => {
+    const active = await open(agent(true), { learning: async () => flows("active"), caps: OWNER });
+    expect(active.calls).toContain("capabilities");
+    expect(active.button(/^Make check-refunds an agent$/)?.textContent).toBe("Make this an agent");
+    expect(active.button(/^Make find-policies an agent$/)).toBeUndefined();
+    act(() => root?.unmount());
+    for (const status of ["pending", "retired"] as const) {
+      const t = await open(agent(true), { learning: async () => flows(status), caps: OWNER });
+      expect(t.button(/^Make check-refunds an agent$/), status).toBeUndefined();
+      act(() => root?.unmount());
+    }
+    const token = await open(agent(true), { learning: async () => flows("active"), caps: { learning: { pending: true, approve_needs: "password" } } });
+    expect(token.button(/^Make check-refunds an agent$/)).toBeUndefined();
+    act(() => root?.unmount());
+    const archived = await open({ ...agent(true), archived_at: "2026-11-05T00:00:00Z" }, { learning: async () => flows("active"), caps: OWNER });
+    expect(archived.button(/^Make check-refunds an agent$/)).toBeUndefined();
+  });
+
+  it("asks first, saying what it makes; yes makes it and links to the new agent, cancel makes nothing", async () => {
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER });
+    await t.click(/^Make check-refunds an agent$/);
+    const ask = t.host.querySelector('[role="alertdialog"][aria-label="Make check-refunds an agent?"]') as HTMLElement;
+    expect(ask?.querySelector("p")?.textContent).toBe(WORDS);
+    expect(document.activeElement?.textContent).toBe("Yes, make the agent");
+    await t.click(/^Cancel$/);
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.calls.some((c) => c.startsWith("promote"))).toBe(false);
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    expect(t.calls).toContain("promote check-refunds");
+    const link = t.card("check-refunds")!.querySelector('a[href="#/agents/check-refunds"]');
+    expect(link?.textContent).toBe("check-refunds");
+    expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+
+  it("a refusal says why and makes nothing: a token is told it takes the password sign-in, the checks' problems are listed", async () => {
+    const token = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { throw new ClientError(403, "forbidden", "token"); } });
+    await token.click(/^Make check-refunds an agent$/);
+    await token.click(/^Yes, make the agent$/);
+    expect(token.text()).toContain("Making an agent from it takes your password sign-in in the console.");
+    act(() => root?.unmount());
+    const refused = new ClientError(400, "bad_request", "The workflow does not pass the checks: secret_value.");
+    refused.problems = [{ rule: "secret_value", path: "workflows/check-refunds/workflow.json", detail: "it holds a value the server keeps secret" }];
+    const checked = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { throw refused; } });
+    await checked.click(/^Make check-refunds an agent$/);
+    await checked.click(/^Yes, make the agent$/);
+    const said = checked.text();
+    expect(said).toContain("No agent was made: The workflow does not pass the checks: secret_value.");
+    expect(said).toContain("it holds a value the server keeps secret");
+    expect(checked.host.querySelector('a[href^="#/agents/"]')).toBeNull();
   });
 });

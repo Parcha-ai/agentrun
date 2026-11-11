@@ -2576,6 +2576,17 @@ with the token, an archived agent's too:
   too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
   `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
   (`{at, by}`, the time of its retire, which an edit since moves not).
+- `POST .../learning/workflows/{name}/promote` (`{name?}`) makes an active learned workflow an agent of its own: a new
+  agent, as `POST /agents` makes one, whose revision is a workflow revision of the workflow's `workflow.json`, so its
+  runs run the workflow's nodes with no agent loop, answer the workflow's output, and can be started by a trigger or a
+  pipeline like any agent's. Only an active one: a workflow that waits for its owner's OK, or was retired, is 409
+  `learned_not_active`. Its files are checked again as a restore checks them, and its workflow as the learning checker
+  checks a run's draft against the agent's tools and gate (400 with `problems`), then as any workflow revision's save
+  (422, or 409 `agent_not_runnable`). The new agent's `tools` are the ones its call nodes call, and it keeps the source
+  agent's policy as it is now (its `tool_settings`, `approvals`, `max_cost_usd` and `cap_mode`), never more. Its id is the
+  workflow's name, with `-2`, `-3` and on past an agent's id or name already here, and its name `name` or the same. It
+  answers 201 with the agent; the learned workflow stays in the folder, unchanged. It takes the owner's password session
+  alone, as an approval does.
 - `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.

@@ -12,7 +12,7 @@ import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
   APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
-  counted, type LearnedItem, statusFile,
+  counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
 import { cn } from "@/lib/utils";
@@ -86,16 +86,17 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   // The skills and the workflows it learned.
   const skills = view?.skills ?? [];
   const workflows = view?.workflows ?? [];
-  // Whether this caller approves from the console, read once a note, a skill or a workflow waits: until the server
-  // says so, no Approve.
+  // Whether this caller is the owner signed in to the console, read once a note, a skill or a workflow waits, or a
+  // workflow could be made an agent: until the server says so, no Approve and no "Make this an agent".
   const [approves, setApproves] = useState<Approval | undefined>(undefined);
   const anyWaiting = waiting.length > 0 || [...skills, ...workflows].some((x) => x.status === "pending");
+  const ownerAsked = anyWaiting || workflows.some((x) => x.status === "active");
   useEffect(() => {
-    if (!anyWaiting || approves !== undefined) return;
+    if (!ownerAsked || approves !== undefined) return;
     let live = true;
     Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(approval(c)); }, () => { if (live) setApproves("password"); });
     return () => { live = false; };
-  }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ownerAsked]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
   const from = useMemo(() => provenance([...(view?.log.items ?? []), ...olderLog.items]), [view, olderLog.items]);
@@ -432,8 +433,12 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
   const [readError, setReadError] = useState<unknown>(null);
   const [approving, setApproving] = useState(false);
   const [retiring, setRetiring] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+  const [made, setMade] = useState<Agent | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
+  // Only an active workflow, and only for the owner signed in: a pending one waits for their OK first.
+  const promotes = kind === "workflow" && item.status === "active" && approves === "yes";
   const load = async () => {
     setReadError(null);
     setText(null);
@@ -480,14 +485,16 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
           {waits && approves === "password" && <p className="mt-2 font-mono text-label text-muted-foreground">{APPROVE_SIGN_IN}</p>}
         </div>
         <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
-          {!readOnly && !retiring && <>
+          {!readOnly && !retiring && !promoting && <>
             {waits && approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${item.name}`}>{approving ? "Approving" : "Approve"}</Button>}
+            {promotes && <Button size="sm" onClick={() => { setMade(null); setPromoting(true); }} aria-label={`Make ${item.name} an agent`}>Make this an agent</Button>}
             <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${item.name}`}>Retire</Button>
           </>}
           <Button size="sm" variant="ghost" onClick={() => void show()} aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} ${label}`}><ChevronDown className={cn("transition-transform", open && "rotate-180")} aria-hidden />{open ? "Hide" : "Show"}</Button>
         </div>
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
+      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
       {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />
@@ -498,6 +505,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={() => v2.retireNote(agentId, statusFile(item), version)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
+      {promoting && <PromoteConfirm name={item.name} promote={() => v2.promoteWorkflow(agentId, item.name)} onDone={(agent) => { setPromoting(false); if (agent) setMade(agent); }} />}
     </article>
   );
 }
@@ -575,6 +583,39 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
       <Button size="sm" variant="ghost" onClick={() => void onDone(false)} disabled={busy}>Keep</Button>
+    </div>
+  );
+}
+
+/** "Make this an agent", after a confirm in place as a retire's: it says what it makes, "Yes, make the agent" takes the
+ *  focus, and Esc or Cancel keeps things as they are. A token is told it takes the password sign-in; a refusal (no longer
+ *  active, the checks, what this host can't run) shows the server's words, and nothing was made. */
+function PromoteConfirm({ name, promote, onDone }: { name: string; promote: () => Promise<Agent>; onDone: (made: Agent | null) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
+  const yes = useRef<HTMLButtonElement>(null);
+  useEffect(() => { yes.current?.focus(); }, []);
+  const go = async () => {
+    setBusy(true); setSaid(null);
+    let made: Agent;
+    try { made = await promote(); }
+    catch (e) {
+      setBusy(false);
+      if (e instanceof ClientError && e.status === 403) return void setSaid(<p className="text-small text-destructive-text" role="alert">{PROMOTE_SIGN_IN}</p>);
+      if (e instanceof ClientError && e.problems?.length) {
+        return void setSaid(<div className="text-small text-destructive-text" role="alert"><p>No agent was made: {e.message}</p><ul className="mt-1 list-disc space-y-0.5 pl-5">{e.problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul></div>);
+      }
+      return void setSaid(<ProblemCard problem={failed(e, "the agent", "No agent was made.")} className="" />);
+    }
+    onDone(made);
+  };
+  return (
+    <div role="alertdialog" aria-label={`Make ${name} an agent?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(null); } }}
+      className="flex flex-wrap items-center gap-3 border-t px-5 py-3">
+      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Make it an agent?</span> {PROMOTES(name)}</p>
+      {said && <div className="w-full">{said}</div>}
+      <Button ref={yes} size="sm" variant="solid" onClick={() => void go()} disabled={busy}>{busy ? "Making the agent" : "Yes, make the agent"}</Button>
+      <Button size="sm" variant="ghost" onClick={() => onDone(null)} disabled={busy}>Cancel</Button>
     </div>
   );
 }

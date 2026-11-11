@@ -495,6 +495,50 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   });
 }
 
+/** A learned workflow as a promotion makes it into an agent of its own: its folder's name, its README's description,
+ *  its workflow.json parsed, and the tools its call nodes call. */
+export type Promotable = { name: string; description: string; workflow: Record<string, unknown>; calls: string[] };
+
+/** POST /agents/{id}/learning/workflows/{name}/promote's read of the learned workflow `raw` (percent-encoded) on agent
+ *  `agentId`'s main: an active one alone, as every later run is given it. One that waits for its owner's OK, or that a
+ *  person retired, is 409 learned_not_active: a promotion never runs what the owner has not let every run use. Each of
+ *  its files is checked again as a restore checks it (unstorable: a secret's shape, the host's values as they are now,
+ *  a hidden character), and its workflow.json as the learning checker checks a run's draft against the agent's tools and
+ *  its gate (draftProblems: the DSL's validation with no code run, no code node, no shell or executor call, no call node
+ *  on a tool the agent does not have or the gate holds to ask or deny). Any of those is 400 with `problems`, printable.
+ *  Reads only: the folder is never written. */
+export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string> }> }): Promise<Promotable> {
+  let name: string;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    throw new ApiError("bad_request", "the workflow's name is not percent-encoded right");
+  }
+  if (!learnedName("workflow", name)) throw new ApiError("bad_request", "A learned workflow's folder is named with lowercase letters, digits, dashes and underscores.");
+  const found = await reading(data, agentId, async ({ snapshot, body }) => {
+    const item = snapshot.workflows.find((one) => one.name === name);
+    if (!item) return undefined;
+    if (item.status !== "active") return { item, files: [] };
+    return { item, files: await Promise.all(item.files.map(async ({ path, oid }) => ({ path, text: await body(path, oid) }))) };
+  }, () => undefined);
+  if (!found) throw new ApiError("not_found", "the agent's learning folder has no such workflow on main");
+  const { item, files } = found;
+  if (item.status === "pending") throw new ApiError("learned_not_active", "This workflow waits for your OK: approve it first. Making it an agent never skips your OK.");
+  if (item.status !== "active") throw new ApiError("learned_not_active", "This workflow is retired: restore it first to make it an agent.");
+  const file = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  const json = files.find(({ path }) => path === file);
+  const problems: Problem[] = unstorable(files.map(({ path, text }) => ({ path, status: "modified" as const, bytes: Buffer.from(text, "utf8") })), input.refuse);
+  if (!json) problems.push(printable({ rule: "workflow", path: file, detail: "the workflow's folder holds no workflow.json" }, input.refuse));
+  const dsl = await import("@parcha/agentrun-dsl");
+  if (json && !problems.length) {
+    const { tools, gated } = await input.draftTools();
+    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated)) problems.push(printable({ rule, path: file, detail }, input.refuse));
+  }
+  if (problems.length) throw new ApiError("bad_request", `The workflow does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
+  const workflow = JSON.parse(json!.text) as Record<string, unknown>;
+  return { name, description: item.description, workflow, calls: dsl.inspectWorkflow(workflow).requires.tools };
+}
+
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
  *  settled: the one shape, read from the one store (store-reads/learning.ts
  *  runLearningOverStore). */

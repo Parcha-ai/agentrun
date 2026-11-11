@@ -179,6 +179,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
      *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
     restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** A learned workflow (`name`, its folder's) made into a workflow agent of its own, which runs with no agent loop: an
+     *  active one alone (409 learned_not_active otherwise), checked again as a restore checks it. The owner's session only.
+     *  The answer is the new agent; the learned workflow stays where it is. */
+    promoteWorkflow: async (id: string, name: string) => {
+      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {} });
+      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
+      return made;
+    },
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
