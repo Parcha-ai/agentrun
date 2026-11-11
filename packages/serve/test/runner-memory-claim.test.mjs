@@ -144,3 +144,35 @@ test("the weights and the budget a runner claims by (memory-claim.ts): each run 
   assert.equal(Math.floor(memory.budgetMib / 128), 15);
   assert.equal(Math.floor(memory.budgetMib / 288), 6);
 });
+
+test("a claim that throws after others landed keeps those: the runs already claimed start, and the one that threw is claimed at a later poll", async (t) => {
+  const { server, runners: [store] } = await stores();
+  for (const id of ["run-1", "run-2"]) await queue(server, id);
+  const turns = heldTurns();
+  // The store's claim of run-2 throws once (a busy store), after run-1's landed in the same poll.
+  let thrown = false;
+  const flaky = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "claim")
+        return async (runId, ...rest) => {
+          if (runId === "run-2" && !thrown) {
+            thrown = true;
+            throw new Error("the store is busy");
+          }
+          return target.claim(runId, ...rest);
+        };
+      const value = target[prop];
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const errors = [];
+  const runner = startRunner({ store: flaky, createLoop: turns.createLoop, name: "runner-a", loops: 10, memory: { budgetMib: 1000, weigh }, onEvent: (event) => event.type === "error" && errors.push(event), ...TIMING });
+  t.after(() => {
+    for (const loop of turns.loops.values()) loop.finishTurn();
+    return runner.close();
+  });
+  await until(() => turns.loops.has("run-1"), "run-1, claimed before the throw, starts");
+  await until(() => turns.loops.has("run-2"), "run-2 claimed at a later poll");
+  assert.ok(thrown, "the claim threw once");
+  assert.ok(errors.some((event) => event.step === "claim" && /busy/.test(event.message)), JSON.stringify(errors));
+});
