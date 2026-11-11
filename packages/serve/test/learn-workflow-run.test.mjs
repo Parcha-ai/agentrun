@@ -423,16 +423,20 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
 
-// The owner's allow can land while the harness is still recording the parked call's result (Claude Code writes it before
-// it reads the next answer). The parked call stays the turn's to end: its result interrupts the turn, and no request of
-// the harness's own leaves after the allow; the approved call's node is the one request that does.
+// The owner's allow can land before the run has let go of the parked turn: the harness is slow to stop, and the call
+// still waits in it. The parked call stays the turn's to end: no request of the harness's own leaves after the allow
+// until the resume's turn, which issues the call again; the approved call runs once there, its node the one request
+// that leaves for it, and the resume's turn answers. The faux harness asks the run's gate before each call
+// (AGENTRUN_TEST_FAUX_HARNESS_GATE), as a real CLI's tool bridge does: a parked call waits, unrun, until the turn is
+// stopped, and here holds the stopped turn until the test lets it go, after the allow.
 for (const harness of ["codex", "claude-agent"]) {
-  test(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000, skip: "no runnable form here: the in-process faux CLI harness asks no gate (run-adapters testing.ts), so it never parks; the real adapters cannot hold a call's result" }, async (t) => {
-    const held = join(await scratch(t), "result-held");
-    const ask = `Use the learned workflow answer on What is six times seven, its result held until ${held}.`;
+  test(`on ${harness}, an allow that lands before the parked turn is let go: no request of the harness's own after the allow until the resume's turn, which runs the approved call once`, { timeout: 180_000 }, async (t) => {
+    const held = join(await scratch(t), "park-held");
+    const ask = `Use the learned workflow answer on What is six times seven, its park held until ${held}.`;
     const gw = await startFauxGateway({ call: submitsAnswer });
     t.after(() => gw.close());
     const key = ["not-a-secret", "gateway"].join("-");
+    withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_GATE: "1" });
     if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
     else withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
     const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, faux: undefined });
@@ -447,26 +451,29 @@ for (const harness of ["codex", "claude-agent"]) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const runId = started.body.run_id;
-    // The call is parked and asks the owner while its result is still held: the allow lands before it.
-    // The gate names the parked call by the call, its tool and its arguments (tool-gate.ts); the run reads as working
-    // while the harness is still recording the call's result, and the allow is taken as soon as the server knows the ask.
-    const pendingId = `ap_${createHash("sha256").update(JSON.stringify([`run:${runId}:0`, LEARNED_WORKFLOW_TOOL, { name: "answer", input: { question: "What is six times seven" } }])).digest("hex").slice(0, 16)}`;
-    let answered;
-    for (const deadline = Date.now() + 60_000; (answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pendingId}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } })).status === 404; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `the call asks the owner: ${answered.text}`);
+    // The ask, as the run's view names it; the allow lands while the harness still holds the parked turn.
+    let pending;
+    for (const deadline = Date.now() + 60_000; !pending; await new Promise((resolve) => setTimeout(resolve, 20))) {
+      assert.ok(Date.now() < deadline, "the call asks the owner");
+      pending = (await api("GET", `/runs/${runId}`)).body.pending;
+    }
+    assert.deepEqual([pending.kind, pending.tool], ["approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(pending));
+    const answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } });
     assert.equal(answered.status, 204, answered.text);
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "working", "the allow landed while the parked turn was still recording its call's result");
-    // The approved call runs (its node's request reaches the gateway), and only then does the harness tell its result.
-    for (const deadline = Date.now() + 60_000; !gw.requests.some((request) => submitsAnswer(request)); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, "the approved call's node is sent");
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(gw.requests.length, 0, "nothing ran while the parked turn is held");
     writeFileSync(held, "");
     await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
     assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-    // The parked turn: its one request (the call), then its end, interrupted on the call's result, never going on after
-    // the allow; the resume's turn answers.
-    const seq = (await entriesOf({ data }, runId, ["agentrun.request_started", "adapter.turn_end"]));
-    const firstEnd = seq.findIndex((entry) => entry.kind === "adapter.turn_end");
-    const parkedTurn = seq.slice(0, firstEnd).filter((entry) => entry.host === undefined).length;
-    assert.deepEqual([parkedTurn, seq[firstEnd]?.status, seq[firstEnd]?.answer ?? null], [1, "interrupted", null], `the parked turn went on after the allow: ${JSON.stringify(seq.map((entry) => [entry.kind, entry.host ?? entry.status ?? ""]))}`);
+    // The parked call, filed as the model's pending call; then the resume's turn, which issues it again and runs it, its
+    // node the one request that leaves for it; no request of the harness's own between the park and that call.
+    const seq = (await entriesOf({ data }, runId, ["faux.request", "faux.issued", "faux.call", "runner.request"])).map((entry) => [entry.kind, entry.host ?? entry.callId ?? entry.index ?? ""]);
+    const parkedAt = seq.findIndex(([kind]) => kind === "faux.issued");
+    const calledAt = seq.findIndex(([kind]) => kind === "faux.call");
+    assert.ok(parkedAt >= 0 && calledAt > parkedAt, JSON.stringify(seq));
+    assert.deepEqual(seq.slice(parkedAt + 1, calledAt).filter(([kind]) => kind === "faux.request" || kind === "runner.request"), [], `no request between the park and the call issued again: ${JSON.stringify(seq)}`);
+    assert.equal(seq[parkedAt][1], seq[calledAt][1], "the same call, issued again");
+    assert.deepEqual(seq.filter(([kind, host]) => kind === "runner.request" && host === LEARNED_WORKFLOW_TOOL).length, 1, "its node's one request");
+    assert.equal(gw.requests.filter((request) => submitsAnswer(request)).length, 1, "the node reached the gateway once");
   });
 }
 

@@ -7,6 +7,12 @@ export function opened(harness, options) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ harness, options })}\n`);
 }
 
+/** Whether the faux harness asks the host's gate before each call (FauxOptions.gate), as a real CLI's tool bridge does:
+ *  from the test's environment, so a test that parks a call on an ask turns it on. */
+export function gates() {
+  return process.env.AGENTRUN_TEST_FAUX_HARNESS_GATE === "1";
+}
+
 /** Told each session the adapter closed (its key), filed for a test to see: the harness's process stops with its run. */
 export function closed(key) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED, `${key}\n`);
@@ -79,6 +85,11 @@ export function script(spec) {
   // run's learned_workflow and a write, run in turn, then a closing answer.
   const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);
   if (beside) return [{ calls: [{ call: "learned_workflow", args: { name: beside[1], input: { question: beside[2] } } }, { call: "write", args: { path: "note.md", content: "noted" } }], usd: 0.001 }, { say: "Ran the learned workflow and wrote note.md.", usd: 0.001 }];
+  // "Use the learned workflow <name> on <question>, its park held until <file>.": the run's learned_workflow, which the
+  // gate parks (with AGENTRUN_TEST_FAUX_HARNESS_GATE); the harness is slow to stop, holding the parked turn until <file>
+  // exists; then, in the resume's turn, the call issued again, and an answer.
+  const heldPark = /Use the learned workflow (\S+) on (.+?), its park held until (\S+)\./.exec(text);
+  if (heldPark) return [{ call: "learned_workflow", args: { name: heldPark[1], input: { question: heldPark[2] } }, usd: 0.001, parkHeldUntil: heldPark[3] }, { say: "Answered after the approval.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>, its result held until <file>.": the run's learned_workflow, whose
   // result the harness tells only once <file> exists (as a CLI still recording it would); then an answer; then another.
   const heldResult = /Use the learned workflow (\S+) on (.+?), its result held until (\S+)\./.exec(text);

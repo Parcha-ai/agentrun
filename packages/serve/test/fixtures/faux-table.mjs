@@ -54,7 +54,9 @@ export function fauxEntries(script) {
                 const openDelayMs = module.openDelayMs?.() ?? 0;
                 const closeDelayMs = module.closeDelayMs?.() ?? 0;
                 const closeError = module.closeError?.();
-                return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
+                // The host's gate asked before each call, as a real CLI's tool bridge asks it, when the module says so.
+                const gate = module.gates?.() === true;
+                return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}), ...(gate ? { gate } : {}) });
               },
             },
           ];
