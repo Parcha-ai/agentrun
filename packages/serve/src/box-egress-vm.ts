@@ -81,10 +81,12 @@ export async function vmDocker(env: NodeJS.ProcessEnv, options: { platform?: str
   return vmDockerOf(answer.stdout, { platform, kernel: options.kernel ?? release() });
 }
 
-/** The proxy container's image: `node:22-bookworm-slim` (the kernel needs Node 22.19 or later), pinned to the multi-arch
- *  index digest Docker Hub served for that tag on 2026-11-05 (Node 22.23.4), as BOX_BASE is pinned (box-image.ts), so every Mac runs the
- *  same Node. To move it, read the tag's index digest again the way BOX_BASE says, and put it here. */
-export const EGRESS_IMAGE = "node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da";
+/** The proxy container's image: `node:22.23.5-trixie-slim` (the kernel needs Node 22.19 or later; 22.23.5 is Node 22's
+ *  November 2026 security release), pinned to the multi-arch index digest Docker Hub served for that tag on 2026-11-11
+ *  (amd64 and arm64 both listed), as BOX_BASE is pinned (box-image.ts), so every Mac runs the same Node. The computer
+ *  provider's EGRESS_IMAGE is the same image. To move it, read the tag's index digest again the way BOX_BASE says, and
+ *  put it here. */
+export const EGRESS_IMAGE = "node:22.23.5-trixie-slim@sha256:68c76cfad89921b927eae28ba21407475e29d0ce450afcdbe70c1532db042b64";
 /** The label the proxy container and its volume carry: the server's key (egressKeyOf). */
 export const EGRESS_LABEL = "agentrun.egress";
 /** Where the volume is in the proxy container, and its code. */

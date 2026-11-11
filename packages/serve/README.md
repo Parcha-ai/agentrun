@@ -180,9 +180,10 @@ docker compose logs agentrun | grep Open
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
 shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
-This `compose.yaml` doesn't pass `AGENTRUN_SEAL_KEY` to the server yet (#2164), so the server keeps its seal key inside
-the container, outside `/data`: recreating the container loses every saved key and sign-in. Until that's fixed, use
-[`deploy/compose.yaml`](../../deploy/README.md), which requires the key, or don't recreate the container.
+This `compose.yaml` passes `AGENTRUN_SEAL_KEY` from the `.env` to the server and refuses to start without it, so the key that
+seals every saved key, MCP credential and sign-in is kept outside the container and the data volume. Keep that `.env`
+line. A store whose secrets were sealed with another key refuses to start, and the server never makes a new key over
+sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
@@ -409,7 +410,7 @@ go through `work/` by path.
     connect, over a minute old); a live run's, of any server of this user's, stays.
   - On a Mac, where Docker runs in a VM, a socket bound in from the Mac does not connect, so the proxy runs inside the
     VM instead: one container per server, `agentrun-egress-<12 hex of the data root>`, labelled `agentrun.egress`. It
-    is `node:22-bookworm-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
+    is `node:22.23.5-trixie-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
     `<data>/egress/`, the list as its one variable, a read-only root, no capability, the server's uid:gid, 256 MiB and
     256 processes. It listens on a Unix socket in a tmpfs volume of the same name, owned by the server's uid, and the
     box mounts that volume read-only at `/run/agentrun/egress/`. The box keeps `--network none`, its `socat` and its

@@ -39,6 +39,7 @@ import {
   WITHHELD_TITLE,
   costView,
   soFarOf,
+  usersOf,
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
@@ -57,7 +58,7 @@ import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-com
 import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
-import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
+import { FINAL_STATES, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -80,7 +81,7 @@ export interface ViewDeps {
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
  *  review; a stopped run is a cancellation), as runs.ts's STATUS_OF mapped them. A running run reads its status from the
- *  journal. */
+ *  journal, and so does an agentic run a person stopped, which reads running (runReadState). */
 const STATUS_OF: Record<Exclude<RunReadState, "running">, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
 /** A run that has reached a last state (its view is its ended shape). */
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
@@ -265,7 +266,6 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const progress = terminal || row.kind === "workflow" ? undefined : turns.progressAt();
   const lastProgressAt = progress === undefined ? null : iso(progress);
 
-
   // The tool-call approvals the run waits (or waited) on, from its journal: each call the gate parked for a person, and
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
   // store entries.
@@ -280,7 +280,13 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // The run's cap as it stands, through the one reader the runner's gate reads too (capNowOf): a raise taken shows in the
   // run's cost.cap_usd and its budget card, never the old cap.
   const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
-  const meta: RunViewMeta = { ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
+  // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
+  // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it.
+  const meta: RunViewMeta = {
+    ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}),
+    ...(Object.keys(answers).length ? { approvals: answers } : {}),
+    ...(stoppedByPerson(runRow, row.kind) ? { stopped_after: usersOf(rows) } : {}),
+  };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
@@ -320,8 +326,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(row.importedFrom ? { imported: { source: row.importedFrom.source, session: row.importedFrom.session } } : {}),
     kind: row.kind,
     ...(outcome ? { outcome } : {}),
-    // The store's "stopped" state is a cancellation; its moment reads cancelled.
-    cancel: row.state === "stopped",
+    // A cancel is the run's outcome 'cancelled', never its state alone: a person's stop is stopped too, and is no cancel.
+    cancel: runRow.outcome === "cancelled",
     working,
     submitted,
     updatedAt: iso(updatedAtMs),
