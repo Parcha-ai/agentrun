@@ -594,15 +594,24 @@ export class HarnessInstall {
  *  claim that needs it waits on, and how many wait now. */
 const claimInstalls = new Map<string, { install: HarnessInstall; waiting: number }>();
 
+/** Where a run's claim stands on the install into `dir`, as installSettled says, except that an install this process's
+ *  claims run (installForClaim) is never waited on from outside: it reads "none", so the claim joins it by installForClaim
+ *  and counts among those that wait for it. Waited on from outside, it would stop once the claim that started it let go,
+ *  though this one still needed it, and start again. An install the server runs is waited on as before. */
+export function claimSettled(entry: HarnessInstallEntry, dir: string, pins: HarnessPins, options: Parameters<typeof installSettled>[3] = {}): ReturnType<typeof installSettled> {
+  const isAlive = options.isAlive ?? alive;
+  return installSettled(entry, dir, pins, { ...options, isAlive: (pid) => !(pid === process.pid && claimInstalls.has(dir)) && isAlive(pid) });
+}
+
 /** Installs `entry` into `dir` for a run's claim when nothing installs it (no install runs, or the last one failed before
  *  this claim): the claim installs it itself, by `lock` (default the one AgentRun ships), or waits for the install this
  *  process or another runs for it already; it resolves once it is in and rejects with the install's own words when it
  *  fails. `signal` aborted (the run stopped, its claim lost, the runner closing): this claim stops waiting at once, and the
- *  install's npm is stopped once no claim waits for it. */
-export async function installForClaim(entry: HarnessInstallEntry, dir: string, pins: () => Promise<HarnessPins>, { lock, signal }: { lock?: string; signal?: AbortSignal } = {}): Promise<void> {
+ *  install's npm is stopped once no claim waits for it. `install`: what runs the install in place of npm (a test's). */
+export async function installForClaim(entry: HarnessInstallEntry, dir: string, pins: () => Promise<HarnessPins>, { lock, signal, install }: { lock?: string; signal?: AbortSignal; install?: (entry: HarnessInstallEntry, dir: string, pins: HarnessPins, signal: AbortSignal) => Promise<void> } = {}): Promise<void> {
   let held = claimInstalls.get(dir);
   if (!held) {
-    held = { install: new HarnessInstall(entry, dir, pins, (entry, dir, pins, stop) => npmInstall(entry, dir, pins, { signal: stop, ...(lock ? { lock } : {}) })), waiting: 0 };
+    held = { install: new HarnessInstall(entry, dir, pins, install ?? ((entry, dir, pins, stop) => npmInstall(entry, dir, pins, { signal: stop, ...(lock ? { lock } : {}) }))), waiting: 0 };
     claimInstalls.set(dir, held);
   }
   const mine = held;

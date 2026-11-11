@@ -21,7 +21,7 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { thinkingFor } from "../adapters.js";
-import { installDirOf, installForClaim, installingWords, installSettled } from "../harness-install.js";
+import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
@@ -201,7 +201,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       run.phase?.(installingWords(installs.label));
     })().catch((error: unknown) => log(`the run's install wait was not said on its timeline: ${(error as Error)?.message ?? String(error)}`)));
     let waited = false;
-    const settled = await (deps.installSettled ?? installSettled)(installs, dir, await pins(), { ...(waitOn ? { signal: waitOn } : {}), onWait: () => void ((waited = true), say()) });
+    const settled = await (deps.installSettled ?? claimSettled)(installs, dir, await pins(), { ...(waitOn ? { signal: waitOn } : {}), onWait: () => void ((waited = true), say()) });
     // The install it waited for failed: the run fails in its words. An earlier one that failed before this claim is tried again.
     if (typeof settled === "object" && waited) throw new HarnessUnavailable(settled.failed, "install");
     if (settled !== "installed") {
