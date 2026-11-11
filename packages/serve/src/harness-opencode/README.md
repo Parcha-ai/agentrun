@@ -41,7 +41,7 @@ install line. `OPENCODE_BIN` names a binary in place of the platform package's.
   refuses a provider-hosted tool and drops any function that is not the host's, and asks the runner before every paid
   request, so the turn cap and the host's budget hold. Each response's usage comes back to the runner. OpenCode's own
   agents are off, its title and summary agents among them, and the session has a title of its own, so it makes no side
-  request (`test/real-opencode.test.mjs`).
+  request (`test/opencode-real.test.mjs`).
 - **The session's instructions.** They are the prompt of OpenCode's one agent, in place of OpenCode's own. OpenCode
   still adds its environment lines (the model's name, the working directory, the platform and the date). A host's own
   lines (the server's shared date line among them) come in the session's instructions.

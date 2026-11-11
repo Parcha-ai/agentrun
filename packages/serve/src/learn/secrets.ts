@@ -7,6 +7,19 @@ const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
 
+/** A bank account number beside its word: "account", "acct", "a/c" or "bank account", maybe "number", "no.", "#", ":"
+ *  or "is" after it, then six digits or more, single dashes or spaces between them. A count before the word ("4
+ *  accounts"), a date (YYYY-MM-DD), a year or a card's last four is none: the word must come first, the digits right
+ *  after it, and there must be six. Every gap is at most three whitespace characters, so the reading stays linear on a
+ *  text of long blank runs. */
+const ACCOUNT_NUMBER = /\b(?:bank\s{1,3})?(?:account|acct|a\/c)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){5,}/i;
+/** An IBAN beside its word: two letters, two check digits, then ten to thirty letters or digits, spaces between. */
+const IBAN = /\bIBAN\s{0,3}(?:#|:|\bis\b)?\s{0,3}[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){10,30}/i;
+/** A US routing (ABA) number beside its word: nine digits. */
+const ROUTING_NUMBER = /\b(?:routing|ABA)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/i;
+/** A UK sort code beside its word: three pairs of digits. */
+const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}[- ]?\d{2}\b/i;
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["AWS access key id", /(?:AKIA|ASIA)[0-9A-Z]{16}/],
@@ -22,6 +35,20 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
 
 /** The kinds of secret-shaped text in `text`. */
 export const secretShapes = (text: string): string[] => SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
+
+/** A bank's numbers beside their words, which learning never keeps: an account, IBAN, routing or sort-code number. Not
+ *  one of SHAPES: a run may show its user an account number (a finance job's answer), and SHAPES cut every run's view;
+ *  only what learning keeps refuses them (LS-09: graders held "send refunds to account 4471-0098" for the owner's OK,
+ *  which would have served it). */
+const MONEY_SHAPES: readonly (readonly [string, RegExp])[] = [
+  ["bank account number", ACCOUNT_NUMBER],
+  ["IBAN", IBAN],
+  ["routing number", ROUTING_NUMBER],
+  ["sort code", SORT_CODE],
+];
+
+/** The kinds of text in `text` learning never keeps: every secret shape, and a bank's numbers beside their words. */
+export const learnedSecretShapes = (text: string): string[] => [...secretShapes(text), ...MONEY_SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind)];
 
 type Span = [start: number, end: number];
 
@@ -81,21 +108,34 @@ export const PRINT_MAX = 4096;
  *  a line break is still seen whole, never hidden by its hex part cut alone), and the fold-aware one always after, on
  *  what is left (a folded value split by whitespace or percent-encoded is found there, never handed back). */
 export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
+  return redactWith(text, values, max, SHAPES, secretShapes);
+}
+
+/** `text` as redactSecrets cuts it, and of a bank's numbers beside their words too (MONEY_SHAPES): what learning prints
+ *  and serves of what it learned or refused (a problem's path and detail, a note read), never a run's own view, which
+ *  may show its user an account number. */
+export function redactLearned(text: string, values: readonly string[], max = PRINT_MAX): string {
+  return redactWith(text, values, max, [...SHAPES, ...MONEY_SHAPES], learnedSecretShapes);
+}
+
+/** redactSecrets over `shapes`, each found in place, and `shapesOf` read of what is left (a shape still there cuts the
+ *  text whole). */
+function redactWith(text: string, values: readonly string[], max: number, shapes: readonly (readonly [string, RegExp])[], shapesOf: (text: string) => string[]): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
   const given = withPathSpellings(values.filter((v) => v.length > 0));
   const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? [...needlesOf(v).plain, ...percentForms(v)] : [])]).filter((form) => form.length > 0));
   const found = [
     ...[...forms].flatMap((form) => places(text, form)),
     ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
-    ...SHAPES.flatMap(([, pattern]) => spans(text, pattern)),
+    ...shapes.flatMap(([, pattern]) => spans(text, pattern)),
   ];
   const unfolded = cutAt(text, found);
-  if (spelledMatcher(given, false)(unfolded) || secretShapes(unfolded).length > 0) return "[redacted]";
+  if (spelledMatcher(given, false)(unfolded) || shapesOf(unfolded).length > 0) return "[redacted]";
   // Then the folded finds cut in place, and the fold-aware check over what is left, always: a folded value split by
   // whitespace or percent-encoded has no span here, but the matcher's squeezed and decoded views still see it.
   const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
   const out = folds.length ? cutAt(text, [...found, ...folds]) : unfolded;
-  return spelledMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
+  return spelledMatcher(given)(out) || shapesOf(out).length > 0 ? "[redacted]" : out;
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
