@@ -108,7 +108,7 @@ describe("the loopback block: a program of the computer's user reaches no port o
 		docker("run", "--detach", "--name", name, ...caps, IMAGE, "sleep", "600");
 		docker("cp", path, `${name}:${STAGING}`);
 		const commands = childCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString(), user: TOOL });
-		assert.equal(execFileSync("docker", ["exec", "-i", name, "sh"], { input: commands.install, encoding: "utf8" }).trim(), `sha256 ${sha}`);
+		assert.equal(execFileSync("docker", ["exec", "-i", name, "sh"], { input: commands.install, encoding: "utf8" }).trim(), `installer 0 root\nsha256 ${sha}`);
 		standIn(name);
 		const address = addressOf(name);
 		reachable(name, address);

@@ -59,6 +59,11 @@ const bytes = await client.runs.readFile(done.run_id, "notes.md"); // a Uint8Arr
 const response = await client.runs.readFile(done.run_id, "notes.md", undefined, { stream: true }); // the Response, unread
 ```
 
+With `{ stream: true }` a download resolves to a `Response` of the client's own: the server's status and headers on it
+(its `url` is empty), its body unread. A read of that body that fails (the call's `timeoutMs` passes before the body
+ends, or the body is cut before its length) rejects with `AgentRunUnreachable` and the failure's code, or with your
+`signal`'s reason once you aborted, never the platform's own error. Nothing is tried again: what was read is yours.
+
 `runs.follow` reads the route's event stream and resumes a dropped connection with `Last-Event-ID`, so no page comes twice.
 Only the server's silence counts as a dropped connection (`idleMs`, default 45000), never the time your loop spends on a
 page.

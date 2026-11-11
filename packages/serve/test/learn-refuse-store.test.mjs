@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, made, objects, reflectRows, repoOf, resnap, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { client, scratch, serve, withEnv } from "./support.mjs";
+import { client, scratch, serve } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const TABLES = note("Prefers tables", "The user reads results as tables");

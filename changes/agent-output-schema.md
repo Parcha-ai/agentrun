@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve
+kind: breaking
+---
+An agentic run's structured answer is its result: `result.output` on `GET /v2/runs/{id}` is no longer always null for an agentic run (#2145). An agentic definition takes `output_schema`, a JSON Schema of at most 64 KiB, refused at save when it does not compile or sits on a workflow. A completed run's `result.output` is its final answer's last fenced json block when that meets the schema, else null. An edit that leaves `output_schema` out keeps it. A template's answer schema (its manifest's `output`) is set on the agent at apply, so a template agent's runs now answer there. A triggered agentic run is also handed its trigger's last completed result after its message, as a fenced json block, so a repeat run (market monitor's weekly digest) leaves out what the last one reported (#2144). Only the same trigger's runs are read, and a result over 32 KiB is named but not handed.
+Upgrading: a client that read an agentic run's answer by parsing `result.final_answer` reads `result.output` instead. An agent applied from a template before this release has no `output_schema`: apply the template again, or `PUT` its definition with the template's schema as `output_schema`. A trigger's run message now ends with the previous result when there is one.
