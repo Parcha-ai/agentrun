@@ -19,6 +19,7 @@ import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.j
 import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
 import { verifyOpenCode } from "./verify.js";
+import { learnedFront } from "../learn/skills.js";
 
 /** A name OpenCode keeps whole for an MCP tool (it turns anything else into `_`), short enough that `hands_<name>` is a
  *  function name the Responses API takes (at most 64). */
@@ -95,15 +96,31 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
-/** The skills as the instructions list them: each by name and description, read with `read_skill_file`. */
-function skillsNote(skills: readonly HostSkill[]): string {
+/** The skills as the instructions list them: each by name and description, read with `read_skill_file`. The
+ *  description as YAML reads it (learnedFront, the one front-matter reader: a quoted one's escapes decoded), so a quote
+ *  in it reaches the model as a quote, never as `\"`; on one line. A SKILL.md that reader can't read whole is a
+ *  revision's own skill the adapter's check accepted (skillProblems reads its name and description lines alone; a
+ *  learned one never reaches a run unread, as the learning checker refuses it): its description is that line's
+ *  (descriptionLine). */
+export function skillsNote(skills: readonly Pick<HostSkill, "name" | "files">[]): string {
   const lines = ["You have these skills. Read a skill's SKILL.md with read_skill_file before you use it, and the files it names the same way."];
   for (const skill of skills) {
-    const head = /^---\n([\s\S]*?)\n---/.exec(skill.files["SKILL.md"] ?? "")?.[1] ?? "";
-    const description = /^description:\s*(.+)$/m.exec(head)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+    const md = skill.files["SKILL.md"] ?? "";
+    const front = learnedFront(md);
+    const description = ((front ? front.description : descriptionLine(md)) ?? "").replace(/\s+/g, " ").trim();
     lines.push(`- ${skill.name}: ${description}`);
   }
   return lines.join("\n");
+}
+
+/** A SKILL.md's `description:` line as the adapter's check reads it (skillProblems: the front matter's first
+ *  `description:` line), its value without one pair of surrounding quotes; undefined with none. */
+function descriptionLine(md: string): string | undefined {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1];
+  const value = front === undefined ? undefined : /^description:[ \t]*(\S.*?)\s*$/m.exec(front)?.[1];
+  if (value === undefined) return undefined;
+  const quoted = /^(['"])(.*)\1$/.exec(value);
+  return quoted ? quoted[2] : value;
 }
 
 export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {

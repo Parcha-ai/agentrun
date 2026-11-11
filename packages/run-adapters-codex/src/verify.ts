@@ -1,11 +1,9 @@
 // The installed Codex checked against the pins (src/versions.ts) before anything runs, with the typed errors a host maps
 // to a run's failure line. Written for AgentRun.
-import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { env } from "node:process";
-import { promisify } from "node:util";
-import { checkedOnce, checkedOnceAsync, sha256OfFile, sha256OfFileAsync } from "@parcha/agentrun-kernel/host";
+import { type BinaryProbe, checkedOnce, checkedOnceAsync } from "@parcha/agentrun-kernel/host";
 import { codexTarget, findCodex } from "./binary.js";
 import { CODEX_BINARY_SHA256, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from "./versions.js";
 
@@ -31,82 +29,53 @@ export function codexPins(target = codexTarget()): CodexPins {
  * from its own directory, where a relative `CODEX_BIN` names nothing. The sha256 is read a chunk at a time, never the
  * whole binary in memory, and a check that passed holds for this process while the binary stays the same file, unchanged
  * (the kernel's checkedOnce): a host that checks it for each model it resolves, and a run's process that makes its
- * adapter, check it once.
+ * adapter, check it once. Its reads hold the event loop: a host checks with verifyCodexBinaryAsync first.
  */
 export function verifyCodexBinary(found: { path: string; packageVersion?: string } | undefined, pins: CodexPins = codexPins()): { path: string } | CodexPinMismatch | CodexNotInstalled {
   const at = located(found, pins);
-  if (typeof at !== "string") return at;
-  // Hashed a chunk at a time, and once per binary in this process while it stays the same file.
-  return checkedOnce(at, JSON.stringify(pins), () => checkBinary(at, pins), (result) => !(result instanceof Error));
+  return at instanceof Error ? at : checkedOnce(at.path, JSON.stringify(pins), () => checkBinary(at.path, pins), passed);
 }
 
-/** verifyCodexBinary's answer, with the event loop handed back while the binary is hashed and answers --version, kept on
- *  the same record: a check that passed here makes verifyCodexBinary (the adapter's own) answer at once. */
+/** verifyCodexBinary without holding the event loop (the kernel's checkedOnceAsync), its pass kept for it too. */
 export async function verifyCodexBinaryAsync(found: { path: string; packageVersion?: string } | undefined, pins: CodexPins = codexPins()): Promise<{ path: string } | CodexPinMismatch | CodexNotInstalled> {
   const at = located(found, pins);
-  if (typeof at !== "string") return at;
-  return checkedOnceAsync(at, JSON.stringify(pins), () => checkBinaryAsync(at, pins), (result) => !(result instanceof Error));
+  return at instanceof Error ? at : checkedOnceAsync(at.path, JSON.stringify(pins), () => checkBinary(at.path, pins), passed);
 }
 
-/** The binary's absolute path, or why there is none to check: no binary, no file there, or its package's version. */
-function located(found: { path: string; packageVersion?: string } | undefined, pins: CodexPins): string | CodexPinMismatch | CodexNotInstalled {
+const passed = (result: { path: string } | Error): boolean => !(result instanceof Error);
+
+/** The absolute path of `found`, there and of the pinned package's version; or why not. */
+function located(found: { path: string; packageVersion?: string } | undefined, pins: CodexPins): { path: string } | CodexPinMismatch | CodexNotInstalled {
   if (!found) return new CodexNotInstalled("no Codex binary found for this platform, and CODEX_BIN is not set");
   const path = resolve(found.path);
   if (!existsSync(path)) return new CodexNotInstalled(`no file at ${path}`);
   if (pins.packageVersion && found.packageVersion !== undefined && found.packageVersion !== pins.packageVersion) {
     return new CodexPinMismatch("package_version", pins.packageVersion, found.packageVersion, path);
   }
-  return path;
+  return { path };
 }
 
-/** How the binary is asked its version: no environment but PATH, 10 s at most. */
-const VERSION_RUN = () => ({ env: { PATH: env.PATH ?? "/usr/bin:/bin" }, encoding: "utf8" as const, timeout: 10_000 });
-const unreadable = (path: string, error: unknown) => new CodexNotInstalled(`${path} could not be read: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
-const unrunnable = (path: string, error: unknown) => new CodexNotInstalled(`${path} could not be run: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
-/** What `--version` reported, against the pins. */
-const versionVerdict = (path: string, pins: CodexPins, reported: string): { path: string } | CodexPinMismatch => {
-  const version = /^codex-cli (\S+)$/.exec(reported.trim())?.[1] ?? JSON.stringify(reported.trim().slice(0, 60));
-  return version !== pins.version ? new CodexPinMismatch("version", pins.version, version, path) : { path };
-};
-
-/** The binary at `path` (absolute, there) against `pins`' sha256 and version. */
-function checkBinary(path: string, pins: CodexPins): { path: string } | CodexPinMismatch | CodexNotInstalled {
+/** The binary at `path` (absolute, there) against `pins`' sha256 and version, as the steps it reads (the kernel's
+ *  BinaryCheck). */
+function* checkBinary(path: string, pins: CodexPins): Generator<BinaryProbe, { path: string } | CodexPinMismatch | CodexNotInstalled, string> {
   if (pins.sha256) {
     let sha256: string;
     try {
-      sha256 = sha256OfFile(path);
+      sha256 = yield { kind: "sha256", path };
     } catch (error) {
-      return unreadable(path, error);
+      return new CodexNotInstalled(`${path} could not be read: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
     }
     if (sha256 !== pins.sha256) return new CodexPinMismatch("binary_sha256", pins.sha256, sha256, path);
   }
   let reported: string;
   try {
-    reported = execFileSync(path, ["--version"], VERSION_RUN());
+    reported = (yield { kind: "run", path, args: ["--version"], env: { PATH: env.PATH ?? "/usr/bin:/bin" }, timeoutMs: 10_000 }).trim();
   } catch (error) {
-    return unrunnable(path, error);
+    return new CodexNotInstalled(`${path} could not be run: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
   }
-  return versionVerdict(path, pins, reported);
-}
-
-/** checkBinary, its read and its run of the binary asynchronous. */
-async function checkBinaryAsync(path: string, pins: CodexPins): Promise<{ path: string } | CodexPinMismatch | CodexNotInstalled> {
-  if (pins.sha256) {
-    let sha256: string;
-    try {
-      sha256 = await sha256OfFileAsync(path);
-    } catch (error) {
-      return unreadable(path, error);
-    }
-    if (sha256 !== pins.sha256) return new CodexPinMismatch("binary_sha256", pins.sha256, sha256, path);
-  }
-  let reported: string;
-  try {
-    reported = (await promisify(execFile)(path, ["--version"], VERSION_RUN())).stdout;
-  } catch (error) {
-    return unrunnable(path, error);
-  }
-  return versionVerdict(path, pins, reported);
+  const version = /^codex-cli (\S+)$/.exec(reported)?.[1] ?? JSON.stringify(reported.slice(0, 60));
+  if (version !== pins.version) return new CodexPinMismatch("version", pins.version, version, path);
+  return { path };
 }
 
 /** This machine's Codex checked against the pins: its path, or the typed error thrown. */
@@ -116,7 +85,8 @@ export function verifyCodex(found = findCodex(), pins: CodexPins = codexPins()):
   return result;
 }
 
-/** verifyCodex, checked with the event loop free (verifyCodexBinaryAsync): its path, or the typed error thrown. */
+/** verifyCodex without holding the event loop: what a host awaits before it makes the adapter, whose own check then
+ *  answers from what this kept. */
 export async function verifyCodexAsync(found = findCodex(), pins: CodexPins = codexPins()): Promise<{ path: string }> {
   const result = await verifyCodexBinaryAsync(found, pins);
   if (result instanceof Error) throw result;

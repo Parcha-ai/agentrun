@@ -5,7 +5,7 @@
 // never change, and a run gets a copy of them through its Workspace, never a link: nothing a run does reaches the upload.
 import { createHash, randomBytes } from "node:crypto";
 import { type FileHandle, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
-import { DISK_DIR } from "@parcha/pi-durable-agent";
+import { DISK_DIR } from "./server-fs.js";
 import { dirname, join } from "node:path";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { typeOf } from "./file-types.js";

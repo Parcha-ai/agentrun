@@ -1,5 +1,4 @@
-// A pi run's system prompt through the dispatch is the one main's per-run process builds: the environment line first (as
-// pi installs it, environment.ts EnvironmentLine), then the revision's instructions with its skills and what the agent
+// A pi run's system prompt through the dispatch: the environment line first (environment.ts environmentLine), then the revision's instructions with its skills and what the agent
 // learned folded in (skills.ts promptOf over learning.ts withLearned), then the effort guidance (effort-guidance.ts), each
 // non-empty part in that order. The runner builds it from the launch and the revision, never from this process's
 // environment: the effort is the launch's.
