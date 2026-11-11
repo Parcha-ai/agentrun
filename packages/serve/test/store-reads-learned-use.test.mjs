@@ -131,6 +131,25 @@ test("a learned workflow call with no result yet, on a run still at work, counts
   assert.deepEqual(learning.used.workflows, [{ name: "answer", calls: 3, failed: 1 }], JSON.stringify(learning.used));
 });
 
+// Review on #2337: claude-agent's own Skill tool is a native call: its session records it as a kernel step (tool.Skill),
+// never as a host tool's call record. A load that completed reads the skill, by `agentrun:<name>` or its bare name; a
+// load that failed, a load of another skill, and one in the end-of-run turn do not.
+test("a skill loaded with claude-agent's own Skill tool reads as read: by its plugin name or its bare one, once its step completed, before the end-of-run turn", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  const step = (call, skill, status) => [
+    { kind: "kernel.start", data: { key: `tool:${call}`, stepId: `tool:${call}#0`, name: "tool.Skill", replay: "safe", input: { skill } } },
+    { kind: "kernel.end", data: { stepId: `tool:${call}#0`, status } },
+  ];
+  await run(store, clock, {
+    id: "r1", start: T0, learning: start({ skills: ["check-units", "find-policies", "keep-dates", "weekly-report"] }), kept: lookedBack(T0, 5),
+    extra: [laid(["check-units", "find-policies", "keep-dates", "weekly-report"]), ...step("a", "agentrun:check-units", "completed"), ...step("b", "find-policies", "completed"), ...step("c", "agentrun:keep-dates", "failed"),
+      { kind: "agentrun.end-of-run.turn", data: { role: "person", text: "The task is done." } }, ...step("d", "agentrun:weekly-report", "completed")],
+  });
+  const learning = await reads.runLearningOverStore(store, "r1", secretsShown([]), []);
+  assert.deepEqual(learning.used.skills, [{ name: "check-units", read: true }, { name: "find-policies", read: true }, { name: "keep-dates", read: false }, { name: "weekly-report", read: false }], JSON.stringify(learning.used));
+});
+
 test("a run's use of learned skills and workflows sits apart from what it learned: a run that learned a skill keeps its learned list", async () => {
   const { runLearningBody } = await import("../dist/learning-routes.js");
   const learning = { state: "merged", reason: null, at: iso(T0), skills: [{ file: "skills/new-skill/SKILL.md", name: "new-skill" }], workflows: [{ file: "workflows/new-flow/workflow.json", name: "new-flow" }] };

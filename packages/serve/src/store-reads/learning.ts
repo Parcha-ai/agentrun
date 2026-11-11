@@ -243,19 +243,48 @@ export function callArgsOf(entries: readonly EntryLike[]): Map<string, { tool: s
   return out;
 }
 
+/** The plugin claude-agent serves a run's skills from (@parcha/agentrun-harness-claude CLAUDE_AGENT_SKILLS_PLUGIN): the
+ *  model loads each as `agentrun:<name>`, or by its bare name. */
+const CLAUDE_SKILLS_PLUGIN = "agentrun";
+
+/** The skills a run's job loaded with a harness's own Skill tool (claude-agent's): a native call, which the CLI's session
+ *  records as a kernel step of its own (`kernel.start` named `tool.Skill`, keyed `tool:<call id>`, then its `kernel.end`)
+ *  and never as a host tool's call record, so no timeline row or callArgsOf entry has it. Each by the name the model
+ *  gave (`agentrun:<name>` or the bare one), only when its step completed, and only before the end-of-run turn. */
+export function nativeSkillLoads(entries: readonly EntryLike[]): string[] {
+  const turnAt = entries.find((entry) => entry.kind === KINDS.endOfRunTurn)?.id;
+  const asked = new Map<string, string>();
+  const loaded: string[] = [];
+  for (const entry of entries) {
+    if (turnAt !== undefined && entry.id !== undefined && entry.id >= turnAt) continue;
+    const data = (entry.data ?? {}) as { name?: unknown; stepId?: unknown; status?: unknown; input?: unknown };
+    if (entry.kind === "kernel.start" && data.name === "tool.Skill" && typeof data.stepId === "string") {
+      const skill = (data.input as { skill?: unknown } | undefined)?.skill;
+      if (typeof skill === "string") asked.set(data.stepId, skill);
+    } else if (entry.kind === "kernel.end" && typeof data.stepId === "string" && data.status === "completed" && asked.has(data.stepId)) {
+      loaded.push(asked.get(data.stepId)!);
+    }
+  }
+  return loaded;
+}
+
+/** Whether a skill loaded by the name `asked` is skill `name`: by its plugin-qualified name or its bare one. */
+const loadsSkill = (asked: string, name: string) => asked === name || asked === `${CLAUDE_SKILLS_PLUGIN}:${name}`;
+
 /** Whether call `call` read skill `name`'s SKILL.md: the read hand on `.agents/skills/<name>/SKILL.md`, a CLI adapter's
- *  read_skill_file of the skill's SKILL.md, or claude-agent's Skill tool on the skill. */
+ *  read_skill_file of the skill's SKILL.md, or a Skill tool call on the skill. */
 function readsSkill(call: { tool: string; args: Record<string, unknown> }, name: string): boolean {
   const text = (key: string) => (typeof call.args[key] === "string" ? (call.args[key] as string) : "");
   if (call.tool === "read" || call.tool === "mcp__hands__read") return posix.normalize(text("path")).endsWith(`skills/${name}/SKILL.md`);
   if (call.tool === "read_skill_file") return text("skill") === name && posix.normalize(text("path")) === "SKILL.md";
-  if (call.tool === "Skill") return [text("skill"), text("command"), text("name")].includes(name);
+  if (call.tool === "Skill") return [text("skill"), text("command"), text("name")].some((asked) => loadsSkill(asked, name));
   return false;
 }
 
 /** `laid`: what the run's claims laid (laidOf): a skill its launch offered but no claim laid (over the budget, or a name
- *  the revision's own skill holds, whose copy is the one installed) is not the run's learned skill, whatever it read. */
-export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map(), laid: Pick<Laid, "skills"> = { skills: [] }): LearnedUse {
+ *  the revision's own skill holds, whose copy is the one installed) is not the run's learned skill, whatever it read.
+ *  `loads`: the skills its job loaded with a harness's own Skill tool (nativeSkillLoads), each a read of its SKILL.md. */
+export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map(), laid: Pick<Laid, "skills"> = { skills: [] }, loads: readonly string[] = []): LearnedUse {
   const job = rows.filter((row) => !reflects(reflect as Reflect | undefined, row.id));
   const results = new Map(job.flatMap((row) => (row.kind === "tool_result" && row.tool_use_id ? [[row.tool_use_id, row.tool_status] as const] : [])));
   const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id).flatMap((row) => {
@@ -263,7 +292,7 @@ export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Refle
     return call ? [{ id: row.tool_use_id!, ...call }] : [];
   });
   const installed = new Set(laid.skills);
-  const skills = (started?.skills ?? []).filter((name) => installed.has(name)).map((name) => ({ name, read: calls.some((call) => results.get(call.id) === "success" && readsSkill(call, name)) }));
+  const skills = (started?.skills ?? []).filter((name) => installed.has(name)).map((name) => ({ name, read: calls.some((call) => results.get(call.id) === "success" && readsSkill(call, name)) || loads.some((asked) => loadsSkill(asked, name)) }));
   const workflows = new Map<string, { calls: number; failed: number }>();
   for (const call of calls) {
     if (!WORKFLOW_CALLS.has(call.tool) || typeof call.args.name !== "string") continue;
@@ -309,5 +338,5 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
-  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries)) }, shown, secrets);
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries), nativeSkillLoads(entries)) }, shown, secrets);
 }
