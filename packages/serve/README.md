@@ -1934,6 +1934,25 @@ Home export and import, quotes and `POST /runs/{id}/kill` answer `501 unsupporte
 capabilities declare each one false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
+### API only
+
+`AGENTRUN_API_ONLY=1` is for a server that runs behind its caller's backend and is never opened in a browser. It
+serves these routes alone:
+
+- a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
+  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
+- its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- `GET /capabilities`, `GET /health` and `GET /usage`.
+
+Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
+assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
+page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
+`false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
+
+Its routes for agents are refused too, so on an API-only server a run is launched inline (`POST /runs` with its
+definition), or on an agent made before the profile was turned on.
+
 ## Uploads
 
 A run's input files. Send one in one call, its bytes the body and its path in the query:
@@ -2253,8 +2272,13 @@ at once; a new one past that is held by the server's budget only, and no address
 Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
 `AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
 `uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
-that is not itself a trusted proxy). Unset, that header is never read. `render.yaml` sets it to `uniquelocal`, the private
-ranges Render's proxy reaches a service from.
+that is not itself a trusted proxy). Unset, that header is never read. The owner's first sign-in of a start (the
+right password) that comes with `X-Forwarded-For` from an address the server doesn't trust is logged once, with that
+address (`event=forwarded_untrusted peer=<address>`; a server from a release after 0.1.0-beta.32). Only the right
+password logs it, so the address is the one that carried the owner's own request: behind a proxy, the proxy's.
+`render.yaml` leaves it unset, as Render publishes no address for its proxy: after a deploy, sign in, read the
+`forwarded_untrusted` line in the service's Logs, and set `AGENTRUN_TRUSTED_PROXIES` to that address (or its range,
+when Render's proxy reaches the service from more than one; sign in again after a redeploy to see whether it moved).
 
 Forgot it: run
 `agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node

@@ -201,6 +201,10 @@ export type AdapterRun = PiRun & {
    *  spec's per-claim resources let go of what they hold at once on it (the run's Archil mount credential). Absent where
    *  no loop gave one (a spec built alone). */
   readonly signal?: AbortSignal;
+  /** The claim's signal, also aborted by any stop of the run (a person's stop or cancel among them): what a spec waits on
+   *  while it is built (a CLI harness's first-use install), so a stop ends that wait at once and never the work it waits
+   *  for. Absent where no loop gave one. */
+  readonly stopped?: AbortSignal;
   /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
    *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
    *  summary). Absent where no loop gave one. */
@@ -453,6 +457,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   let stopped: () => void = () => {};
   const stopping = new Promise<void>((resolve) => (stopped = resolve));
+  /** Aborted by any stop of the run (AdapterRun.stopped, with the claim's signal). */
+  const stopAbort = new AbortController();
+  void stopping.then(() => stopAbort.abort(new Error("the run was stopped")));
   let parked: () => void = () => {};
   const parking = new Promise<void>((resolve) => (parked = resolve));
   let finished: Promise<LoopEnd> | undefined;
@@ -817,7 +824,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal, phase, rowSummaryOn };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
@@ -828,6 +835,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (error instanceof Fenced) return await interrupted("its claim was lost while its MCP credentials were made fresh");
           if (error instanceof McpClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
           if (error instanceof ClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
+          // A person's stop while the spec was built (it waited on a harness's install): the run ends stopped, in the stop's
+          // words, its row taken; the work it waited on goes on for the next run.
+          if (stopReason?.kind === "command") return await writeEnd(harness, await harness.root(context), gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId]);
           throw error;
         }
         mcp = spec.mcp;
