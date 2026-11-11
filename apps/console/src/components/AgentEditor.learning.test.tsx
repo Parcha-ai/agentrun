@@ -81,3 +81,33 @@ describe("AgentEditor, the learning switch", () => {
     expect("learning" in createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [] }).definition).toBe(false);
   });
 });
+
+describe("AgentEditor, what the agent learns: notes and skills, or workflows too", () => {
+  const choice = (host: HTMLElement, label: RegExp) => [...host.querySelectorAll('input[type="radio"][name="learning-kind"]')].find((r) => label.test(r.closest("label")?.textContent ?? "")) as HTMLInputElement | undefined;
+  it("with learning on, offers two choices in plain words, everything checked for learning: true", () => {
+    const e = mount(agentOf({ learning: true }), caps("on"));
+    expect(choice(e.host, /^Notes, skills and workflows/)?.checked).toBe(true);
+    expect(choice(e.host, /^Notes and skills only/)?.checked).toBe(false);
+    expect(e.text()).toContain("It never runs a learned workflow, and is never asked to draft one.");
+  });
+  it("is hidden while learning is off", () => {
+    const e = mount(agentOf(), caps("on"));
+    expect(choice(e.host, /^Notes and skills only/)).toBeUndefined();
+  });
+  it("a definition that says learning: \"notes\" shows the switch on and Notes and skills only checked; choosing everything saves learning: true", async () => {
+    const e = mount(agentOf({ learning: "notes" }), caps("on"));
+    expect(e.sw()!.getAttribute("aria-checked")).toBe("true");
+    expect(choice(e.host, /^Notes and skills only/)?.checked).toBe(true);
+    await e.click(choice(e.host, /^Notes, skills and workflows/)!);
+    await e.save();
+    expect(e.saves[0].learning).toBe(true);
+  });
+  it("choosing Notes and skills only saves learning: \"notes\", and a new agent created so says it", async () => {
+    const e = mount(agentOf({ learning: true }), caps("on"));
+    await e.click(choice(e.host, /^Notes and skills only/)!);
+    await e.save();
+    expect(e.saves[0].learning).toBe("notes");
+    expect(editBody(agentOf({ learning: true }), e.saves[0], "").definition.learning).toBe("notes");
+    expect(createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [], learning: "notes" }).definition.learning).toBe("notes");
+  });
+});
