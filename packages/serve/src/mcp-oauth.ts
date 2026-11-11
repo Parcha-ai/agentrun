@@ -312,19 +312,20 @@ export class McpSignIns {
    *  names a registration endpoint (dynamic client registration), or says it takes a client metadata document and this
    *  server can offer one. Read by the same discovery a start makes, behind the same guard; `registration: false` when it
    *  publishes no metadata or the metadata offers neither; `callback`, the callback URL a hand-made app names. undefined
-   *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. */
-  async registration(url: URL): Promise<{ registration: boolean; callback: string } | undefined> {
-    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed() });
+   *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. `stop`: the
+   *  preview's, so a server that stops cuts the discovery's requests and lookups with the preview's own. */
+  async registration(url: URL, stop?: AbortSignal): Promise<{ registration: boolean; callback: string } | undefined> {
+    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed() }, stop);
     return found && { registration: found.registration, callback: this.callback };
   }
 
   /** The discovery registration() reads, with what it found (`state`, as the SDK's auth() keeps a discovery), so a
-   *  start that checked it hands it to auth() instead of discovering the same server again. */
-  private async discovered(url: URL, reach: Reach): Promise<{ registration: boolean; state: OAuthDiscoveryState } | undefined> {
+   *  start that checked it hands it to auth() instead of discovering the same server again. `stop` cuts its requests. */
+  private async discovered(url: URL, reach: Reach, stop?: AbortSignal): Promise<{ registration: boolean; state: OAuthDiscoveryState } | undefined> {
     const seen: Seen = {};
     let info: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>["discoverOAuthServerInfo"]>>;
     try {
-      info = await (await sdk()).discoverOAuthServerInfo(url, { fetchFn: guarded(undefined, url.href, this.network, seen, reach) });
+      info = await (await sdk()).discoverOAuthServerInfo(url, { fetchFn: guarded(stop, url.href, this.network, seen, reach) });
     } catch {
       return undefined;
     }
