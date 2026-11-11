@@ -14,9 +14,8 @@ const GUARD_MS = 30_000;
 const URL_ = "https://downloads.example/dl/";
 const CHILD = `
 import { monitorEventLoopDelay } from "node:perf_hooks";
-const [dist, local, fixture, chars, which, options, shape] = process.argv.slice(1);
-const { readPage } = await import(dist);
-const { httpBackup } = await import(local);
+const [dist, fixture, chars, which, options, shape] = process.argv.slice(1);
+const { publicFetch, readPage } = await import(dist);
 const { downloadsPage, shapedPage } = await import(fixture);
 const { html, first, last } = shape ? shapedPage(shape, Number(chars)) : downloadsPage(Number(chars));
 const held = monitorEventLoopDelay({ resolution: 10 });
@@ -27,18 +26,18 @@ let error = null;
 try {
   if (which === "readPage") page = await readPage(html, ${JSON.stringify(URL_)}, JSON.parse(options));
   else if (which === "abort") await readPage(html, ${JSON.stringify(URL_)}, { signal: AbortSignal.timeout(200) });
-  else page = { text: await httpBackup({ lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }) }).fetch(${JSON.stringify(URL_)}) };
+  else { const answer = await publicFetch(${JSON.stringify(URL_)}, { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }) }); page = await readPage(answer.body, answer.url); }
 } catch (thrown) { error = { name: thrown?.name, message: String(thrown?.message ?? thrown) }; }
 const wallMs = performance.now() - started;
 held.disable();
 process.stdout.write(JSON.stringify({ wallMs, heldMs: held.max / 1e6, htmlChars: html.length, first, last, page, error }));
 `;
 
-/** `which` ("readPage", "abort" or "httpBackup") on a generated page of `chars` characters (downloadsPage's, or
+/** `which` ("readPage", "abort" or "publicFetch") on a generated page of `chars` characters (downloadsPage's, or
  *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. */
 function inChild(which, chars, options = {}, shape = "") {
   return new Promise((resolve, reject) => {
-    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("../dist/coding-agent-local.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape];
+    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape];
     const child = spawn(process.execPath, ["--input-type=module", "-e", CHILD, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
@@ -98,8 +97,8 @@ test("a read whose signal ends mid-conversion stops at once, with the signal's r
   assert.equal(run.error?.name, "TimeoutError");
 });
 
-test("the local coding agent's web backup reads a 3 MB page within 10 s without holding the event loop", async () => {
-  const run = await inChild("httpBackup", 3_000_000);
+test("a 3 MB page fetched through the public-host guard and read is done within 10 s without holding the event loop", async () => {
+  const run = await inChild("publicFetch", 3_000_000);
   quick(run, 10_000);
   assert.match(run.page.text, row(run.first));
   assert.ok(!run.page.text.includes(run.last));
