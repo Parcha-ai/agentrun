@@ -28,9 +28,8 @@
 //   from mount name to a mount, so one disk can be mounted twice, each a different folder (the types allow it; the docs
 //   neither promise nor forbid it). It answers once the line ended, with stdout and stderr as text (cut by Archil
 //   somewhere below 14 MB, measured live) and the exit code. The SDK retries it only when the connection failed, so a
-//   line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1). `network` sets the
-//   container's egress (`{ egress: { default: "deny" } }`: nothing but the disk's own mounts, which Archil keeps
-//   reachable); Archil refuses it on a plan without network policies (its Free plan).
+//   line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1); serve's claim names
+//   DEFAULT_ARCHIL_EXEC_IMAGE unless the owner saved another (archil-settings.ts).
 import type { Archil as ArchilClient, Disk as SdkDisk } from "disk";
 
 /** One object of a listing: its whole key, its size in bytes, and its time (S3's lastModified, in ms) when the listing
