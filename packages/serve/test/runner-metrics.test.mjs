@@ -86,3 +86,15 @@ test("a run's decisions are their own session's spend, never its model requests'
   assert.equal(decisions, 0.00002);
   assert.equal(runEndCost({ model, paid: 0, decisions }), 0.002 + 0.00002, "counted once");
 });
+
+test("bookedSpend reads an answer with no price of its own as a cost unknown, never the hold the cap booked it at ($0 with no cap)", async () => {
+  const { bookedSpend } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const entries = [
+    e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }),
+    e(7, 2, "runner.request", { turn: 1, model: "not-a-catalog-model", heldUsd: 0 }),
+    // Answered at no known price (a model serve has no price for): the booking's rule books it at its hold for the cap.
+    e(7, 3, "runner.turn", { turn: 1, usd: null, bookedUsd: 0, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
+  ];
+  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0, unpriced: 1, requests: 1, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } });
+});

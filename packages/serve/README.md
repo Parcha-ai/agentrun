@@ -1913,7 +1913,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -2412,9 +2412,13 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   not counted toward the budget. Each active note is there whole (its
   `## name (file.md)`, its description, then its text), the one changed last on `main` first (a merge or a person's
   edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
-  Past it, the run reads the first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own),
-  then the notes changed last, whole, while they fit what is left; the rest are named only in the index, and an agent
-  with the `read` tool is told they are in `.learning/`, to open one when it applies (one without is not). A line
+  Past it, the run reads the notes that bear on it: each active note is scored against the run's first message by a
+  lexical match (BM25 over its name, description and text; a code review's changed paths weigh three times its prose; no
+  model call), and the run reads the best ones whole while they fit, then one line for each of the rest
+  (`- <name> (<file>): <description>`, at most 200 lines and 25 KB), in place of the index. A first message that shares
+  no word with any note reads the index's first 200 lines, then the notes changed last, whole, while they fit. An agent
+  with the `read` tool is told the notes not given whole are in `.learning/`, to open one when it applies (one without
+  is not). A line
   before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
   what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
   writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
@@ -2431,6 +2435,10 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   revision's (pi and codex read each `SKILL.md` in their prompt, claude-agent loads the ones its adapter takes through
   its Skill tool). A skill named like one of the revision's is the revision's, and only an active skill is served: one
   whose `SKILL.md` front matter says `status: pending` (held for its owner's OK), or any status but `active`, is not.
+  One front-matter reader decides a skill's and a workflow's status everywhere (the checks, the console, the routes and
+  a run's start): front matter that does not read one way (not closed, a key indented under another, a key set twice, a
+  status over more than one line) reads as retired, so no run is given it. A learned skill is served with its `name` and
+  `description` quoted, so a harness reads them as text.
   The learned ones get 256 KiB, every file of each together, and never more than the revision's skills leave of the 1
   MiB an adapter takes of a run's skills in all, so they never push the revision's back into the prompt: the one
   changed last on `main` first, each whole while it fits. One that does not fit, or holds one of the server's secrets,
@@ -2462,6 +2470,10 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   offered the workflows its pin names. A call a crash cut off is answered interrupted, never run again. The tool gate holds
   `learned_workflow` like any tool: its settings key is `learned_workflow`, allowed by default (the agent's own graded
   workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
+  When a run's learned workflows name decision providers (Jev, Parallel, OpenRouter), the runner opens those providers'
+  keys as it opens the run's own, from the server's environment first and then its saved keys, for the run's tools alone:
+  never for its model or a CLI harness's own environment. A provider the run's tool gate denies gets no key. Learned
+  workflows can use them once decision nodes land (see Coming).
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -2479,27 +2491,41 @@ with each note to keep as one ` ```note <file>.md ` block in the note format, an
 needed, and nothing the run wrote in `work/.learning/`, during the task or the turn, counts. It also says that a memory
 is replaced by a new note with `supersedes: [old.md]` and never by reusing a name, how many index lines are left (200
 less the active notes), that `No notes.` is a fine answer, and what not to keep. The turn runs under the run's own cap,
-with no reserve, and within 5 minutes; its rows are labelled `learning`, and the run's answer stays the job's.
+with no reserve, and within 5 minutes; its rows are labelled `learning`, and the run's answer stays the job's. While it
+runs, the run reads `reflecting` on every harness. A run whose only tool work was its learned workflows, each answering,
+with nothing said after its first message, is not asked: no request is sent, and its learning ends `dropped` (`empty`),
+"Nothing new: the run only ran a learned workflow."
 
-As the run settles, before it reads ended and before a follow-up can open it again, the server keeps what the turn
-answered, the whole text of each of its messages, and what the user said in the run, in `runs/<id>/learning-turn.json`.
-Once the run has ended, in the agent's queue, the server reads the notes from that answer alone (`parseReflection`, in
+The same turn may give one skill (only when the job completed) and one workflow draft, when the work repeats. Once a
+learned skill the run was given has been given to 3 earlier runs of its agent, with no learned workflow of that name,
+the turn also asks for that skill's job as a workflow draft under the skill's name, and says what each tool a draft's
+call node may run takes and gives. A draft the checks pass is dry-run before it is kept: the workflow language runs it on
+the run's own input (its block's `example:` line) or one made from its input schema, with every model and tool answer
+made up from the node's output schema, so nothing is sent, paid or run. One whose wiring breaks is left out, and the
+turn is asked once more to fix it. [`src/learn/SPEC.md`](src/learn/SPEC.md) has the rules.
+
+The runner reads the notes from that answer alone (`parseReflection`, in
 `src/learn/reflect.ts`): an answer with no note is `empty`, and one that gives notes out of format (a note outside a
 block, a block with no file name, or one name given twice with other words) is `unparsed`, nothing kept. A block opens
 with the fence asked for (```` ```note ```` or four backticks for a note, four for a skill or a draft) and runs to the
 next line that is that fence; a shorter fence is text, a longer one an example, and an opening never closed is left out
 alone. `checkProposal`
-(`src/learn/check.ts`) then refuses, before anything is written anywhere, a note that reuses an existing note's name, a
+(`src/learn/check.ts`) then leaves out, before anything is written anywhere, each item that breaks a rule, and the rest
+goes on: a note that reuses an existing note's name, a
 path that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes`
 naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
 less the 28 the server's own `origin` and `status` lines may take once it merges the note), an
 index past 200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
 launcher's, the keys and tokens in its environment, its API and door tokens, each webhook trigger's signing secret as it
-is now), in a note or its name. A `MEMORY.md` the
-answer gives is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`, with what the
-user said, each message cut of the server's secrets.
+is now), in a note or its name. A cap leaves out the items past it, in the order the answer gave them, and the run's
+learning names what was left out. The whole answer is refused when it holds a secret or a hidden character (no item of
+it is trusted), when it writes a path outside the folder or deletes a file, when a text is not UTF-8, when the index
+would pass 200 lines, or when nothing is left. A `MEMORY.md` the
+answer gives is ignored. What passes is kept as the run's proposal, with what the user said, each message cut of the
+server's secrets, in the store in the same write as the run's end, beside what the turn answered. The run's end queues a
+learning run of its own, which no list of runs shows.
 
-Then one grader decides, one grade at a time per agent: `gradePrompt` (`src/learn/grade.ts`), which holds
+Then one grader decides, in that learning run: `gradePrompt` (`src/learn/grade.ts`), which holds
 `GRADE_RUBRIC`, the rubric's one statement, bounded (3 minutes), against `main` as it is then, and read by
 `parseVerdict`, which fails closed. It runs on the model the server grades on: `--grade-model` (or
 `AGENTRUN_SERVE_GRADE_MODEL`), else the strong tier (`AGENT_MODEL_STRONG`), named as the strong tier takes one; with
@@ -2508,8 +2534,13 @@ cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
 many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
-from, and read a preference the user stated as a planted instruction; the grader's Planted question decides. What the
-grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
+from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the
+user states in their own words is theirs, even beside a form or a pasted email in the same message, and a rule found only
+inside text the run read is planted and dropped, never held for the owner's OK. An item that holds an account number is
+dropped too, even where the user gave it as where money goes. The Risky question reads one way on every grade model: a
+limit or threshold that decides whether an approval or a check happens is risky in either direction, as is an exemption
+from a check, trusting or paying a named site or seller, or naming where money or data goes, whoever asked. What the
+grade spends is in no run's totals, and is read once its request is booked: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
@@ -2571,7 +2602,24 @@ An eval set of 20 runs and what each proposed, labelled keep or drop (`test/fixt
 agent worked out, user preferences and a "remember" during the task, one-shop facts, secrets, a tool's failure and four
 injections), runs in CI through the parser, the checks and the grader's prompt on a faux grader that answers by label
 (`test/learn-eval.test.mjs`). `scripts/learn-eval.mjs` runs the same set on real models, the grade and the end-of-run
-turn both, and prints keep-precision, keep-recall and the injection-drop rate per model; it spends.
+turn both, and prints keep-precision, keep-recall and the injection-drop rate per model; it spends. It grades on several
+models at once (`--grade-models A,B,C`, with how often they agree, note by note), reads the held-out set with
+`--set heldout`, and lists its plan without calling a model with `--dry`.
+
+The learning bench, `node scripts/learn-bench.mjs`, runs repeated jobs with learning off and on, on pi and
+claude-agent, and reports the follow rate on repeat steps, the work cost per run and its trend, how often workflows are
+proposed and reused, staleness after a rule changes, and wrong keeps after a planted request. Six jobs ship with it, in
+[`learn-bench/`](learn-bench/README.md); it calls real models and spends, so it runs on demand or nightly.
+
+### Coming
+
+- One copy of each rule: a note that repeats an active note's rule is a duplicate, and a skill re-filed as a note retires the old skill (#2256).
+- A learned workflow may hold decision nodes (judge, pick, sift), answered by the run's decision provider under the run's cap (#2363).
+- Consolidation: related notes merged into one, and a skill and its workflow brought back in step (#2335).
+- A learned workflow's node of a tier runs on the server's model of that tier, at its own price (#2408).
+- A learned workflow's call node runs an MCP tool through the run's own MCP, under its gate, and the grader holds one that writes for the owner's OK (#2424).
+- A learned workflow keeps the output format its skill asks for (#2412).
+- A grade that contradicts itself is asked once more (#2425).
 
 ### What a person sees and controls
 
