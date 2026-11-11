@@ -13,6 +13,10 @@ const MIME: Readonly<Record<string, string>> = {
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xml": "application/xml", ".zip": "application/zip",
 };
 
+/** The media type browser_upload gives a file named `name`, by its extension; application/octet-stream for one it does
+ *  not know. */
+export const uploadMime = (name: string): string => MIME[path.extname(name).toLowerCase()] ?? "application/octet-stream";
+
 // Where the opened file really is, so a parent directory swapped for a symlink after the check is caught.
 async function openedPath(handle: FileHandle, checked: string): Promise<string | null> {
   if (process.platform === "linux") return readlink(`/proc/self/fd/${handle.fd}`).catch(() => null);
@@ -47,7 +51,7 @@ export function workspaceFiles(root: string, { maxBytes = MAX_UPLOAD_BYTES, refu
         let size = 0;
         for (let read; size < buffer.length && (read = (await handle.read(buffer, size, buffer.length - size, size)).bytesRead) > 0; size += read);
         if (size !== info.size) return { refused: `${rel} changed while it was read; try again` };
-        return { bytes: new Uint8Array(buffer.subarray(0, size)), name: path.basename(where), mime: MIME[path.extname(where).toLowerCase()] ?? "application/octet-stream" };
+        return { bytes: new Uint8Array(buffer.subarray(0, size)), name: path.basename(where), mime: uploadMime(where) };
       } finally {
         await handle.close();
       }
