@@ -37,7 +37,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -55,6 +55,7 @@ import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, vi
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
+import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
@@ -93,8 +94,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secre
 import { bootSealKey, withSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
-import { outcomes } from "./usage.js";
+import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -104,7 +104,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -122,7 +122,7 @@ import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -178,6 +178,9 @@ const LINK_REFUSED = "A link is on the way to this path, or is the file: this se
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
   data: string;
+  /** On Postgres: told when this server's owner lock is lost for good (another server took the schema, or the lock could
+   *  not be taken back): every store call is refused from then. The CLI exits 1 on it, so the platform restarts the server. */
+  onStoreLost?: (error: Error) => void;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
   /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
@@ -333,8 +336,6 @@ export type ServeOptions = {
   /** With `faux` only: the door nonce each run's process is handed in place of its launch's own, so its door answers the
    *  launch's proof wrongly (a test of a door that fails its proof). */
   fauxHandedNonce?: string;
-  /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
-  reflectTimeoutMs?: number;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -343,8 +344,8 @@ export type ServeOptions = {
    *  its agent's definition says, and its `learning` is null. */
   learning?: LearningMode;
   /** How much of what a run learned its instructions hold under `# Learned`, in UTF-8 bytes (`--learning-budget`;
-   *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the index and the notes
-   *  changed last, whole, while they fit (learning.ts learnedOf). */
+   *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the notes that bear on
+   *  the run's input whole and a line for each of the rest (learning.ts learnedParts, its note selector). */
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
@@ -849,7 +850,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
   // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
-  const store = await openStore({ dataDir: data, role: "server" });
+  // A server deploying while the old one still holds the schema waits for it (said once), never exits at once.
+  const store = await openStore({
+    dataDir: data, role: "server",
+    warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`),
+    ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
+  });
   stops.push(() => store.close());
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
@@ -1112,7 +1118,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
   const computerReady = async (setting: { kind: string; provider?: string }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers);
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1221,12 +1227,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     modelOf,
     // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
     // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
-    // (git), and the host's secrets as they are shown now to cut the notes a run is given. runs-over-store.learningStartFor
-    // pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed that cannot be read starts the run
-    // with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
+    // (git), and the host's secrets as they are shown now to cut the notes a run is given, a loopback address kept (local),
+    // as the run's .learning/ files keep it: the run's own machine, which an agent with no read tool learns of only here.
+    // runs-over-store.learningStartFor pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed
+    // that cannot be read starts the run with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
     // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
     learning,
     learningBudget,
+    // The model the server names to grade what a run proposes (capabilities' learning.grade_model), carried on each learning
+    // start for the runner's learning run to grade on: none, the agent's own.
+    ...(gradeModelOf(env, options.gradeModel) ? { gradeModel: gradeModelOf(env, options.gradeModel) } : {}),
     seedFor: async (agentId: string) => {
       // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
       // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
@@ -1238,13 +1248,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         },
       );
     },
-    shown: () => secretsShown(serverSecrets()),
+    shown: () => secretsShown(serverSecrets(), { local: true }),
   };
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
   // The run's key read from this server's environment with the keys a person saved, as its Timeline reads it (keyEnv below).
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) });
+  // The learning routes' cut: the server's secrets and agent `agentId`'s own sign-in pointers, live and forgotten; 403 when
+  // one of them can't be read here (agentPointers), never a shorter cut.
+  const learningValues = async (agentId: string): Promise<string[]> => {
+    const pointers = await agentPointers(signIns, agentId);
+    if (pointers === "unreadable") throw new ApiError("forbidden", WITHHELD_LEARNING);
+    return [...serverSecrets(), ...pointers];
+  };
+  const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
+  // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
+  const statuses = (agentId: string) => statusesOf(data, agentId);
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1270,7 +1290,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) }, forStore, runId, context),
+    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses }, forStore, runId, context),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -2138,8 +2158,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (usd === null) total.unpriced++;
       total.usd += usd ?? soFar;
     }
-    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
-    for (const entry of (await outcomes(data)).values()) {
+    // What learning spent on this server, outside any run (store-reads/learning.ts learningSpendOverStore): each run's grade, on
+    // the day its learning ended.
+    for (const entry of await learningSpendOverStore(store, { from, to })) {
       const at = Date.parse(entry.at);
       if (at >= from && at < to) add(lineKey(entry.agent, entry.at, "learning"), entry.cost);
     }
@@ -2931,14 +2952,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, withDefaults(settings.get()));
       }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
-      // they are now; a write as the definition's: an archived agent's too.
+      // they are now and of the agent's own sign-in pointers, live and forgotten (agentPointers); a write as the
+      // definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
         // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
         // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
         // launch, journal and learning end.
         const { counts, impact, notes } = await agentLearningOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
+        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -2946,12 +2968,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (found.name === "listLearningNotes") {
           // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
           const { notes } = await agentLearningOverStore(store, id);
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
+          return send(res, 200, await learningNotes(data, id, url.searchParams, await learningShown(id), notes));
         }
-        return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
+        return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id)));
       case "readLearningFile":
         await needAgent(id);
-        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(serverSecrets())));
+        return sendNote(res, 200, await readNote(data, id, second!, await learningShown(id)));
       case "writeLearningFile":
       case "retireLearningFile":
       case "approveLearningFile":
@@ -2959,18 +2981,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: serverSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
+        // What it refuses is what the reads cut: a note shown cut is never saved over the hidden text.
+        const refuse = await learningValues(id);
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
-        const shown = secretsShown(serverSecrets());
+        const shown = secretsShown(refuse);
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
       case "getRunLearning": {
         const run = await needRun(id);
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
-        // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
+        // from its launch, what it holds for the owner's OK as the store's run view reads it (on its folder's main), as main.
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
-        return send(res, 200, await servedRunLearning({ serverSecrets, signIns }, store, run.id));
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, statuses }, store, run.id));
       }
       case "getRunLearningDiff": {
         const run = await needRun(id);
@@ -3251,15 +3275,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const heldReadAt = new Map<string, number>();
   const HELD_WAIT_REREAD_MS = 1_000;
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
-  /** The wait of a run its runner left parked (or let go of), told once as main told it: its marker the run's last row
-   *  that shows (not usage, a phase or learning's), its kind the pending card's (a stop's when it waits on no card). */
+  /** The wait of a run its runner left parked (or let go of), or holds in its claim, told once per ask: its marker the
+   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (a stop's when it waits on no card). */
   const tellWait = async (row: RunRow): Promise<void> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
     if (readWaits.get(row.id) === seen) return;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
-    const marker = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== LEARNING_LABEL)?.id;
+    // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last.
+    const marker = waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
     if (!marker) return void readWaits.set(row.id, seen);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";

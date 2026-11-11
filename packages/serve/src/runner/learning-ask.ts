@@ -16,6 +16,10 @@ import { policyFor } from "./adapters/pi.js";
 import type { LearningLoopDeps } from "./learning-loop.js";
 import { journalSessions } from "./sessions.js";
 
+/** How long the ask waits, once the grade answered, for the proxy to book its request: the proxy books a request after its
+ *  client has the whole answer (when the provider's stream ends, which can come later), so the spend is read once it is
+ *  booked. One booked later than this reads unknown (null), never $0. */
+export const GRADE_BOOKING_WAIT_MS = 10_000;
 /** The session the grader's requests are booked under, in the learning run's journal. */
 export const GRADE_SESSION = "learning.grade";
 const PROVIDER = "agentrun-grade";
@@ -65,6 +69,8 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
       // The cap is the learning run's: asked with every session of the run summed, never this one's alone.
       const hostCheck = options.beforeRequest ? runBooking(sessions, options.beforeRequest) : undefined;
       let refused: Refusal | undefined;
+      // Told once the grade's own request is booked (its request_end), never by a cut request booked before it.
+      let booked: (() => void) | undefined;
       const booking = await modelPortFor(writer, {
         key: GRADE_SESSION,
         label: "grade",
@@ -76,11 +82,13 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         // The rule before a side effect: the request's record is durable before the request leaves.
         onEvent: async (event) => {
           if (event.type === "request_start") await run.flush();
+          if (event.type === "request_end") booked?.();
         },
       });
       // A grade request an earlier attempt sent and a crash cut is booked first, at its held figure.
       await booking.bookCut();
       const before = booking.spentUsd();
+      const bookedOnce = new Promise<true>((resolve) => (booked = () => resolve(true)));
       // The policy of the route's wire, as pi's session takes it (pi.ts policyFor: claude-agent's on Messages, codex's on
       // Responses, no fork); the grade offers no tool.
       const proxy = await startModelProxy({
@@ -102,7 +110,12 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         if (refused) throw new Error(refused.refuse);
         if (answer.stopReason === "error" || answer.stopReason === "aborted") throw new Error(`the grade's request failed: ${answer.errorMessage ?? answer.stopReason}`);
         const text = answer.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");
-        const after = booking.spentUsd();
+        // The spend once the proxy booked this request: read before, it is the spend without it ($0 for the grade). Not
+        // booked within the wait: unknown.
+        let timer: NodeJS.Timeout | undefined;
+        const inTime = await Promise.race([bookedOnce, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), GRADE_BOOKING_WAIT_MS)))]);
+        clearTimeout(timer);
+        const after = inTime ? booking.spentUsd() : null;
         const usd = before === null || after === null ? null : after - before;
         // pi-ai counts cache reads and writes apart from input, as the grade's tokens do.
         const used = answer.usage;

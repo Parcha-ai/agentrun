@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { EGRESS_MOUNT, EGRESS_SOCKET, type EgressCode, egressNameOf, egressOf, policyWords, RELAY_FLAG, sameAllow } from "./docker/egress.js";
 import { type DockerVolume, engineOf, subpathOf } from "./docker/volume.js";
 import { type MountReadBack, WORKSPACE } from "./mount.js";
-import type { ComputerKind, Group, HelloResult } from "./protocol.js";
+import { type ComputerKind, type Group, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
@@ -355,6 +355,11 @@ export function mountOf(inspected: DockerInspect | null | undefined, volume?: Do
 /** Every way hello differs from what the provider expects. */
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {
 	const found: string[] = [];
+	// Another protocol version is another wire. A hello with none is a daemon from before the protocol was versioned,
+	// which the version check below already refuses as another daemon.
+	if (hello?.protocol !== undefined && hello.protocol !== PROTOCOL_VERSION) {
+		found.push(`hello: the daemon speaks protocol ${text(hello.protocol)}, expected ${PROTOCOL_VERSION}`);
+	}
 	if (hello?.version !== expected.version) found.push(`hello: the daemon reports version ${text(hello?.version)}, expected ${expected.version}`);
 	if (hello?.os !== "linux") found.push(`hello: the daemon reports os ${text(hello?.os)}, expected linux`);
 	if (expected.arch !== undefined && hello?.arch !== expected.arch) {

@@ -132,7 +132,7 @@ function verdictOf(rules, files, faux) {
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
-    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
+    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, decision: kept(file) ? "keep" : "drop", ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
   }));
 }
 
@@ -144,6 +144,9 @@ export default function reply(context, faux) {
   const system = systemOf(context);
   // The folder as the prompt names it, relative to the run's workspace, where pi's file tools resolve it.
   const asked = /^The task is done\.[\s\S]*?Your notes from earlier runs are in `([^`]+)`/.exec(last);
+  // The runner's one re-ask of an answer its parser refused (learn/reflect.ts reflectAgain) is the end-of-run turn too:
+  // answered as the turn was.
+  const again = /^Your answer could not be read: /.test(last);
   const done = context.messages.slice(context.messages.findLastIndex((m) => m.role === "user")).filter((m) => m.role === "toolResult").length;
   const writes = /^Write: (\[.*\])$/m.exec(last)?.[1];
   if (writes) {
@@ -152,23 +155,23 @@ export default function reply(context, faux) {
     return faux.message(faux.toolCall("write", { path: `.learning/${files[done][0]}`, content: files[done][1] }), { stopReason: "toolUse" });
   }
   // The job's own turn: a person's "remember" written down first, then any scribbles, then its answer.
-  if (!asked) {
+  if (!asked && !again) {
     const said = /Remember for next time: (.+)/.exec(last)?.[1];
     const notes = [...(said ? [["notes.txt", `${said}\n`]] : []), ...JSON.parse(/^Scribble: (\[.*\])$/m.exec(system)?.[1] ?? "[]")];
     if (done < notes.length) return faux.message(faux.toolCall("write", { path: `.learning/${notes[done][0]}`, content: notes[done][1] }), { stopReason: "toolUse" });
     if (said) return faux.message("Got it: I saved that in .learning/notes.txt.");
   }
-  if (!asked && /Fail the job\./.test(system)) return faux.message("", { stopReason: "error", errorMessage: "the faux job failed on purpose" });
+  if (!asked && !again && /Fail the job\./.test(system)) return faux.message("", { stopReason: "error", errorMessage: "the faux job failed on purpose" });
   const held = /Answer once (\S+) exists\./.exec(system)?.[1];
-  if (!asked && held) {
+  if (!asked && !again && held) {
     return (async () => {
       while (!(await access(held).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
       return faux.message(answerOf(system));
     })();
   }
   const reads = readsOf(system);
-  if (!asked && done < reads.length) return faux.message(faux.toolCall("read", { path: reads[done] }), { stopReason: "toolUse" });
-  if (!asked) return faux.message(answerOf(system));
+  if (!asked && !again && done < reads.length) return faux.message(faux.toolCall("read", { path: reads[done] }), { stopReason: "toolUse" });
+  if (!asked && !again) return faux.message(answerOf(system));
   return (async () => {
     const gate = /Reflect once (\S+) exists\./.exec(system)?.[1];
     while (gate && !(await access(gate).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));

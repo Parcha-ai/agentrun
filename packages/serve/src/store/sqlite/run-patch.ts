@@ -13,6 +13,10 @@ import { writeLaunch } from "./run-launch.js";
  *  runner, no box: its only writes are the learning folder's one script). */
 /** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
  *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
+/** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
+ *  list of runs names. */
+export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
+
 export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of

@@ -126,7 +126,7 @@ Over a cap is refused, never cut.
 
 | Rule | Meaning |
 | --- | --- |
-| `too_many_files` | more than 64 changed paths |
+| `too_many_files` | a changed path past the 64th, named unread |
 | `outside` | a path that is not a `.md` file at the folder's top, a skill's `SKILL.md` or a draft's two files |
 | `file_name` | a `.md` file whose name is not a note's, or a skill's or draft's folder whose name is not one |
 | `file_mode` | a link, a folder or anything else that is not a regular file |
@@ -135,18 +135,18 @@ Over a cap is refused, never cut.
 | `deleted` | a file that was there, gone: a note, a skill or a draft's file |
 | `exists` | a new file whose name the folder holds, a superseded note's included |
 | `too_large` | a note over 4096 bytes; a run's note over 4068; a skill's `SKILL.md` or a draft's JSON over 16384, its README over 1024 |
-| `too_many_notes` | more than 8 new notes |
+| `too_many_notes` | a new note past the 8th |
 | `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind, in a note or its name |
 | `secret_value` | a value the host holds as secret, in a note or its name |
 | `note` | front matter missing or out of shape |
 | `status` | a note that sets `status`, `superseded_by` or `origin`, or a skill that sets `status` |
-| `supersedes` | `supersedes` naming a note that is not active, or one another new note supersedes too, or more than 8 notes superseded |
+| `supersedes` | `supersedes` naming a note that is not active, or one another new note supersedes too, or a note that takes the notes superseded past 8 |
 | `index_full` | the index would pass 200 lines |
 | `skill` | a `SKILL.md` whose front matter does not name its folder or has no description |
 | `skill_outcome` | a skill from a run whose job did not complete |
-| `too_many_skills` | more than one skill added or changed |
-| `too_many_workflows` | more than one workflow draft added or changed |
+| `too_many_skills` | a skill added or changed past the first |
+| `too_many_workflows` | a workflow draft added or changed past the first |
 | `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, a README that does not name its folder or has no description, or one of the two files without the other |
 | `no_tool_list` | a draft that names a tool, checked with no tool list |
 | `executable_node` | a draft with a `code` node, or a call via shell or executor |
@@ -160,11 +160,13 @@ Over a cap is refused, never cut.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked
-  again and goes on to the grader, and the run's learning names what was left out (`problems`). The whole proposal is
-  refused when a problem names no item it proposed, when its rule refuses the whole (`too_many_files`, `too_many_notes`,
-  `too_many_skills`, `too_many_workflows`, `outside`, `deleted`, `index_full`, `encoding`) or must never be stored
-  (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not trusted for any item), or when the rest
-  is refused again, with both passes' problems. Before any item is kept, every name and text
+  again, until it passes, and goes on to the grader, and the run's learning names what was left out (`problems`). A
+  count cap names the items past it, in the order the answer gave them whatever their kind, and a size cap the item
+  over it: one oversized or extra item is left out, the rest kept. A note left out past the supersedes cap holds
+  nothing as superseded for the notes after it. The whole proposal is refused when a problem names no item it proposed,
+  when its rule refuses the whole (`outside`, `deleted`, `index_full`, the notes' total, which no one item is past,
+  `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
+  trusted for any item), or when nothing is left, with every pass's problems. Before any item is kept, every name and text
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
 

@@ -1,43 +1,15 @@
-// A run's learning, as the server reads it from a run's rows and the runs' rows: which rows its end-of-run turn made
-// (reflects, labelled), the notes it read (notesRead), how the runs that tried to learn fared (learningStats), and an
-// agent's impact (noteRuns, learningImpact). The runner runs the end-of-run turn itself (runner/reflect-hook.ts).
+// A run's learning, as the server reads it from a run's rows and the runs' rows: the notes it read (notesRead), its
+// learning row once its learning ended (withLearning), how the runs that tried to learn fared (learningStats), and an
+// agent's impact (noteRuns, learningImpact). Which rows its end-of-run turn made is reflect-range.ts's (reflects,
+// labelled). The runner runs the end-of-run turn itself (runner/reflect-hook.ts).
 import { posix } from "node:path";
 import { INDEX_FILE } from "./learn/index.js";
 import { type AnalyticsFilter, type RunRow } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { LEARNED_DIR, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS } from "./learning.js";
-import type { Status } from "./run-view.js";
-import { said } from "./learning-words.js";
+import { detailShown, LEARNED_DIR, type Learning, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, type Shown } from "./learning.js";
+import { type Reflect, reflects } from "./reflect-range.js";
 import type { NoteFiles } from "./usage.js";
 
-/** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
- *  after it (its rows are those between), its deadline, and how it ended. */
-export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
-/** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
- *  with, at its one call (reflectTurn); the tool gate reads it there and refuses that turn's writes under work/.learning/ (tool-gate.ts NOTE_ONLY_TEXT). */
-const REFLECT_ORIGIN = "reflect";
-export type TurnOrigin = typeof REFLECT_ORIGIN;
-/** A row's store entry, from its id (`<conversation>:<entry>[:...]`); NaN for a row no entry made (a live one, usage). */
-const entryOf = (id: string) => Number(id.split(":")[1]);
-/** Whether entry `id` (a number), or the row `id`, is the end-of-run turn's. Before the run has ended every later entry
- *  is, and so is a live row. */
-export function reflects(reflect: Reflect | undefined, id: string | number): boolean {
-  if (!reflect) return false;
-  const entry = typeof id === "number" ? id : entryOf(id);
-  if (Number.isInteger(entry)) return entry > reflect.after && (reflect.until === undefined || entry <= reflect.until);
-  return reflect.until === undefined && typeof id === "string" && id.includes(":live:");
-}
-/** `rows` with the end-of-run turn's labelled: never the run's answer (meaningful skips the label), its answer shown as
- *  a text row, and its message as the host's, in a person's words (learning-words.ts): what the model is asked stays in
- *  the run's store, and no row shows it. */
-export function labelled(reflect: Reflect | undefined, rows: TimelineEvent[]): TimelineEvent[] {
-  if (!reflect) return rows;
-  return rows.map((row) => (!reflects(reflect, row.id) ? row : {
-    ...row, agent_label: LEARNING_LABEL,
-    ...(row.kind === "final_answer" ? { kind: "text_block" as const } : {}),
-    ...(row.kind === "user_message" ? { summary: said.asked, text: said.asked } : {}),
-  }));
-}
 /** A path that names a file at the top of a run's copy of the folder: `.learning/<file>` relative to its work, as a
  *  harness's file tools take it, or the same at the end of an absolute path (claude-agent's CLI joins its working
  *  directory; a box names its own). */
@@ -57,6 +29,22 @@ export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineE
     if (file && file !== INDEX_FILE) read.add(file);
   }
   return [...read];
+}
+
+/** The run's learning row, once its learning was proposed, merged or dropped (`seed_failed` included): its state, reason
+ *  and detail, its summary the detail itself as the run's view says it (learning.ts detailShown: cut of the host's
+ *  secrets now, `shown`, then cut short). One row, which says where the learning ended. */
+export function withLearning(rows: readonly TimelineEvent[], learning: Learning | undefined, shown: Shown): TimelineEvent[] {
+  if (!learning || learning.state === "seeded" || learning.state === "reflecting") return [...rows];
+  const detail = detailShown(learning, shown);
+  const row = {
+    id: LEARNING_LABEL, timestamp: learning.at, created_at: learning.at, kind: "learning" as const, summary: detail ?? `Learning ${learning.state}`, agent_label: LEARNING_LABEL,
+    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: detail,
+    learning: { state: learning.state, reason: learning.reason, detail },
+  };
+  // No store entry makes it: the served view adds it at each read, and learning that starts over (seeded, reflecting)
+  // has none.
+  return [...rows, row];
 }
 
 /** How the runs that tried to learn fared, over the runs the analytics' `from`, `to` and `agent` pick (by when they

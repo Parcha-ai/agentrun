@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Playground, type StartResult } from "@/components/Playground";
 import { Shell } from "@/components/Shell";
 import { agentsList, recorded, revisionsOf } from "@/fixtures";

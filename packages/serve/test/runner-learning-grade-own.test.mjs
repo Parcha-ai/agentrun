@@ -47,7 +47,9 @@ async function graded(t, { own, named, env = {}, routeOf }) {
   const deps = {
     env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32),
     computerForClaim: async () => ({ release: async () => {} }),
-    routeOf: routeOf ?? (async (model) => (asked.push(model), { provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"g"}` }, model: model ?? "the-hosts-default", price: () => 0, fetch: graderOrigin(sent) })),
+    // What the route is asked for: a model by name on the default tier, or the strong tier's model (a grade model the
+    // server named, which goes with the strong tier's settings: harness-loops.ts gradeRouteFor).
+    routeOf: routeOf ?? (async (model, env, tier) => (asked.push(tier === "strong" ? `strong:${env.AGENT_MODEL_STRONG}` : model), { provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"g"}` }, model: model ?? (tier === "strong" ? env.AGENT_MODEL_STRONG : "the-hosts-default"), price: () => 0, fetch: graderOrigin(sent) })),
   };
   const factory = await resolveRunnerLoop(deps)("learning", await store.runs.launch("learn-1"), "learn-1");
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
@@ -77,7 +79,7 @@ test("an agent whose revision names its model, with no grade model named: the gr
 });
 
 test("a grade model the server names comes before the agent's own; with neither, the host's default", async (t) => {
-  assert.deepEqual((await graded(t, { own: "anthropic/claude-sonnet-4-5", named: "openai/gpt-5" })).asked, ["openai/gpt-5"]);
+  assert.deepEqual((await graded(t, { own: "anthropic/claude-sonnet-4-5", named: "openai/gpt-5" })).asked, ["strong:openai/gpt-5"], "the named grader, as the strong tier's model");
   assert.deepEqual((await graded(t, {})).asked, [undefined], "neither: the route picks the host's default");
   assert.equal(gradeModelFor({ own: "x/y" }), "x/y");
   assert.equal(gradeModelFor({ model: "a/b", own: "x/y" }), "a/b");
@@ -87,7 +89,7 @@ test("a grade model the server names comes before the agent's own; with neither,
 test("a faux host that inherited OpenRouter's key grades a named anthropic/* model on its faux route, as named: nothing goes to OpenRouter", async (t) => {
   const refused = offLoopback(t);
   const { asked, sent, store } = await graded(t, { named: "anthropic/claude-sonnet-4-5", env: { AGENTRUN_SERVE_FAUX: "1", OPENROUTER_API_KEY: `not-a-secret-${"or"}` } });
-  assert.deepEqual(asked, ["anthropic/claude-sonnet-4-5"], "the route is asked for the model as named, not rewritten to OpenRouter");
+  assert.deepEqual(asked, ["strong:anthropic/claude-sonnet-4-5"], "the route is asked for the model as named (the strong tier's), not rewritten to OpenRouter");
   assert.deepEqual(sent, ["anthropic/claude-sonnet-4-5"], "the grade went to the faux route's origin");
   assert.deepEqual(refused, [], "no request off loopback");
   assert.equal((await runLearningEnd(store, "run-1"))?.state, "merged");
