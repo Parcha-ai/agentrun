@@ -138,3 +138,49 @@ test("a run's view is of one moment: a write landing between any two of its read
   }
   assert.deepEqual(mixed, [], "each answer is the run as it was before the write, or as it was after, never a mix");
 });
+
+/** A store whose first snapshot, once it has answered, saves a value to the server's secrets: it is saved after the rows
+ *  were read and before the cut is read again. */
+function savingAfterSnapshot(store, save) {
+  let saved = false;
+  return new Proxy(store, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "snapshot") return typeof value === "function" ? value.bind(target) : value;
+      return async (read) => {
+        const answer = await value.call(target, read);
+        if (!saved) {
+          saved = true;
+          save();
+        }
+        return answer;
+      };
+    },
+  });
+}
+
+test("a value saved after the snapshot read a row that holds it is cut from that row: the cut is read again, and the rows rebuilt under it", async (t) => {
+  const KEY = ["not-a-secret", "late-key", "0123456789abcdef"].join("-");
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Late key", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const user = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Say it.", timestamp: T0 }] };
+  const answer = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: `The key is ${KEY}.` }], usage: { cost: { total: 0.01 } }, timestamp: T0 + 1_000 }] };
+  await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: user }, { type: "entry", value: answer }], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: `The key is ${KEY}.`, costUsd: 0.01, endedAt: T0 + 2_000 });
+
+  // The held values: none when the rows are first read, the key once it is saved.
+  let held = [];
+  const secrets = () => held;
+  const saving = () => savingAfterSnapshot(store, () => (held = [KEY]));
+  const view = await viewOverStore(saving(), "run-1", { ...DEPS, serverSecrets: secrets });
+  assert.ok(!JSON.stringify(view).includes(KEY), `the view holds the key saved after its rows were read: ${JSON.stringify(view.result)}`);
+  assert.match(view.result.final_answer, /\[redacted\]/, "the answer is cut where the key was");
+
+  held = [];
+  const timeline = await servedTimelineRows({ ...SERVED, serverSecrets: secrets }, saving(), "run-1", {});
+  assert.ok(!JSON.stringify(timeline).includes(KEY), "the timeline holds the key saved after its rows were read");
+  assert.ok(timeline.some((row) => row.kind === "final_answer" && /\[redacted\]/.test(row.text ?? "")), "its answer row is cut where the key was");
+});
