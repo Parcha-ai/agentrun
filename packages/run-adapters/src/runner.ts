@@ -166,6 +166,8 @@ export interface ModelPortOptions {
   draining?: () => Error | undefined;
   /** A note the host has for the session's next main-model request, taken by the call (ModelPort.note). */
   note?: (model: string, request?: NoteRequest) => string | undefined;
+  /** A note given back by the request that took it, before its admission (ModelPort.noteReturned). */
+  noteReturned?: (note: string) => void;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string) => Error;
 }
@@ -399,6 +401,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   };
   const models: ModelPort = {
     ...(options.note ? { note: options.note } : {}),
+    ...(options.noteReturned ? { noteReturned: options.noteReturned } : {}),
     beforeRequest: (request: ModelRequest) => {
       const admitted = admitting.then(() => admit(request));
       admitting = admitted.catch(() => {});

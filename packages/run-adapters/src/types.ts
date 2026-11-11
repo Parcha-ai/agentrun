@@ -221,6 +221,9 @@ export interface ModelPort {
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
    *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
+  /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
+   *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
+  noteReturned?(note: string): void;
 }
 
 /** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs

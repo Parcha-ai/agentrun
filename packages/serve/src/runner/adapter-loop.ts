@@ -276,8 +276,8 @@ const TURN_ERROR_MAX = 500;
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
 /** How long the cap's wrap-up note, once a request took it, waits for that request's admission before a later request
- *  may take it: past it, the request that took it is taken to have gone (its client gone while the proxy counted its
- *  tokens), never to be admitted. A proxy's token count and admission take well under it. */
+ *  may take it. A request that leaves before its admission gives it back as it goes (ModelPort.noteReturned): this is
+ *  only the backstop for a path that never does. A proxy's token count and admission take well under it. */
 const WRAP_UP_OFFER_MS = 30_000;
 
 /** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
@@ -1250,8 +1250,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const capUsd = capNow();
           // One request at a time carries it: while one offered it waits for its admission, an overlapping request is not
           // offered it too (its admission tells it, or a refusal or a dropped note gives it back: below). A request that
-          // took it and never reached its admission (its client gone while the proxy counted its tokens, a body the proxy
-          // refused) says nothing back, so the offer waits WRAP_UP_OFFER_MS at most: then a later request is offered it.
+          // took it and left before its admission (its client gone while the proxy counted its tokens, a body the proxy
+          // refused) gives it back as it goes (noteReturned), so the next request takes it at once. WRAP_UP_OFFER_MS is
+          // only the backstop for a path that never gives it back: past it, a later request is offered it.
           if (wrapUp.offered && Date.now() - wrapUp.offered.at < WRAP_UP_OFFER_MS) return undefined;
           if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const note = noteFor(
@@ -1269,6 +1270,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           label: spec.session.label,
           beforeRequest,
           note: wrapUpNote,
+          // A request that took it and left before its admission gives it back: the next request may take it at once.
+          noteReturned: (note) => {
+            if (wrapUp.offered?.words === note) wrapUp.offered = undefined;
+          },
           onEvent: async (event) => {
             if (event.type === "request_start") await deps.flush();
             // The run's own priced answers, the typical cost the wrap-up is worked out by (a request the host sent beside
@@ -1419,6 +1424,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
+          ...(port.noteReturned ? { noteReturned: port.noteReturned.bind(port) } : {}),
         };
         // What the request that just answered cost, once the session's requests are booked (bookingOfAnswer): its own
         // booking's figure, null when unknown; a side request's is given and never read. A refused request's record is its $0.

@@ -489,6 +489,7 @@ function deferredHooks() {
       },
       responded: (ids: never, ticket?: never) => (port ?? missing()).responded?.(ids, ticket) ?? Promise.resolve(),
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
+      noteReturned: (note: never) => (port ?? missing()).noteReturned?.(note),
     },
     setPort: (p: typeof port) => { port = p; },
     /** Waits, at most CLOSE_MS, until every request admitted is booked, and says how many are still not. Past the bound
