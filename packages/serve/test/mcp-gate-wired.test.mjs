@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, whenFree, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const json = { "content-type": "application/json" };
@@ -37,18 +37,6 @@ async function echoGateway(t) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}`, seen };
-}
-
-/** `send`'s answer, sent again while the store answers 409 home_busy (retryable: another write holds it, such as a CLI's
- *  first-use install), after the retry_after_ms it names, as an API client does; at most 20 tries. The claude-agent
- *  deny case went red on the first busy answer to its agent's create (any-4 on #2410 and #2383). */
-async function whenFree(send) {
-  for (let tries = 1; ; tries++) {
-    const answer = await send();
-    const error = answer.body?.error;
-    if (answer.status !== 409 || error?.code !== "home_busy" || error.retryable !== true || tries >= 20) return answer;
-    await new Promise((resolve) => setTimeout(resolve, error.retry_after_ms ?? 500));
-  }
 }
 
 /** A server for `harness` with the fake MCP server saved, an owner who can answer approvals, and the run's prompt. */
