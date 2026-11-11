@@ -425,7 +425,8 @@ describe("applying a template", () => {
       expect(zone.textContent).not.toContain(raw);
     }
     expect(cron.textContent).toContain("Monday 08:00 unless you set it; set lookback_days to its gap");
-    expect(zone.textContent).toContain("UTC unless you set it");
+    // No help under the zone: the form always sends one (the browser's to start), so "UTC unless you set it" never applies.
+    expect(zone.textContent).not.toContain("UTC unless you set it");
     // Any other parameter keeps its key and its whole description.
     const topics = t.host.querySelector('[data-field="parameters.topics"]')!;
     expect(topics.querySelector("label > span")!.textContent).toBe("topics");

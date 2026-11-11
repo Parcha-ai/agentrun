@@ -94,6 +94,9 @@ export const paramLabel = (key: string, p?: Parameter): string =>
  *  lookback_days to its gap"), and nothing when it has none. Any other parameter's description is kept whole. */
 export function paramHelp(p: Parameter): string | undefined {
   if (p.type !== "string" || (p.format !== "cron" && p.format !== "timezone") || !p.description) return p.description;
+  // A time zone needs no help: the picker names the zone, and the form always sends one (the browser's to start), so a
+  // template's "UTC unless you set it" never applies here.
+  if (p.format === "timezone") return undefined;
   const colon = p.description.indexOf(": ");
   return colon < 0 ? undefined : p.description.slice(colon + 2).trim() || undefined;
 }
