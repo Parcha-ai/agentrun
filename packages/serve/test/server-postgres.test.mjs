@@ -147,13 +147,26 @@ test("a least-privilege deployment (a host's three roles): the server as the sch
   assert.equal((await api("POST", "/agents", agent("plain", { place: { mode: "runner" } }))).status, 201);
   const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  // The runner as the runtime role: it claims, journals, renews and ends the run on its grants alone.
+  // The runner as the runtime role: it claims, journals and ends the run on its grants alone.
   const runner = cli(t, ["runner", "--data", data], { ...storeEnv(root, runtime.url, schema), AGENTRUN_RUNNER_NAME: "runner-runtime", AGENTRUN_SERVE_FAUX: FAUX });
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
-  runner.once("exit", (code) => err.push(`exited ${code}`));
+  const runnerExit = new Promise((resolve) => runner.once("exit", (code) => (err.push(`exited ${code}`), resolve(code))));
   const { last } = await follow(api, run.body.run_id, ["completed", "failed", "cancelled"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", `the run, under the runtime role: ${last.status} ${err.join("\n")}`);
+  // A faux run ends before the runner's first renew tick, so the renew is driven here, with the runner stopped: a run
+  // started through the API is claimed, its claim renewed (its lease moving on) and released, all as the runtime role.
+  runner.kill("SIGTERM");
+  await runnerExit;
+  const queued = await api("POST", "/agents/plain/runs", { input: { content: "Again." } });
+  assert.equal(queued.status, 202, JSON.stringify(queued.body));
+  const runtimeStore = await openPostgresStore({ url: runtime.url, schema, role: "runner" });
+  t.after(() => runtimeStore.close());
+  const claim = await runtimeStore.claim(queued.body.run_id, "runner-runtime", { leaseMs: 30_000 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const [renewed] = await runtimeStore.renewMany([claim], { leaseMs: 30_000 });
+  assert.ok(renewed.until > claim.until, `the runtime role renews a claim, its lease moved on: ${claim.until} -> ${renewed.until}`);
+  await runtimeStore.release(renewed);
   // The runtime role may not change the schema, and the reader may not read or open it.
   const ddl = await asRole(runtime.url, `CREATE TABLE ${schema}.extra (id int)`);
   assert.equal(ddl?.code, "42501", `the runtime role may not create a table: ${ddl?.message ?? "created"}`);
