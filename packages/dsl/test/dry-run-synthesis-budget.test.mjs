@@ -118,3 +118,26 @@ test('a dry run stops by the clock too: past its deadline it ends not run', asyn
   assert.equal(result.status, 'not_run', JSON.stringify(result));
   assert.ok(result.skipped?.some((reason) => /past its 200 ms deadline/.test(reason)), JSON.stringify(result.skipped));
 });
+
+test('an object\'s property names are charged their characters: 10,000 items each named by a 100,000-character key stop at the character budget, fast', async () => {
+  const key = 'k'.repeat(100_000);
+  const Rows = { type: 'object', properties: { rows: { type: 'array', minItems: 10_000, items: { type: 'object', properties: { [key]: { type: 'number' } } } } }, required: ['rows'] };
+  let started = Date.now();
+  assert.throws(() => synthesizeInstance(Rows), { name: 'SynthesisTooLarge' });
+  assert.ok(Date.now() - started < 2_000, `stopped in ${Date.now() - started} ms`);
+  const flow = {
+    v: 2, name: 'keys', schemas: { Q: Question, Rows },
+    input: { schemaId: 'Q' }, output: { schemaId: 'Rows', path: 'rows' },
+    root: { node: 'chain', steps: [{ node: 'extract', label: 'rows', instructions: 'List.', out: 'Rows', as: 'rows' }] },
+  };
+  started = Date.now();
+  notRunTooLarge(await dryRunWorkflow(flow, { input: { question: 'q' } }));
+  assert.ok(Date.now() - started < 5_000, `stopped in ${Date.now() - started} ms`);
+  // One key's characters count once per value built under it: a small budget stops a short key too.
+  assert.throws(() => synthesizeInstance({ type: 'object', properties: { abcdefghij: { type: 'number' } } }, {}, 0, { chars: 5 }), { name: 'SynthesisTooLarge' });
+});
+
+test('a schema synthesis cannot read is a one-character "x", charged as one', () => {
+  assert.equal(synthesizeInstance({ type: 'mystery' }, {}, 0, { chars: 1 }), 'x');
+  assert.throws(() => synthesizeInstance({ type: 'object', properties: { a: { type: 'mystery' }, b: { type: 'mystery' } } }, {}, 0, { chars: 3 }), { name: 'SynthesisTooLarge' });
+});

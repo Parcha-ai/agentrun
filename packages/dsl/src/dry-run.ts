@@ -79,6 +79,8 @@ function synthesize(schema: unknown, definitions: Record<string, unknown>, depth
   if (type === "object" || (!type && spec.properties)) {
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, property] of Object.entries((spec.properties as Record<string, unknown>) || {})) {
+      // Its name is built into every value made under it, and serialized with it: charged before it is added.
+      charge(spend, 0, key.length);
       out[key] = synthesize(property, definitions, depth + 1, spend);
     }
     return { ...out };
@@ -139,6 +141,8 @@ function synthesize(schema: unknown, definitions: Record<string, unknown>, depth
   }
   if (type === "boolean") return false;
   if (type === "null") return null;
+  // A schema synthesis cannot read: one character.
+  charge(spend, 0, 1);
   return "x";
 }
 
