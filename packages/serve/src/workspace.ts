@@ -4,7 +4,7 @@
 // check and the open is refused, not followed. On top of it: the path must be the root joined with its own names (a link
 // anywhere on the way, even one pointing inside the root, is refused), only regular files and directories are read, and a
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
-import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
+import { closeSync, constants, openSync, realpathSync, type Stats, statSync } from "node:fs";
 import { access, type FileHandle, lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Confinement } from "./confine.js";
@@ -182,17 +182,5 @@ export async function walkWork(work: string, visit: (path: string, stats: Stats,
     }
   };
   await into("", 0);
-}
-
-/** Throws unless the kernel refuses a hard link to a file the linker cannot write (fs.protected_hardlinks = 1): with a
- *  run's commands under a uid of their own, it keeps them from linking this server's files into their workspace. */
-export function assertHardlinkProtection(read = () => readFileSync("/proc/sys/fs/protected_hardlinks", "utf8")): void {
-  let value: string;
-  try {
-    value = read().trim();
-  } catch (error) {
-    throw new Error(`agentrun-serve: fs.protected_hardlinks cannot be read (${(error as Error).message}); a run's workspace could hold a link to this server's files`);
-  }
-  if (value !== "1") throw new Error(`agentrun-serve: fs.protected_hardlinks is ${value}, not 1; a run's workspace could hold a link to this server's files`);
 }
 
