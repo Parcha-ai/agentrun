@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AgentEditor } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { Shell } from "@/components/Shell";
 import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf, runFixture, runNames } from "@/fixtures";
 import { saveError } from "@/lib/agentForm";
@@ -38,7 +39,8 @@ const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "
   return page(<AgentPage v2={v2 as never} agentId={slug} efforts={efforts} go={noop} tab={tab} />);
 };
 
-export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
+export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }}
+  handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="lg" iconOnPhone className="max-sm:w-11" serverUrl="http://127.0.0.1:7340/v2" />} />) };
 export const ListArchived: Story = { render: () => page(<AgentsList agents={archivedAgents()} archived actions={{ onOpen: noop, onEdit: noop, onArchive: noop }} />) };
 export const ListEmpty: Story = { render: () => page(<AgentsList agents={[]} actions={{ onNew: noop }} />) };
 export const ListLoading: Story = { render: () => page(<AgentsList agents={null} />) };

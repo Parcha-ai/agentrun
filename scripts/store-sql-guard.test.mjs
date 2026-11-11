@@ -28,7 +28,6 @@ const TODAY = [
   "packages/serve/src/cap.ts",
   "packages/serve/src/import-summary.ts",
   "packages/serve/src/run-db.ts",
-  "packages/serve/src/runs.ts",
   "packages/serve/src/server-lock.ts",
 ];
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
@@ -50,12 +49,8 @@ const TODAY_FILE = [
   "packages/pi-durable-disk/src/run.ts",
   "packages/pi-durable-disk/src/status.ts",
   "packages/serve/src/agents.ts",
-  "packages/serve/src/app.ts",
-  "packages/serve/src/disk.ts",
   "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
-  "packages/serve/src/run-holder.ts",
-  "packages/serve/src/runs.ts",
   "packages/serve/src/server.ts",
   "packages/serve/src/stats.ts",
   "packages/serve/src/tool-plane.ts",

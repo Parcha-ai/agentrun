@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { devProxy } from "./src/lib/devProxy";
+import { credentialGate } from "./credential-gate.mjs";
 import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
@@ -31,8 +32,9 @@ const projects = process.env.VITEST_STORYBOOK === "true" ? [(await import("./.st
 
 export default defineConfig({
   base: "./",
-  // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs).
-  plugins: [react(), thirdPartyNotices()],
+  // THIRD-PARTY-NOTICES.txt beside index.html: the licenses of what the bundle holds (third-party-notices.mjs). Then the
+  // credential gate (credential-gate.mjs), last: the build fails when the bundle, the notices included, holds a credential.
+  plugins: [react(), thirdPartyNotices(), credentialGate()],
   server: {
     proxy: {
       "/v2": {
