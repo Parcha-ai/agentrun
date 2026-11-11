@@ -470,6 +470,20 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
+/** A run's facts as its view states them, and none of its words: its kind, revision, agent, status and times, and whether
+ *  its output is withheld (`unshown`). What a read that serves its own parts (the graph) needs of the run: read off the
+ *  run as viewOverStore reads it, with nothing of it served, so nothing is redacted here. Undefined for an unknown run. */
+export async function factsOverStore(store: Store, runId: string, deps: ViewDeps): Promise<RunStated | undefined> {
+  const run = await storeRunOf(store, runId, deps);
+  if (!run) return undefined;
+  const { status } = statusOf(run.view, factsOf(run));
+  const endedAtMs = TERMINAL.has(status) ? (run.runRow.endedAt ?? run.runRow.startedAt) : null;
+  return { kind: run.row.kind, revision: run.row.revision, agentId: run.row.agent, status, createdAt: iso(run.runRow.startedAt), endedAt: endedAtMs === null ? null : iso(endedAtMs), unshown: run.unshown };
+}
+
+/** A run's facts as its view states them (factsOverStore): no word of it, so nothing in it is redacted. */
+export type RunStated = { readonly kind: string; readonly revision: string; readonly agentId: string; readonly status: string; readonly createdAt: string; readonly endedAt: string | null; readonly unshown: boolean };
+
 /** A run's live moment from the store (momentOf), for the one acceptance each act a run takes reads. A run no runner holds
  *  (ended, or running with no live claim) reads live false. */
 export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
