@@ -79,7 +79,7 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
  *  (default: the server's stderr). */
-export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking; pause?: (refusal: LedgerRefusal) => Promise<void> } = {}) {
+export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking; pause?: (refusal: LedgerRefusal) => Promise<void>; flush?: () => Promise<void> } = {}) {
   /** The runner's one ledger (the kernel cap's paidCalls), when the run has one: each browser call is one paid request on
    *  it, held at the hold main takes for it and settled at the charges booked under it; a charge under no call (a
    *  session's release, its top-up to the minute) is one more, settled at that charge. In place of this process's spend. */
@@ -352,12 +352,14 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   }
 
   /** pi-browser's `beforeCreate`: the session's open recorded in the run's journal (BROWSER_SESSION_OPEN) beside its
-   *  `creating` record, and the journal synced (barriers.ts browserSessionOpen) before the vendor's session is created.
-   *  A sync that fails throws, and pi-browser creates nothing. */
+   *  `creating` record, then flushed to disk (`ledger.flush`, the runner's store flush) before the vendor's session is
+   *  created. The runner's flush before a tool call comes before the call opens its session, so it never covers this
+   *  record. A write, a flush or a sync that fails throws, and pi-browser creates nothing. */
   const opening: BeforeCreate = async (open) => {
     const hold = [...calls.values()].find((c) => c.cid === open.conversationId)?.hold;
     const data = { tag: open.tag, conversation: open.conversationId, provider, held_usd: hold ? hold.usd : null };
     await open.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_SESSION_OPEN, data })));
+    await ledger.flush?.();
     await syncNow(runJournal(), BARRIER.browserSessionOpen);
   };
 

@@ -91,16 +91,11 @@ async function execsOf(work) {
 /** A person's write as the route makes it: the file and MEMORY.md rebuilt. */
 const personChange = (kind, file, files, approved = false) => ({ by: { person: kind, file, ...(approved ? { approved: true } : {}) }, writes: [{ path: file, text: files[file] }, { path: "MEMORY.md", text: indexOf(Object.fromEntries(Object.entries(files).filter(([path]) => !path.includes("/")))) }] });
 
-// SKIP (follow-up #2089): over the fake Archil disk, the snapshot a commit writes differs from the one rebuilt from git,
-// so the snapshot checks fail there; the local folder passes the same cases.
-const archilSkip = (backend) => backend === "archil" && "SKIP (follow-up #2089): the fake Archil disk's snapshot differs from main's rebuilt from git";
-
 /**
  * The suite: `make()` gives a fresh, empty learning folder's Workspace (`{ ws }`).
  */
 export function folderSuite(backend, make) {
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: init then a merge lands, one exec each, and the snapshot is main's: oids, front matter, history and log`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: init then a merge lands, one exec each, and the snapshot is main's: oids, front matter, history and log`, async () => {
     const { ws } = await make();
     assert.equal(await readSnapshot(ws), undefined, "no snapshot before the folder's first commit");
     const init = await execsOf(() => learningInit(ws));
@@ -126,8 +121,7 @@ export function folderSuite(backend, make) {
     assert.equal(text(await ws.read("MEMORY.md")), indexOf(files));
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: a stale main exits 3 and writes nothing: main, the snapshot and the working tree as they were`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: a stale main exits 3 and writes nothing: main, the snapshot and the working tree as they were`, async () => {
     const { ws } = await make();
     await learningInit(ws);
     const base = await readSnapshot(ws);
@@ -145,8 +139,7 @@ export function folderSuite(backend, make) {
     assert.deepEqual(after.notes.map((n) => n.file).sort(), ["check-units.md", "prefers-tables.md"]);
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: a merge writes .agentrun/diffs/<run>.json: its commit, its parent and each file's patch as git diffs it`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: a merge writes .agentrun/diffs/<run>.json: its commit, its parent and each file's patch as git diffs it`, async () => {
     const { ws } = await make();
     await learningInit(ws);
     const base = await readSnapshot(ws);
@@ -180,8 +173,7 @@ export function folderSuite(backend, make) {
     await matchesMain(ws);
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: snapshot.json is written last: a failure after the files leaves the old snapshot, a reader sees the old snapshot with newer bodies (503 on what changed), and the next write rebuilds it from main`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: snapshot.json is written last: a failure after the files leaves the old snapshot, a reader sees the old snapshot with newer bodies (503 on what changed), and the next write rebuilds it from main`, async () => {
     const { ws } = await make();
     await learningInit(ws);
     await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
@@ -218,8 +210,7 @@ export function folderSuite(backend, make) {
     assert.equal(after.log[1].commit, moved, "the stopped merge is in the log the rebuild read");
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: a person's create, edit, retire, approve and restore, and a skill's approve and retire, are each one exec, and each snapshot is main's`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: a person's create, edit, retire, approve and restore, and a skill's approve and retire, are each one exec, and each snapshot is main's`, async () => {
     const { ws } = await make();
     await learningInit(ws);
     const files = {};
@@ -302,8 +293,7 @@ export function folderSuite(backend, make) {
     await assert.rejects(readLearning(gone, ({ body }) => body("check-units.md", oid)), FolderBusy);
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: nextSnapshot and a rebuild from main agree over a longer history: a log past LOG_KEEP says older exist`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: nextSnapshot and a rebuild from main agree over a longer history: a log past LOG_KEEP says older exist`, async () => {
     const { ws } = await make();
     await learningInit(ws);
     const files = {};
@@ -331,8 +321,7 @@ export function folderSuite(backend, make) {
     assert.equal(writes, 1);
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is refused; a person's stale ifMatch is a conflict; a failing exec is unavailable`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is refused; a person's stale ifMatch is a conflict; a failing exec is unavailable`, async () => {
     const { ws } = await make();
     // A folder with no main: made in the same call.
     const first = await execsOf(() => learningCommit(ws, { kind: "person", action: "created", file: "check-units.md", text: UNITS, ifMatch: null }));
@@ -400,8 +389,7 @@ export function folderSuite(backend, make) {
     assert.equal(ended, 2, "the folder is ended after each check");
   });
 
-  // SKIP (follow-up #2078): the snapshot a learning commit writes is not the one rebuilt from main
-  test.skip(`${backend}: learningCommit as the runner's learning loop calls it (no supersede named): the new notes' own front matter marks what they supersede, a held one marks nothing, the run's risky mark is never kept; readMain gives the grader main from the snapshot`, { skip: archilSkip(backend) }, async () => {
+  test(`${backend}: learningCommit as the runner's learning loop calls it (no supersede named): the new notes' own front matter marks what they supersede, a held one marks nothing, the run's risky mark is never kept; readMain gives the grader main from the snapshot`, async () => {
     const { ws } = await make();
     await learningCommit(ws, { kind: "person", action: "created", file: "check-units.md", text: UNITS, ifMatch: null });
     const V2 = note("Units v2", "Convert to the answer's unit", "Better.\n", "supersedes: [check-units.md]\nrisky: false\n");

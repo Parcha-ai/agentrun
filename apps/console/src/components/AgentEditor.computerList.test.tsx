@@ -20,7 +20,7 @@ const KINDS = [
 ];
 const CAPS = {
   harnesses: [{ id: "pi", available: true }], tools: toolOffers([{ name: "read", available: true }]), thinking: [],
-  places: placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }] } }),
+  places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "docker", available: true }] } }),
 };
 
 async function open(computers: () => Response) {

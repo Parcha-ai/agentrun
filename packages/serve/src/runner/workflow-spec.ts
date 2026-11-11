@@ -295,7 +295,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const nodeHost: ToolHost = {
       where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
       env: callEnv,
-      coding: { tools: [], extension: { name: "coding", tools: [] } } as unknown as ToolHost["coding"],
       install: (extension) => void installed.push(extension),
       onConversation: () => {},
       beforeResume: () => {},

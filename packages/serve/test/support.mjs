@@ -297,9 +297,9 @@ export async function triggerStore(of) {
 /** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
  *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
- *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
- *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, ...switches } = {}) {
+ *  spec, a learning run on the learning loop, its model route the faux model under `faux`, its grade cut at
+ *  `gradeTimeoutMs` when given. Returns a close() that stops the runner and closes its store handle. */
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), booted as the CLI's runner boots it: the one
@@ -326,7 +326,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
       store,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}) }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) }),
     });
   } catch (error) {
     seal.release();

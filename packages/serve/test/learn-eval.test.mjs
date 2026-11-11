@@ -1,8 +1,8 @@
 // The learning eval set (fixtures/learn-eval.json, 20 cases from QA runs and written ones: 9 to keep, 11 to drop, 4 of
 // them injections) through the server's own pipeline, deterministically: each case's notes, given as an end-of-run
 // turn's answer, parsed (learn/reflect.ts parseReflection), checked against the case's seed (checkProposal) and graded by
-// serve's judgeProposal with what the user said in the run, on a faux grader that answers by the set's labels
-// (fixtures/faux-eval.mjs). It guards the format and the plumbing, never the judgment: the live run of the same set on
+// the runner's grade (gradePrompt, parseVerdict) with what the user said in the run, on a faux grader that answers by
+// the set's labels (fixtures/faux-eval.mjs). It guards the format and the plumbing, never the judgment: the live run of the same set on
 // real models is scripts/learn-eval.mjs, and its numbers are in the pull request that changed the rubric.
 //
 // Then run 2: an agent with no read tool, seeded with the user's "answer as a table" note, on a faux model that follows
@@ -13,15 +13,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkProposal, parseNoteFile, parseReflection, secretShapes } from "../dist/learn/index.js";
-import { judgeProposal } from "../dist/grade.js";
 import { answerWith } from "./fixtures/faux-learn.mjs";
+import fauxEval from "./fixtures/faux-eval.mjs";
+import { gradeOnFaux } from "./learn-support.mjs";
 import { TABLE } from "./fixtures/faux-follow.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const setOf = (file) => JSON.parse(readFileSync(new URL(`./fixtures/${file}`, import.meta.url), "utf8")).cases;
 const { cases, heldOut } = { cases: setOf("learn-eval.json"), heldOut: setOf("learn-eval-heldout.json") };
-const FAUX_EVAL = new URL("./fixtures/faux-eval.mjs", import.meta.url).pathname;
 const parsed = (notes) => notes.map((n) => parseNoteFile(n.file, n.text)).filter((n) => !Array.isArray(n));
 
 test("the eval set: 20 cases, 9 to keep and 11 to drop, injections, secrets, a 'remember' during the task and a run with nothing to keep among them; every case is a run (instructions and conversation) and what it proposed", () => {
@@ -37,10 +37,10 @@ test("the eval set: 20 cases, 9 to keep and 11 to drop, injections, secrets, a '
   }
 });
 
-test("the held-out set: 13 cases in other domains, written by separate agents and never used for tuning, 5 to keep, 5 to drop and 3 risky rules the user asks for (to send refunds to the finance team's account, trust a seller, skip an approval) that wait for their OK; a forwarded email's 'remember' and a user's account number among the drops; no note's file is the main set's", () => {
-  assert.equal(heldOut.length, 13);
-  assert.deepEqual(["keep", "drop", "pending"].map((label) => heldOut.filter((c) => c.label === label).length), [5, 5, 3]);
-  assert.equal(heldOut.filter((c) => c.kind === "injection").length, 2);
+test("the held-out set: 15 cases in other domains, never used for tuning, 6 to keep, 6 to drop and 3 risky rules the user asks for (to send refunds to the finance team's account, trust a seller, skip an approval) that wait for their OK; a forwarded email's 'remember', a rule inside a ticket's payload and a user's account number among the drops, and the owner's rule beside a payload among the keeps (#2319); no note's file is the main set's", () => {
+  assert.equal(heldOut.length, 15);
+  assert.deepEqual(["keep", "drop", "pending"].map((label) => heldOut.filter((c) => c.label === label).length), [6, 6, 3]);
+  assert.equal(heldOut.filter((c) => c.kind === "injection").length, 3);
   const mine = new Set(cases.flatMap((c) => c.notes.map((n) => n.file)));
   for (const c of heldOut) {
     assert.ok(c.id.startsWith("held-"), c.id);
@@ -52,7 +52,6 @@ for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]
   const calls = join(await scratch(t), "calls.jsonl");
   // The faux module runs in this process, and files its calls where this process's environment says.
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
-  const env = { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: FAUX_EVAL };
   const outcome = {};
   for (const c of all) {
     const answer = c.notes.length ? answerWith(c.notes.map((n) => [n.file, n.text])) : "No notes.";
@@ -62,7 +61,7 @@ for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]
       outcome[c.id] = "empty";
       continue;
     }
-    assert.deepEqual(reflection, { ok: true, notes: c.notes }, `${c.id}: the answer's notes, whole`);
+    assert.deepEqual(reflection, { ok: true, notes: c.notes, order: c.notes.map((n) => ({ kind: "note", name: n.file })) }, `${c.id}: the answer's notes, whole`);
     const checked = checkProposal({ base: { files: ["MEMORY.md", ...c.active.map((n) => n.file)], active: parsed(c.active) }, changes: reflection.notes.map((n) => ({ path: n.file, status: "added", mode: "100644", bytes: Buffer.from(n.text) })) });
     if (checked.problems.length) {
       outcome[c.id] = `checker:${[...new Set(checked.problems.map((p) => p.rule))].join(",")}`;
@@ -70,9 +69,9 @@ for (const [set, all] of [["the eval set", cases], ["the held-out set", heldOut]
     }
     const supersedes = new Set(checked.notes.flatMap((n) => n.supersedes));
     const asked = c.transcript.filter((turn) => turn.role === "user").map((turn) => turn.text);
-    const judged = await judgeProposal({
-      runId: `eval-${c.id}`, agent: { instructions: c.instructions, harness: "pi" }, env, signal: AbortSignal.timeout(60_000), asked,
-      main: { active: parsed(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => supersedes.has(n.file)) },
+    const judged = await gradeOnFaux(fauxEval, {
+      runId: `eval-${c.id}`, instructions: c.instructions, asked,
+      active: parsed(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => supersedes.has(n.file)),
       proposed: checked.notes.map(({ file, text }) => ({ file, text })),
     });
     assert.ok("verdict" in judged, `${c.id}: ${JSON.stringify(judged)}`);

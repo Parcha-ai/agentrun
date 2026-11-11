@@ -51,7 +51,6 @@ const TODAY_FILE = [
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server.ts",
   "packages/serve/src/stats.ts",
-  "packages/serve/src/tool-plane.ts",
   "packages/serve/src/webhooks.ts",
 ];
 

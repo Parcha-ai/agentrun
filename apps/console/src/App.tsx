@@ -395,7 +395,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // point at the card: no model ready for want of a key, no AGENT_MODEL named (its provider's key may not be among the
   // card's), no gateway (a provider's key names no gateway model), and the key routes there. Anything else keeps the
   // step's own setup text.
-  const keyCardSavesModel = caps?.models?.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
+  const keyCardSavesModel = caps?.models.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
     && !!caps.features?.tool_keys?.routes;
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
@@ -552,7 +552,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // While no model is ready, or a box's image is still coming, the capabilities are read again every MODEL_CHECK_MS and
   // whenever the page comes back into view, so the bar (and the first screen's card, and its box line) goes by itself
   // once a key is set where the server starts, or saved, or once the box is ready.
-  const modelsReady = caps?.models?.ready;
+  const modelsReady = caps?.models.ready;
   const boxComing = preparingBox(placesOf(caps));
   const preparing = !!boxComing;
   useEffect(() => {
@@ -585,7 +585,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
-      {caps?.models?.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
+      {caps?.models.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
     </>}>
       {where.section === "playground" && startError
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
@@ -602,7 +602,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+            {caps?.models.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
             {boxComing && <BoxImageBanner box={boxComing} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}

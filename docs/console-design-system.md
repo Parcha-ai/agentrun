@@ -254,3 +254,16 @@ These hold for every change. The primitives already do them; keep them when you 
 | `src/components/ui/primitives.test.tsx` | Each primitive's keyboard and screen-reader contract, and that every design-system story renders in both themes. |
 
 After a change to a token, also look: `npm run storybook`, then "Design system / Foundations / Contrast".
+
+## The catalogue over MCP, and stories as tests
+
+`npm run storybook` in `apps/console` also serves the catalogue to coding agents over MCP, at
+`http://127.0.0.1:6006/mcp` (Streamable HTTP; add it to an agent as an HTTP MCP server). Its tools list the components
+and stories (`docs-list`), show a component's or a story's documentation (`docs-show`, `docs-show-story`), find the
+stories that render a source file (`stories-find-by-component`) or that changed (`stories-changed`), give a story's
+preview URL (`stories-preview`), say how to write a story (`get-storybook-story-instructions`), and run story tests
+(`test-run`).
+
+`npm run test-storybook` runs every story as a test in headless Chromium: a story passes when it renders without an
+error. The first run on a machine needs the browser: `npx playwright install chromium`. `npm test` does not run them;
+CI's console job builds the Storybook but does not run its stories.

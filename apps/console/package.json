@@ -9,7 +9,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "storybook": "storybook dev --host 127.0.0.1 -p 6006 --no-open",
-    "build-storybook": "storybook build -o dist/storybook"
+    "build-storybook": "storybook build -o dist/storybook",
+    "test-storybook": "VITEST_STORYBOOK=true vitest run --project 'storybook*'"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.1.1",
@@ -26,19 +27,21 @@
     "tailwind-merge": "2.6.0"
   },
   "devDependencies": {
-    "@storybook/addon-viewport": "8.6.14",
-    "@storybook/react": "8.6.14",
-    "@storybook/react-vite": "8.6.14",
+    "@storybook/addon-mcp": "10.6.4",
+    "@storybook/addon-vitest": "10.6.4",
+    "@storybook/react-vite": "10.6.4",
     "@types/react": "18.3.18",
     "@types/react-dom": "18.3.5",
     "@vitejs/plugin-react": "4.3.4",
+    "@vitest/browser-playwright": "4.1.12",
     "autoprefixer": "10.4.20",
     "jsdom": "25.0.1",
+    "playwright": "1.64.1",
     "postcss": "8.4.49",
-    "storybook": "8.6.14",
+    "storybook": "10.6.4",
     "tailwindcss": "3.4.17",
     "typescript": "5.7.3",
-    "vite": "5.4.21",
-    "vitest": "2.1.9"
+    "vite": "6.4.5",
+    "vitest": "4.1.12"
   }
 }

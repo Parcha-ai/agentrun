@@ -64,7 +64,7 @@ async function setUp(t, { answers = [] } = {}) {
   const claimOf = (access = { mint, target: { installation: 7, repo: "acme/widgets" } }) =>
     // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
     mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer, githubMcpOrigin: new URL(fake.url).origin });
-  const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   return { store, clock, fake, valid, mints, timers, to, claimOf, call, mint };
 }
 const bearer = (step) => step.credentials.gh?.headers?.authorization;

@@ -1,9 +1,7 @@
-// The server's tool settings over the one store (store.settings), the store-backed replacement for the ToolSettings class
-// (tool-plane.ts) that read and wrote tool-settings.json. It keeps the same surface the server calls: a synchronous get()
-// off an in-memory snapshot the server (the one writer of this row) loads once at start and keeps in step with every
-// put(), and a put() that returns the settings as served. put() returns a promise the handler awaits (durable before the
-// 204, as writeDurableSync was). The read and write go through loadToolSettings / saveToolSettings; this layer is
-// only the snapshot and the sync surface the switch swaps `new ToolSettings(dir)` for.
+// The server's tool settings over the one store (store.settings): a synchronous get() off an in-memory snapshot the server
+// (the one writer of this row) loads once at start and keeps in step with every put(), and a put() that returns the
+// settings as served, durable before the handler's answer. The read and write go through loadToolSettings /
+// saveToolSettings; this layer is only the snapshot and the sync surface.
 import { SETTINGS_UNREAD } from "./tool-gate.js";
 import { loadToolSettings, saveToolSettings, type ToolSettingsMap } from "./tool-plane.js";
 import type { Settings } from "./store/index.js";

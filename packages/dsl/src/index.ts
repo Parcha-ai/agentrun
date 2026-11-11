@@ -21,7 +21,7 @@ export type {
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
   AskPredicate, DecisionEvidenceMode, DecisionImages, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
-export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
+export { dryRunWorkflow, SYNTHESIS_BUDGET, SynthesisTooLarge, synthesizeInstance, type SynthesisBudget } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
 
 export {

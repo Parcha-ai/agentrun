@@ -251,6 +251,8 @@ test("a claude-agent run's paid MCP charge renders a Tool cost row under its cal
   const cost = rows.findIndex((x) => x.kind === "phase" && /^Tool cost:/.test(x.summary ?? ""));
   assert.ok(result >= 0 && cost === result + 1, `the Tool cost row follows its call's result: ${JSON.stringify(shown(rows))}`);
   assert.equal(rows[cost].summary, "Tool cost: fake charged $0.0500 for mcp:fake/paid");
-  // A CLI run drops the usage row, so the charge shows only on its Tool cost line.
-  assert.equal(rows.filter((x) => x.kind === "usage").length, 0);
+  // A CLI run's usage row is its booking's (#2275): here no model request was booked, so it is the paid call's charge.
+  const usage = rows.filter((x) => x.kind === "usage");
+  assert.equal(usage.length, 1);
+  assert.deepEqual([usage[0].usage, usage[0].summary], [{ usd: 0.05, requests: 0 }, "Cost so far: $0.0500 over 0 model requests and 1 paid tool call"]);
 });

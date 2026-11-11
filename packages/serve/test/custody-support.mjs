@@ -6,8 +6,8 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { forgetSignIn, saveSignIn } from "../dist/sign-ins-store.js";
+import { Connection } from "../dist/store/sqlite/connection.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
@@ -64,23 +64,17 @@ export const saved = (s, pointer) => overStore(s, (store) => saveSignIn(store, s
 /** Forgets alpha's Browserbase sign-in: its pointer to a tombstone, kept only for cutting. */
 export const forgotten = (s) => overStore(s, (store) => forgetSignIn(store, s.seal, { remove: async () => undefined }, "alpha", "browserbase"));
 
-/** Writes `sql` with `params` on the server's store file (a row as the runner writes it), as the store's own writer
- *  writes (store/sqlite/worker.ts): BEGIN IMMEDIATE takes the write lock before anything is read, so the busy timeout
- *  covers another writer in flight. A plain autocommit UPDATE reads first and upgrades after, and a commit by the server
- *  or its runner in between fails it at once ("database is locked", a stale snapshot the timeout never waits out). */
-export function written({ data }, sql, ...params) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+/** Writes `sql` with `params` on the server's store file (a row as the runner writes it), through the store's own
+ *  connection (store/sqlite/connection.ts): its own BEGIN IMMEDIATE, waiting for the write lock in its worker, off this
+ *  thread. The server's store steps an open write transaction from this thread, so a writer that waited here (a
+ *  DatabaseSync's busy wait) would hold that transaction back until its own wait ran out: "database is locked" (#2327).
+ *  Waited off this thread, the open write finishes and this row lands after it. */
+export async function written({ data }, sql, ...params) {
+  const db = await Connection.open(join(data, "store.sqlite"));
   try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.prepare(sql).run(...params);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    await db.run(sql, ...params);
   } finally {
-    db.close();
+    await db.close();
   }
 }
 

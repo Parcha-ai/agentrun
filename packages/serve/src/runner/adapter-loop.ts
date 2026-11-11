@@ -15,13 +15,13 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, createRegistry, defineDoc, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { deniedText as setToDenyText } from "../refusal-words.js";
+import { deniedText as setToDenyText, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -187,6 +187,11 @@ export function agentConversation(record: { readonly id: number | ConversationId
   return Number(record.id) === Number(ROOT_CONVERSATION_ID) || record.owner !== undefined;
 }
 
+/** On the run's root: the spec's onConversation writes for it are owed (a phase made the root while the spec was built,
+ *  before the spec's lifecycle was known). Set in the root's creating commit, cleared in the commit that makes them, so a
+ *  claim lost in between leaves them to the next claim. */
+const RootWritesOwed = defineDoc<{ owed: boolean }>({ kind: "agentrun.root-writes-owed", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ owed: false }), checkpointWhen: () => false });
+
 /** What the loop lends the spec for one Session: the run's Harness (pi adds its turns to it). */
 export type AdapterRun = PiRun & {
   /** The run's one cap's handles, made before the spec is (so a tool host binds them at its bind): its decisions, its
@@ -227,6 +232,9 @@ export interface RunLedger {
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
   pause(refusal: Refusal): Promise<void>;
+  /** The store's flush (what the runner's flush before a side effect runs): a record a tool writes during its call that
+   *  must be on disk before the call's next step leaves the box (a browser session's open, before its vendor is asked). */
+  flush(): Promise<void>;
 }
 
 export interface AdapterLoopOptions {
@@ -322,8 +330,17 @@ interface CliRecord {
   /** The first input when someone other than the person wrote it (a trigger's): the host's input entry with its origin, as
    *  pi's steer writes one, once for the run like the person's. */
   input(text: string, origin: MessageOrigin): Promise<void>;
-  /** A call's start, before it runs (once per call id). */
+  /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
+   *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** A call through a CLI's own MCP client, as it reaches its gate: its start, marked parked (nothing sent until start()
+   *  writes its sent mark), so it shows on the record while it waits (once per call id). */
+  park(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
+  unsentParked(): string[];
+  /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
+   *  record's. */
+  noteEnd(callId: string, status: CallStatus, output?: string): void;
   /** The end the record holds for a call, if any: a call issued again under its id is answered from it, never run. */
   endOf(callId: string): { status: CallStatus; output?: string } | undefined;
   /** A started call's end (once). */
@@ -347,16 +364,22 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
   const ends = new Map<string, { status: CallStatus; output?: string }>();
+  // A call parked at its gate (its start marked parked) and its sent mark: one parked and never marked never left, so it
+  // is never ended interrupted; it waits for its answer, which ends it (run once, refused, or withdrawn).
+  const parked = new Set<string>();
+  const sent = new Set<string>();
   let personWritten = false;
   for (const entry of await entriesOf(journal, root.id, context)) {
-    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown };
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown; parked?: unknown };
     if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
+    if (entry.kind === KINDS.callStart && typeof data.callId === "string" && data.parked === true) parked.add(data.callId);
+    if (entry.kind === KINDS.callSent && typeof data.callId === "string") sent.add(data.callId);
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
     else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
   }
   for (const [callId, ended] of started) {
-    if (ended) continue;
+    if (ended || (parked.has(callId) && !sent.has(callId))) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
     ends.set(callId, { status: "interrupted" });
@@ -402,10 +425,31 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     async start(callId, tool, input, replaySafe) {
       await flushText();
       await inTurn(async () => {
-        if (started.has(callId)) return;
+        if (started.has(callId)) {
+          // Parked at its gate and now sent: its mark first, in its own commit (the flush before the send makes it last).
+          if (parked.has(callId) && !sent.has(callId) && started.get(callId) === false) {
+            await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.callSent, data: { callId } as unknown as JsonValue }), context);
+            sent.add(callId);
+          }
+          return;
+        }
         await append(KINDS.callStart, { callId, tool, input, replaySafe });
         started.set(callId, false);
       });
+    },
+    async park(callId, tool, input, replaySafe) {
+      await flushText();
+      await inTurn(async () => {
+        if (started.has(callId)) return;
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true });
+        started.set(callId, false);
+        parked.add(callId);
+      });
+    },
+    unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
+    noteEnd(callId, status, output) {
+      started.set(callId, true);
+      ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
     },
     endOf: (callId) => ends.get(callId),
     end: (callId, status, output) =>
@@ -457,7 +501,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   let stopped: () => void = () => {};
   const stopping = new Promise<void>((resolve) => (stopped = resolve));
-  /** Aborted by any stop of the run (AdapterRun.stopped, with the claim's signal). */
+  /** Aborted by any stop of the run (AdapterRun.stopped, with the claim's signal): a host tool call in flight (a CLI's door
+   *  call among them, whose own request signal its CLI may never abort) is cut with it, as pi's own abort cuts pi's calls.
+   *  stop() aborts it first, with the stop's Interrupted, so the reason a cut call reads is the stop's. */
   const stopAbort = new AbortController();
   void stopping.then(() => stopAbort.abort(new Error("the run was stopped")));
   let parked: () => void = () => {};
@@ -500,6 +546,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the end-of-run turn runs: a steer is left for the end, and its writes and edits under work/.learning/ are
    *  refused (REFLECT_NOTE_ONLY). */
   let reflecting = false;
+  /** While the run's end waits for a person to hand its desktop or phone back (#2134): a steer is left for the end, as
+   *  in the end-of-run turn, so no turn starts that the end, written after the hand-back, would cut. */
+  let handingBack = false;
   /** A run a person's follow-up reopened (the store's runs.reopen: its journal holds the end of its last turn, its session
    *  opens idle): the follow-up's steer is this claim's turn, sent by steer() as a tracked turn (`sent`), and the claim waits
    *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows.
@@ -594,30 +643,43 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return { taken: true };
   };
 
+  /** A hand-back that reaches a loop whose pass is over, or never opened, waits for the run's next claim. */
+  const HAND_BACK_LATER = "the run is parking or ending: the hand-back waits for its next claim";
   /** Hand-backs one at a time: each decides on the journal the one before it left, so a second answer meets the first. */
   let handing: Promise<unknown> = Promise.resolve();
   /** A person's answer to the agent's browser hand-over (hand-back.ts): the first for an ask is its answer, committed as
    *  the answered hand-over entry at the row's own time, the row taken in that commit. A row after the ask lapsed writes
-   *  the expiry (at the expiry's time) and is refused; one for an ask answered already, or never made, is refused. */
+   *  the expiry (at the expiry's time) and is refused; one for an ask answered already, or never made, is refused. `later`
+   *  when this claim can no longer say, as an approval's (waitsFor): its Harness never opened, or its pass is over. */
   const handBack = (command: Command): Promise<CommandOutcome> => {
     const turn = handing.then(async (): Promise<CommandOutcome> => {
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, theHarness, theRoot] = [gate, harness, root];
-      if (!theGate || !theHarness || !theRoot) return { refused: handBackOf([], command.body, command.createdAt).refused! };
-      // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
-      // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
-      // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
-      // and the staging matches nothing (an answered ask is never answered again).
-      const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
-      const at = new Date(command.createdAt).toISOString();
-      const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
-      landed?.catch(() => undefined);
-      const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
-      if (write && refused === undefined) await landed;
-      return refused === undefined ? { taken: true } : { refused };
+      if (!theGate || !theHarness || !theRoot || theGate.sealed) return { later: HAND_BACK_LATER };
+      try {
+        return await handBackThrough(command, theGate, theHarness, theRoot);
+      } catch (error) {
+        // Sealed while it read or wrote: closeSession seals, then closes the Harness the answer went through.
+        if (theGate.sealed) return { later: HAND_BACK_LATER };
+        throw error;
+      }
     });
     handing = turn.catch(() => undefined);
     return turn;
+  };
+  /** A hand-back's answer, decided and written through the pass's open Harness. */
+  const handBackThrough = async (command: Command, theGate: Gate, theHarness: Harness, theRoot: Conversation): Promise<CommandOutcome> => {
+    // The person's answer takes its row in the commit that writes it: staged for the answer this row would write (its ask,
+    // its outcome, at its own time). Decided and written in one commit (answerOnce), so no other writer's answer (the
+    // browser host's give or expiry) lands between: a row whose commit writes nothing, or the ask's expiry, takes none,
+    // and the staging matches nothing (an answered ask is never answered again).
+    const { ask, outcome } = (command.body ?? {}) as { ask?: unknown; outcome?: unknown };
+    const at = new Date(command.createdAt).toISOString();
+    const landed = typeof ask === "string" ? theGate.expect(writesEntry(KINDS.handover, (data) => data.id === ask && data.state === outcome && data.at === at), { take: [command.id] }) : undefined;
+    landed?.catch(() => undefined);
+    const { write, refused } = await answerOnce((change) => theHarness.commit(change, context), theRoot.id, (entries) => handBackOf(entries, command.body, command.createdAt));
+    if (write && refused === undefined) await landed;
+    return refused === undefined ? { taken: true } : { refused };
   };
 
   /** A person's take-over or hand-back of the run's desktop or phone (computer-journal.ts): applied to the hold, and taken
@@ -670,6 +732,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
     // to answer. Left untaken, so the run's end says it came after the answer.
     if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
+    if (handingBack) return { later: "the run has answered and waits for its computer to be handed back before it ends: the steer is not placed" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
     // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
@@ -708,7 +771,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+    // A person's answer to the question the last turn ended on (a parked ask's, its run claimed again by it): the row's
+    // waiting summary goes in its commit, as an in-claim wait's answer clears it. Left until the end commit, the answer's
+    // turn reads running, held and "Waiting for your reply", and the server tells run.needs_input for that ask again.
+    const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(askedLast ? { run: { summary: null } } : {}) });
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
@@ -752,6 +818,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The spec's phases said before the run's root exists (AdapterRun.phase), written in the root's creating commit.
         const phasesBeforeRoot: { summary: string; at: number }[] = [];
         let rootMade = false;
+        // A root made by a phase while the spec was built (below), before the spec's own lifecycle was known: its
+        // onConversation writes for the root are owed (RootWritesOwed, on the root), made once the spec is (after specOf).
+        let specKnown = false;
+        /** The root a phase is making, awaited before the owed writes are read. */
+        let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
           models: () => models, registry, settings: { restartLimit }, onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
@@ -761,6 +832,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (Number(record.id) === Number(ROOT_CONVERSATION_ID)) {
               rootMade = true;
               for (const data of phasesBeforeRoot.splice(0)) await tx.appendEntry(record.id, { kind: HOST_PHASE, data });
+              if (!specKnown) {
+                (await tx.doc(RootWritesOwed, record.id)).owed = true;
+                return;
+              }
             }
             for (const write of specNow?.lifecycle?.onConversation ?? []) await write(tx, Number(record.id));
           },
@@ -806,14 +881,26 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },
+          flush: () => deps.flush(),
         };
-        // A phase of the host's: queued until the root exists (written in its creating commit, above), else written at once.
+        // A phase of the host's, on the run's timeline while its step runs. Said before the root exists (the claim's computer
+        // waiting on its image build, inside specOf), it makes the root then, the row in its creating commit (above), so a
+        // person sees the row during the wait, and a failed step keeps it (run()'s catch writes the end on that root). The
+        // session opens onto that root later and sets its agent there (pi.ts configures it on every open). Else at once.
         const phasing = harness;
         const phase = (summary: string): void => {
           const data = { summary, at: Date.now() };
           void (async () => {
             if (!rootMade && !(await phasing.conversation(ROOT_CONVERSATION_ID, context)) && !rootMade) {
               phasesBeforeRoot.push(data);
+              rootMaking = phasing.root(context);
+              await rootMaking;
+              // The root was made by another write meanwhile (its creating commit took none of these): written now.
+              const left = phasesBeforeRoot.splice(0);
+              if (left.length === 0) return;
+              await phasing.commit(async (tx) => {
+                for (const one of left) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: one });
+              }, context);
               return;
             }
             await phasing.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data }), context);
@@ -836,13 +923,35 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (error instanceof McpClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
           if (error instanceof ClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
           // A person's stop while the spec was built (it waited on a harness's install): the run ends stopped, in the stop's
-          // words, its row taken; the work it waited on goes on for the next run.
+          // words, its row taken; the work it waited on goes on for the next run. A stop wins over the build's own failure.
           if (stopReason?.kind === "command") return await writeEnd(harness, await harness.root(context), gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId]);
+          // A spec that failed after a phase made the run's root (its computer's image build failed): the end goes on that
+          // root with why (said: cut of every secret the runner holds), as run()'s catch writes it once the session's root
+          // is known, so the timeline keeps the phase row and reads the failure after it.
+          await rootMaking?.catch(() => undefined);
+          if (rootMade && claim.from !== "parked" && !gate.sealed && !deps.signal.aborted) {
+            const ended = await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: said(error) }, []).catch(() => undefined);
+            if (ended) return ended;
+          }
           throw error;
         }
         mcp = spec.mcp;
         specNow = spec;
+        specKnown = true;
+        // The spec's resources are the pass's from here: a claim lost in any write below still lets them go (closeSession).
         releaseNow = spec.release;
+        // A root a phase made while the spec was built (on this claim or an earlier one lost before this point) took none
+        // of the spec's onConversation writes: they are made now, in a commit of their own, before anything of the
+        // session's. A root still being made is waited for first (made from here on, its creating commit takes them itself).
+        await rootMaking?.catch(() => undefined);
+        if (await harness.conversation(ROOT_CONVERSATION_ID, context)) {
+          await harness.commit(async (tx) => {
+            const owed = await tx.doc(RootWritesOwed, ROOT_CONVERSATION_ID);
+            if (!owed.owed) return;
+            owed.owed = false;
+            for (const write of spec.lifecycle?.onConversation ?? []) await write(tx, Number(ROOT_CONVERSATION_ID));
+          }, context);
+        }
         // A mark of the run's commits through its own Harness, under its fence.
         const opened_ = harness;
         spec.harnessReady?.((change, ctx) => opened_.commit(change, ctx));
@@ -934,7 +1043,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 flush: () => deps.flush(),
                 // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid); one
                 // refused for room pauses the run (Ledger.pause, the run's pause), as main's paidCall does.
-                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => tool.call(args, toolContext)),
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal })),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -946,7 +1055,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                   }
                 },
               });
-              if (record) await record.end(toolContext.callId, answer.isError ? "failed" : "done", answer.text);
+              // A call a stop cut answers whatever its tool said of the abort: it ends interrupted, never as its outcome.
+              if (record) await record.end(toolContext.callId, stopAbort.signal.aborted ? "interrupted" : answer.isError ? "failed" : "done", answer.text);
               return answer;
             } catch (error) {
               // A call its stop or its signal cut off ends interrupted; a fault leaves its end to the next open (the
@@ -1002,8 +1112,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const ownClient = mcp !== undefined && spec.adapter.capabilities().mcpClient !== undefined;
         const sessionMcp = ownClient
           ? mcp!.session(new Map(tools.filter((tool) => mcpNames.has(tool.name)).map((tool) => [tool.name, tool])), async (call) => {
+              // A call through the door is on the run's record before its gate answers (once per call id; the gate's park
+              // seals the journal): its row, and an approval read beside it, show while it waits. A refused one ends there;
+              // a parked one runs, or is refused, on the claim that resumes it (parkedFollowUp); an allowed one runs now.
+              const wire = mcp!.tools.find((tool) => mcp!.catalogOf(tool.name) === call.tool);
+              if (record) await record.park(call.callId, wire?.name ?? call.tool, call.args ?? {}, wire?.replay === "safe");
               const answer = await gateOf(call, context);
-              return answer === "allow" ? undefined : "deny" in answer ? { refused: answer.deny } : { parked: true as const };
+              if (answer === "allow") return undefined;
+              if ("deny" in answer) {
+                if (record) await record.end(call.callId, "refused", answer.deny);
+                return { refused: answer.deny };
+              }
+              return { parked: true as const };
             })
           : undefined;
         session = await spec.adapter.open({ ...spec.session, tools: ownClient ? tools.filter((tool) => !mcpNames.has(tool.name)) : tools, ...(sessionMcp ? { mcp: sessionMcp } : {}) }, io);
@@ -1088,8 +1208,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               return now === "deny" ? setToDenyText(call.tool) : typeof now === "object" ? now.deny : undefined;
             },
             run: (call) => wrapped.get(mcp!.tools.find((tool) => mcp!.catalogOf(tool.name) === call.tool)!.name)!.call(call.args, { callId: call.callId, signal: deps.signal }),
+            // A parked call refused ends on the run's record (its start was written at its park), in the refusal's words.
+            refused: async (call, text) => cliRecord?.end(call.callId, "refused", text),
           });
           if (follow === "park") {
+            // A person's stop (or cancel) waiting here is taken: the run ends stopped, its waiting calls withdrawn in the
+            // end's commit. Released parked instead, its untaken stop would have it claimed again at once, and again.
+            if (stopReason?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason.cancel) }, [stopReason.commandId], await cutRows(claim, spec, "stopped"));
             gate.seal(new Parked());
             return { state: "parked" };
           }
@@ -1226,6 +1351,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           break;
         }
         if (parkOn !== undefined) return await parkOnAsk(harness, root, gate, parkOn);
+        // A person who holds the run's desktop or phone keeps it (#2134): the run's end, and its computer's release after
+        // it, wait for the hand-back or the hold's idle bound, the Timeline saying why. A stop ends the run stopped at
+        // once, and a lost claim or a closing runner leaves it for the next claim, as during the end-of-run step.
+        if (computerNow) {
+          const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
+          // Until the run returns: a steer after the hand-back would start a turn its end then cuts, too.
+          handingBack = true;
+          await computerNow.heldAtEnd(Promise.race([stopping, aborted, harness.closed]));
+          // Set by stop() during the wait: read past the narrowing TypeScript did before it.
+          const cut = stopReason as StopReason | undefined;
+          if (cut?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(cut.cancel) }, [cut.commandId], await cutRows(claim, spec, "stopped"));
+          if (cut || deps.signal.aborted) return await interrupted(cut?.kind ?? "its claim's signal aborted");
+        }
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
@@ -1251,6 +1389,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       held?.detach();
       computerNow?.detach();
       computerNow = undefined;
+      handingBack = false;
       deps.live?.(() => undefined);
       // A tool host's beforeRelease, when no end or park let it go first (a shutdown, a lost claim): the Harness still open.
       // A restart within the claim is no release. What it writes after a lost claim is refused by the fence, as any write.
@@ -1335,15 +1474,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
-  async function waitsFor(approval: string | undefined): Promise<boolean> {
+  /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. `later` when this
+   *  claim can no longer say: its Harness never opened, or its pass is parking, ending or stopping (the journal sealed,
+   *  closeSession closing the Harness behind the seal). The row is left untaken and the run's next claim checks it, as a
+   *  steer that comes as the run parks is (#2292: the read went through the closed Harness and threw). */
+  async function waitsFor(approval: string | undefined): Promise<boolean | "later"> {
     if (approval === undefined) return false;
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
-    if (!gate || !harness) return false;
-    const conversation = await harness.root(context);
-    const entries = await entriesOf(gate.journal, conversation.id, context);
-    const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
-    return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
+    const [theGate, theHarness] = [gate, harness];
+    if (!theGate || !theHarness || theGate.sealed) return "later";
+    try {
+      const conversation = await theHarness.root(context);
+      const entries = await entriesOf(theGate.journal, conversation.id, context);
+      const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
+      return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
+    } catch (error) {
+      // Sealed while it read: closeSession seals, then closes the Harness the read went through.
+      if (theGate.sealed) return "later";
+      throw error;
+    }
   }
 
   async function reportHeld(session: Harness, conversationId: ConversationId): Promise<void> {
@@ -1712,12 +1861,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // card reads answered (withdrawn), never waiting for good on a final run.
     const byPerson = data.state === "stopped" || stopReason?.kind === "command";
     const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow()) : [];
+    // A CLI's call on the record from its gate and never sent (parked, or its runner gone before its send): its record ends
+    // with the run's, in the same commit, saying it was not run (never interrupted: it never left).
+    const recordEnds = cliRecord?.unsentParked() ?? [];
+    const notRun = data.state === "stopped" ? STOPPED_WHILE_WAITING : ENDED_WHILE_WAITING;
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
     try {
       await on.commit(async (tx) => {
         for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
+        for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: notRun, at: now() } as unknown as JsonValue });
         if (failedWith !== undefined) await tx.appendEntry(conversation.id, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", failedWith, now())] as never });
         return tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue });
       }, context);
@@ -1727,6 +1881,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await ended;
+    for (const callId of recordEnds) cliRecord?.noteEnd(callId, "refused", notRun);
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };
   }
 
@@ -1744,7 +1899,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
         // approval, another run's) is refused, never applied to the call that waits now.
         const approval = approvalOf(command);
-        if (!(await waitsFor(approval))) {
+        const waits = await waitsFor(approval);
+        if (waits === "later") return { later: "the run is parking or ending: the answer waits for its next claim" };
+        if (!waits) {
           refusals += 1;
           wakeInbox();
           return { refused: `no call of this run waits for approval ${JSON.stringify(approval ?? "")}` };
@@ -1764,6 +1921,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       stopReason ??= reason;
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
       stopped();
+      stopAbort.abort(new Interrupted(reason.kind));
       wakeInbox();
       await finished?.catch(() => undefined);
     },

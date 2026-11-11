@@ -75,7 +75,7 @@ describe("App, Mission Control when the stats can't be read", () => {
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
@@ -98,7 +98,7 @@ describe("App, Mission Control after a failed read", () => {
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/stats") return ++statsCalls === 1
         ? json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } })
         : json(200, { agents: 3, runs: { total: 9, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 9 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS });
@@ -136,7 +136,7 @@ describe("App, Settings", () => {
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, session);
       if (path.startsWith("/v2/settings/tool-keys/")) return new Response(null, { status: 204 });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
@@ -164,7 +164,7 @@ describe("App, Settings", () => {
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
       if (path === "/v2/capabilities") {
         const n = ++caps;
-        const body = (tools: unknown[]) => json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+        const body = (tools: unknown[]) => json(200, { harnesses: [], models: { source: "providers", ready: true }, tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
         // The read after the first save answers last, with what was true before the second save.
         if (n === 2) { await new Promise((r) => setTimeout(r, 300)); return body(tool("native", "native")); }
         return body(n === 1 ? tool("auto", "exa-keyless") : tool("parallel", "parallel"));
@@ -335,14 +335,14 @@ describe("App, the model key card on the first screen", () => {
 describe("App, archiving a run and filtering the runs list", () => {
   it("Archive moves the run out of the default list into the archived one; the state filter asks the server", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    const run = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null as string | null };
+    const run = { run_id: "r1", place: { mode: "runner" }, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null as string | null };
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const u = new URL(url, "http://serve.test");
       const method = init?.method ?? "GET";
       asked.push(`${method} ${u.pathname}${u.search}`);
       if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
       if (u.pathname === "/v2/runs") {
         const archived = u.searchParams.get("archived") === "true", status = u.searchParams.get("status");
@@ -351,7 +351,7 @@ describe("App, archiving a run and filtering the runs list", () => {
       if (u.pathname === "/v2/runs/r1") return json(200, run);
       if (u.pathname === "/v2/runs/r1/archive" && method === "POST") { run.archived_at = "2026-11-01T07:00:00Z"; return json(200, run); }
       if (u.pathname === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: [], complete: true, truncated: false });
-      if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+      if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", place: { mode: "runner" }, status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
       return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
     });
     location.hash = "#/runs";
@@ -393,7 +393,7 @@ describe("App, an agent's address", () => {
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
       if (path === "/v2/agents/calc") return json(200, calc);
       if (path === "/v2/agents/calc/runs" || path === "/v2/agents/calc/revisions") return json(200, { runs: [], revisions: [], next_cursor: null });
@@ -537,7 +537,7 @@ describe("App, the playground when its agents can't be read", () => {
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (path === "/v2/agents") return json(400, { error: { code: "invalid_cursor", message: "that cursor is not one this server gave", retryable: false } });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -749,17 +749,17 @@ describe("App, the no-model bar", () => {
 // run opened at its own address (a link from elsewhere), to its agent's page. The breadcrumb's agent name links there too.
 describe("App, a run page's back arrow", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const run = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null };
+  const run = { run_id: "r1", place: { mode: "runner" }, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null };
   const calc = { agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
   const serve = () => vi.stubGlobal("fetch", async (url: string) => {
     const u = new URL(url, "http://serve.test");
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
     if (u.pathname === "/v2/runs") return json(200, { runs: [run], next_cursor: null });
     if (u.pathname === "/v2/runs/r1") return json(200, run);
     if (u.pathname === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: [], complete: true, truncated: false });
-    if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+    if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", place: { mode: "runner" }, status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
     return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
   });
   const wait = async (ok: () => boolean, what: string) => {
