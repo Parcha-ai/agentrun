@@ -20,6 +20,13 @@ test("a fence closed before more words: the summary is the code alone; a fence w
   assert.equal(answerOf('~~~json\n{"ok": true}\n~~~').summary, '{"ok": true}');
 });
 
+test("a closing fence longer than its opening one closes it (CommonMark); a shorter one, or the other character, does not", () => {
+  assert.equal(answerOf('~~~json\n{"ok":true}\n~~~~\nMore prose.').summary, '{"ok":true}');
+  assert.equal(answerOf('```json\n{"ok":true}\n`````\nMore prose.').summary, '{"ok":true}');
+  assert.equal(answerOf('````json\n{"a":1}\n```\n{"b":2}\n````\nMore prose.').summary, '{"a":1} ``` {"b":2}');
+  assert.equal(answerOf('```json\n{"a":1}\n~~~\n{"b":2}\n```').summary, '{"a":1} ~~~ {"b":2}');
+});
+
 test("plain words: the summary is still their first line, and inline code on that line is no fence", () => {
   assert.equal(answerOf("Done.\n\nThe report is in report.md.").summary, "Done.");
   assert.equal(answerOf("```npm test``` passes.\nMore below.").summary, "```npm test``` passes.");
