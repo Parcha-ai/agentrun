@@ -6,6 +6,17 @@ export const str = (value: unknown): string | undefined => (typeof value === "st
 
 export const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 3)}...` : text);
 export const firstLine = (text: string): string => text.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
+/** The summary of the agent's words (an answer, a text block): their first line; words that open with a fenced code block
+ *  (a JSON answer's ```json … ```) the code inside the fence, up to its closing fence, each whitespace run one space, so
+ *  the row previews the code itself, never the fence's label. The row's text keeps the words whole. */
+export const saidSummary = (text: string): string => {
+  // A fence's info string (its language) holds no backtick, so an inline ```code``` on one line is no fence.
+  const open = /^\s*(`{3,}|~{3,})[^\n`]*\n/.exec(text);
+  if (!open) return firstLine(text);
+  const body = text.slice(open[0].length);
+  const close = body.search(new RegExp(`^[ \\t]*${open[1]}[ \\t]*$`, "m"));
+  return (close >= 0 ? body.slice(0, close) : body).replace(/\s+/g, " ").trim() || firstLine(text);
+};
 export const firstSentence = (text: string): string => {
   const flat = text.replace(/\s+/g, " ").trim();
   return /^.*?[.!?](?=\s|$)/.exec(flat)?.[0] ?? flat;
