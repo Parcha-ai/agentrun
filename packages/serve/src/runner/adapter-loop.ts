@@ -1143,14 +1143,23 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
         // start and its end, refused in the gate's words, go on the record here, as pi writes a refused call and its error
-        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it).
+        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it). A call it asks
+        // about goes on the record first, its start marked parked (once per call id), as an MCP call parked at its door does:
+        // its row shows while it waits, before its approval; the claim that runs it once allowed writes its sent mark on that
+        // one start (start()), and a stop withdraws it never sent (unsentParked). A start refused because another call of the
+        // round parked the run first (the journal sealed) leaves this call held as that one is.
+        const replaySafe = (name: string) => tools.find((one) => one.name === name)?.replay === "safe";
+        const askingGate = record
+          ? preIntentGate(spec, hooks, (call) =>
+              record.park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch((error: unknown) => {
+                if (!gate?.sealed) throw error;
+              }),
+            )
+          : gateOf;
         const bridgeGate: typeof gateOf = record
           ? async (call, hookContext) => {
-              const answer = await gateOf(call, hookContext);
-              if (answer !== "allow" && "deny" in answer) {
-                const tool = tools.find((one) => one.name === call.tool);
-                await record.refused(call.callId, call.tool, call.args ?? {}, tool?.replay === "safe", answer.deny);
-              }
+              const answer = await askingGate(call, hookContext);
+              if (answer !== "allow" && "deny" in answer) await record.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny);
               return answer;
             }
           : gateOf;
@@ -1448,8 +1457,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park). */
-  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks) {
+  /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park).
+   *  `beforeAsk`: what goes on the record of a call the gate asks about, before its ask is written or read (a CLI's call
+   *  through its tool bridge: its start, marked parked, so its row shows while it waits and reads before its approval). */
+  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
@@ -1465,6 +1476,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
       if (decision === "deny") return { deny: setToDenyText(asked) };
       if (decision === "allow") return "allow";
+      await beforeAsk?.(call);
       const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
