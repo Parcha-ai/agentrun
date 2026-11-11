@@ -185,6 +185,12 @@ export interface McpGatewayOptions {
   bounds?: { callMs?: number; connectMs?: number };
   /** The run's commit to its store: an unpriced call's "not metered" is written on its root. */
   commit?: () => McpCommit | undefined;
+  /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
+   *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
+   *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
+   *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. A CLI harness's
+   *  session proxy ends in the same call. */
+  beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
 }
 
 /** A run's journal commit. */
@@ -211,7 +217,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
   /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
-   *  server: with liveCredentials a refresh can swap a token between a call taking its headers and a request leaving, so
+   *  server: a refresh can swap a token between a call taking its headers and a request leaving, so
    *  what its answer or error is scrubbed of is every one of them, never only the headers it took. A call's set goes when
    *  the call ends, so nothing held outlives the calls that sent it. */
   const inFlight = new Map<string, Set<Set<string>>>();
@@ -366,6 +372,15 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** A call the gate let go: a priced one under the run's cap and booked, an unpriced one marked not metered. */
   const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
+    // The credential's custody checked first: one the claim drops now is refused below, unsent. A check that could not
+    // be made (a store read failed, the call was stopped) refuses this call unsent too, in words: never sent unchecked.
+    if (options.beforeCall) {
+      try {
+        await options.beforeCall(server, signal);
+      } catch {
+        return said(`The MCP server ${server}'s credential can't be used right now: it could not be checked just now. Nothing was sent.`, true);
+      }
+    }
     const why = unsendable(server, tool);
     if (why) return said(why, true);
     const { url, prices, tools: pinnedTools } = pins.get(server)!;
