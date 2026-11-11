@@ -13,20 +13,17 @@ and delivery.
 
 ## Layout
 
-Each package's README is its API reference. Packages with no dependency on the others:
-`pi-durable-disk`, `pi-browser`.
+Each package's README is its API reference. A package with no dependency on the others: `pi-browser`.
 
 | Path | What an agent must know |
 | --- | --- |
 | `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun-dsl`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
-| `packages/jev`, `packages/pi` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`); the Pi extension (`/agentrun`) and Pi-backed `runNode` |
-| `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
+| `packages/jev` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`) |
 | `packages/pi-browser` | packages/pi-browser is the source; other repos copy FROM it. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
-| `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
-| `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
+| `packages/serve` | v2 API on `127.0.0.1:7340/v2`; runners claim and run every run over the one store; workflows run on `src/workflow`; `--faux` needs no key and its tests use it |
 | `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
 | `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code taken from vercel-labs/durable-harness is AgentRun's own since the port froze (2026-11-07): edit it in place. `vendor/durable-harness/UPSTREAM.json` records where each copy came from, each copy keeps its three-line header, and NOTICE keeps the attribution (`scripts/vendor-durable-harness.mjs` checks both). The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
-| `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ models `Receipts.tla` and `Door.tla` (see Models of recovery) |
+| `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ model `Receipts.tla` (see Models of recovery) |
 | `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
 | `apps/console` | The server's console (React, Vite, Tailwind), outside the workspaces with its own lockfile; `packages/serve` serves its build. Before any change someone sees, read [docs/console-design-system.md](docs/console-design-system.md): colours, sizes, layers and durations are tokens in `src/tokens.css`, and controls and messages are the primitives in `src/components/ui`. `npm test` in `apps/console` holds both |
 | `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
@@ -54,8 +51,7 @@ npm run build:daemon -w @parcha/agentrun-computer   # the Go computer daemon (Go
 npm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
 ```
 
-- Most package suites import `dist/`, so rebuild before running one file with `node --test`.
-  Exception: `pi-durable-disk` runs on `src/*.ts`.
+- Package suites import `dist/`, so rebuild before running one file with `node --test`.
 - Tests use scripted adapters and need no credentials or network. Live examples are opt-in.
 - After changing workflow types: `npm run build`, then `node scripts/generate-schema.mjs`,
   `node scripts/generate-author-contract.mjs` (reads `packages/dsl/dist/`) and
@@ -109,12 +105,12 @@ CI runs Lean separately from `npm run check`. Documentation-only changes don't n
 `spec/receipts/Receipts.tla` (TLA+, checked by TLC with guard mutants) and
 `spec/lean/AgentRunRecovery/Frozen.lean` (Lean) state what a recovery driver does with effects
 across crashes, failed commits and the host's cancel (admit before dispatch, one dispatch per
-effect, never resume a cancelled run). `spec/receipts/Door.tla` models the serve door's journal.
+effect, never resume a cancelled run).
 
 **A change to modeled behavior changes the model in the same pull request.** When a change touches
 what a model states (the recovery hooks in `workflow.ts`, the `RecoveryStore` contract, a driver
-over it, or the door in `packages/pi-durable-disk/src/door.ts`), update the TLA+ model and its
-mutants (plus `Frozen.lean` for a driver; the door is `Door.tla` only) and run the checks in
+over it), update the TLA+ model and its
+mutants (plus `Frozen.lean` for a driver) and run the checks in
 [CONTRIBUTING.md](CONTRIBUTING.md#changing-recovery-behavior) (Java 11+ and `TLA2TOOLS` set to
 `tla2tools.jar`; `lake build` runs in `spec/lean`), or say in the pull request why the model does
 not move. A property that breaks is fixed in code or recorded with a test that reproduces its

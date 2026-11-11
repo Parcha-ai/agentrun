@@ -58,16 +58,16 @@ test('the developed version is what the root lockfile resolves for the pi packag
   const lock = {
     [`node_modules/${durable}`]: { version: '1.0.4' },
     [`node_modules/${chord}`]: { version: '1.0.4' },
-    [`packages/pi/node_modules/${durable}`]: { version: '1.1.0' },
-    [`packages/pi/node_modules/${chord}`]: { version: '1.1.0' },
-    'packages/pi': { name: '@parcha/agentrun-pi' },
+    [`packages/serve/node_modules/${durable}`]: { version: '1.1.0' },
+    [`packages/serve/node_modules/${chord}`]: { version: '1.1.0' },
+    'packages/serve': { name: '@parcha/agentrun-serve' },
   };
   assert.deepEqual(developedVersions(lock), { [durable]: '1.1.0', [chord]: '1.1.0' });
   const flat = { ...lock };
-  delete flat[`packages/pi/node_modules/${durable}`];
-  delete flat[`packages/pi/node_modules/${chord}`];
+  delete flat[`packages/serve/node_modules/${durable}`];
+  delete flat[`packages/serve/node_modules/${chord}`];
   assert.deepEqual(developedVersions(flat), { [durable]: '1.0.4', [chord]: '1.0.4' });
-  assert.throws(() => developedVersions({ 'packages/pi': {} }), /does not resolve/);
+  assert.throws(() => developedVersions({ 'packages/serve': {} }), /does not resolve/);
 });
 
 test('every copy is listed with its location', () => {
@@ -120,9 +120,9 @@ test('a workspace package that still develops on the older copy is named beside 
   const lock = {
     [`node_modules/${durable}`]: { version: '1.0.4' },
     [`node_modules/${chord}`]: { version: '1.0.4' },
-    [`packages/pi/node_modules/${durable}`]: { version: '1.1.0' },
-    [`packages/pi/node_modules/${chord}`]: { version: '1.1.0' },
-    'packages/pi': { name: '@parcha/agentrun-pi', devDependencies: { [durable]: '1.1.0', [chord]: '1.1.0' } },
+    [`packages/serve/node_modules/${durable}`]: { version: '1.1.0' },
+    [`packages/serve/node_modules/${chord}`]: { version: '1.1.0' },
+    'packages/serve': { name: '@parcha/agentrun-serve', devDependencies: { [durable]: '1.1.0', [chord]: '1.1.0' } },
     'packages/pi-vision': { name: '@parcha/pi-vision', devDependencies: { [durable]: '1.0.4', [chord]: '1.0.4' } },
     'packages/dsl': { name: '@parcha/agentrun-dsl' },
   };

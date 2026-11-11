@@ -67,9 +67,9 @@ Run on a maintainer's machine whose environment already holds the credentials. N
 Actions, never with a secret added to the repository. A package's section says when its check is
 required, the command, the pass rule and the cost. Its lead owns that section.
 
-### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`
+### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`
 
-- **When:** any change to `packages/dsl`, `packages/jev` or `packages/pi`.
+- **When:** any change to `packages/dsl` or `packages/jev`, or to serve's workflow engine (`packages/serve/src/workflow`).
 - **pi version:** the packages pin one pi family exactly (`scripts/pi-ranges.test.mjs`), and the suites run on it; there
   is no other version to run.
 - **Recovery or durable behaviour** (the driver, the journal, reconcile, effects, `./durable`): the PR

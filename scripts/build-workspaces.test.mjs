@@ -75,15 +75,15 @@ test("no package's build builds, or skips building, a dependency: each compiles 
 
 // A build of some workspaces goes through the same order: the set, in dependency order (`--only`). npm's own `-w a -w b`
 // order is the workspaces' directory order, which built decisions before dsl once no package built its dependencies itself.
-test("a subset builds in dependency order: dsl before decisions, pi before pi-durable-agent", async () => {
+test("a subset builds in dependency order: dsl before decisions, the kernel before a harness", async () => {
   const mod = await ordering();
   assert.ok(mod?.subsetOrder, 'scripts/build-workspaces.mjs exports subsetOrder');
   // Given in directory order, the order npm's -w would build them in.
-  const built = ['@parcha/agentrun-decisions', '@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-agent', '@parcha/pi-durable-disk'];
+  const built = ['@parcha/agentrun-decisions', '@parcha/agentrun-dsl', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/pi-browser'];
   const order = mod.subsetOrder(mod.workspaces(), built, () => true);
   assert.deepEqual([...order].sort(), [...built].sort(), 'the set, each once, nothing else');
   const at = (name) => order.indexOf(name);
-  for (const [later, earlier] of [['@parcha/agentrun-decisions', '@parcha/agentrun-dsl'], ['@parcha/pi-durable-agent', '@parcha/agentrun-pi']]) {
+  for (const [later, earlier] of [['@parcha/agentrun-decisions', '@parcha/agentrun-dsl'], ['@parcha/agentrun-harness-claude', '@parcha/agentrun-kernel']]) {
     assert.ok(at(earlier) >= 0 && at(earlier) < at(later), `${later} after ${earlier}: ${order.join(', ')}`);
   }
 });

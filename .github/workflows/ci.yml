@@ -160,7 +160,7 @@ jobs:
           AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
           # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
           AGENTRUN_CODEX_REQUIRE_BINARY: '1'
-          # On 24.21.0 the lean pool's shards record every workflow their DSL, pi and example tests validate or run
+          # On 24.21.0 the lean pool's shards record every workflow their DSL, serve workflow and example tests validate or run
           # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
           LEAN_SWEEP_DIR: ${{ matrix.node == '24.21.0' && startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
       # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
@@ -342,7 +342,7 @@ jobs:
         run: sh deploy/walk/smoke.sh
 
   real-chrome:
-    # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
+    # @parcha/pi-browser's suites that drive a real local Chrome (the local Chrome provider, the cdp provider, Stagehand's
     # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not both Node versions.
     # Chrome for Testing is used because the runner's own Chrome answers Extensions.loadUnpacked with "Method not available", so
     # Stagehand's extension cannot load in it. A missing or incapable Chrome fails a test here instead of skipping it.
@@ -428,7 +428,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-durable-agent, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-serve]
+        spec: [agentrun-dsl, agentrun-jev, pi-browser, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -451,10 +451,8 @@ jobs:
           if grep -q 'no-key path missing' "$RUNNER_TEMP/stranger.out"; then echo "::notice title=${{ matrix.spec }}::$(cat "$RUNNER_TEMP/stranger.out")"; fi
 
   macos-local-run:
-    # A run on a local directory on macOS, which has no /proc and no setpriv: the process table comes from ps and
-    # sysctl, the run's root is addressed by its path, the file tools are confined by path, and the store syncs with
-    # F_FULLFSYNC. No other job runs on a Mac, so every macOS line of the README stands on this one: the stranger's
-    # no-key quickstart, and the local run's tests on the Mac's own ps.
+    # The server on macOS: it hands a workflow run its decision key over a pipe, and macOS aborts the parent of a spawn with
+    # a pipe at descriptor 16 or above. No other job runs on a Mac.
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -466,82 +464,9 @@ jobs:
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
-      - name: The local run's tests
-        working-directory: packages/pi-durable-disk
-        run: >-
-          node --test --test-timeout=240000
-          test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
-          test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
-          test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
-          test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
       - name: The server hands a workflow run its decision key
-        # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
         working-directory: packages/serve
         run: node --test --test-timeout=240000 test/decision-key.test.mjs
-      - name: The stranger's no-key quickstart
-        # The README's quickstart, then the keyless examples against the registry's latest (#557). On a Mac the walk installs
-        # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).
-        run: node scripts/stranger.mjs pi-durable-disk
-
-  stranger-readme-line:
-    # A README's own install line (its spec's readmeInstall), as a stranger types it, against what the registry serves now
-    # (--readme-line): `packed` puts this tree's package in the line, so it says whether the next release installs; `registry`
-    # runs the line as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not
-    # pinned to the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so
-    # a known failure does not turn every pull request red. pi-durable-disk's `packed` blocks; its `registry` warns until the
-    # first release on pi 1.5 publishes (the README's line pins pi 1.5.0, and every published beta's peers stop below pi
-    # 1.4, so the line as written ends in ERESOLVE until then). Make it blocking then. pi-durable-agent's `packed` blocks;
-    # its `registry` warns until its README's line names `@latest`, which the registry serves (0.1.0-beta.28), instead of
-    # `@beta`, a tag it has none of for this package. Make it blocking then.
-    needs: [build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - spec: pi-durable-disk
-            mode: packed
-            blocking: true
-          - spec: pi-durable-disk
-            mode: registry
-            blocking: false
-          - spec: pi-durable-agent
-            mode: packed
-            blocking: true
-          - spec: pi-durable-agent
-            mode: registry
-            blocking: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.21.0'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - uses: actions/download-artifact@v4
-        with:
-          name: build-24.21.0
-          path: ${{ runner.temp }}/build
-      - name: The build job's output, for this tree and this Node
-        run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
-      - name: Run the README's install line
-        shell: bash
-        env:
-          SPEC: ${{ matrix.spec }}
-          MODE: ${{ matrix.mode }}
-          BLOCKING: ${{ matrix.blocking }}
-        run: |
-          flags=(--readme-line)
-          if [ "$MODE" = registry ]; then flags+=(--registry); fi
-          out="$RUNNER_TEMP/readme-line.out"
-          if node scripts/stranger.mjs "$SPEC" "${flags[@]}" > "$out" 2>&1; then cat "$out"; exit 0; fi
-          cat "$out"
-          # The first line that says why (npm's ERESOLVE, an assertion, the spec's verdict), else the last line.
-          reason=$(grep -m1 -iE 'ERESOLVE|error|failed|not ok' "$out" || tail -n 1 "$out")
-          if [ "$BLOCKING" = true ]; then echo "::error title=$SPEC README install line ($MODE)::${reason:-no output}"; exit 1; fi
-          echo "::warning title=$SPEC README install line ($MODE, not blocking yet)::${reason:-no output}"
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.

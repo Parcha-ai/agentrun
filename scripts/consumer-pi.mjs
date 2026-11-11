@@ -4,7 +4,7 @@ import { isUpstream, resolveDependency, upstreamName } from './pi-family-pins.mj
 
 const durable = '@earendil-works/pi-durable';
 const chord = '@earendil-works/chord';
-const developedFrom = 'packages/pi';
+const developedFrom = 'packages/serve';
 
 const parse = version => {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.+)?$/.exec(version);

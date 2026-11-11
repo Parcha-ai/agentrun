@@ -11,7 +11,7 @@ import { isMain } from './is-main.mjs';
 
 /** Package directory pattern, and the package names (or subpaths) its manifest and source may not name. */
 export const FORBIDDEN = [
-  { packages: /^run-adapters(?:-[a-z0-9-]+)?$/, names: ['@parcha/agentrun-serve', '@parcha/pi-durable-agent/serve', '@parcha/agentrun-pi'] },
+  { packages: /^run-adapters(?:-[a-z0-9-]+)?$/, names: ['@parcha/agentrun-serve'] },
 ];
 
 const reaches = (specifier, name) => specifier === name || specifier.startsWith(`${name}/`);

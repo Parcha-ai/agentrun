@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Model-checks the recovery driver's effects (spec/receipts/Receipts.tla) and the serve door's journal
-# (spec/receipts/Door.tla) with TLC.
+# Model-checks the recovery driver's effects (spec/receipts/Receipts.tla) with TLC.
 #
 #   Receipts.cfg       every property: two call steps, two crashes and failing commits.
 #   ReceiptsFull.cfg   every property at larger bounds: six call steps and six crashes.
-#   Door.cfg           every property of the door: two requestIds, two incarnations, one lost lease.
 #   Receipts_<P>.cfg   a property with a known counterexample (a finding with its node test); must still
 #                      be violated, by exactly that property. When a fix lands, the config stops failing,
 #                      this script says so, and the property moves into the configs above.
@@ -33,8 +31,8 @@ jar="$(cd "$(dirname "$jar")" && pwd)/$(basename "$jar")"
 timeout_bin="$(command -v timeout || command -v gtimeout || true)"
 [ -n "$timeout_bin" ] || { echo "GNU timeout not found (timeout, or gtimeout from coreutils on macOS): install coreutils" >&2; exit 2; }
 
-holds=(Receipts.cfg ReceiptsFull.cfg Door.cfg)
-module_of() { case "$1" in Door*) echo Door ;; *) echo Receipts ;; esac; }
+holds=(Receipts.cfg ReceiptsFull.cfg)
+module_of() { echo Receipts; }
 cpus="$(nproc 2>/dev/null || echo 2)"
 share=$(( cpus / ${#holds[@]} )); [ "$share" -ge 1 ] || share=1
 workers="${TLC_WORKERS:-$share}"

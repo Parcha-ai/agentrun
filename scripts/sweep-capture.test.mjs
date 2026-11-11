@@ -130,20 +130,20 @@ function shard(name, sources) {
 }
 
 test('--captures reads every directory it is given, runs no suite, and skips temporary files', () => {
-  const core = shard('core', ['packages/dsl/test/a.test.mjs', 'packages/pi/test/b.test.mjs', join(root, 'packages/dsl/test/c.test.mjs')]);
+  const core = shard('core', ['packages/dsl/test/a.test.mjs', 'packages/serve/test/durable-b.test.mjs', join(root, 'packages/dsl/test/c.test.mjs')]);
   const examples = shard('examples', ['examples/d.test.mjs']);
   const out = join(scratch, 'corpus-captures.json');
   const done = collector(['--captures', core, `--captures=${examples}`, out]);
   assert.equal(done.status, 0, done.stderr);
   assert.deepEqual(done.suites, [], 'no suite ran');
   const sources = JSON.parse(readFileSync(out, 'utf8')).map((entry) => entry.source);
-  for (const source of ['packages/dsl/test/a.test.mjs', 'packages/pi/test/b.test.mjs', 'packages/dsl/test/c.test.mjs', 'examples/d.test.mjs']) {
+  for (const source of ['packages/dsl/test/a.test.mjs', 'packages/serve/test/durable-b.test.mjs', 'packages/dsl/test/c.test.mjs', 'examples/d.test.mjs']) {
     assert.ok(sources.includes(source), `${source} is in the corpus, relative to the repository`);
   }
 });
 
 test('--captures fails, naming it, on a directory that is missing or holds no finished capture, and writes no corpus', () => {
-  const core = shard('core-only', ['packages/dsl/test/a.test.mjs', 'packages/pi/test/b.test.mjs', 'examples/d.test.mjs']);
+  const core = shard('core-only', ['packages/dsl/test/a.test.mjs', 'packages/serve/test/durable-b.test.mjs', 'examples/d.test.mjs']);
   const empty = join(scratch, 'empty');
   mkdirSync(empty);
   writeFileSync(join(empty, 'dead.1.tmp'), '{');
@@ -158,10 +158,10 @@ test('--captures fails, naming it, on a directory that is missing or holds no fi
 });
 
 test('--captures fails, naming it, when no capture came from one of the suites', () => {
-  const core = shard('no-pi', ['packages/dsl/test/a.test.mjs', 'examples/d.test.mjs']);
-  const done = collector(['--captures', core, join(scratch, 'corpus-no-pi.json')]);
+  const core = shard('no-serve', ['packages/dsl/test/a.test.mjs', 'examples/d.test.mjs']);
+  const done = collector(['--captures', core, join(scratch, 'corpus-no-serve.json')]);
   assert.equal(done.status, 1);
-  assert.match(done.stderr, /packages\/pi\/test: no capture came from this suite/);
+  assert.match(done.stderr, /packages\/serve\/test: no capture came from this suite/);
   assert.doesNotMatch(done.stderr, /packages\/dsl\/test: no capture/);
 });
 

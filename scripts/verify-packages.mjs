@@ -104,13 +104,6 @@ const allowedEndpoints = {
     // The live view starts its own server on loopback when the host mounts none (never 0.0.0.0), and tells the host the viewer's address.
     ['dist/live-view/server.js', 'http://127.0.0.1:${s.address().port}'],
   ],
-  'pi-durable-agent': [
-    // `serve` binds the loopback only (it has no host option): it parses a request's target against that origin and tells its caller the address it listens on.
-    ['dist/serve/server.js', 'http://127.0.0.1'],
-    ['dist/serve/server.d.ts', 'http://127.0.0.1:<port>/'],
-    // The README's example of the address the command prints.
-    ['README.md', 'http://127.0.0.1:41297/'],
-  ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
@@ -156,7 +149,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-durable-agent', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -245,7 +238,7 @@ try {
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
   const zod = await json(join(root, 'node_modules', 'zod', 'package.json'));
-  // The Pi packages are optional peers of @parcha/agentrun-pi: a host or application supplies them, so the consumer does.
+  // The Pi packages, at the repository's versions: a host or application supplies them, so the consumer does.
   const peers = [];
   for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
@@ -297,7 +290,6 @@ syncBuiltinESMExports();
   const starterTarballs = tarballs.filter((_, index) => ['dsl', 'jev'].includes(packageDirectories[index]));
   await starterCommand(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...starterTarballs], 0, false);
   assert.ok((await lstat(join(starter, 'node_modules/@parcha/agentrun-dsl'))).isDirectory(), 'Starter must install the DSL package, not a workspace symlink');
-  await assert.rejects(lstat(join(starter, 'node_modules/@parcha/agentrun-pi')), { code: 'ENOENT' });
   await starterCommand(['test']);
   const starterOutput = await starterCommand(['start']);
   assert.match(starterOutput, /\[review-policy\]/);
@@ -332,16 +324,10 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJevRunner } from '@parcha/agentrun-jev';
-import * as pi from '@parcha/agentrun-pi';
-import * as archil from '@parcha/pi-durable-disk';
-import * as archilInternals from '@parcha/pi-durable-disk/internals';
 import * as browser from '@parcha/pi-browser';
 import * as browserAgent from '@parcha/pi-browser/coding-agent';
 import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
-import * as piDurable from '@parcha/agentrun-pi/durable';
-import * as piWorkflows from '@parcha/agentrun-pi/workflows';
-import * as agentHome from '@parcha/pi-durable-agent';
 import * as decisions from '@parcha/agentrun-decisions';
 import * as client from '@parcha/agentrun-client';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
@@ -354,15 +340,9 @@ import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durab
 import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { execFileSync } from 'node:child_process';
-import * as agentExport from '@parcha/pi-durable-agent/export';
-import * as agentServe from '@parcha/pi-durable-agent/serve';
-import * as agentWorkflow from '@parcha/pi-durable-agent/workflow';
 import * as serve from '@parcha/agentrun-serve';
-import * as piSignin from '@parcha/agentrun-pi/signin';
 import * as computer from '@parcha/agentrun-computer';
 import * as computerMount from '@parcha/agentrun-computer/mount';
-const { createPiRunner } = pi;
-assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
 const schema=JSON.parse(await readFile(new URL(import.meta.resolve('@parcha/agentrun-dsl/schema')),'utf8'));
 assert.equal(schema.$id,'https://agentrun.ai/schema/v2/workflow.schema.json');
@@ -379,21 +359,8 @@ assert.ok(formatWorkflowTree(inspectWorkflow(typed)).includes('copy [code]'));
 assert.deepEqual((await runWorkflow(JSON.parse(JSON.stringify(typed)),{text:'serialized'},{})).output,{text:'serialized'});
 const judge=createJevRunner({client:{async systemOne(){return {model:'fake',answers:{ok:{type:'noul',noul:.9}},usage:{input_tokens:1,output_tokens:1}};}}});
 assert.equal((await judge({label:'check',kind:'judge',state:{ok:true},questions:{ok:{type:'noul',instructions:'Is it okay?'}}})).answers.ok.noul,.9);
-let disposed=false;
-const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async options=>({session:{subscribe(){return()=>{};},async abort(){},dispose(){disposed=true;},async prompt(){await options.customTools.find(t=>t.name==='submit').execute('submit',{value:{total:5}});}}})});
-assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
-assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
-assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archil.localRun,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false);
+assert.equal(typeof authorWorkflow,'function');
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
-assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
-assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
-assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExport.projectForExport],[agentHome.EXPORTABLE_KINDS,agentHome.SECRET_KINDS,agentHome.projectForExport]);
-{ assert.deepEqual(Object.keys(agentServe).sort(),['STORE_PAGE_FILES','serveHome','serveStore','storeApi']); const pkg=join(process.cwd(),'node_modules','@parcha','pi-durable-agent'); assert.match(execFileSync(join(process.cwd(),'node_modules','.bin','pi-durable-agent'),['--help'],{encoding:'utf8'}),/usage: pi-durable-agent serve <dir>/); for (const file of ['page.html','store.html','page.css','graph.js','page.js']) assert.ok((await readFile(join(pkg,'dist','serve',file),'utf8')).length>0,'the install has dist/serve/'+file); }
-assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWorkflowRun','revisionGraph','runWorkflowRevision','startWorkflowRevision','workflowCarry','workflowIssues']); await assert.rejects(agentWorkflow.checkWorkflowBody(null),error=>error.code==='invalid');
-{ const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-workflows-')); try { const work=join(dir,'work'), checkout=join(dir,'checkout'), records='.pi/agentrun/workflows/consumer-add'; await mkdir(work); const saved=await new piWorkflows.WorkflowStore(work).save('consumer-add',workflow); await mkdir(join(checkout,records),{recursive:true}); await writeFile(join(checkout,records,saved.digest+'.json'),await readFile(join(work,records,saved.digest+'.json'),'utf8')); await writeFile(join(checkout,records,'latest'),saved.digest+'\\n'); assert.equal((await new piWorkflows.WorkflowStore(checkout).load('consumer-add')).digest,saved.digest); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
@@ -401,7 +368,7 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
 { assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); assert.ok(Array.isArray(module.MOUNT)&&module.MOUNT.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' MOUNT'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
 { const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,agent:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -460,9 +427,6 @@ console.log(JSON.stringify({ loaded: loaded.filter(url => !url.startsWith('node:
     assert.match(serveNotice, /dist\/console\/THIRD-PARTY-NOTICES\.txt/, "agentrun-serve's NOTICE points to the console's notices");
     receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html) and its third-party notices (dist/console/THIRD-PARTY-NOTICES.txt, which NOTICE names); its files passed the same scans.');
   }
-  await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
-  receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
-  receipt.checks.push('Packed Pi package installed and discovered by native Pi package manager/resource loader; skill and complete/escalated demos passed offline.');
   const auditRun = await run('npm', ['audit', '--omit=dev', '--json'], consumer, true);
   const audit = JSON.parse(auditRun.stdout);
   await writeFile(join(receiptDir, 'npm-audit.json'), JSON.stringify(audit, null, 2) + '\n');
@@ -476,13 +440,12 @@ console.log(JSON.stringify({ loaded: loaded.filter(url => !url.startsWith('node:
 import { z } from 'zod';
 import { createJevRunner, type JevOptions } from '@parcha/agentrun-jev';
 import { authorWorkflow, type AuthorWorkflowOptions } from '@parcha/agentrun-dsl';
-import { createPiRunner, type PiRunnerOptions } from '@parcha/agentrun-pi';
 import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 const jevOptions: JevOptions = {client:{async systemOne(){return {answers:{ok:{type:'noul',noul:1}}};}}};
 const deps: WorkflowDeps = { runJudge: createJevRunner(jevOptions) };
 const workflow: Workflow = {v:2,name:'typed',schemas:{Result:{type:'object'}},output:{schemaId:'Result'},root:{node:'chain',steps:[]}};
-async function useAll(pi: PiRunnerOptions, author: AuthorWorkflowOptions) {
-  const result = await runWorkflow(workflow,{}, {...deps,runNode:createPiRunner(pi)});
+async function useAll(author: AuthorWorkflowOptions) {
+  const result = await runWorkflow(workflow,{}, deps);
   const candidate = await authorWorkflow(author);
   return [result.status,candidate.workflow.name];
 }
@@ -512,15 +475,6 @@ async function typedConsumer(){
 void typedConsumer;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'consumer.ts'], consumer);
-  // pi-ai's declarations name an optional peer of @google/genai that npm does not install, so this file is checked without
-  // declaration checking (the package's own declarations are checked by its `verify:tarball`).
-  // The durable entry's declarations name pi-durable's, which reach the same pi-ai declarations: checked the same way.
-  await writeFile(join(consumer, 'durable-consumer.ts'), `import type { RecoveryJournal, RecoveryStore } from '@parcha/agentrun-dsl/recovery';
-import type { RecoveryStore as DurableStore } from '@parcha/agentrun-pi/durable';
-const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const contract: RecoveryStore = store; return contract.open({binding:'digest'}); };
-void openStore;
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
   await writeFile(join(consumer, 'jev-consumer.ts'), `import { createJevRunner, type JevJudge, type JevImage } from '@parcha/agentrun-jev';
 import type { WorkflowDeps } from '@parcha/agentrun-dsl';
 const image: JevImage = { bytes: new Uint8Array([0x89]), mime: 'image/png' };
@@ -530,12 +484,6 @@ const call = (): ReturnType<JevJudge> => judge({ label: 'door', kind: 'judge', s
 void [asDep, call];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'jev-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
-import type { Workflow } from '@parcha/agentrun-dsl';
-const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
-void keep;
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
   await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-kernel/kernel';
 import { NativeJournal, placeSubmissions } from '@parcha/agentrun-kernel/process';
 const place = async (drive: Drive): Promise<[EffectRecord | undefined, NativeJournal]> => { await placeSubmissions(drive, drive.pending()); return [drive.state().effects.get('k'), new NativeJournal(drive)]; };
@@ -543,13 +491,6 @@ const kernel: [typeof openDrive, typeof Restart] = [openDrive, Restart];
 void [place, kernel];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'adapters-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
-const durable: [typeof openDurableRun, RunRef | undefined] = [openDurableRun, undefined];
-// @ts-expect-error a run reference names its disk.
-const incomplete: RunRef = { region: 'aws-us-east-1', id: 'r1' };
-void [durable, incomplete];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'archil-consumer.ts'], consumer);
   await writeFile(join(consumer, 'browser-consumer.ts'), `import { BROWSER_TOOLS, type BrowserPolicy } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/coding-agent';
 import { FakeBackend } from '@parcha/pi-browser/testing';
@@ -569,37 +510,6 @@ const leaked: MountReadBack = { kind: 'archil', disk: 'd', region: 'r', folder: 
 void [back, checkMount(spec, kinds), takes, leaked, undefined as ComputerProvider | undefined];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'computer-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'agent-consumer.ts'), `import { carryBack, createAgentHome, durableProfileStore, runPaths, startRun, type AgentHome, type CarryBack, type ProfileStore, type RunStart } from '@parcha/pi-durable-agent';
-// A host's run: start it from the agent home, hand its browser the run store's profiles, carry it back.
-const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfileStore>[0]): Promise<CarryBack> => {
-  const started: RunStart = await startRun(home, { host: 'consumer' });
-  const profiles: ProfileStore = durableProfileStore(harness);
-  void [profiles, runPaths(home, started.runId).dir];
-  return carryBack(home, started, { outcome: 'completed' });
-};
-void [oneRun, createAgentHome];
-`);
-  await writeFile(join(consumer, 'agent-serve-consumer.ts'), `import { serveHome, type ServeHandle, type ServeOptions } from '@parcha/pi-durable-agent/serve';
-// A host serves a home to look at: an address, and a way to stop it.
-const look = async (dir: string, options: ServeOptions): Promise<ServeHandle> => serveHome({ dir }, options);
-void look;
-`);
-  await writeFile(join(consumer, 'agent-export-consumer.ts'), `import { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from '@parcha/pi-durable-agent/export';
-// An exporter's view: the two lists and one document as it may leave the home, from the subpath that loads nothing else.
-const kept: readonly string[] = EXPORTABLE_KINDS;
-const secret: readonly string[] = SECRET_KINDS;
-void [kept, secret, projectForExport('agent.runs', { path: 'runs/r1', host: 'h', startedAt: '' })];
-`);
-  await writeFile(join(consumer, 'agent-workflow-consumer.ts'), `import { checkWorkflowBody, readWorkflowRun, revisionGraph, runWorkflowRevision, type GraphDiff, type RunNodeState, type RunState, type WorkflowBody, type WorkflowRunStart, type WorkflowRunView } from '@parcha/pi-durable-agent/workflow';
-// A store's workflow revision: checked before it is committed, run on its run store, read back for a run page.
-const check = (body: WorkflowBody): Promise<void> => checkWorkflowBody(body);
-const page = (run: WorkflowRunStart): Promise<WorkflowRunView> => readWorkflowRun(run);
-const ended: RunState[] = ['completed', 'failed', 'stopped', 'escalated'];
-const interrupted: RunNodeState = 'stopped';
-const changed = async (body: WorkflowBody, parent: WorkflowBody): Promise<GraphDiff | undefined> => (await revisionGraph({ body }, { kind: 'workflow', body: parent })).diff;
-void [check, page, ended, interrupted, changed, runWorkflowRevision];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts', 'agent-serve-consumer.ts', 'agent-export-consumer.ts', 'agent-workflow-consumer.ts'], consumer);
   // The Claude Agent adapter installed without its SDK (an optional peer the host brings) says so in one line that ends with
   // the line installing the pinned SDK. That line, run exactly as printed in a consumer of its own, is all it takes for the
   // adapter's checks to pass: the SDK, its platform package (the CLI) and the MCP library it brings as a peer.

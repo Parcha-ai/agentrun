@@ -23,6 +23,7 @@
     "test:release": "node --test scripts/*.test.mjs",
     "test:e2e": "node apps/console/e2e/run.mjs",
     "test:examples": "node --test examples/*.test.mjs",
+    "test:workflows": "node --test packages/serve/test/durable-*.test.mjs packages/serve/test/node-*.test.mjs packages/serve/test/record-*.test.mjs packages/serve/test/pi-runner*.test.mjs packages/serve/test/typed-submit-contract.test.mjs",
     "demo:typed": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "test:typed-example": "tsc -p examples/tsconfig.json && node --test examples/typed-research.test.mjs",
     "demo:research": "node examples/research-live.mjs --summary",

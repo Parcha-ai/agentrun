@@ -4,7 +4,7 @@ One file per pull request, named for the change (`changes/<slug>.md`, lowercase 
 
 ```md
 ---
-packages: @parcha/agentrun-pi
+packages: @parcha/agentrun-dsl
 kind: feature
 ---
 What changed and what a user does differently, as the text of one changelog bullet (no leading "- ").

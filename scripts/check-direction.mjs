@@ -24,8 +24,7 @@ export const LAYERS = {
   'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/computer', 'packages/decisions', 'packages/jev'],
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
   subsystem: [
-    'packages/dsl', 'packages/pi', 'packages/pi-browser',
-    'packages/pi-durable-agent', 'packages/pi-durable-disk',
+    'packages/dsl', 'packages/pi-browser',
   ],
   server: ['packages/serve'],
   surface: ['apps/console', 'packages/agentrun', 'packages/client'],
@@ -44,7 +43,6 @@ export const MAY = {
 const KERNEL_DSL = ['the kernel takes the workflow types and parameter check from the DSL', 'run workflows as a harness on the kernel, so the kernel names no workflow type'];
 const DECLARED_DSL = ['a declared dependency on the DSL that no source file imports', 'delete it from the manifest'];
 const PROVIDER_DSL = ['the DecisionProvider interface and its helpers live in the DSL', 'move the interface into a protocol package'];
-const PI_JEV = ['the Pi runtime builds the Jev decision provider itself', 'workflows run as a harness and are handed their decision providers'];
 const CONSOLE_SOURCE = ['the console compiles library source through a path alias (tsconfig paths and the Vite alias)', 'fold the library into the server and serve what the console needs through the API'];
 const LAUNCHER_SERVER = ['the launcher installs the server at its own version and runs its start script', 'the server package carries its own start command'];
 
@@ -63,9 +61,6 @@ export const EXCEPTIONS = [
   ['packages/decisions/src/parallel.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
   ['packages/jev/package.json', 'packages/dsl', 1, ...PROVIDER_DSL],
   ['packages/jev/src/index.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
-  ['packages/pi/package.json', 'packages/jev', 1, ...PI_JEV],
-  ['packages/pi/src/extension.ts', 'packages/jev', 1, ...PI_JEV],
-  ['packages/pi/src/extension-service.ts', 'packages/jev', 1, 'the Pi runtime reads Jev\'s error type to report a failed decision', 'the same change: the provider reports its own failures'],
   ['apps/console/tsconfig.json', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/pi-durable-agent', 1, ...CONSOLE_SOURCE],

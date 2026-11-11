@@ -14,11 +14,6 @@ const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
 /** Each accepted site: where the call is, and what keeps a throw out of pi. */
 export const ACCEPTED = [
-  { at: "packages/pi-durable-disk/src/park.ts#1", keeps: "resolves", why: "parking's recheck: queues a check, never throws" },
-  { at: "packages/pi-durable-disk/src/park.ts#2", keeps: "resolves", why: "drain's wake: resolves the promise its loop waits on" },
-  { at: "packages/pi-durable-disk/src/live-events.ts#1", keeps: "catches", why: "the watchEvents adapter: a commit it cannot translate ends the stream, failed" },
-  { at: "packages/pi-durable-disk/src/live-events.ts#2", keeps: "catches", why: "the adapter's followed documents: a change it cannot follow ends the stream, failed" },
-  { at: "packages/pi/src/durable/recording.ts#1", keeps: "catches", why: "the recording maps and queues; a failure is the stop's to report" },
   { at: "packages/serve/src/browser-cost.ts#1", keeps: "catches", why: "a charge it fails to count, or an end before the run's close, makes the run's spend unknown (spent null)" },
   { at: "packages/serve/src/runner/adapter-loop.ts#1", keeps: "catches", why: "the runner's held state (pi.live), on the one loop: its advance hands the ticker a reader and catches; a value it cannot read reports nothing held, at the tick, whose read never throws; its end only returns" },
 ];

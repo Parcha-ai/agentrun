@@ -91,9 +91,9 @@ test('a moderate or low package beside the accepted chain blocks nothing, and is
   const moderate = (name, via) => ({ ...dependent(name, via), severity: 'moderate' });
   const vulnerabilities = zodChain({
     '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@browserbasehq/stagehand', '@earendil-works/pi-coding-agent']),
-    '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-pi', '@parcha/pi-browser']),
+    '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-serve', '@parcha/pi-browser']),
     '@earendil-works/pi-coding-agent': moderate('@earendil-works/pi-coding-agent', ['undici']),
-    '@parcha/agentrun-pi': moderate('@parcha/agentrun-pi', ['@earendil-works/pi-coding-agent']),
+    '@parcha/agentrun-serve': moderate('@parcha/agentrun-serve', ['@earendil-works/pi-coding-agent']),
     undici: { name: 'undici', severity: 'moderate', isDirect: false, effects: [], nodes: ['node_modules/undici'], via: [advisory('GHSA-dddd-eeee-ffff', 'moderate')] },
   });
   assert.deepEqual(auditBlockers(audit(vulnerabilities), before, withZod), {
@@ -114,9 +114,9 @@ const moderatePackage = (name, via) => ({ ...dependent(name, via), severity: 'mo
 const withUndici = (overrides = {}) => ({
   undici: { name: 'undici', severity: 'high', isDirect: false, effects: ['@earendil-works/pi-coding-agent'], nodes: [codingAgentUndici], via: undiciAdvisories },
   '@earendil-works/pi-coding-agent': moderatePackage('@earendil-works/pi-coding-agent', ['undici']),
-  '@parcha/agentrun-pi': moderatePackage('@parcha/agentrun-pi', ['@earendil-works/pi-coding-agent']),
+  '@parcha/agentrun-serve': moderatePackage('@parcha/agentrun-serve', ['@earendil-works/pi-coding-agent']),
   '@parcha/pi-browser': dependent('@parcha/pi-browser', ['@earendil-works/pi-coding-agent', 'undici']),
-  '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-pi', '@parcha/pi-browser']),
+  '@parcha/agentrun-harness': dependent('@parcha/agentrun-harness', ['@parcha/agentrun-serve', '@parcha/pi-browser']),
   ...overrides,
 });
 const undiciChain = ['undici', '@parcha/pi-browser', '@parcha/agentrun-harness'];
