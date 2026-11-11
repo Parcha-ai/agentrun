@@ -72,6 +72,14 @@ walk_up() {
   for r in runner-1 runner-2; do
     logged "$r" "^Runner $r ready: store [a-z]+ schema v[0-9]+, [0-9]+ loops\$" || fail "$r ready" "no ready line from $r within 60 s"
     pass "$r ready" "$(dc logs --no-log-prefix --no-color "$r" | grep -E "^Runner $r ready" | tail -1)"
+    # Its memory budget is its own container's limit (compose.yaml's mem_limit) less the 128 MiB a process keeps, never
+    # the whole host's: the host's memory as the container sees it (os.totalmem, as the runner reads it) caps it.
+    limit=$(docker inspect -f '{{.HostConfig.Memory}}' "$(dc ps -q "$r")")
+    [ "${limit:-0}" -gt 0 ] || fail "$r memory" "its container has no memory limit (compose.yaml's mem_limit)"
+    host=$(dc exec -T "$r" /usr/local/bin/node -p 'require("node:os").totalmem()')
+    if [ "$limit" -lt "$host" ]; then want=$((limit / 1048576 - 128)); else want=$((host / 1048576 - 128)); fi
+    logged "$r" "^Runner $r memory: $want MiB for runs" || fail "$r memory" "no line saying $want MiB for runs (its limit $limit bytes): $(dc logs --no-log-prefix --no-color "$r" | grep -E "^Runner $r memory" | tail -1)"
+    pass "$r memory" "$(dc logs --no-log-prefix --no-color "$r" | grep -E "^Runner $r memory" | tail -1) (its container's limit $limit bytes)"
   done
 }
 

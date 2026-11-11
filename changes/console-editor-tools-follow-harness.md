@@ -1,0 +1,9 @@
+---
+packages: repo
+kind: fix
+---
+The agent editor's tools follow the harness. Switching an agent to a harness that doesn't run one of its tools here (ask_person on Claude, an MCP grant on a harness that runs no MCP tools) unticks that tool at once, and says why under the Harness choice before any save. The Tools step shows it unticked with the same reason, which names the harnesses that do run it ("Runs on Pi here, not on Claude"), Save sends only what the harness runs, and switching back ticks it again. Every tool card in the Tools step, a built-in tool's or an MCP server's (Linear, Composio, any), is the same component at one fixed height: one human line (the served blurb, else the description clamped to three lines), its state as a short tag, and More/Less to open that card alone. A long MCP description no longer prints whole on a card dozens of lines tall, and a long unbroken string (a base64 example, a shell line) wraps inside its card. A card's hover title says only what the card cuts or hides (a long name, a clamped description, the reason behind a short tag), never text it already shows, and an open card has none.
+
+Save revision follows the form: it is off with nothing to change and reads "Saved · rev N"; on with an edit (a setting changed and set back is no change). The "Leave without saving?" question reads the same flag, and now asks before Sign out and Sign out everywhere too. A new agent's form is read-only while its Create is under way. A refused save's reason shows under the button, and a new agent says under Create what it still needs (a name, its instructions). The save warnings name the step a line is about (Tools & skills) instead of a raw field like `definition.tools[3]`.
+
+A workflow's node count is the boxes its graph draws, and a run's "Open the run" is a button. Settings → Tools greys out a harness this server can't run, as "not offered here", with the server's reason on hover.

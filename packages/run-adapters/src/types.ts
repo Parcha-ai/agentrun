@@ -135,6 +135,8 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** Its `inputTokensMax` is its provider's count, not its bytes (ProxyRequest.inputTokensCounted). */
+  inputTokensCounted?: true;
   /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
@@ -164,6 +166,10 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
+   *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
+   *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
+  route?: string;
 }
 
 /** What a paid request cost, once it completed. */
@@ -334,8 +340,10 @@ export interface AdapterSession {
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
    *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of
-   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. */
-  port?(label: string): SessionPort | undefined;
+   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. `tier`: the run's
+   *  model of that tier instead (a learned workflow's node of a tier), on a proxy of its own beside the session's, with
+   *  that model's origin, credential and price and the session's booking; undefined when the session has none for it. */
+  port?(label: string, tier?: string): SessionPort | undefined;
 }
 
 /** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */

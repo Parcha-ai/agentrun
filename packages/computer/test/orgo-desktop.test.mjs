@@ -190,6 +190,26 @@ test("Orgo Windows connect: hello is the desktop's; screen.shot is a PNG of the 
 	assert.equal((await client.call("ping", {})).error.code, "gone");
 });
 
+test("Orgo Windows input: a down that first releases a press still held, cancelled while that release waits on Orgo, says aborted, not bad input", async () => {
+	// Orgo's click for the release is held until the batch is cancelled.
+	let holding = false;
+	let let_go;
+	const hold = ({ path }) => (holding && path.endsWith("/click") ? new Promise((resolve) => { let_go = resolve; }) : undefined);
+	const { provider, fake } = setup("windows", { api: { hold } });
+	const { ref } = seeded({ fake });
+	const { client } = (await provider.connect(ref)).value;
+	assert.deepEqual((await client.call("input.actions", { actions: [{ type: "move", at: [50, 50] }, { type: "down" }] })).value, { done: 2 });
+	holding = true;
+	const cancel = new AbortController();
+	const second = client.call("input.actions", { actions: [{ type: "down" }] }, { signal: cancel.signal });
+	await until(() => let_go !== undefined);
+	cancel.abort();
+	let_go();
+	const answer = await second;
+	const said = answer.value ?? answer.error;
+	assert.ok(said.failed?.kind === "aborted" || said.code === "aborted", JSON.stringify(answer));
+});
+
 test("Orgo Windows input: each action as Orgo's Windows calls take it; a down and its up become one click or drag; what Windows cannot do is refused whole, with nothing run", async () => {
 	const { provider, fake } = setup("windows");
 	const { ref } = seeded({ fake });

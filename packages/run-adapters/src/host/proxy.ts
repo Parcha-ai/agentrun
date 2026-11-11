@@ -103,6 +103,11 @@ export interface ProviderPolicy {
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
+  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens), which the proxy asks before
+   *  each of the session's answer requests (`countedInputOf`) when its upstream is exactly `origin`, the provider's own: never
+   *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
+   *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
+  countInput?: InputCounter;
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
@@ -489,6 +494,9 @@ export interface ProxyRequest {
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
+  /** Its `inputTokensMax` is its provider's count (ProviderPolicy.countInput), not its bytes: a host that compares one
+   *  request's bound with another's (how far a conversation grew) pairs a counted bound only with a counted one. */
+  inputTokensCounted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -513,6 +521,10 @@ export interface ModelProxyOptions {
   hooks: ModelProxyHooks;
   /** The session's model, as the runner names it to `beforeRequest`. The policy fixes the body's model. */
   model: string;
+  /** This proxy's route among the session's, told to `beforeRequest` with each request (ModelRequest.route) so the host
+   *  prices it at this proxy's price: a proxy beside the session's for another tier's model names its tier. Absent: the
+   *  session's own. */
+  route?: string;
   /** The provider's base: its origin and, for a gateway that serves the API under a path, that path
    *  (`https://api.example.com`, `https://gateway.example/api`). A route's path is appended to it. A base with userinfo, a
    *  query or a fragment is refused, so the key goes only where the base reads. */
@@ -742,6 +754,56 @@ function baseOf(base: string): string {
   // A backslash is a path separator to the URL parser, so it could move the base to a path the text does not read as.
   if (url.username || url.password || url.search || url.hash || base.includes("\\")) throw new Error("agentrun-kernel: a model proxy's base is an origin and a path, with no userinfo, query, fragment or backslash");
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/** A provider's endpoint that counts a request's input tokens (ProviderPolicy.countInput). */
+export interface InputCounter {
+  /** The provider's own base (`https://api.anthropic.com`): counted only when the session's upstream is exactly it. */
+  readonly origin: string;
+  /** The counting endpoint's path under it (`/v1/messages/count_tokens`). */
+  readonly path: string;
+  /** The body to count, from the request's (the fields the endpoint takes). */
+  body(body: Record<string, unknown>): Record<string, unknown>;
+  /** The headers to send it, from the request's as the proxy sends them (its credential and version headers among them). */
+  headers(sent: Record<string, string>): Record<string, string>;
+  /** The input tokens its answer says, or undefined when it says none. */
+  tokensOf(answer: unknown): number | undefined;
+  /** What the provider bills beside the count, which the count may leave out (a tool-use system prompt): added to it. */
+  margin?(body: Record<string, unknown>): number;
+}
+
+/** How long a count may take before the request goes on its byte bound: a count never holds a request up for long. */
+export const COUNT_TIMEOUT_MS = 3_000;
+
+/**
+ * The exact input tokens of a request with body `body`, by its provider's own count (`policy.countInput`), plus its
+ * margin; undefined (the request keeps its byte bound) when the policy has no counter, the upstream `origin` is not
+ * the counter's own, or the count fails, times out or says no count. Never throws: a count is only ever a tighter bound.
+ */
+export async function countedInputOf(policy: ProviderPolicy, origin: string, body: Record<string, unknown>, headers: Record<string, string>, fetch: typeof globalThis.fetch, say: (message: string, detail?: Record<string, unknown>) => void = () => {}, timeoutMs = COUNT_TIMEOUT_MS, signal?: AbortSignal): Promise<number | undefined> {
+  const counter = policy.countInput;
+  if (!counter) return undefined;
+  try {
+    if (baseOf(counter.origin) !== origin) return undefined;
+    // Cut at its timeout, or when `signal` aborts (its client went).
+    const cut = signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs);
+    const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: cut });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound`);
+      return undefined;
+    }
+    const tokens = counter.tokensOf(await response.json());
+    const margin = counter.margin ? counter.margin(body) : 0;
+    if (!Number.isSafeInteger(tokens) || tokens! < 0 || !Number.isSafeInteger(margin) || margin < 0) {
+      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound`);
+      return undefined;
+    }
+    return tokens! + margin;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
 }
 
 /** Start a session's model proxy on the loopback interface, admitting `key`. */
@@ -986,6 +1048,33 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // The turn's answer stopped and the harness was told: its client asking again is refused (no retry), never sent, never
     // admitted or booked, until the harness opens its next turn.
     if (answering && !route.free && stopTold !== undefined) return refuse(res, refusedStatus, `refused: the turn's answer was ${stopTold}, and the turn ends there`, req);
+    // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
+    // exact count when that is below its bytes, so a small cap admits a first turn its bytes would not. Each answer request
+    // is counted, not only the first: the cap prices a step by the last one's tokens plus how far its bound grew, so a
+    // counted bound beside a byte bound would read the bytes as growth. A count that fails or times out leaves the byte
+    // bound, and never holds the request up for long. A noted request is counted with its note, which bounds it without
+    // the note too (the note only adds).
+    // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
+    let inputTokensCounted = false;
+    if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
+      // A client that goes while its request is counted is gone before anything is admitted: the count is cut, and the
+      // request is neither admitted nor sent (nothing is booked, and no paid answer starts for no one).
+      const gone = new AbortController();
+      const onGone = () => gone.abort(new Error("the client went while its request was counted"));
+      res.once("close", onGone);
+      let counted: number | undefined;
+      try {
+        counted = await countedInputOf(policy, origin, body, headers, forward, say, COUNT_TIMEOUT_MS, gone.signal);
+      } finally {
+        res.off("close", onGone);
+      }
+      if (gone.signal.aborted || res.destroyed) return;
+      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
+        inputTokensMax = counted;
+        inputTokensCounted = true;
+        if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
+      }
+    }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
@@ -996,6 +1085,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(host === undefined ? {} : { host }),
+        ...(inputTokensCounted ? { inputTokensCounted: true as const } : {}),
+        ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).

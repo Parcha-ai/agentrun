@@ -41,6 +41,11 @@ function shaped(snapshot) {
     assert.deepEqual(extra, [], `no key SNAPSHOT.md does not name: ${JSON.stringify(value).slice(0, 200)}`);
     for (const key of required) assert.ok(key in value, `${key} is there: ${JSON.stringify(value).slice(0, 200)}`);
   };
+  // A retired item's retired_from says what its restore gives back, active or pending; any other item has none.
+  const retiredFrom = (value) => {
+    if (value.status === "retired") assert.ok(value.retired_from === undefined || ["active", "pending"].includes(value.retired_from), `retired_from is active or pending: ${JSON.stringify(value).slice(0, 200)}`);
+    else assert.equal(value.retired_from, undefined, `only a retired item says retired_from: ${JSON.stringify(value).slice(0, 200)}`);
+  };
   const history = (value) => {
     keys(value, ["at"], ["last", "retire", "person"]);
     for (const change of [value.last, value.retire, value.person].filter(Boolean)) keys(change, ["kind", "by", "at"]);
@@ -50,11 +55,14 @@ function shaped(snapshot) {
   assert.match(snapshot.main, HEX);
   keys(snapshot.index, ["oid", "bytes"]);
   for (const one of snapshot.notes) {
-    keys(one, ["file", "oid", "bytes", "name", "description", "type", "status", "origin", "supersedes", "superseded_by", "order", "history"]);
+    // retired_from: past v1, additive, on a retired note alone (the status its restore gives back).
+    keys(one, ["file", "oid", "bytes", "name", "description", "type", "status", "origin", "supersedes", "superseded_by", "order", "history"], ["retired_from"]);
+    retiredFrom(one);
     history(one.history);
   }
   for (const one of [...snapshot.skills, ...snapshot.workflows]) {
-    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links"]);
+    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links", "retired_from"]);
+    retiredFrom(one);
     for (const file of one.files) keys(file, ["path", "oid", "bytes"]);
     history(one.history);
   }
@@ -168,7 +176,7 @@ export function folderSuite(backend, make) {
     const lines3 = odd.split("\n").slice(0, -1);
     assert.deepEqual((await readRunDiff(ws, "run-c")).files, [{ path: "odd.md", status: "added", patch: `@@ -0,0 +1,${lines3.length} @@\n${lines3.map((l) => `+${l}\n`).join("")}` }]);
     // A person's write keeps no diff file.
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd, "active") }));
     assert.deepEqual((await ws.list(DIFFS_DIR)).map((e) => e.name), ["run-a.json", "run-b.json", "run-c.json"]);
     await matchesMain(ws);
   });
@@ -200,7 +208,7 @@ export function folderSuite(backend, make) {
     const ops = [];
     folderTestHooks.exec = (argv) => ops.push(argv[2]);
     try {
-      await writeLearning(ws, async ({ snapshot }) => ({ result: null, change: personChange("retired", "quote-sources.md", { "check-units.md": edited, "quote-sources.md": retire(SOURCES) }) }));
+      await writeLearning(ws, async ({ snapshot }) => ({ result: null, change: personChange("retired", "quote-sources.md", { "check-units.md": edited, "quote-sources.md": retire(SOURCES, "active") }) }));
     } finally {
       folderTestHooks.exec = undefined;
     }
@@ -234,7 +242,7 @@ export function folderSuite(backend, make) {
     files["ask-first.md"] = approve(files["ask-first.md"]);
     snap = await step(personChange("approved", "ask-first.md", files, true), "approve");
     assert.deepEqual(snap.log[0].by, { user: true, via: "console" });
-    files["check-units.md"] = retire(files["check-units.md"]);
+    files["check-units.md"] = retire(files["check-units.md"], "active");
     snap = await step(personChange("retired", "check-units.md", files), "retire");
     const retired = snap.notes.find((n) => n.file === "check-units.md");
     assert.deepEqual([retired.status, retired.history.retire?.kind, retired.history.person?.kind], ["retired", "retired", "retired"]);
@@ -436,7 +444,7 @@ export function folderSuite(backend, make) {
     await learningInit(ws);
     const one = await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
     const atMain = await seedBase(ws, one.main);
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS, "active") }));
     const older = await execsOf(() => seedBase(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
     assert.deepEqual({ files: [...older.result.base.files], active: older.result.base.active.map((n) => n.file), kept: older.result.kept }, { files: [...atMain.base.files], active: atMain.base.active.map((n) => n.file), kept: atMain.kept }, "the same base from git's own read as from the snapshot it had");
@@ -463,7 +471,7 @@ export function folderSuite(backend, make) {
     // Held: every entry at the seed's top, the pending note's file among them (never laid, but main holds it).
     const top = ["MEMORY.md", "ask-first.md", "check-units.md", "skills"];
     assert.deepEqual({ ...atMain.result, held: [...atMain.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "a pending note and a held skill are never laid");
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS, "active") }));
     const older = await execsOf(() => readSeed(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
     assert.deepEqual({ ...older.result, held: [...older.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "the same files, read by git at the seed");

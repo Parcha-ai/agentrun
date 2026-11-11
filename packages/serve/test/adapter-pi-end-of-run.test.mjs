@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { closeOpenSessions, openSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { closeOpenSessions, openSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -313,6 +313,11 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
   // The steady lease: the claim is lost by the runner's close, never by a stall of a loaded box lapsing a short one (which
   // let runner-a take the run back and ask its step a second time, CI 11-11).
   const { start, until, toldRows, endEntries } = await setup(t, STEADY);
+  // Every request the model got, on both claims: the end-of-run turn's reaches it once, the next claim's ask answered
+  // from its submission, never a second paid turn.
+  const requests = [];
+  const script = [{ say: "done" }, { say: "a note" }];
+  const fetch = scriptedOrigin(script, requests);
   let asked;
   const firstAsked = new Promise((resolve) => (asked = resolve));
   const seen = [];
@@ -324,7 +329,7 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
     await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
     throw new Error("aborted");
   };
-  const runnerA = await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: first }), "runner-a");
+  const runnerA = await start(loopWith(piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch }), {}, { endOfRun: first }), "runner-a");
   await firstAsked;
   await runnerA.close();
   assert.equal(endEntries(), 0, "no end while the step was cut off");
@@ -335,9 +340,11 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
     assert.deepEqual(answer, { ended: true, answer: "a note" }, "the resumed turn's answer is the one already given");
     return { also: [told("second")] };
   };
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: second }), "runner-b");
+  await start(loopWith(piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch }), {}, { endOfRun: second }), "runner-b");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end on the next claim");
   assert.deepEqual(seen, ["first", "second"], "asked again on the next claim");
+  const reflect = requests.filter((body) => JSON.stringify(body.messages ?? []).includes("What did you learn?"));
+  assert.equal(reflect.length, 1, `the end-of-run request reached the model once, across both claims: ${requests.length} requests`);
   assert.equal(endEntries(), 1, "one end");
   assert.deepEqual(toldRows().map((row) => row.marker), ["second"], "only the finished step's row");
 });
