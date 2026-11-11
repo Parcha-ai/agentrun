@@ -296,6 +296,31 @@ test("a stop row whose tries a failed resume raised is a stop all the same: the 
   assert.ok(!starts.includes("runner-b"), "the claim after the failed resume started no loop: it only ended the run");
 });
 
+// Ported from turn-record-restart.test.mjs, whose server took a cancel and went down before its run's process ended the
+// run: a cancel is the run's end from its 202 on, whoever holds the run then. Here the cancel's row is written while no
+// runner holds the parked run (its runner gone); the next claim only ends it cancelled, never as its cut turn reads, and
+// no paid turn follows a cancel.
+test("a cancel row written while no runner holds the run: the next claim only ends it cancelled, its waiting call canceled, with no model request and no tool run", { timeout: 60_000 }, async (t) => {
+  const { server, runner, spawn, sent, requests } = await runOf(t);
+  await runner.close();
+  const cancel = await server.command("run-1", { kind: "cancel" });
+  const asked = requests.length;
+  spawn("runner-b");
+  const row = await until(async () => {
+    const now = await server.runs.get("run-1");
+    return now.state === "stopped" && now.runner === null && now;
+  }, "the run ended", 30_000);
+  assert.deepEqual([row.state, row.summary], ["stopped", "cancelled"], "ended cancelled, in the cancel's own words");
+  const taken = (await server.commands("run-1", 0)).find((one) => one.id === cancel.id);
+  assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row was taken: ${JSON.stringify(taken)}`);
+  const entries = await entriesOf(server);
+  const ask = entries.find((entry) => entry.kind === "agentrun.ask")?.data;
+  assert.deepEqual(entries.filter((entry) => entry.kind === "agentrun.answer").map((entry) => [entry.data.callId, entry.data.decision]), [[ask.callId, "canceled"]], "its waiting call answered canceled with the end");
+  await assert.rejects(server.command("run-1", { kind: "steer", body: { text: "go on" } }), { name: "RunFinal" });
+  assert.equal(requests.length, asked, "no model request after the cancel");
+  assert.deepEqual(sent, [], "the waiting call was never sent");
+});
+
 test("a stopped end with no call to withdraw still ends stopped on the run's row alone when the journal refuses it, with no backoff", { timeout: 60_000 }, async (t) => {
   // Stopped before it is claimed, its one call allowed: nothing waits for an answer when its end is refused.
   const { server, events } = await runOf(t, { onEnd: async () => {

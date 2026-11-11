@@ -48,13 +48,11 @@ import { readRunDbSync } from "./run-db.js";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
+import { imageInputOf, providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
 import { CAP_WRAPUP, type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
-/** A run's cap in USD, passed to its process. */
-export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
 /** How near two dollar figures are the same figure: a sum a float puts a hair past the cap (0.0028 + 0.3072 is
@@ -79,8 +77,6 @@ export const BOUND_FIELD = "boundUsd";
  *  case, so no request can pass it. */
 export const CAP_MODES = ["expected", "strict"] as const;
 export type CapMode = (typeof CAP_MODES)[number];
-/** A run's cap mode, passed to its process; absent is "expected". */
-export const CAP_MODE_ENV = "AGENTRUN_SERVE_CAP_MODE";
 
 /** How long after a request ended the next one in its conversation is expected to read its cache: 4 minutes, inside
  *  Anthropic's 5 (a cache kept that long from its last use; OpenAI's lasts longer). A request later than that is priced
@@ -639,6 +635,14 @@ export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: n
   return readRunDbSync(storeFile, false, (db) => meterFiguresFrom(db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }))));
 }
 
+/** A browser charge's record on the run's root when the run books its money on the runner's one ledger (browser-cost.ts
+ *  browserSpend's `paid`): the same record a browser TOOL_COST is, for what the browser's process holds and the seconds
+ *  it was for, under a kind no cost reads. The charge's money is the ledger's paid step alone, which the cap counts and
+ *  the run's cost (adapter-run-spec.ts endPatch), its timeline and its meters (store-reads/journal.ts withPaidCosts) read,
+ *  as every paid tool's on the runner: a TOOL_COST beside it would count the same charge twice. Its seconds are the
+ *  browser_time meter's (meterFiguresFrom). */
+export const BROWSER_CHARGED = "agentrun.browser_charged";
+
 /** meterFiguresIn's figures from a run's entries by conversation, in log order: the one computation, shared by
  *  meterFiguresIn (reading a settled run's own database) and the one-store reader (store-reads/cap.ts metersOverStore, over
  *  A's journal). Only where the entries come from changes; the figures do not (the money-parity rule), as spentFrom is to
@@ -655,6 +659,9 @@ export function meterFiguresFrom(rows: readonly { conversation: number; entry: E
   const known = { tokens: 0, browser: 0, others: 0 };
   for (const { entry } of rows) {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // On the runner a browser charge's money reaches here from the run's ledger (a TOOL_COST of tool "browser", with no
+    // seconds) and its seconds from its record on the root: each counted once.
+    if (entry.kind === BROWSER_CHARGED && data.tool === "browser") browser.seconds += figureOf(data.seconds) ?? 0;
     if (entry.kind === TOOL_STARTED) marks.add(data.call);
     else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
     if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd)), (known.others += figureOf(data.usd) ?? 0);
@@ -873,16 +880,19 @@ function outputBound(model: Pick<Model<Api>, "maxTokens" | "contextWindow" | "co
 }
 
 /** A request's input tokens, bounded above: one per UTF-8 byte of what is sent (a byte-level tokenizer never takes
- *  fewer than one byte a token, and an image's base64 is far more bytes than its tokens), plus `overhead`, what the
- *  provider adds server-side that the body does not hold. The same bound on every harness. */
+ *  fewer than one byte a token), plus `overhead`: what the provider adds server-side that the body does not hold, and
+ *  each image at what it is billed as in place of its base64's bytes (below 0 for a large image: piOverhead). The same
+ *  bound on every harness. */
 export const inputBound = (sent: string, overhead = 0): number => Buffer.byteLength(sent, "utf8") + overhead;
 
 /** What pi's provider adds server-side to a request of `context`, the same table the model proxy uses, by the model's API
  *  kind: undefined for a kind whose additions are not known. The context does not say how the request chooses a tool,
  *  so the dearer choice is taken. */
-export function piOverhead(model: Pick<Model<Api>, "api">, context: Context): number | undefined {
-  const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown }[] }).content) : []));
-  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").length });
+export function piOverhead(model: Pick<Model<Api>, "api"> & { id?: string }, context: Context): number | undefined {
+  const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown; data?: unknown }[] }).content) : []));
+  // Each image, in every turn, at what the model's provider bills it as by its size, in place of its base64's bytes in
+  // what is sent (imageInputOf, imageTokens).
+  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").map((part) => imageInputOf(part.data)), ...(model.id ? { model: model.id } : {}) });
 }
 
 const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;

@@ -1,4 +1,4 @@
-export { createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { answeredUnpriced, createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
 export { runBooking, type RunSessions } from "./run-booking.js";
 export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
