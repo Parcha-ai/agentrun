@@ -248,6 +248,8 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
     "We manage 4 accounts for this vendor.",
     "Check the 12 accounts the finance team owns.",
     "Review the account on 2026-11-11 before the close.",
+    "Review account 2026-11-11 before the close.",
+    "Review account number: 2026-11-11 before the close.",
     "The account 2025 budget closes in March.",
     "Card ending in 4471: ask before using it.",
     "Routing tickets to on-call needs the owner's OK.",
@@ -262,4 +264,22 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
     assert.deepEqual(learnedSecretShapes(text), [], `no secret: ${text}`);
     assert.equal(check([added(NEW, note({ body: `${text}\n` }))]).ok, true, text);
   }
+});
+
+// #2358 review (PRRT_kwDOUmdVMs62CYsv, security): a name refused for a bank's number is cut of it where learning prints
+// and serves it: the problem as printed (printable, what a run's learning keeps and serves) and a learning read
+// (secretsShown). A run's own view keeps an account number (secretShapes leaves it): only learning cuts it.
+test("a refused name holding a bank account number is cut from the problem as printed and as a learning read serves it", async () => {
+  const { secretsShown } = await import("../dist/learning.js");
+  const { secretShapes } = await import("../dist/learn/secrets.js");
+  const name = "account12345678.md";
+  const result = check([added(name, note())]);
+  assert.ok(rules(result).includes("secret_shape"), JSON.stringify(result.problems));
+  const printed = JSON.stringify(result.problems.map((problem) => checks.printable(problem, [])));
+  assert.equal(printed.includes("12345678"), false, printed);
+  const shown = secretsShown([]);
+  assert.equal(shown.text(`It names ${name} here.`).includes("12345678"), false);
+  assert.equal(shown.name(name), "[redacted]");
+  assert.equal(shown.holds("Pay acct #98765432 today."), true);
+  assert.deepEqual(secretShapes(`It names ${name} here.`), [], "a run's own view still reads it as no secret");
 });
