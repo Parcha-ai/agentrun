@@ -23,7 +23,7 @@
 // custody ends a create it refused at once.
 import type { AttachTarget, BrowserProvider, LeaseRef, ProviderCaps, RemoteFile, ResourceStatus, SessionSpec } from "@parcha/pi-browser";
 import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@parcha/pi-browser";
-import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, providerFor, runLabels } from "@parcha/agentrun-computer";
+import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
@@ -238,7 +238,18 @@ export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Pro
   // sign-in creation already use it, so the browser's sessions do too.
   const gateway = vendor === "browserbase" ? env.BROWSERBASE_BASE_URL : vendor === "kernel" ? env.KERNEL_BASE_URL : undefined;
   const apiUrl = typeof gateway === "string" && gateway.trim() !== "" ? { apiUrl: gateway.trim().replace(/\/+$/, "") } : {};
-  return providerFor(vendor as never, { ...(options.options as object), ...apiUrl } as never);
+  // Behind either Browserbase gateway the gateway's injected key names the project: none is sent (as sign-in creation does).
+  const behindGateway = vendor === "browserbase" && Boolean(env.BROWSERBASE_BASE_URL || env.BROWSERBASE_CONNECT_BASE_URL);
+  const { projectId: _project, ...rest } = options.options as Record<string, unknown>;
+  return providerFor(vendor as never, { ...(behindGateway ? rest : options.options as object), ...apiUrl } as never);
+}
+
+/** The run's browser sessions of a lower claim epoch released, as a computer's are when a claim starts it (the janitor's
+ *  releaseOlder): a runner that died after the vendor made a session and before its id was kept left one this claim's
+ *  labels would never find. */
+export async function releaseOlderBrowsers(provider: ComputerProvider, run: { readonly runId: string; readonly epoch: number }, signal?: AbortSignal): Promise<void> {
+  const older = await releaseOlder(provider, run.runId, run.epoch, signal ? { signal } : {});
+  if (!older.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${older.error.message}.`));
 }
 
 /** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with

@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { claimBrowserProvider, planeBrowser, resetBrowserComputerHoldings, rewriteConnectUrl } = await import("../dist/browser-computer.js");
+const { claimBrowserProvider, planeBrowser, releaseOlderBrowsers, resetBrowserComputerHoldings, rewriteConnectUrl } = await import("../dist/browser-computer.js");
 
 /** The label a session's custody tag rides on (workspace/computer-for-claim.ts). */
 const TAG_LABEL = "agentrun.session";
@@ -171,6 +171,14 @@ test("a create that failed may have left its browser: the saver's claim stays un
   await assert.rejects(provider.create(other, signal()), /one session at a time may save/);
   s.browsers.get("lost").running = false;
   await assert.rejects(provider.create(other, signal()), /did not answer/, "it opens (and here fails at the stand's create) once nothing carries the tag");
+});
+
+test("a session a dead claim left (a lower epoch's labels) is released when the next claim starts the plane's browser", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand(ALL);
+  const lost = await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
+  await releaseOlderBrowsers(s.provider, RUN);
+  assert.deepEqual(s.calls.filter((call) => call.op === "release").map((call) => call.id), [lost.id]);
 });
 
 test("a Browserbase connect URL moves onto the credential proxy, its signing query kept; another host's is left alone", () => {
