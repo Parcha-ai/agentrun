@@ -20,8 +20,9 @@
 // that directory, never a half install, and the next install removes it; a tree that is not whole (an install by hand
 // cut short) is never loaded, and the next install replaces it.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -367,31 +368,78 @@ export async function installSettled(entry: HarnessInstallEntry, dir: string, pi
  *  that install. npm's staging directories beside `dir` are each install's own, and an install removes what an earlier one
  *  left there, so two at once would undo each other. */
 export const installHoldOf = (dir: string): string => `${installMarkOf(dir)}.hold`;
-/** How young a hold that cannot be read yet is still taken as held: its installer made it and is writing it. */
+/** How young a hold that cannot be read is still taken as held (none is ever written part way: one left unreadable is a
+ *  copy cut short, or a file of another's that this bound lets go of in time). */
 const HOLD_WRITING_MS = 10_000;
 
-/** Takes the hold on installs into `dir` for this process: true when it holds it now, false while another installer does
- *  (its process alive, when it names this host; within INSTALL_TIMEOUT_MS, when another host's). A hold its installer left
- *  (gone, or past that bound) is taken over. */
-async function takeHold(dir: string, { isAlive = alive, host = hostname(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; host?: string; timeoutMs?: number } = {}): Promise<boolean> {
+type Hold = { readonly host: string; readonly pid: number; readonly startedAt: number; readonly token: string };
+
+/** The hold at `at` as written, or undefined when it cannot be read (gone, cut short, not one). */
+async function readHold(at: string): Promise<Partial<Hold> | undefined> {
+  try {
+    const held = JSON.parse(await readFile(at, "utf8")) as unknown;
+    return held !== null && typeof held === "object" ? (held as Partial<Hold>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Takes the hold on installs into `dir` for this process: its token when it holds it now, undefined while another
+ *  installer does (its process alive, when it names this host; within INSTALL_TIMEOUT_MS, when another host's). The hold
+ *  is written whole beside its place and linked into it, which fails when a hold is there, so no reader sees one part
+ *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
+ *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
+ *  file, so a hold another taker made meanwhile is never removed. */
+export async function takeHold(dir: string, { isAlive = alive, host = hostname(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; host?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
   const at = installHoldOf(dir);
   await mkdir(dirname(at), { recursive: true });
-  for (let tries = 0; tries < 2; tries++) {
-    try {
-      await writeFile(at, JSON.stringify({ host, pid: process.pid, startedAt: Date.now() }), { flag: "wx" });
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  const token = randomUUID();
+  const draft = `${at}.${token}`;
+  await writeFile(draft, JSON.stringify({ host, pid: process.pid, startedAt: Date.now(), token } satisfies Hold));
+  try {
+    for (let tries = 0; tries < 3; tries++) {
+      try {
+        await link(draft, at);
+        return token;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const judged = await lstat(at).catch(() => undefined);
+      if (!judged) continue;
+      const held = await readHold(at);
+      const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
+        ? Date.now() - held.startedAt <= timeoutMs && (held.host !== host || isAlive(held.pid))
+        : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;
+      if (live) return undefined;
+      // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very
+      // file's (its device and inode), which only one can make, and that one removes the hold, once the link shows it is
+      // still the hold judged left. The others wait. A reap a taker cut short left long ago is cleared for the next look.
+      const reap = `${at}.reap-${judged.dev}-${judged.ino}`;
+      try {
+        await link(at, reap);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") continue;
+        if (code !== "EEXIST") throw error;
+        const since = (await lstat(reap).catch(() => undefined))?.ctimeMs;
+        if (since !== undefined && Date.now() - since > HOLD_WRITING_MS) await rm(reap, { force: true });
+        return undefined;
+      }
+      const reaped = await lstat(reap);
+      if (reaped.ino === judged.ino && reaped.dev === judged.dev) await rm(at, { force: true });
+      await rm(reap, { force: true });
     }
-    const held = await readFile(at, "utf8").then((text) => JSON.parse(text) as Partial<{ host: string; pid: number; startedAt: number }>, () => undefined);
-    const live = held && typeof held.pid === "number" && typeof held.startedAt === "number"
-      ? Date.now() - held.startedAt <= timeoutMs && (held.host !== host || isAlive(held.pid))
-      // Not readable yet: its installer is writing it, unless it is older than that takes.
-      : await lstat(at).then((st) => Date.now() - st.mtimeMs <= HOLD_WRITING_MS, () => false);
-    if (live) return false;
-    await rm(at, { force: true });
+    return undefined;
+  } finally {
+    await rm(draft, { force: true }).catch(() => undefined);
   }
-  return false;
+}
+
+/** Lets go of the hold on installs into `dir` that `token` took; a hold of another's (one that took over this one past
+ *  its bound) stays. */
+export async function releaseHold(dir: string, token: string): Promise<void> {
+  const at = installHoldOf(dir);
+  if ((await readHold(at))?.token === token) await rm(at, { force: true });
 }
 
 /** The server's one installer of a harness into `dir`: `ensure()` resolves once it is installed whole, installing it first
@@ -429,7 +477,8 @@ export class HarnessInstall {
     this.running ??= (async () => {
       // One installer at a time on this data: while another process holds the install, wait for it to settle, then look
       // again (installed: done; failed: so is this; let go with nothing in: take the hold).
-      while (!(await takeHold(this.dir))) {
+      let token: string | undefined;
+      while (!(token = await takeHold(this.dir))) {
         if (this.stopping.signal.aborted) throw new Error("the server is stopping");
         const settled = await installSettled(this.entry, this.dir, await this.pins(), { signal: this.stopping.signal });
         if (settled === "installed") return void (this.done = true);
@@ -462,7 +511,7 @@ export class HarnessInstall {
         this.done = true;
         this.onInstalled?.(Math.round(performance.now() - started));
       } finally {
-        await rm(installHoldOf(this.dir), { force: true }).catch(() => undefined);
+        await releaseHold(this.dir, token).catch(() => undefined);
       }
     })().finally(() => (this.running = undefined));
     return this.running;
@@ -506,8 +555,20 @@ export async function installForClaim(entry: HarnessInstallEntry, dir: string, p
     mine.waiting -= 1;
     if (mine.waiting === 0 && claimInstalls.get(dir) === mine) {
       claimInstalls.delete(dir);
-      // Nothing waits for it any more: its npm stops (nothing to stop once it is in or has failed).
-      void mine.install.stop();
+      // Nothing waits for it any more: its npm stops (nothing to stop once it is in or has failed). The claim goes on at
+      // once; the stop is kept until it ends, for the runner's close to wait on (claimInstallsStopped).
+      const stopping = mine.install.stop();
+      claimStops.add(stopping);
+      void stopping.finally(() => claimStops.delete(stopping));
     }
   }
+}
+
+/** The stops of the claims' installs under way (installForClaim). */
+const claimStops = new Set<Promise<void>>();
+
+/** Resolves once every install a claim let go of has stopped (its npm ended, SIGTERM then SIGKILL past its grace, its
+ *  staging directory and hold gone): a runner's close waits for it before the process can end, so no npm outlives it. */
+export async function claimInstallsStopped(): Promise<void> {
+  await Promise.all([...claimStops]);
 }

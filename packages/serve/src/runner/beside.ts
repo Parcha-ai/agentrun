@@ -62,5 +62,7 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env }: { l
   const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
-  return { runner, close: async () => { await runner.close(); await store.close(); seal.release(); } };
+  // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
+  const { claimInstallsStopped } = await import("../harness-install.js");
+  return { runner, close: async () => { await runner.close(); await claimInstallsStopped(); await store.close(); seal.release(); } };
 }

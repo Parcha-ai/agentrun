@@ -21,6 +21,7 @@ import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
+import { claimInstallsStopped } from "../dist/harness-install.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
@@ -344,6 +345,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   return Object.assign(
     async () => {
       await runner.close().catch(() => {});
+      // As the CLI's runner closes: a first-use install its claims let go of has stopped (its npm ended) first.
+      await claimInstallsStopped();
       await store.close().catch(() => {});
       seal.release();
     },

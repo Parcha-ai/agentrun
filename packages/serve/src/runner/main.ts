@@ -13,6 +13,7 @@ import { mkdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_TABLE_ENV } from "../harness-table.js";
 import { maxRunsOf } from "../host.js";
 import { FAUX_PREFIX } from "../model.js";
@@ -218,6 +219,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     close: () =>
       (closing ??= (async () => {
         await runner.close();
+        // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
+        await claimInstallsStopped();
         await store.close();
         held.release();
       })()),
