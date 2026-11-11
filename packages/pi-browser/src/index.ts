@@ -21,4 +21,5 @@ export * from "./core/redact.js";
 export { DEFAULT_BROWSER_POLICY } from "./core/session-control.js";
 export * from "./core/tools.js";
 export * from "./core/usage.js";
+export * from "./core/web.js";
 export * from "./core/vault.js";
