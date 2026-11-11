@@ -1308,6 +1308,15 @@
           "description": "The DISPLAY a desktop's screen and input methods drive, such as \":99\"; absent on any other computer.",
           "type": "string",
           "title": "display"
+        },
+        "fence": {
+          "description": "How init holds its programs off the computer's network, when it gave them one of their own (init --own-network).",
+          "enum": [
+            "netns",
+            "userns-netns"
+          ],
+          "type": "string",
+          "title": "fence"
         }
       },
       "required": [
