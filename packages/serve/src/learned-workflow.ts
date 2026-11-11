@@ -151,6 +151,9 @@ export type LearnedWorkflowRun = {
   /** The run's MCP tools by catalog name (`mcp:<server>/<tool>`): those the claim's pin holds, which its revision grants.
    *  A call node may name one of these; it runs through the run's own MCP, as the loop wrapped it (host-calls.ts). */
   mcpTools?: readonly string[];
+  /** The gate's whole decision of an MCP node's call with its arguments, as the run's own call of the tool gets it
+   *  (RunGate.decide: deny, argument pins, ask, no approver). Required for an MCP node: one with none is never sent. */
+  decide?: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -169,11 +172,13 @@ export function learnedText(text: string): string {
  *  The check before the run refuses such a workflow first (draftProblems); this one holds should it not. */
 export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
 
-/** The tool's description: what it does, and each workflow by name with the line its README says what it does with. */
+/** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
+ *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
+ *  one; what it answers), then each workflow on a line of its own (workflowLine): its name, its input's fields and the
+ *  line its README says what it does with. */
 export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]): string =>
   [
-    "Run a workflow this agent learned, as one step: give its name and its input, a JSON object as the workflow's input",
-    "schema says. It answers the workflow's output as JSON, or why it did not run. The workflows:",
+    "Runs one of this agent's learned workflows in one call, by name, on a JSON input with the fields below (* required). Answers its output as JSON, or why it did not run.",
     ...workflows.map(workflowLine),
   ].join("\n");
 
@@ -212,8 +217,9 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       additionalProperties: false,
       required: ["name", "input"],
       properties: {
-        name: { type: "string", enum: names, description: "The learned workflow to run." },
-        input: { type: "object", description: "The workflow's input, as its input schema says." },
+        // No words of their own: the description says what each is, and the parameters go with every request too.
+        name: { type: "string", enum: names },
+        input: { type: "object" },
       },
     } as unknown as TSchema,
     execute: async (args, api, context) => {
@@ -282,12 +288,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (tool && MCP_TOOL.test(tool)) {
       // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
       // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
-      const send = (run.mcpTools ?? []).includes(tool) ? hostCalls()?.mcp(tool) : undefined;
-      if (!send) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
+      const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
+      if (!send || !run.decide) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
+      // The gate's whole decision of this call with the arguments the workflow resolved, as the harness's own call of the
+      // tool gets it: its deny, its argument pins (a messaging tool held to one channel), its ask, or no one to approve.
+      // The call's approval lifts only an ask, never a pin or a deny.
       await run.refresh?.();
-      const permission = run.policy(tool);
-      if (permission === "deny") throw new Error(deniedText(tool, undefined, run.denyFrom(tool)));
-      if (permission === "ask" && hostCalls()?.approved !== true) throw new Error(`This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
+      const verdict = await run.decide(tool, given);
+      if (typeof verdict === "object") throw new Error(verdict.deny);
+      if (verdict === "ask" && hostCalls()?.approved !== true) throw new Error(`This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
       const answer = await send(given, { callId, signal: own });
       if (answer.isError) throw new Error(answer.text);
       return mcpValue(answer.text);
