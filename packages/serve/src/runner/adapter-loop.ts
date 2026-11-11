@@ -1250,7 +1250,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
           if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
         }
-        const wrapUp: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; at: number } } = {
+        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; at: number } } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -1266,7 +1266,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const sessionSpent = bookingNow?.spentUsd();
           const decided = ledger.decisions.spentUsd();
           const paidSpent = ledger.paid.spentUsd();
-          const rest = wrapUp.restUsd;
+          const rest = capNote.restUsd;
           // The model session's requests in flight, at what is held for each (as the cap reads a flight); unknown gives none.
           const inFlight = bookingNow?.heldUsd();
           const capUsd = capNow();
@@ -1275,13 +1275,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // took it and left before its admission (its client gone while the proxy counted its tokens, a body the proxy
           // refused) gives it back as it goes (noteReturned), so the next request takes it at once. WRAP_UP_OFFER_MS is
           // only the backstop for a path that never gives it back: past it, a later request is offered it.
-          if (wrapUp.offered && Date.now() - wrapUp.offered.at < WRAP_UP_OFFER_MS) return undefined;
+          if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
           if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const note = noteFor(
             { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
-            { capUsd, spentUsd: sessionSpent + decided + paidSpent + rest, heldUsd: inFlight + ledger.decisions.heldUsd() + ledger.paid.heldUsd(), costs: wrapUp.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
+            { capUsd, spentUsd: sessionSpent + decided + paidSpent + rest, heldUsd: inFlight + ledger.decisions.heldUsd() + ledger.paid.heldUsd(), costs: capNote.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
           );
-          wrapUp.offered = note ? { ...note, capUsd, at: Date.now() } : undefined;
+          capNote.offered = note ? { ...note, capUsd, at: Date.now() } : undefined;
           return note?.words;
         };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
@@ -1294,13 +1294,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           note: wrapUpNote,
           // A request that took it and left before its admission gives it back: the next request may take it at once.
           noteReturned: (note) => {
-            if (wrapUp.offered?.words === note) wrapUp.offered = undefined;
+            if (capNote.offered?.words === note) capNote.offered = undefined;
           },
           onEvent: async (event) => {
             if (event.type === "request_start") await deps.flush();
             // The run's own priced answers, the typical cost the wrap-up is worked out by (a request the host sent beside
             // the harness's own is not one of them).
-            if (event.type === "request_end" && event.host === undefined && !notOwn.has(event.turn) && typeof event.usage.usd === "number" && event.usage.usd > 0 && !event.usage.estimated && !event.usage.cut && !event.usage.givenBack) wrapUp.costs.push(event.usage.usd);
+            if (event.type === "request_end" && event.host === undefined && !notOwn.has(event.turn) && typeof event.usage.usd === "number" && event.usage.usd > 0 && !event.usage.estimated && !event.usage.cut && !event.usage.givenBack) capNote.costs.push(event.usage.usd);
           },
         });
         bookingNow = booking;
@@ -1424,8 +1424,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
             // The wrap-up this request carries, taken off the offer now: its admission tells it; a refusal (the throw below)
             // or a dropped note leaves it untold, to be offered to a later request.
-            const offer = (request as { noted?: boolean }).noted ? wrapUp.offered : undefined;
-            if (offer) wrapUp.offered = undefined;
+            const offer = (request as { noted?: boolean }).noted ? capNote.offered : undefined;
+            if (offer) capNote.offered = undefined;
             const ticket = await port.beforeRequest(request);
             unbooked += 1;
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
@@ -1433,9 +1433,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // What follows is the wrap-up's own bookkeeping, after the request was admitted and its hold booked: it never fails
             // the request (a throw here would leave it admitted and never sent, read as cut at its worst case).
             try {
-              wrapUp.restUsd = await restOf();
+              capNote.restUsd = await restOf();
             } catch (error) {
-              wrapUp.restUsd = null;
+              capNote.restUsd = null;
               console.warn(`[runner] the run's other sessions' spend was not read; no wrap-up until it is: ${said(error)}`);
             }
             // Told once a request carrying it is admitted with it (never one that went without the note's bytes): the server's
