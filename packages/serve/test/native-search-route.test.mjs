@@ -5,14 +5,12 @@
 // the harness's own search (Parallel with its key, else keyless Exa), and native resolves unavailable, saying why.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
 
 import { MODEL_KEYS } from "../dist/model.js";
 import { explainsView, planeFor, resolveCapability } from "../dist/tool-plane.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, serve, withEnv } from "./support.mjs";
 import { OPENROUTER_BASE, providerFor } from "../dist/provider.js";
 
 const fake = (name) => ["not-a-secret", name].join("-");
@@ -65,24 +63,29 @@ test("a run's plane follows the route its model requests take, the one providerF
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY", ...MODEL_KEYS.map((row) => row.field)];
 
-// SKIP (follow-up #2078): a codex agent on OPENROUTER_API_KEY alone fails with OpenRouter's 401 on the runner
-test.skip("a codex agent with web_search on OPENROUTER_API_KEY alone sends no hosted web_search tool, and its requests are priced", { timeout: 300_000 }, async (t) => {
-  const dir = await scratch(t);
+test("a codex agent with web_search on OPENROUTER_API_KEY alone sends no hosted web_search tool, and its requests are priced", { timeout: 300_000 }, async (t) => {
   const gw = await startFauxGateway({ text: () => "42" });
   t.after(() => gw.close());
-  // OpenRouter's route has no loopback setting by design: a preload in the run's processes sends openrouter.ai to the
-  // faux gateway, which answers as OpenRouter does (no tool_usage count of searches).
-  const hook = join(dir, "to-gateway.mjs");
-  writeFileSync(hook, `const real = globalThis.fetch;
-const gw = process.env.OR_TEST_GATEWAY;
-if (gw && typeof real === "function") globalThis.fetch = (input, init) => {
-  const url = new URL(String(input instanceof Request ? input.url : input));
-  if (url.origin !== "https://openrouter.ai") return real(input, init);
-  const there = gw + url.pathname + url.search;
-  return input instanceof Request ? real(new Request(there, input), init) : real(there, init);
-};
-`);
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), OPENROUTER_API_KEY: fake(`or-${randomBytes(6).toString("hex")}`), NODE_OPTIONS: `--import=file://${hook}`, OR_TEST_GATEWAY: gw.url }, [...MODEL_VARS, "NODE_OPTIONS", "OR_TEST_GATEWAY"]);
+  // OpenRouter's route has no loopback setting by design: the run's requests leave from the runner beside the server, in
+  // this process, so its fetch sends openrouter.ai to the faux gateway, which answers as OpenRouter does (no tool_usage
+  // count of searches). Set before the server starts, so every model proxy it opens takes it.
+  // Fail closed: nothing leaves for a host that is not this machine's. A request for any other host is refused and noted.
+  const real = globalThis.fetch;
+  const outside = [];
+  globalThis.fetch = (input, init) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    if (url.origin === "https://openrouter.ai") {
+      const there = gw.url + url.pathname + url.search;
+      return input instanceof Request ? real(new Request(there, input), init) : real(there, init);
+    }
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+      outside.push(url.origin);
+      return Promise.reject(new Error(`the test refuses a request to ${url.origin}`));
+    }
+    return real(input, init);
+  };
+  t.after(() => void (globalThis.fetch = real));
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), OPENROUTER_API_KEY: fake(`or-${randomBytes(6).toString("hex")}`) }, MODEL_VARS);
   const { api } = await serve(t, { faux: undefined });
   const offer = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.ok(offer?.available, `codex offered: ${JSON.stringify(offer)}`);
@@ -96,4 +99,5 @@ if (gw && typeof real === "function") globalThis.fetch = (input, init) => {
   assert.ok(sent.length > 0, "the run asked OpenRouter's Responses API");
   for (const request of sent) assert.ok(!(request.body?.tools ?? []).some((tool) => tool?.type === "web_search" || tool?.type === "web_search_preview"), `no hosted web_search tool sent: ${JSON.stringify(request.body?.tools?.map((tool) => tool?.type ?? tool?.name))}`);
   assert.equal(typeof view.cost?.usd, "number", `every request priced: ${JSON.stringify(view.cost)}`);
+  assert.deepEqual(outside, [], "no request left this machine: every OpenRouter one reached the faux gateway");
 });

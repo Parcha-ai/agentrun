@@ -17,7 +17,7 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
@@ -319,6 +319,9 @@ export interface StartDeps {
   /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
    *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
+  /** Holds the run's files for it (uploads.ts Uploads.hold) before its row is written, so a file deleted after the start
+   *  is still the run's at its claim; `release` lets go of a hold whose run was never written (or was another's). */
+  readonly files?: { hold(runId: string, ids: readonly string[]): Promise<void>; release(runId: string): Promise<void> };
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
   /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
@@ -376,7 +379,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
@@ -395,7 +398,10 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
     // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...grade };
+    // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
+    // agent's impact counts a run as started from, beside its notes and skills.
+    const workflows = chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...grade };
   } catch {
     return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
   }
@@ -410,7 +416,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) }));
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -418,6 +424,22 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
       const row = existing && (await store.runs.get(existing.runId));
       if (row) return row;
     }
+    throw error;
+  }
+}
+
+/** Writes run `runId` with `write`, its files (launch.files) held for it first (StartDeps.files): a hold that fails part
+ *  way, a write that fails, or one that answers another run (an origin key's run started before), lets go of the hold. */
+async function withHeldFiles(deps: StartDeps, runId: string, launch: RunLaunch, write: () => Promise<RunRow>): Promise<RunRow> {
+  const ids = launch.files ?? [];
+  if (!ids.length || !deps.files) return await write();
+  try {
+    await deps.files.hold(runId, ids);
+    const row = await write();
+    if (row.id !== runId) await deps.files.release(runId);
+    return row;
+  } catch (error) {
+    await deps.files.release(runId).catch(() => undefined);
     throw error;
   }
 }
@@ -450,12 +472,12 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.createInline({
+    return await withHeldFiles(deps, runId, launch, () => store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
       launch: { body: launchBody(launch) },
-    });
+    }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) {
       const { source, kind, id, version } = external;

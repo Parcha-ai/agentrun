@@ -352,11 +352,17 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // Under a fake docker (fixtures/fake-docker.mjs), a box command that asked for sudo fails the test: the stand-in refused
   // it, and noted it here.
   const dockerState = process.env.FAKE_DOCKER_STATE;
-  t.after(async () => {
-    // The runner releases its claims and closes its store handle before the server's directory goes.
+  // The whole start stopped, as the CLI's stop stops it (a restart's first half): the runner first, which lets each run
+  // it holds go where the next runner takes it up (runner.ts close: released, no backoff), then the server. Once.
+  let stopping;
+  const stop = () => (stopping ??= (async () => {
     if (closeRunner) await closeRunner();
     await store.close().catch(() => {});
     await server.close();
+  })());
+  t.after(async () => {
+    // The runner releases its claims and closes its store handle before the server's directory goes.
+    await stop();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
     // ENOTEMPTY (and a hook that throws skips the rest, their closes among them, so the file hangs).
@@ -368,7 +374,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, store, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
+  return { ...server, data, store, stop, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the

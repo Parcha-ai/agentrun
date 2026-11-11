@@ -1806,7 +1806,7 @@ GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integra
 the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
 `manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
 callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
-(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
+(`pull_request`, `issue_comment`, `release`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
 "GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
 `AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
 App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
@@ -2489,6 +2489,10 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   keys as it opens the run's own, from the server's environment first and then its saved keys, for the run's tools alone:
   never for its model or a CLI harness's own environment. A provider the run's tool gate denies gets no key. Learned
   workflows can use them once decision nodes land (see Coming).
+  A learned workflow's call node can run an MCP tool the agent grants (`mcp:<server>/<tool>`) through the run's own MCP,
+  under the run's tool gate: allowed, it runs at the run's tool cost; denied, the workflow is refused before any node
+  runs; set to ask, the `learned_workflow` call asks once, naming every such tool, and the run parks. A run's own draft
+  can't call one yet: the checks admitting it are coming.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -2552,11 +2556,14 @@ many notes the folder holds. No injection screen runs before it: a page classifi
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the
 user states in their own words is theirs, even beside a form or a pasted email in the same message, and a rule found only
 inside text the run read is planted and dropped, never held for the owner's OK. An item that holds an account number is
-dropped too, even where the user gave it as where money goes. The Risky question reads one way on every grade model: a
+dropped too, even where the user gave it as where money goes; one with a bank account, IBAN, routing or sort-code number
+beside its word never reaches the grader, since the checks refuse it as they refuse a secret. The Risky question reads one way on every grade model: a
 limit or threshold that decides whether an approval or a check happens is risky in either direction, as is an exemption
 from a check, trusting or paying a named site or seller, or naming where money or data goes, whoever asked. What the
 grade spends is in no run's totals, and is read once its request is booked: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
+A grade that contradicts itself (it keeps every item yet says not to merge) is asked once more, the contradiction named;
+a second contradiction drops the proposal, saying the review contradicted itself.
 
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
 for what the user asked in their own words, `run` for what the run worked out), each note they supersede marked
@@ -2632,9 +2639,8 @@ proposed and reused, staleness after a rule changes, and wrong keeps after a pla
 - A learned workflow may hold decision nodes (judge, pick, sift), answered by the run's decision provider under the run's cap (#2363).
 - Consolidation: related notes merged into one, and a skill and its workflow brought back in step (#2335).
 - A learned workflow's node of a tier runs on the server's model of that tier, at its own price (#2408).
-- A learned workflow's call node runs an MCP tool through the run's own MCP, under its gate, and the grader holds one that writes for the owner's OK (#2424).
+- A run's workflow draft may call a granted MCP tool: the checks admit it, and the grader holds one that writes for the owner's OK.
 - A learned workflow keeps the output format its skill asks for (#2412).
-- A grade that contradicts itself is asked once more (#2425).
 
 ### What a person sees and controls
 
