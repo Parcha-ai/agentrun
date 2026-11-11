@@ -192,7 +192,7 @@ export async function modelPortFor(writer: SessionWriter, options: ModelPortOpti
  *  session's spend (null: unknown). A turn is a paid request that left: counted from the records written before each one
  *  left, so a request a crash cut off (or one still in flight, read from another process or session) counts at the
  *  figure its host held for it, and leaves the spend unknown when there is none. */
-export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; bounds: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; spentUsd: number | null; cost: SessionCost } {
+export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; bounds: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; spentUsd: number | null; figures: { turn: number; usd: number | null }[]; cost: SessionCost } {
   const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; boundUsd?: unknown; host?: unknown });
   const turns = requests.map((data, i) => data.turn ?? i + 1);
   const hosts = new Map<number, string>();
@@ -219,6 +219,8 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   // the cap's, never a cost: a request without its own figure makes the cost unknown, the known part kept beside it.
   let soFarUsd = 0;
   let unpriced = 0;
+  // Each request's figure for the cap, in the order its spend is summed (`spentUsd` is their sum; null: no figure).
+  const figures: { turn: number; usd: number | null }[] = [];
   for (const r of records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
     const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown };
@@ -231,7 +233,9 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     const booked = data.bookedUsd === null ? null : heldFigure(data.bookedUsd);
     const cut = data.cut === true && booked === undefined;
     const capped = booked !== undefined && bookedLost(data.rule) ? (worst(turn) ?? booked) : booked;
-    spentUsd = spent(spentUsd, capped !== undefined ? (capped ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
+    const figure = capped !== undefined ? (capped ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0);
+    spentUsd = spent(spentUsd, figure);
+    figures.push({ turn, usd: figure ?? null });
     // An answer with no price of its own (usd null) was booked at its hold for the cap: as a cost it is unknown, never
     // the hold (0 with no cap), as main read an unpriced answer.
     const own = answeredUnpriced(data) ? null : booked !== undefined ? booked : cut || data.usd === null ? null : data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null);
@@ -241,9 +245,10 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   for (const turn of turns) {
     if (answered.has(turn)) continue;
     spentUsd = spent(spentUsd, worst(turn));
+    figures.push({ turn, usd: worst(turn) ?? null });
     unpriced++;
   }
-  return { turns, held, bounds, hosts, answered, spentUsd, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
+  return { turns, held, bounds, hosts, answered, spentUsd, figures, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
 }
 
 /** Whether a request answered with no price of its own (bookRequest's rule `answered`, or `answered:<label>`, its usd

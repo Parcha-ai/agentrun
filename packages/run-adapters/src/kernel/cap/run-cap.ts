@@ -6,8 +6,9 @@
 // spend of both from the journal: a decision held and never answered counts at its hold and its bound, as any request.
 // Decisions book under their own session (DECISION_SESSION), priced as main holds them (decisionAsk).
 import { runBooking, type RunSessions } from "../../run-booking.js";
-import { type BeforeRequest, modelPortFor } from "../../runner.js";
-import type { ModelRequest, ModelTicket, SessionWriter } from "../../types.js";
+import { type BeforeRequest, modelPortFor, sessionSpendOf } from "../../runner.js";
+import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
+import { overCapEnd } from "./words.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf } from "./port.js";
@@ -77,6 +78,23 @@ export interface RunTools {
 
 /** The session a run's paid tool calls book under. */
 export const TOOL_SESSION = "paid-tools";
+
+/** How a run ends once its booked spend passed its cap (overCapEnd), read from its model session's `records` and what
+ *  its other sessions spent (`othersUsd`): each request at the figure the cap counts it at (sessionSpendOf's figures: one
+ *  cut by a crash at its hold plus its bound), and the bound of the requests since the spend last fit, so a cache miss
+ *  within that bound (a cut request's possible one included) pauses the run instead. Undefined while it fits, by such a
+ *  miss, or with a spend unknown. */
+export function overCapOf(records: readonly SessionRecord[], othersUsd: number, capUsd: number): string | undefined {
+  const read = sessionSpendOf(records);
+  if (read.spentUsd === null) return undefined;
+  let running = othersUsd;
+  let bound = 0;
+  for (const { turn, usd } of read.figures) {
+    running += usd ?? 0;
+    bound = running <= capUsd ? 0 : bound + (read.bounds.get(turn) ?? 0);
+  }
+  return overCapEnd(othersUsd + read.spentUsd, capUsd, bound);
+}
 
 export function runCap(options: RunCapOptions): RunCap {
   const mode: CapMode = options.mode ?? "expected";

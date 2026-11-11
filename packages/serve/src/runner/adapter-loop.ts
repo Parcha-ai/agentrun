@@ -30,7 +30,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, overCapEnd, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { portModels, type PortModels } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -1022,20 +1022,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (spent === null) return undefined;
             others += spent;
           }
-          const own = await sessions.read(spec.session.key);
-          const read = sessionSpendOf(own);
-          if (read.spentUsd === null) return undefined;
-          // One pass over its answers in order: the spend after each, and the bound of those since the spend last fit.
-          let running = others;
-          let bound = 0;
-          for (const record of own) {
-            if (record.kind !== RUNNER_RECORDS.turn) continue;
-            const data = (record.data ?? {}) as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
-            const figure = typeof data.bookedUsd === "number" ? data.bookedUsd : typeof data.usd === "number" ? data.usd : 0;
-            running += figure;
-            bound = running <= cap ? 0 : bound + (typeof data.turn === "number" ? (read.bounds.get(data.turn) ?? 0) : 0);
-          }
-          return overCapEnd(others + read.spentUsd, cap, bound);
+          // Its model session read as the cap reads it (the kernel's overCapOf: a request cut by a crash at its hold plus its
+          // bound, and that bound kept, so a possible cache miss pauses the run, never fails it).
+          return overCapOf(await sessions.read(spec.session.key), others, cap);
         };
         const beforeRequest: BeforeRequest = async (request) => {
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
