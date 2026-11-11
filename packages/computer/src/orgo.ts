@@ -19,7 +19,7 @@ import { DaemonClient } from "./client.js";
 import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
-import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
+import { EPOCH_LABEL, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
@@ -35,7 +35,6 @@ import {
 	type OrgoComputer,
 	orgoName,
 	refProblem,
-	runHash,
 	sameComputer,
 	show,
 	withDeadline,
@@ -778,8 +777,10 @@ export class OrgoProvider implements ComputerProvider {
 			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			const ref = { id: record.id, name: record.name };
 			const running = RUNNING.has(record.status);
+			// The name keeps the run's hash, not the run: listed with no run to match, the hash is given, so a caller (serve's
+			// janitor) can still tell whose run a computer is.
 			let read: Record<string, string> = {
-				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
+				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : parts.run !== undefined ? { [RUN_HASH_LABEL]: parts.run } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
 			// The janitor's deadline is the name's, which every name this provider makes carries. One with none is listed

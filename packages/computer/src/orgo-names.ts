@@ -2,9 +2,8 @@
 // answers, orgo-desktop.ts) shares about a computer with nothing run inside it: its name, which carries the run, the
 // epoch and the janitor's deadline; the labels a spec may give; Orgo's record of a computer; and the labels file each
 // keeps in the computer, the truth attach reads.
-import { createHash } from "node:crypto";
 import { COMPUTER_LABEL } from "./drift.js";
-import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
+import { EPOCH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { ComputerRef } from "./provider.js";
 
 /** The longest name Orgo holds. */
@@ -38,25 +37,6 @@ export interface OrgoComputer {
 }
 
 export const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-
-/** The run label's hash, as a name carries it: base32 of its sha256, lower case, 16 letters. */
-export function runHash(run: string): string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-	const bytes = createHash("sha256").update(run, "utf8").digest();
-	let bits = 0;
-	let value = 0;
-	let out = "";
-	for (const byte of bytes) {
-		value = (value << 8) | byte;
-		bits += 8;
-		while (bits >= 5 && out.length < 16) {
-			out += alphabet[(value >>> (bits - 5)) & 31];
-			bits -= 5;
-		}
-		if (out.length >= 16) break;
-	}
-	return out;
-}
 
 /**
  * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when

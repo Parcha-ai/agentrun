@@ -263,6 +263,11 @@ test("Orgo list: this workspace's computers by name, the run and epoch filtered 
 	assert.deepEqual(byRun.value.map((info) => info.ref.id), [mine.ref.id]);
 	assert.deepEqual(byRun.value[0].labels, { "agentrun.run": RUN, "agentrun.epoch": "3" });
 	assert.equal(byRun.value[0].network, "none");
+	// Listed with no run to match, a computer gives its run's hash (the name keeps no more), so a caller can still tell
+	// whose run it is: the janitor's list.
+	const { runHash } = await import("../dist/labels.js");
+	const unmatched = await fakes.provider.list({});
+	assert.deepEqual(unmatched.value.find((info) => info.ref.id === mine.ref.id).labels, { "agentrun.run.hash": runHash(RUN), "agentrun.epoch": "3" });
 	assert.equal(byRun.value[0].state, "running");
 	const deadline = Date.parse(JSON.parse(mine.box.labels).deadline);
 	assert.equal(byRun.value[0].deadline.getTime(), Math.ceil(deadline / 1000) * 1000, "the deadline read from the name: the janitor's");

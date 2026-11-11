@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 import { checkActions } from "./actions.js";
 import { readPng } from "./conformance/png.js";
 import { MACOS_GROUPS, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, WINDOWS_GROUPS } from "./descriptors/orgo.js";
-import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
+import { EPOCH_LABEL, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import { checkMount } from "./mount.js";
 import { ORGO_API_URL, type OrgoRest, orgoRest } from "./orgo-channel.js";
 import {
@@ -46,7 +46,6 @@ import {
 	type OrgoComputer,
 	orgoName,
 	refProblem,
-	runHash,
 	sameComputer,
 	show,
 	withDeadline,
@@ -835,8 +834,10 @@ export class OrgoDesktopProvider implements ComputerProvider {
 			if (labels[RUN_LABEL] !== undefined && parts.run !== runHash(labels[RUN_LABEL])) continue;
 			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			const ref = { id: record.id, name: record.name };
+			// The name keeps the run's hash, not the run: listed with no run to match, the hash is given, as the Linux
+			// desktop's list gives it, so a caller (serve's janitor) can still tell whose run a computer is.
 			let read: Record<string, string> = {
-				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
+				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : parts.run !== undefined ? { [RUN_HASH_LABEL]: parts.run } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
 			// The janitor's deadline is the name's, which every name this provider makes carries.
