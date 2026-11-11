@@ -46,6 +46,7 @@ import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, NODE_LOG_SESSION, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
 import type { NodeLine } from "../pause.js";
+import { cutStrings } from "../key-refusal.js";
 import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
@@ -344,7 +345,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           // would book beside the run's ledger), and the run's gate over them by name (main's registry.install).
           sharedExtensions: [nodeToolGate(nodeNames, nodePolicy), ...[...nodeTools.values()].flatMap((binding) => binding.extensions)],
           nodeTool: (name) => nodeTools.get(name),
-          runEffect: runEffectOf(claimed, complete, callEnv, callPolicyOf(deps.store, claim.runId, claimed), () => paidTools, (line) => nodeLog?.append([{ kind: KINDS.nodeEffect, data: line as never }]) ?? Promise.resolve()),
+          runEffect: runEffectOf(claimed, complete, callEnv, callPolicyOf(deps.store, claim.runId, claimed), () => paidTools, (line) => nodeLog?.append([{ kind: KINDS.nodeEffect, data: (run?.redact ? cutStrings(line, run.redact) : line) as never }]) ?? Promise.resolve()),
           workRoot: claimed.workRoot,
           flush: () => deps.store.flush(),
           // A decision node books through the run's one cap (admitted and settled as main holds it); a cap refusal for room
