@@ -4,9 +4,11 @@
 // write lands after.
 //
 // The write is the runner's end of a run parked on an approval: the person's answer and the model's final answer, in
-// one journal commit, then the run's row ended. It is landed between every pair of the view's store reads in turn (a
-// hook on the store's own reads, no sleep and no clock), and each view that comes back must be exactly the view of the
-// run before the write, or exactly the view of it after, never a mix of the two. SQLite or Postgres, as the suite runs.
+// one journal commit, then the run's row ended. It is made on a second connection to the same store, as the runner (a
+// process of its own) makes it, and landed between every pair of the view's store reads in turn (a hook on the store's
+// own reads, those inside a snapshot included; no sleep and no clock). Each view that comes back must be exactly the
+// view of the run before the write, or exactly the view of it after, never a mix of the two. SQLite or Postgres, as
+// the suite runs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -24,7 +26,7 @@ const SERVED = { serverSecrets: () => [], keyEnv: () => ({}) };
 
 /** A run parked on a tool call's approval: its claim let go, the call asked and not answered. */
 async function parkedRun(t) {
-  const { store } = await storeOn(t);
+  const { store, file } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Fetch it." }, title: "One moment", place: { mode: "runner" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
@@ -34,7 +36,9 @@ async function parkedRun(t) {
   const ask = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args: { url: "https://example.test" }, requestedAt: iso(T0 + 1_500), price: 0.02 } };
   await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: user }, { type: "entry", value: call }, { type: "entry", value: ask }], context);
   await store.release(claim);
-  return store;
+  // The runner's own connection to the same store, which lands the write.
+  const { store: runner } = await storeOn(t, { file, role: "runner" });
+  return { store, runner };
 }
 
 /** The runner's next claim: the person's allow, the model's final answer with its cost, and the run ended, as a runner
@@ -52,7 +56,8 @@ const isThenable = (value) => typeof value?.then === "function";
 
 /** `store`, with `after(n)` awaited once the store's n-th read (counting from 1, every read of its tree, journal reads
  *  included) has answered and before its answer is handed back: the write lands between that read and the next. A sync
- *  call (readJournal, which hands back the reads) is wrapped down into its own methods, and not counted itself. */
+ *  call (readJournal, which hands back the reads) is wrapped down into its own methods, and not counted itself. The store
+ *  a snapshot hands its callback is wrapped the same way, and the snapshot itself is not counted: its reads are. */
 function interleaved(store, after) {
   let reads = 0;
   const wrap = (target, path) =>
@@ -62,6 +67,7 @@ function interleaved(store, after) {
         if (typeof prop === "symbol") return value;
         if (typeof value === "function") {
           return (...args) => {
+            if (prop === "snapshot") return value.call(object, (inside) => args[0](wrap(inside, `${path}.snapshot`)));
             const result = value.apply(object, args);
             if (!isThenable(result)) return result !== null && typeof result === "object" ? wrap(result, `${path}.${prop}`) : result;
             const n = ++reads;
@@ -82,10 +88,11 @@ const readers = async (store) => ({ view: await viewOverStore(store, "run-1", DE
 
 test("a run's view is of one moment: a write landing between any two of its reads shows whole, or not at all", async (t) => {
   // The run before the write and after it, each read with nothing in between.
-  const before = await readers(await parkedRun(t));
-  const afterStore = await parkedRun(t);
-  await land(afterStore);
-  const after = await readers(afterStore);
+  const beforeRun = await parkedRun(t);
+  const before = await readers(beforeRun.store);
+  const afterRun = await parkedRun(t);
+  await land(afterRun.runner);
+  const after = await readers(afterRun.store);
   assert.equal(before.view.status, "input_required");
   assert.equal(before.view.pending?.kind, "approval");
   assert.equal(after.view.status, "completed");
@@ -94,19 +101,19 @@ test("a run's view is of one moment: a write landing between any two of its read
   assert.notDeepEqual(before.view, after.view);
 
   // How many reads one view makes, with nothing landing.
-  const dry = interleaved(await parkedRun(t), async () => {});
+  const dry = interleaved((await parkedRun(t)).store, async () => {});
   await readers(dry.store);
   const total = dry.reads();
   assert.ok(total > 3, `the view reads the store more than once (${total})`);
 
   const mixed = [];
   for (let n = 1; n <= total; n++) {
-    const store = await parkedRun(t);
+    const { store, runner } = await parkedRun(t);
     let landed = false;
     const hooked = interleaved(store, async (read) => {
       if (read === n && !landed) {
         landed = true;
-        await land(store);
+        await land(runner);
       }
     });
     const seen = await readers(hooked.store);
