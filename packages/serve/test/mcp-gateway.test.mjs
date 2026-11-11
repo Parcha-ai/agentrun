@@ -107,7 +107,7 @@ test("a redirect is never followed: the credential goes nowhere else", async (t)
 
 test("names that are an object's own properties are servers and tools like any other: the pin holds them, the gateway names them", async () => {
   const listed = [{ name: "toString", inputSchema: schema }];
-  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ headers: { authorization: `Bearer ${TOKEN}` } }) };
+  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined) };
   const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
   assert.deepEqual(Object.keys(pin), ["constructor"]);
   assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
@@ -168,7 +168,7 @@ test("at the session proxy's /mcp/<server>: a client that drops a held tools/cal
 test("a tool named like an object's own property (__proto__) keeps its price: pinned, refused unsent over the cap, booked at it once it leaves", async (t) => {
   const listed = [{ name: "__proto__", inputSchema: schema }];
   // Saved prices read back from JSON, as the server's file and a PUT's body are.
-  const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: listed, prices: JSON.parse('{"__proto__": 0.05}') }), headers: () => undefined };
+  const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: listed, prices: JSON.parse('{"__proto__": 0.05}') }) };
   const pin = mcpPinOf(["mcp:fake/__proto__"], source);
   assert.deepEqual(Object.entries(pin.fake.prices), [["__proto__", 0.05]]);
   const fake = await startFakeMcp({ token: TOKEN });
@@ -226,7 +226,7 @@ test("a declared header that cannot be sent is named, and a grant of its tool re
     [{ type: "object", properties: { a: { type: "string", "x-mcp-header": "Region" }, b: { type: "string", "x-mcp-header": "region" } } }, /declared twice/],
     [{ type: "object", properties: { a: { type: "string", "x-mcp-header": "Two words" } } }, /RFC 9110 token/],
   ]) assert.match(mcpHeaderProblem(schema) ?? "", said);
-  const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "bad", inputSchema: { type: "object", properties: { a: { type: "object", "x-mcp-header": "A" } } } }, { name: "good", inputSchema: valid }] }), headers: () => undefined };
+  const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "bad", inputSchema: { type: "object", properties: { a: { type: "object", "x-mcp-header": "A" } } } }, { name: "good", inputSchema: valid }] }) };
   assert.deepEqual(mcpPinOf(["mcp:fake/good"], source).fake.tools.map((tool) => tool.name), ["good"]);
   // A granted tool that cannot be pinned refuses the pin in words, never a pin without it.
   assert.throws(() => mcpPinOf(["mcp:fake/bad", "mcp:fake/good"], source), /^Error: The MCP tool mcp:fake\/bad declares a header it cannot send: a: x-mcp-header is only allowed on a string, integer or boolean\.$/);
@@ -316,7 +316,7 @@ test("a call to a server that never answers ends at the call's deadline: an erro
 
 test("a grant whose server is no longer saved, or whose tool a refresh removed, refuses the pin in words naming it", () => {
   const listed = [{ name: "add", inputSchema: schema }];
-  const saved = { server: (name) => (name === "fake" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => undefined };
+  const saved = { server: (name) => (name === "fake" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined) };
   assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: the MCP server gone is no longer saved\.$/);
   assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
@@ -360,7 +360,7 @@ test("a token refreshed while a call is out is scrubbed too: its request carries
       if (typeof init?.body === "string" && init.body.includes('"fail_auth"')) return new Response(`refused for ${authorization}`, { status: 500 });
       return fetch(input, init);
     };
-    return { carried, gateway: mcpGateway({ pin: { fake: { url: fake.url, tools: echoing } }, credentials, work: () => work, fetch: spy, liveCredentials: true }) };
+    return { carried, gateway: mcpGateway({ pin: { fake: { url: fake.url, tools: echoing } }, credentials, work: () => work, fetch: spy }) };
   };
   const one = refreshed();
   const answer = textOf(await one.gateway.call("fake", "echo_auth", {}, { signal: signal() }));
@@ -390,7 +390,7 @@ test("the credentials a call holds for its scrub go when the call ends: held whi
     await new Promise((resolve) => (release = resolve));
     return { content: [{ type: "text", text: "waited" }] };
   } };
-  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [...tools, { name: "wait", inputSchema: schema }] } }, credentials, work: () => work, liveCredentials: true });
+  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [...tools, { name: "wait", inputSchema: schema }] } }, credentials, work: () => work });
   // Three calls, a refresh before each: none of them leaves a value held once it ended.
   for (const token of tokens.slice(1)) {
     credentials.fake = { url: fake.url, headers: { authorization: `Bearer ${token}` } };

@@ -1,9 +1,9 @@
 // The tools a revision may name here: one closed table. Each entry is how the run's process binds the name and which
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
-// The file tools and `bash` bind from the run's coding source (coding-tools.ts): on the runner, pi's coding tools
-// without `bash`, so a run gets no shell on this machine; in a box, pi's four and the background tools (bash_background,
-// bash_output, bash_input, bash_signal, bash_list), each call made in the box. `bash` and the background tools may be
-// named only by an agent whose place is a box (runnable.ts).
+// The file tools, `bash` and the background tools (bash_background, bash_output, bash_input, bash_signal, bash_list) bind
+// nothing here: a run's runner binds them from its workspace's registry (workspace/run-tools.ts), each call made on the
+// run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
+// (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
@@ -14,7 +14,6 @@ import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
-import type { CodingSource } from "./coding-tools.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
@@ -81,8 +80,6 @@ export type ToolHost = {
   where: AppContext;
   /** The run's environment: the server's, without the server's token. */
   env: NodeJS.ProcessEnv;
-  /** The run's coding tools, by its place (coding-tools.ts codingSource). */
-  coding: CodingSource;
   /** Installs an extension in the run's registry, before the run opens. */
   install(extension: Extension): void;
   /** Runs in the commit that creates each of the run's conversations. */
@@ -193,16 +190,14 @@ const webFetchEntry = (name: string): ToolEntry => ({
   effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: pagesOf(run.env), signal: run.signal })),
 });
 
-/** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
-const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry => ({
+/** A file or shell tool: listed here for its words and its rules, bound by the run's workspace registry
+ *  (workspace/run-tools.ts), never by this table. */
+const fileTool = (summary: string, sandboxOnly = false): ToolEntry => ({
   summary,
   needs: [],
   nodes: !sandboxOnly,
   ...(sandboxOnly ? { sandboxOnly: true as const } : {}),
-  bind: async (host) => {
-    const tools = host.coding.tools.filter((tool) => tool.name === name);
-    return { tools, extensions: tools.length ? [host.coding.extension] : [] };
-  },
+  bind: async () => ({ tools: [], extensions: [] }),
 });
 
 /** The folder the browser files what it reads in. */
@@ -572,16 +567,16 @@ const browserTool: ToolEntry = {
 };
 
 export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
-  read: fileTool("read", "Read a file in the run's work/; in a sandbox, an image anywhere in the run's box too (a render in /tmp)."),
-  write: fileTool("write", "Write a file in the run's work/."),
-  edit: fileTool("edit", "Edit a file in the run's work/."),
-  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).", true),
+  read: fileTool("Read a file in the run's work/; in a sandbox, an image anywhere in the run's box too (a render in /tmp)."),
+  write: fileTool("Write a file in the run's work/."),
+  edit: fileTool("Edit a file in the run's work/."),
+  bash: fileTool("Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).", true),
   // The background tools (background.ts): each call a short command in the run's box, on bash's environment.
-  bash_background: fileTool("bash_background", `Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
-  bash_output: fileTool("bash_output", `Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
-  bash_input: fileTool("bash_input", "Write text to a running background process's stdin, and close it if asked. Sandbox only.", true),
-  bash_signal: fileTool("bash_signal", "Send TERM, INT or KILL to a background process's process group. Sandbox only.", true),
-  bash_list: fileTool("bash_list", "List the run's background processes: id, state or exit code, output size and command. Sandbox only.", true),
+  bash_background: fileTool(`Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
+  bash_output: fileTool(`Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
+  bash_input: fileTool("Write text to a running background process's stdin, and close it if asked. Sandbox only.", true),
+  bash_signal: fileTool("Send TERM, INT or KILL to a background process's process group. Sandbox only.", true),
+  bash_list: fileTool("List the run's background processes: id, state or exit code, output size and command. Sandbox only.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
