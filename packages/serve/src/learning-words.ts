@@ -7,7 +7,7 @@
 // secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
 // words are made of (`learned`, `verdict`), and each read says them again (wordsOf): every part cut of the host's
 // secrets as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
-import { CAPS, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
+import { CAPS, CONTRADICTED_REASON, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
 import type { LearnedFile, Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
@@ -94,6 +94,7 @@ export const STOPPED = {
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
   noReview: "the review of the new notes gave no answer",
   unread: "the review of the new notes gave an answer that could not be read",
+  contradicted: "the review of the new notes contradicted itself twice: it kept them and said not to",
 } as const;
 
 /** A run's learning, in words, by where it stands. */
@@ -102,6 +103,9 @@ export const said = {
   reflecting: "Looking back on this run…",
   /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
   asked: "Looking back on this run.",
+  /** The end-of-run turn asked again because a workflow draft failed its dry run (learn/reflect.ts reflectDryRun), as a
+   *  person reads it in the timeline: never the ask, which holds the check's words. */
+  askedDryRun: "Looking back again: a workflow draft did not pass its dry run.",
   proposed: (notes: number, skills = 0, workflows = 0) => `Checking ${listed([...(notes || !(skills || workflows) ? [count(notes, "new note")] : []), ...(skills ? [count(skills, "skill")] : []), ...(workflows ? [count(workflows, "workflow")] : [])])}…`,
   /** What it learned, by name, and how many older notes they replace, and its skill and workflow by name; then what
    *  waits for the owner's OK, by name; then, when the grader dropped an item and kept others (a verdict per item), its
@@ -166,7 +170,9 @@ const learnedWords = (file: string): string | undefined => {
  *  secrets: a name is the run's to choose. */
 export function notKept(verdict: Pick<Verdict, "reason" | "items">, lost: readonly Pick<LearnedFile, "file">[] = []): string {
   const dropped = verdict.items.find((item) => !item.keep);
-  const said_ = dropped?.why ? said.grader(dropped.why) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+  // A grade that contradicted itself (it kept every item and said no merge, twice) is said as such: never its own reason,
+  // which may say the items can be kept.
+  const said_ = dropped?.why ? said.grader(dropped.why) : verdict.reason === CONTRADICTED_REASON ? said.stopped(STOPPED.contradicted) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
   const subject = dropped?.why ? learnedWords(dropped.file) : undefined;
   const others = [...new Set(lost.flatMap(({ file }) => learnedWords(file) ?? []))].filter((words) => words !== subject);
   if (!subject && !others.length) return said_;
