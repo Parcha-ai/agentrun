@@ -308,6 +308,22 @@ func TestInitWithOwnNetworkMustStartAsRoot(t *testing.T) {
 	}
 }
 
+// userns-init is only the child InitInUserNamespace starts: with no --started-in, or without --own-network among init's
+// arguments, it refuses (2) before anything.
+func TestUserNamespaceInitRefusesAnythingButTheChildsArguments(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"userns-init", "--deadline", deadline, "--own-network", "--user", "2510:2510"},
+		{"userns-init", "--started-in", "", "--deadline", deadline, "--own-network", "--user", "2510:2510"},
+		{"userns-init", "--started-in", "net:[4026531840]", "--deadline", deadline, "--user", "2510:2510"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 || !strings.Contains(stderr, "userns-init") && !strings.Contains(stderr, "--own-network") {
+			t.Errorf("computerd %q: exit %d, stderr %q; want 2, a refusal in words", args, code, stderr)
+		}
+	}
+}
+
 // probe --sockets lists the unix sockets with a path it can connect to, the isolation fence's listing (no python3 in the
 // image needed): a socket this test listens on under /tmp is among them; without --sockets there is no list.
 func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
