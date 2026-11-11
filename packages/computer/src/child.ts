@@ -111,7 +111,8 @@ const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringi
  * working directory and binary. Each read is bounded by timeoutMs and the caller's signal.
  */
 export async function daemonDrift(connection: ComputerConnection, expected: DaemonExpected, timeoutMs: number, signal?: AbortSignal): Promise<Result<string[]>> {
-	const found = helloDrift(connection.hello, { version: expected.version, kind: expected.kind, groups: expected.groups, arch: expected.arch });
+	// childCommands starts init with --own-network: hello must say which fence holds its programs.
+	const found = helloDrift(connection.hello, { version: expected.version, kind: expected.kind, groups: expected.groups, arch: expected.arch, fence: true });
 	const bounded = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs));
 	const status = await connection.client.call("files.read", { path: "/proc/self/status" }, { signal: bounded() });
 	if (!status.ok) return fail(status.error.code === "aborted" && !signal?.aborted ? "timeout" : status.error.code, `reading the daemon's /proc/self/status: ${status.error.message}`);

@@ -18,6 +18,7 @@ import {
 	type Clock,
 	type CaseContext,
 	type CaseResult,
+	type ComputerRole,
 	type ConformanceOptions,
 	type ConformanceReport,
 	coreGroups,
@@ -96,7 +97,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
 	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared).
 	const declared = options.declared ?? PROVIDERS.find((entry) => entry.id === provider.id)?.capabilities;
@@ -119,7 +120,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		kind: capabilities.kind,
 		daemonMode: capabilities.daemon,
 		image,
-		daemon: null,
+		daemons: [],
 		...(only === undefined ? {} : { only }),
 		...(only === undefined && kind === undefined ? {} : { coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
 		results: [],
@@ -160,17 +161,24 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			report.cleanup.errors.push(words(error).startsWith(`release ${ref.name}`) ? words(error) : `release ${ref.name} threw: ${words(error)}`);
 		}
 	};
-	/** Records the notes a create returned beside its ref, each naming the computer: never dropped with the ref. */
-	const noteCreated = (created: Result<CreatedComputer>) => {
-		if (!created.ok || !Array.isArray(created.value.notes)) return;
-		for (const note of created.value.notes) (report.computerNotes ??= []).push({ computer: created.value.name, note: String(note) });
+	/** Each computer the run made, by name: its role, "shared" or the id of the case that made it. */
+	const roles = new Map<string, ComputerRole>();
+	/**
+	 * Records the computer's role, and the notes a create returned beside its ref, each naming the computer and its role:
+	 * never dropped with the ref.
+	 */
+	const noteCreated = (created: Result<CreatedComputer>, role: ComputerRole) => {
+		if (!created.ok) return;
+		roles.set(created.value.name, role);
+		if (!Array.isArray(created.value.notes)) return;
+		for (const note of created.value.notes) (report.computerNotes ??= []).push({ computer: created.value.name, role, note: String(note) });
 	};
 	/** Deletes the computer a create gives after nobody waits for it any more, and names it in the report. */
 	const lateCreate = (creating: Promise<Result<CreatedComputer>>, what: string, by: ComputerProvider = provider) =>
 		keep(
 			creating.then(
 				async (created) => {
-					noteCreated(created);
+					noteCreated(created, "shared");
 					if (!created.ok) return;
 					report.cleanup.late.push(created.value.name);
 					await release(created.value, by);
@@ -181,8 +189,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		);
 	const createError = (result: Result<unknown>) =>
 		result.ok ? "" : `create ${result.error.code === "refused" ? "was refused" : `failed (${result.error.code})`}: ${result.error.message}`;
-	const sawHello = (hello: HelloResult) => {
-		report.daemon ??= { version: hello.version, os: hello.os, arch: hello.arch };
+	/** Records a computer's first hello, naming the computer and its role: the one it was made for, else the connecting case's. */
+	const sawHello = (computer: string, hello: HelloResult, role: ComputerRole) => {
+		if (report.daemons.some((daemon) => daemon.computer === computer)) return;
+		report.daemons.push({ computer, role: roles.get(computer) ?? role, version: hello.version, os: hello.os, arch: hello.arch, ...(hello.fence === undefined ? {} : { fence: hello.fence }) });
 	};
 
 	/** The run's shared computer, made the first time a case needs it or the daemon's hello. */
@@ -202,7 +212,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				lateCreate(creating, "create (the run's computer)");
 				return { error: words(error) };
 			}
-			noteCreated(created);
+			noteCreated(created, "shared");
 			if (!created.ok) return { error: createError(created) };
 			sharedRef = created.value;
 			const connecting = provider.connect(created.value);
@@ -218,7 +228,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			}
 			if (!connected.ok) return { error: `connect: ${connected.error.code}: ${connected.error.message}` };
 			await bounded(connected.value.close(), CLOSE_MS);
-			sawHello(connected.value.hello);
+			sawHello(created.value.name, connected.value.hello, "shared");
 			return { ref: created.value, hello: connected.value.hello };
 		})().catch((error: unknown) => ({ error: `the provider threw: ${words(error)}` })));
 
@@ -248,6 +258,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need} (capabilities().vendorAgentPorts): no vendor's agent runs beside its computers' programs`;
 			} else if (need === "secrets" && planted === undefined) {
 				return "the provider takes no secret: its conformance module's ENV names no key, token or secret";
+			} else if (need === "gpu" && capabilities.gpu === undefined) {
+				return "the provider does not declare gpu (capabilities().gpu): it offers no GPU";
 			}
 		}
 		return undefined;
@@ -315,13 +327,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			});
 			keep(connecting, `connect to ${ref.name} (${c.id})`);
 			const once = unwrap(await connecting, `connect to ${ref.name}`);
-			sawHello(once.hello);
+			sawHello(ref.name, once.hello, c.id);
 			return once;
 		};
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
 		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
 			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
-				noteCreated(created);
+				noteCreated(created, c.id);
 				if (created.ok) track(created.value, by);
 				return created;
 			});
@@ -415,6 +427,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (ended) keep(bounded(folder.close().catch(() => {}), CLOSE_MS), `close of a run folder (${c.id})`);
 					else folders.push(folder);
 					return folder;
+				},
+				gpu() {
+					// A GPU bills by the second: the run names the one it pays for, never a default.
+					if (gpu === undefined) return t.skip("the run named no GPU: give --gpu <type>[:<count>] (or options.gpu), one the provider declares in capabilities().gpu");
+					return { type: gpu.type, count: gpu.count };
 				},
 				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);

@@ -1,7 +1,7 @@
 // A workflow run's decisions as timeline rows: one row per receipt its judge, pick, sift, route, ask and verify nodes
 // committed to the run's store (`agentrun.decisions`), so a run shows its verdicts beside its model nodes' rows. The
 // rows are read from the released store, as the rest of a workflow run's rows are.
-import { CAPS, costLabel, cut, endedUsage, scrubUrls, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { CAPS, costLabel, cut, endedUsage, scrubUrls, type TimelineEvent } from "./timeline/index.js";
 
 type Answer = { type?: unknown; noul?: unknown; choice?: unknown; score?: unknown; legend?: unknown; confidence?: unknown; probabilities?: unknown };
 type Receipt = Record<string, unknown>;

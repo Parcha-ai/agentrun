@@ -9,7 +9,7 @@
 // refused (Fenced, or the runner's ClaimLost before it reaches the store), and from then on this store refuses every
 // append at once, whatever its key, as it does once the claim's signal (the loop's Context) is aborted: a fenced CLI
 // stops writing, never retrying into a Harness the claim no longer holds. Within a process, the newest `open` of a key,
-// checked inside the commit that appends. A port of serve/src/sessions.ts (the per-run store's, until the cutover).
+// checked inside the commit that appends.
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";

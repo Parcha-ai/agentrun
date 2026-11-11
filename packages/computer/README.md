@@ -98,7 +98,10 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   refuses uid 0 for its programs (root shares its uid with every root process of the vendor's); refuses to start while
   any other process holds that uid (one could be signalled, traced or written to by them, and a vendor's agent among
   them would be theirs to command), naming each; moves every one of its threads into a new network namespace and
-  brings its loopback up, reading back that no thread stayed behind and that the loopback alone is up or addressed
+  brings its loopback up over rtnetlink (RTM_NEWLINK with IFF_UP on lo's index, as `ip link set lo up` does; and
+  RTM_NEWADDR for 127.0.0.1/8 where the kernel gave lo none), never by the SIOCSIFFLAGS ioctl, which gVisor's netstack
+  refuses in a new namespace (ENOTTY, live on Modal's gVisor, 11-11). It reads back lo up and running, 127.0.0.1 on it
+  and a listener there reached, and that no thread stayed behind and that the loopback alone is up or addressed
   (a kernel with the tunnel modules loaded gives every new namespace its fallback tunnels, tunl0, gre0, sit0 and the
   rest, down with no address: they stay so, since no program holds CAP_NET_ADMIN, and computerd's probe reports any
   it could bring up, which every read-back refuses); then drops as below, and installs a seccomp filter on every thread that refuses (EPERM) a socket of family
@@ -112,6 +115,24 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `--egress`: such a computer's network is `none` (open and allowlists wait for a proxy out of that namespace, which
   is not built yet). The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
+- **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
+  CAP_SYS_ADMIN on gVisor (Modal's GPU runtime), so `unshare(CLONE_NEWNET)` is EPERM. It may make a user namespace with
+  a network namespace inside it (a live probe on Modal's gVisor, 11-11). Init doesn't ask the vendor which it is: it
+  tries the plain namespace first, and on EPERM alone (`isolate.ErrNoNetworkNamespace`) it takes this way, whatever the
+  vendor.
+  - Init starts itself again as `computerd userns-init --started-in <its network namespace>`: a child in a new user
+    namespace that maps every uid and gid to itself, and a new network namespace. The root parent writes the map, which
+    needs CAP_SETUID and CAP_SETGID. The map keeps every id as it is, so the files the programs make, HOME, and the run's
+    folder belong to the same uid inside and out.
+  - The child does all of the above but make the namespace. Before touching anything, it reads back
+    (`isolate.KeepOwnNetwork`) that no thread is in the namespace it was started from. Then it brings the loopback up
+    over rtnetlink and reads it back, as above. The live T4 run at the fallback's first head (11-11) made the user and
+    network namespace, then failed at lo on the ioctl.
+  - The first init keeps no capability (no_new_privs, every set empty). It passes SIGTERM and SIGINT on, reaps, and exits
+    with the child's code.
+  - If neither way works, init refuses to start in words that name both, and the computer fails closed.
+  - hello says which fence holds, `fence: "netns"` or `"userns-netns"`. Every provider that starts init with
+    `--own-network` (Daytona, E2B, Orgo, Modal) refuses a hello that names neither.
 - **Init drops its privileges itself, as any user, root included,** before it listens, so the line holds on every
   vendor and not only where the provider drops capabilities (Docker: `--cap-drop ALL`). On every thread it sets
   `no_new_privs`; drops from the bounding set each capability up to the kernel's last
@@ -398,7 +419,7 @@ in the kernel's tool registry, keyed by these groups.
   | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
-  | browserbase, kernel | browser: `BROWSER_IMAGE` ("chromium") |
+  | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
 
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
@@ -410,6 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
+  | local | Local Chrome | browser | none | none | no |
 
 - Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
   holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
@@ -1143,7 +1165,7 @@ const modal = new ModalProvider({
 const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
 ```
 
-`ModalProvider` makes Modal sandboxes on the VM runtime only, through the slice of Modal's JS SDK named by `ModalSdk`
+`ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
@@ -1155,7 +1177,9 @@ of that slice, and the live conformance file waits for a key (below).
 - **The loopback block.** Init starts with `--own-network` (see [Init, the socket and the
   bridge](#init-the-socket-and-the-bridge)) whatever Modal runs inside the sandbox: the daemon's programs reach their
   own loopback and nothing else, and the default computer user is 2510:2510 (`user` option or spec.user for another;
-  init refuses one another process holds). Modal's root holds every capability, so the namespace is made there. Known
+  init refuses one another process holds). On the VM runtime Modal's root holds every capability, so the namespace is
+  made there. On gVisor, a GPU computer's runtime, root may not make it, so init makes it inside a user namespace
+  (below). Known
   gap: network `open` is refused in words until a proxy carries it out of the daemon's own network, the next feature
   after this one; a computer that needs pip, npm or git from the internet cannot be made on Modal until then.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
@@ -1259,8 +1283,47 @@ of that slice, and the live conformance file waits for a key (below).
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
   is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
-  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
-- **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
+  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read. Before that
+  terminate, a create whose sandbox's own command had ended says so: its exit code and the tail of its output. When
+  Modal refuses an exec with FAILED_PRECONDITION ("Modal Sandbox is shutting down", code `gone`), the command, init, has
+  just exited and Modal ends the sandbox asynchronously, so create first waits up to `endedMs` (30 s) for `poll()` to
+  read it finished, then reads init's words. The first GPU live run on gVisor ended this way, with no words.
+- **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
+  `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer
+  (Modal refuses an `A10` past 4, in its words). Its `H100!` and `B200+` variants are not offered: a computer gets the
+  type it asked for. `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal
+  offers GPUs on gVisor only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM
+  runtime. The drift check holds the runtime from both sides: the probe's kernel must be gVisor's on a GPU computer, and a
+  VM's on any other. Modal reads no GPU back: the
+  spec tag records the GPUs, and attach reports them on a computer the probe reads as gVisor. `capabilities().isolation`
+  stays `vm`, every other computer's; a GPU computer's is declared apart, `gpu.isolation: "gvisor"`, so a caller that
+  needs a VM's isolation can tell. Modal's GPUs are `preemptible: true`: Modal may move a GPU workload, so a run on one
+  can be cut short (guide/preemption). `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu), since the
+  Archil client's FUSE mount is not proven on gVisor yet. That keeps serve from giving a run a Modal GPU sandbox in either
+  mode, as a serve sandbox always mounts the run's folder; the library takes one without a mount.
+- **The loopback fence on gVisor.** A GPU computer's init gets the same network namespace of its own, loopback alone,
+  made another way.
+  - Modal's gVisor gives root no CAP_SYS_ADMIN, so `unshare(CLONE_NEWNET)` is EPERM. With `--own-network`, init refused
+    to start there (live on a T4, 11-10).
+  - It does let root make a user namespace with a network namespace inside it (`unshare -Urn`, live on a T4, 11-11, as
+    root and as nobody; nothing of Modal's runs or listens inside a gVisor sandbox, and every loopback port answered
+    nothing).
+  - So init, given the same `--own-network` on every runtime, makes the namespace inside a user namespace when root's
+    own attempt is EPERM (the daemon's fallback, any vendor: see "Where root may not make the network namespace").
+  - The first init stays PID 1 with no capability and no_new_privs set. It passes SIGTERM and SIGINT on and ends with
+    the init that serves, so the sandbox lives as long as that one does.
+  - Declared: `gpu.fence: "userns-netns"`. Read back: hello's `fence` on every connect, which the drift check requires
+    to be one of the two. Create notes it when it is `userns-netns`, and the conformance report records it under the GPU
+    computer's own name and role (`daemons[].fence`).
+  - Proven in Docker. In `test/docker/modal-commands.docker.test.mjs`, a root container with Docker's default
+    capabilities and no seccomp profile stands in for gVisor:
+    - `--own-network` falls back and serves;
+    - hello says `userns-netns`;
+    - the programs run as 1000 with no capability, in another network and user namespace than PID 1's, on the loopback
+      alone;
+    - what they write in HOME is 1000's from outside;
+    - with Docker's default seccomp profile (no user namespace either), init refuses in words that name both ways.
+  - Not yet proven live on Modal.
 
 ### What every Modal fact rests on
 
@@ -1506,6 +1569,7 @@ the TTL.
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
+| `gpu` | `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`; at most 8 | Daytona's `GpuType` names (its API's enum, `daytona_api_client` 0.214.0) and its 8 VFIO GPUs to a sandbox ([dotfiles/gpu-sandboxes](https://www.daytona.io/dotfiles/gpu-sandboxes)); `spec.gpu` becomes `gpu` (how many) and `gpuType` (the one type, as its preference list), and the read-back's `gpu` and `gpuType` must match. The types come from the API's `GpuType` enum alone: Daytona's docs and pricing page also list `L40S`, `B200` and `B300`, which the enum doesn't name, so they aren't offered. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says: a GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 192 GiB memory and 512 GiB disk, Daytona's defaults for each GPU. The org needs GPU credits, or the create is refused in Daytona's words. A GPU computer whose image is `"default"` (`DAYTONA_DEFAULT_SNAPSHOT`: the create sends no snapshot) gets Daytona's `daytona-gpu` snapshot. Whether a GPU sandbox takes a snapshot of box/Dockerfile, its class, the root init needs for its own network, and the network allowlist are not yet proven live |
 
 ### What the provider does
 
@@ -1570,7 +1634,8 @@ From Daytona's read of the sandbox:
 | `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
 | `sandboxClass` | the provider's class |
-| `public`, `kvm`, `gpu`, `volumes`, `linkedSandboxId` | false, not true, 0, none, none |
+| `gpu`, `gpuType` | `spec.gpu`'s count (0 with none) and, with one, its type |
+| `public`, `kvm`, `volumes`, `linkedSandboxId` | false, not true, none, none |
 
 From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
@@ -2010,6 +2075,82 @@ AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider kernel
 ```
 
+## A local browser: this machine's Chrome, no keys
+
+The `local` provider (`local.ts`) is a computer of kind `browser` that is the Chrome or Chromium on the machine
+AgentRun runs on. No vendor, no key, nothing billed.
+
+```ts
+import { LocalBrowserProvider } from "@parcha/agentrun-computer";
+
+const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
+const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });
+const connected = await local.connect(made.value); // connected.value.cdp.url: ws://127.0.0.1:<port>/devtools/browser/<id>
+await local.release(made.value, "delete");
+```
+
+Each computer is one Chrome with a throwaway profile and a debugging port Chrome picks on 127.0.0.1. It runs
+headless by default. `headed: true` shows the window, for a person watching on this machine. `create()` returns
+once `/json/version` answers on that port. `connect()` hands over the DevTools URL. `release("delete")` ends Chrome and
+removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
+`browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
+refused when another user can write it). That file holds the labels and the deadline.
+
+Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
+ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process
+that made the browser. So a run that crashes leaves no Chrome behind once its deadline passes. `list()` reads the
+deadline, so the janitor's `sweep` also ends a browser whose supervisor was killed (`lifetime: "janitor"`). The cap is
+24 h.
+
+Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
+first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
+install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+`create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
+once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
+keeps nothing.
+
+The fence and the sandbox are PR #1718's:
+
+- Chrome's own sandbox is always on. A start as root is refused (Chrome refuses root with its sandbox on), and so is a
+  Chrome that cannot start its sandbox here, in words that name the fix (an AppArmor profile on Ubuntu 23.10 and later,
+  or Chrome's setuid helper). Nothing retries without the sandbox.
+- Every request Chrome makes goes through the browser's egress proxy, the same one Docker's computers use
+  (`docker/egress-proxy.ts`). A spec's `network` is `"open"` (no list) or `{ allow: [names and CIDRs] }`. With a list,
+  the proxy reaches only those hosts, on ports 80 and 443, and refuses any other host by name before its lookup. A
+  CIDR that covers a refused range (loopback, private) is refused at `check()`. The proxy reaches public addresses only, each checked after its lookup:
+  this machine's loopback, private networks, link-local and a cloud's metadata address (169.254.169.254) are
+  refused. Chrome is started with `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too. Its
+  `--host-resolver-rules=MAP <proxy> <proxy>, MAP * ~NOTFOUND` means Chrome resolves no name itself, so a request
+  sent around the proxy reaches nothing. QUIC is off (`--disable-quic`), and WebRTC sends no UDP
+  (`--webrtc-ip-handling-policy=disable_non_proxied_udp`). The proxy and its relay live in the supervisor, so the fence
+  holds for a browser driven from another process, and a browser whose supervisor is gone reaches nothing.
+
+Capabilities: `network: ["open"]` (public addresses), `isolation: "host"`, `daemon: "none"`, groups `cdp` only (no
+live view: run it headed to watch), `release: ["delete"]`, no mount.
+
+Known limits, so it is for local and development use:
+
+- The debugging port has no auth. Any process on this machine that finds the port can drive the browser, read its
+  pages and cookies, and navigate it. The port is on 127.0.0.1 only, and it is random per browser.
+- Chrome runs as the user AgentRun runs as, on this host. Chrome's sandbox is the only isolation between a page and
+  the machine. The fence keeps the browser off this machine's services and private networks, but the browser
+  process itself is not in a container or a VM.
+- The page cannot reach this machine's services, but the supervisor's relay port on 127.0.0.1 is reachable by local
+  processes. Through it they reach public addresses, which they can reach anyway.
+- No proxy of your own, no extensions, no saved profiles: each browser starts from an empty profile that goes with it.
+
+Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser with the same
+`snapshot` and `run` actions the vendor browsers take, with no Stagehand and nothing loaded into Chrome. `run` code is
+refused there; navigation is a `goto` action. Its snapshot does not read a frame another site runs in its own
+process (a cross-origin iframe). The snapshot names each frame it left out, so an agent knows the page has more.
+
+The conformance module starts a real Chrome, so it waits for its switch:
+
+```sh
+AGENTRUN_COMPUTER_LIVE_LOCAL=1 [COMPUTER_LOCAL_CHROME=/usr/bin/chromium] \
+  npm run conformance -w @parcha/agentrun-computer -- --provider local --kind browser
+```
+
 ## Phone harness (the phone kind)
 
 ```ts
@@ -2130,7 +2271,7 @@ through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`) and the capabilities it needs, and uses only `ComputerProvider`,
+`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`, `gpu`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
@@ -2155,11 +2296,16 @@ core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · moun
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
-daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
-undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
-case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
-ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
-report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
+daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
+group, status, reason?, undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under
+its line with what the case found. A computer's `role` is `"shared"` for the run's computer, which the cases that need
+none of their own share, else the id of the case that made it. `daemons` holds each computer's first `hello`, one entry
+per computer in the order they answered (empty when none did), so computers of one run that differ are kept apart: a GPU
+computer's `fence` is not the run's computer's. The text report prints each as `daemon <computer> (<role>): computerd
+<version> <os>/<arch> · fence <fence>` above the verdict. `computerNotes` (`[{ computer, role, note }]`, absent when
+empty) holds every note a `create` returned beside its ref, such as a probe target that accepted and sent nothing back,
+naming the computer and its role, in the order they came; the text report prints each as `note <computer> (<role>):
+<words>` above the verdict, so a run that passes Core never hides one. Notes an
 `attach` returns are not carried: cases call `attach` on the provider directly, so the runner never sees them.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
@@ -2365,6 +2511,10 @@ AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
 ```
+
+`npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names
+one) and starts here with its sandbox on: it creates a local browser, drives it over CDP, checks that a service on this
+machine's loopback is out of its reach, and releases it. Elsewhere it skips with the reason.
 
 Where Xvfb is on PATH, the Go tests also run the X client, and screen and input against the fixture, on a real X
 server; elsewhere those tests skip in words and the fake X server's tests still run.
