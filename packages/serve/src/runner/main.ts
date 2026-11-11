@@ -31,7 +31,8 @@ import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { routeOf } from "./model-route.js";
-import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent } from "./runner.js";
+import { runnerMemory } from "./memory-claim.js";
+import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -42,6 +43,9 @@ export interface RunnerProcessOptions {
   loops?: number;
   /** How long close() lets each busy run finish its turn (--drain-timeout; RunnerOptions.drainMs). Default 0. */
   drainMs?: number;
+  /** Its memory budget and its runs' weights (RunnerOptions.memory). Default: this host's memory, each run weighed by its
+   *  harness (memory-claim.ts runnerMemory). */
+  memory?: RunnerMemory;
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
   /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop). */
@@ -215,6 +219,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       name,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
+      memory: options.memory ?? runnerMemory(store),
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });

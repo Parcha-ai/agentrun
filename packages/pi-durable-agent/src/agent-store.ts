@@ -24,9 +24,10 @@ export type RevisionKind = "agentic" | "workflow";
  *  absent: the host's own). `maxCostUsd`: a revision's default spend cap for each run, agentic or workflow, in US dollars,
  *  that a run started with none of its own takes (absent: none). `capMode`: how such a cap prices a request, a name its host
  *  knows (absent: the host's default). `computer`: the computer its runs are given, a kind and the provider that serves
- *  it, ids its host knows (absent: the host's default; `place` is its view where it can say it). */
+ *  it, ids its host knows, and the GPUs it asks for, a type its host's provider names and how many (absent: the host's
+ *  default; `place` is its view where it can say it). */
 export type RevisionPlace = { mode: string; box?: string };
-export type RevisionComputer = { kind: string; provider?: string };
+export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
 export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
@@ -320,10 +321,15 @@ function placeOf(place: unknown): RevisionPlace {
   return { mode: place.mode, ...(place.box !== undefined ? { box: place.box } : {}) };
 }
 
-/** A computer as a body keeps it: `{kind, provider?}`, nothing else, each an id its host knows. */
+/** A computer as a body keeps it: `{kind, provider?, gpu?}`, nothing else: kind and provider ids its host knows, and gpu
+ *  `{type, count}`, a type its host's provider names (the vendor's own, such as "A100-80GB") and a whole count from 1. */
 function computerOf(computer: unknown): RevisionComputer {
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider")) throw invalid("the computer is not {kind, provider?}, each an id (lowercase letters, digits and dashes)");
-  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}) };
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "gpu")) throw invalid("the computer is not {kind, provider?, gpu?}, kind and provider each an id (lowercase letters, digits and dashes)");
+  const gpu = computer.gpu;
+  if (gpu !== undefined && (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count") || typeof gpu.type !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(gpu.type) || !Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1)) {
+    throw invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
+  }
+  return { kind: computer.kind, ...(computer.provider !== undefined ? { provider: computer.provider } : {}), ...(gpu !== undefined ? { gpu: { type: gpu.type as string, count: gpu.count as number } } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */
