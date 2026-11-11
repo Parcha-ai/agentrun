@@ -11,7 +11,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shownImpact, took, TYPE_HINT, typeLabel,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, restores, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
@@ -594,7 +594,7 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
  *  again (`onChanged`). A version changed since says so and reads it again; one no longer retired (restored elsewhere)
  *  reads it again; a token is told restoring takes the password sign-in; a refusal by the checks a new one passes shows
  *  the server's words, and it stays retired. */
-function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
+function RestoreConfirm({ name, kind, from, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; from: Retired["from"] | undefined; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -621,7 +621,7 @@ function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: stri
   return (
     <div role="alertdialog" aria-label={`Restore ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(); } }}
       className="flex flex-wrap items-center gap-3 border-t bg-card px-5 py-3">
-      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Restore it?</span> {RESTORES}</p>
+      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Restore it?</span> {restores(from)}</p>
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="solid" onClick={() => void go()} disabled={busy}>{busy ? "Restoring" : "Yes, restore"}</Button>
       <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>Keep</Button>
@@ -782,7 +782,7 @@ function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, o
             <p className="mt-1 font-mono text-label text-muted-foreground">
               {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? retiredLine(x.retired) : null}
             </p>
-            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" from={x.retired?.from} restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {opened && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <p className="mt-2 px-5 text-body text-muted-foreground">{x.description}</p>
@@ -833,7 +833,7 @@ function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }:
             {x.description && <p className="mt-1 text-small text-muted-foreground">{x.description}</p>}
             <p className="mt-1 font-mono text-label text-muted-foreground">{retiredLine(x.retired)}</p>
             {/* Restored by the file that says whether it is in use (a skill's SKILL.md, a draft's README), on the listed version. */}
-            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} from={x.retired?.from} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {shown.has(x.file) && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <FileText v2={v2} agentId={agentId} file={x.file} etag={x.etag} kind={kind} label={`the ${kind} ${x.name}`} />

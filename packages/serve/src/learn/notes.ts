@@ -2,7 +2,7 @@
 // index a run reads, one line per active note. A note is `<slug>.md`: front matter with `name`, `description` and `type`
 // (Claude Code's four), optionally `supersedes: [old.md]` (the notes it replaces), and what only the host sets:
 // `status: superseded | retired | pending` with `superseded_by` (absent, it is active; pending, it waits for its owner's
-// OK) and `origin: you | run` (a note kept from what the user asked, or one the run worked out; absent, the run's). Then
+// OK), `retired_from: active | pending` on a retired note (the status a restore gives it back), and `origin: you | run` (a note kept from what the user asked, or one the run worked out; absent, the run's). Then
 // its body. The host builds the index from the active notes' front matter; nothing else writes it.
 
 /** The index: what a run reads. */
@@ -20,8 +20,13 @@ export type NoteOrigin = (typeof NOTE_ORIGINS)[number];
 /** A note's file name: in the folder itself, never under a directory or hidden, and never the index. */
 export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 
-/** `supersedes`: the notes it replaces, by file name; `keys`: every key its front matter sets. */
-export type LearnedNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; origin: NoteOrigin; superseded_by: string | null; supersedes: string[]; keys: string[]; body: string };
+/** The statuses a retire records it was retired from (`retired_from`), the one a restore gives back. */
+export const RETIRED_FROM = Object.freeze(["active", "pending"] as const);
+export type RetiredFrom = (typeof RETIRED_FROM)[number];
+/** `supersedes`: the notes it replaces, by file name; `retired_from`: on a retired note, the status a restore gives back:
+ *  `pending` when its retire recorded none (fail closed: only an approval makes a note active); null on any other note.
+ *  `keys`: every key its front matter sets. */
+export type LearnedNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; origin: NoteOrigin; superseded_by: string | null; supersedes: string[]; retired_from: RetiredFrom | null; keys: string[]; body: string };
 
 /** A value as front matter writes it: bare, or in one pair of quotes. */
 const unquoted = (value: string) => (/^"[^"]*"$|^'[^']*'$/.test(value) ? value.slice(1, -1) : value);
@@ -59,16 +64,18 @@ export function parseNoteFile(file: string, text: string): LearnedNote | string[
   if (!(NOTE_ORIGINS as readonly string[]).includes(origin)) out.push(`origin is not ${NOTE_ORIGINS.join(" or ")}`);
   const by = fields.get("superseded_by") || null;
   if (by !== null && !NOTE_FILE.test(by)) out.push("superseded_by is not a note's file name");
+  const from = fields.get("retired_from") || null;
+  if (from !== null && !(RETIRED_FROM as readonly string[]).includes(from)) out.push(`retired_from is not ${RETIRED_FROM.join(" or ")}`);
   const supersedes = listOf(fields.get("supersedes") ?? "");
   if (supersedes.some((old) => !NOTE_FILE.test(old))) out.push("supersedes is not a list of notes' file names");
   else if (new Set(supersedes).size < supersedes.length) out.push("supersedes names a note twice");
   if (out.length) return out;
-  return { file, name: fields.get("name")!, description: fields.get("description")!, type: type as NoteType, status: status as NoteStatus, origin: origin as NoteOrigin, superseded_by: by, supersedes, keys: [...fields.keys()], body: lf.slice(head[0].length) };
+  return { file, name: fields.get("name")!, description: fields.get("description")!, type: type as NoteType, status: status as NoteStatus, origin: origin as NoteOrigin, superseded_by: by, supersedes, retired_from: status === "retired" ? ((from as RetiredFrom | null) ?? "pending") : null, keys: [...fields.keys()], body: lf.slice(head[0].length) };
 }
 
 /** `text`, a note's file, with `lines` in its front matter in place of any it had of the keys `replaced` (`status` and
  *  `superseded_by` unless named); the rest as it was, with LF line ends. */
-function marked(text: string, lines: readonly string[], replaced: readonly string[] = ["status", "superseded_by"]): string {
+function marked(text: string, lines: readonly string[], replaced: readonly string[] = ["status", "superseded_by", "retired_from"]): string {
   const lf = text.replace(/\r\n/g, "\n");
   const head = FRONT.exec(lf);
   if (!head || head.index !== 0) throw new Error("the note has no front matter");
@@ -82,7 +89,7 @@ function marked(text: string, lines: readonly string[], replaced: readonly strin
 export function mergedNote(text: string, as: { origin: NoteOrigin; pending?: boolean }): string {
   if (!(NOTE_ORIGINS as readonly string[]).includes(as.origin)) throw new Error(`origin is ${NOTE_ORIGINS.join(" or ")}`);
   // The run's own `risky` mark is read by the grade (runMarkedRisky) and never kept: a held note says so by its status.
-  return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "origin", "risky"]);
+  return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "retired_from", "origin", "risky"]);
 }
 
 /** `text`, a run's new note, without the mark its end-of-run turn may set (`risky:`), as the grader reads it: the grader
@@ -118,8 +125,14 @@ export function supersede(text: string, by: string): string {
   return marked(text, ["status: superseded", `superseded_by: ${by}`]);
 }
 
-/** `text`, a note's file, as the host leaves it when a person retires it: `status: retired`, and no `superseded_by`. */
-export const retire = (text: string): string => marked(text, ["status: retired"]);
+/** `text`, a note's file, as the host leaves it when a person retires it: `status: retired` and `retired_from`, the status
+ *  it had (`from`: active or pending), which its restore gives back; no `superseded_by`. */
+export const retire = (text: string, from: RetiredFrom): string => marked(text, ["status: retired", `retired_from: ${from}`]);
+
+/** `text`, a retired note's file (`note`, as parsed), as the host leaves it when a person restores it: back in the status
+ *  its retire recorded (`retired_from`), active or pending. A note retired while it waited for its owner's OK waits again:
+ *  only an approval makes it active. */
+export const restore = (text: string, note: Pick<LearnedNote, "retired_from">): string => marked(text, note.retired_from === "active" ? [] : ["status: pending"]);
 
 /** The active ones of `notes`, by file name. */
 export function activeNotes(notes: Iterable<LearnedNote>): LearnedNote[] {

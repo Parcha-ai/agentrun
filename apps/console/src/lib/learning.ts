@@ -48,7 +48,9 @@ export type LearnedFileRef = { file: string; name: string; pending?: true };
 export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
 /** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
  *  changes. */
-export type Retired = { at: string; by: "person" | "run" };
+/** When and by whom an item was retired, and `from`, the status its restore gives back: `active`, or `pending` (it goes
+ *  back to waiting for your OK). */
+export type Retired = { at: string; by: "person" | "run"; from: "active" | "pending" };
 /** The newest change to an item's file, as the server names it (absent when it names none). */
 export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
 const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned", superseded: "Replaced" };
@@ -91,8 +93,9 @@ export async function seenVersion(note: Pick<LearningNote, "text" | "etag">, rea
 export const NO_VERSION = "Can't tell which version this is: reload.";
 /** Said when the note changed since a card showed it. */
 export const CHANGED = "It changed since you opened it.";
-/** What a restore says before it is made: what it changes. */
-export const RESTORES = "It becomes active again for the next run.";
+/** What a restore says before it is made: what it changes, by the status it goes back to. Only an item that was active
+ *  before its retire becomes active; one that waited for your OK waits again. */
+export const restores = (from: Retired["from"] | undefined): string => (from === "active" ? "It becomes active again for the next run." : "It goes back to waiting for your OK: no run uses it until you approve it.");
 /** A restore made by a token, not the owner's password sign-in: the server refuses it (403). */
 export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the console.";
 

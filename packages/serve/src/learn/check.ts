@@ -243,7 +243,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     if (base.has(path)) return add("exists", "the folder has a note by this name", path);
     const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
-    if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
+    if (["status", "superseded_by", "retired_from", "origin"].some((key) => note.keys.includes(key))) return add("status", "a run never sets status, superseded_by, retired_from or origin: the host does, when it merges the note, a later one supersedes it or a person retires it", path);
     notes.push(note);
   };
   for (const change of changes) one(change);

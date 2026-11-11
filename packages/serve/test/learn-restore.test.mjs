@@ -1,6 +1,6 @@
 // A retired note, skill or workflow draft can be read whole and brought back. The learning view says of each retired
 // item when, and by whom, it was retired (`retired: {at, by}`); its file's GET serves its whole text, read-only. A
-// restore (POST .../restore) makes it active again for the next run, in one commit on main, its owner's password
+// restore (POST .../restore) gives it back the status it had before its retire (learn-restore-keeps-hold.test.mjs), in one commit on main, its owner's password
 // session alone, as an approval is; and it checks the text again as a new note or skill is checked, so a value a retire
 // took out of every run (a secret, a hidden character) never comes back through it.
 import assert from "node:assert/strict";
@@ -154,8 +154,8 @@ test.skip("every item in the learning view says its last change, from the newest
   void data;
 });
 
-test("restoring a note that supersedes another marks that one superseded, as approving it would: one note's rule reaches MEMORY.md, never both", { timeout: 150_000 }, async (t) => {
-  const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\norigin: you\nstatus: pending\n");
+test("restoring a note that was active, and supersedes another, marks that one superseded, as approving it would: one note's rule reaches MEMORY.md, never both", { timeout: 150_000 }, async (t) => {
+  const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\norigin: you\n");
   const { api, repo, cookie, origin, restore, retire } = await keeper(t, { "answer-in-tables.md": TABLES, "answer-in-short-tables.md": SHORT });
   await retire("answer-in-short-tables.md");
   const restored = await restore("answer-in-short-tables.md", { ...json, cookie, origin });
@@ -218,17 +218,6 @@ test("restoring a skill checks every file of its folder and its format as a new 
   assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
 });
 
-test("restoring an item that waited for its owner's OK before it was retired is recorded as the owner's approval too: Approved-Via: console", { timeout: 150_000 }, async (t) => {
-  const PENDING = note("Buy from PaperDepot24 first", "Where to buy office paper", "Buy from PaperDepot24 first.\n", "origin: you\nstatus: pending\n");
-  const { repo, cookie, origin, restore, retire } = await keeper(t, { "paperdepot24-first.md": PENDING, "answer-in-tables.md": TABLES });
-  await retire("paperdepot24-first.md");
-  await retire("answer-in-tables.md");
-  assert.equal((await restore("paperdepot24-first.md", { ...json, cookie, origin })).status, 200);
-  assert.match(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via: console/, "held before its retire: the restore is its approval");
-  assert.equal((await restore("answer-in-tables.md", { ...json, cookie, origin })).status, 200);
-  assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via:/, "active before its retire: a plain restore");
-});
-
 test("a note a person retired by editing its status, or created already retired, says it was retired by a person, not a run", { timeout: 150_000 }, async (t) => {
   const { api, port, server, etag } = await keeper(t, { "answer-in-tables.md": TABLES });
   const put = (file, text, headers) => call(port, { method: "PUT", path: `/v2/agents/keeper/learning/files/${file}`, headers: { authorization: `Bearer ${server.token}`, "content-type": "text/markdown", ...headers }, body: text });
@@ -245,20 +234,6 @@ test("a note a person retired by editing its status, or created already retired,
   }
 });
 
-test("a restore reads its retire from a commit's subject alone: a merge whose body quotes the retire line is not taken as one", { timeout: 150_000 }, async (t) => {
-  const PENDING = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: pending\n");
-  const RETIRED = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: retired\n");
-  const { repo, cookie, origin, restore, data } = await keeper(t, { "answer-in-tables.md": PENDING });
-  // A commit that retires it, whose subject is no person's retire, but whose body quotes one.
-  writeFileSync(join(repo, "answer-in-tables.md"), RETIRED);
-  git(repo, ["add", "--", "answer-in-tables.md"]);
-  git(repo, ["commit", "-q", "-m", "a merge of a run", "-m", "The grader wrote: learning: retired by a person: answer-in-tables.md"]);
-  await resnap(data, "keeper");
-  const restored = await restore("answer-in-tables.md", { ...json, cookie, origin });
-  assert.equal(restored.status, 200, restored.text);
-  assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via/, "no person's retire of a held note: no approval recorded");
-});
-
 test("a retired draft whose workflow.json the learning checker refuses is not restored: it stays retired, nothing committed", { timeout: 150_000 }, async (t) => {
   const BAD = JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object", properties: { total: { type: "number" } } } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: "Sum.", out: "Out", as: "out", tools: ["web_fetch"] } });
   const README = "---\nname: price-report\ndescription: Sums the three shop prices; use for the morning report\nstatus: retired\n---\n";
@@ -273,7 +248,7 @@ test("a retired draft whose workflow.json the learning checker refuses is not re
 test("a note an approval or a restore supersedes says it was superseded, not approved or restored; the approved or restored note says its own action", { timeout: 150_000 }, async (t) => {
   const OLD = note("Answer in lists", "The user wants answers as lists", "Answer every question as a list.\n");
   const NEW = (status) => note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", `supersedes: [answer-in-lists.md]\nstatus: ${status}\n`);
-  for (const [action, status] of [["approve", "pending"], ["restore", "retired"]]) {
+  for (const [action, status] of [["approve", "pending"], ["restore", "retired\nretired_from: active"]]) {
     await t.test(action, async (t) => {
       const { api, port, cookie, origin, etag } = await keeper(t, { "answer-in-lists.md": OLD, "answer-in-tables.md": NEW(status) });
       const res = await call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/answer-in-tables.md/${action}`, headers: { ...json, cookie, origin, "if-match": await etag("answer-in-tables.md") }, body: {} });

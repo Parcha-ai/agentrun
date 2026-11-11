@@ -87,7 +87,7 @@ test("a pending note waits for its owner: it parses, holds its origin, and is in
   assert.equal(approved, "---\nname: Buy from PaperDepot first\ndescription: Prices\ntype: user\norigin: you\n---\nThe body.\n");
   assert.equal(format.parseNoteFile("paperdepot.md", approved).status, "active");
   assert.equal(format.buildIndex([format.parseNoteFile("paperdepot.md", approved)]), "- [Buy from PaperDepot first](paperdepot.md) — Prices\n");
-  assert.equal(format.retire(asked), "---\nname: Buy from PaperDepot first\ndescription: Prices\ntype: user\norigin: you\nstatus: retired\n---\nThe body.\n", "a pending note can be retired");
+  assert.equal(format.retire(asked, "pending"), "---\nname: Buy from PaperDepot first\ndescription: Prices\ntype: user\norigin: you\nstatus: retired\nretired_from: pending\n---\nThe body.\n", "a pending note can be retired, and its retire records it waited");
   assert.equal(format.mergedNote(REFUND, { origin: "run" }), REFUND, "a note the run worked out carries no origin line: absent reads as run");
   assert.equal(format.mergedNote(note("name: T\ndescription: d\ntype: user\norigin: run"), { origin: "you", pending: true }), "---\nname: T\ndescription: d\ntype: user\norigin: you\nstatus: pending\n---\nThe body.\n", "the host's own lines, in place of any");
   assert.equal(format.mergedNote(note("name: T\ndescription: d\ntype: user\norigin: you"), { origin: "run" }), note("name: T\ndescription: d\ntype: user"));

@@ -16,8 +16,8 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
-import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, restore, restoredLearned, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
+import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
@@ -38,7 +38,7 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
-type Retired = { at: string; by: "person" | "run" };
+type Retired = { at: string; by: "person" | "run"; from: "active" | "pending" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
 type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
@@ -98,7 +98,9 @@ async function reading<T>(data: string, agentId: string, read: (folder: { ws: Wo
 
 /** A retired item's `retired`: its newest retire by a person; else, one a person made retired another way (an edit to
  *  status: retired, or created so), their newest change; else (retired by none of theirs) its newest change's time. */
-const retiredOf = (history: SnapHistory): Retired => (history.retire ? { at: history.retire.at, by: "person" } : history.person ? { at: history.person.at, by: "person" } : { at: history.at, by: "run" });
+/** `from`: the status its restore gives back (its retire recorded it, retired_from; none recorded reads pending, as its
+ *  restore gives it: only an approval makes an item active). */
+const retiredOf = (history: SnapHistory, from: "active" | "pending" | undefined): Retired => ({ ...(history.retire ? { at: history.retire.at, by: "person" as const } : history.person ? { at: history.person.at, by: "person" as const } : { at: history.at, by: "run" as const }), from: from ?? "pending" });
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows; its last
@@ -106,7 +108,7 @@ const retiredOf = (history: SnapHistory): Retired => (history.retire ? { at: his
 const noteView = (note: SnapNote, text: string, shown: Shown, runs: NoteRuns): NoteView => ({
   file: shown.name(note.file), name: shown.text(note.name), description: shown.text(note.description), type: note.type, status: note.status, origin: note.origin, superseded_by: note.superseded_by === null ? null : shown.name(note.superseded_by), text: shown.text(text), etag: etagOf(note.oid), runs: { ...(runs.get(note.file) ?? { given: 0, read: 0 }) },
   ...(note.history.last ? { last_change: note.history.last } : {}),
-  ...(note.status === "retired" ? { retired: retiredOf(note.history) } : {}),
+  ...(note.status === "retired" ? { retired: retiredOf(note.history, note.retired_from) } : {}),
 });
 
 /** A skill or a workflow draft as the view lists it: its folder's name, its file (a skill's SKILL.md, a draft's
@@ -120,7 +122,7 @@ function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown
   return {
     name: shown.name(item.name), file: shown.name(file), ...(kind === "workflow" ? { readme: shown.name(item.file) } : {}), description: shown.text(item.description), status: item.status, run: item.run, bytes, etag: etagOf(item.oid),
     ...(item.history.last ? { last_change: item.history.last } : {}),
-    ...(item.status === "retired" ? { retired: retiredOf(item.history) } : {}),
+    ...(item.status === "retired" ? { retired: retiredOf(item.history, item.retired_from) } : {}),
   };
 }
 
@@ -384,11 +386,18 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         }
         let text = given;
         // A note that waits for its owner's OK is made active by an approval alone: an edit keeps it waiting, so one that
-        // drops or changes its status is refused, whoever sends it.
+        // drops or changes its status is refused, whoever sends it. A retired note comes back by its restore alone, to the
+        // status its retire recorded: an edit keeps it retired and keeps that record (retired_from) as it is.
         if (given !== undefined && current) {
           const was = parseNoteFile(file, current.text);
           const now = parseNoteFile(file, given);
           if (!Array.isArray(was) && was.status === "pending" && !Array.isArray(now) && now.status !== "pending") throw refused([printable({ rule: "status", path: file, detail: "it waits for its owner's OK: an edit keeps status: pending, only an approval makes it active, and a retire takes it out" }, input.refuse)]);
+          if (!Array.isArray(was) && was.status === "retired" && !Array.isArray(now)) {
+            const kept = was.retired_from ?? "pending";
+            if (now.status !== "retired" || (now.keys.includes("retired_from") && now.retired_from !== kept)) throw refused([printable({ rule: "status", path: file, detail: `it is retired: an edit keeps status: retired and retired_from: ${kept}, and only its restore brings it back, as it was before its retire` }, input.refuse)]);
+            // What its retire recorded is the host's: the edit carries it, written or not.
+            text = retire(given, kept);
+          }
         }
         // Beside the note itself: what an approve marks of the notes the approved one supersedes.
         const also = new Map<string, string>();
@@ -397,19 +406,17 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const mark = async (superseded: readonly string[]) => {
           for (const old of superseded) if (notes.get(old)?.status === "active") also.set(old, supersede(await body(old, noteOid(old)), file));
         };
-        let heldBefore = false;
         if (input.restore) {
-          // Restored, a retired note, skill or draft is active again: given to every later run. It is checked again as a
-          // new one is (secrets' shapes, the host's values, hidden characters, its format, every file of a skill's or a
-          // draft's folder): a retire takes a leaking one out of every run unchecked, and a restore never brings it back.
-          // One that waited for its owner's OK before its retire is recorded as their approval too (Approved-Via).
-          const before = await beforeRetire(ws, main!, file);
-          heldBefore = before !== undefined && (learned ? learnedStatus(before) === "pending" : ((note) => !Array.isArray(note) && note.status === "pending")(parseNoteFile(file, before)));
+          // Restored, a retired note, skill or draft goes back to the status its retire recorded (retired_from): active, so
+          // given to every later run, or waiting for its owner's OK again, so a retire and a restore never skip that OK
+          // (a retire that recorded none restores it waiting). It is checked again as a new one is (secrets' shapes, the
+          // host's values, hidden characters, its format, every file of a skill's or a draft's folder): a retire takes a
+          // leaking one out of every run unchecked, and a restore never brings it back. A restore is never an approval.
           if (learned) {
             const status = learnedStatus(current!.text);
             const kind = learned.kind === "skill" ? "skill" : "workflow";
             if (status !== "retired") throw new ApiError("bad_request", `The ${kind} is not retired: it is ${status}.`);
-            text = released(current!.text);
+            text = restoredLearned(current!.text);
             const problems = skillProblems(text, learned.name).map((detail) => printable({ rule: kind, path: file, detail }, input.refuse));
             const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
             if (extra.length) problems.push(printable({ rule: "skill_front_matter", path: file, detail: `its front matter sets ${extra.join(", ")}: a learned ${kind} sets name and description alone` }, input.refuse));
@@ -430,11 +437,12 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             const note = parseNoteFile(file, current!.text);
             if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
             if (note.status !== "retired") throw new ApiError("bad_request", `The note is not retired: it is ${note.status}.`);
-            text = approve(current!.text);
+            text = restore(current!.text, note);
             const { problems } = checkNote(file, Buffer.from(text, "utf8"), input.refuse);
             if (problems.length) throw refused(problems);
-            // What it supersedes, and is active still, is superseded now, as an approval marks it.
-            await mark(note.supersedes);
+            // Back active, what it supersedes, and is active still, is superseded now, as an approval marks it; back
+            // waiting, it supersedes nothing until it is approved.
+            if (note.retired_from === "active") await mark(note.supersedes);
           }
         } else if (text === undefined && learned && !input.approve) {
           // Retired, as a note is: no later run is given it. One already retired is answered as it is; nothing else in
@@ -461,7 +469,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           // A retire is how a person takes a note out of every later run's prompt, a leaking one above all, so it always
           // can: only the note's format is checked as retired (its front matter parses, and it fits the note cap with the
           // status line added), never a secret in its name or text. Every answer cuts those as any read does.
-          text = retire(current!.text);
+          text = retire(current!.text, note.status === "pending" ? "pending" : "active");
           const retired = parseNoteFile(file, text);
           if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
           const size = Buffer.byteLength(text);
@@ -474,7 +482,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const kind: PersonKind = input.approve ? "approved" : input.restore ? "restored" : given === undefined ? "retired" : current ? "edited" : "created";
         const change: FolderChange = {
           // Who approved, and how, in the trailers; the commit's own date is when. Never the note's text.
-          by: { person: kind, file, approved: Boolean(input.approve || heldBefore) },
+          by: { person: kind, file, approved: Boolean(input.approve) },
           writes: [{ path: file, text: text! }, { path: INDEX_FILE, text: buildIndex(after) }, ...[...also].map(([path, marked]) => ({ path, text: marked }))],
           // A create takes a name main holds nothing by, as git holds it: a file the notes leave out included.
           ...(current ? {} : { absent: [file] }),

@@ -864,7 +864,7 @@ describe("the Learning tab's skills and workflows", () => {
     it("one the server lists retired has no Retire and no Approve, is not counted, and says who retired it and when", async () => {
       const v = learned({ skill: "retired", workflow: "retired" });
       v.skills = [...v.skills!, { name: "read-receipts", file: "skills/read-receipts/SKILL.md", description: "Read a receipt", status: "pending", run: "run-b", bytes: 40, etag: '"rr-v1"' }];
-      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "person" as const } } : x));
+      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "person" as const, from: "active" as const } } : x));
       const t = await open(agent(true), { learning: async () => v, read: reads, caps: { learning: { pending: true, approve: true } } });
       const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
       expect(skills.textContent).toContain("1 skill: how to do a job it does again");
@@ -997,7 +997,7 @@ describe("text in angle brackets in what it learned", () => {
 // who retired it when. Nothing to edit or retire on it: no later run reads it.
 describe("the Learning tab's retired notes and skills, opened", () => {
   const retiredView = () => view({
-    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: "2026-11-04T09:10:00Z", by: "person" } })], total: 2, next_cursor: null },
+    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: "2026-11-04T09:10:00Z", by: "person", from: "active" } })], total: 2, next_cursor: null },
     log: { items: [
       { by: { user: true }, commit: "c4", at: "2026-11-04T09:10:00Z", reason: "retired by a person", files: [MINE, "MEMORY.md"] },
       { by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "Short answers read better.", files: [MINE, FIRST, "MEMORY.md"] },
@@ -1106,7 +1106,7 @@ describe("the Learning tab's words for the newest change", () => {
   });
   it("names who retired one from the served retired field: you, or a run", async () => {
     const v = view();
-    v.notes.items = [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: AT, by: "person" } }), note(OLD, "Shopify refund policy path", { status: "retired", retired: { at: AT, by: "run" } })];
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: AT, by: "person", from: "active" } }), note(OLD, "Shopify refund policy path", { status: "retired", retired: { at: AT, by: "run", from: "active" } })];
     const t = await open(agent(true), { learning: async () => v });
     await t.click(/^Earlier notes/);
     const earlier = t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent ?? "";
@@ -1118,9 +1118,9 @@ describe("the Learning tab's words for the newest change", () => {
 // A retired note, skill or draft can be restored: after a confirm, on the version its card shows (If-Match), then the tab
 // reads it again. A refusal says why in plain words, and it stays retired.
 describe("restoring a retired note, skill or draft", () => {
-  const retiredView = () => {
+  const retiredView = (from: "active" | "pending" = "active") => {
     const v = view();
-    v.notes.items = [note(FIRST, "Try /policies/refund-policy first", { etag: '"v-first"' }), note(MINE, "Keep it to three lines", { status: "retired", etag: '"v-mine"' })];
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first", { etag: '"v-first"' }), note(MINE, "Keep it to three lines", { status: "retired", etag: '"v-mine"', retired: { at: "2026-11-04T09:10:00Z", by: "person", from } })];
     return v;
   };
   const restoreOf = async (t: Awaited<ReturnType<typeof open>>) => {
@@ -1139,6 +1139,14 @@ describe("restoring a retired note, skill or draft", () => {
     await t.click(/^Yes, restore$/);
     expect(t.calls).toContain(`restore ${MINE} "v-mine"`);
     expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a note that waited for your OK before its retire says it goes back to waiting, never that it becomes active", async () => {
+    const t = await open(agent(true), { learning: async () => retiredView("pending") });
+    await restoreOf(t);
+    const ask = t.host.querySelector('[role="alertdialog"]')?.textContent ?? "";
+    expect(ask).toContain("It goes back to waiting for your OK: no run uses it until you approve it.");
+    expect(ask).not.toContain("active again");
   });
 
   it("a version changed since says so and reads the tab again", async () => {

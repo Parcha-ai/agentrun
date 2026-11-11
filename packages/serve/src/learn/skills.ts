@@ -128,13 +128,25 @@ export function held(text: string): string {
 }
 
 /** `text`, a held SKILL.md or draft README.md, as the host leaves it when its owner approves it: its front matter with
- *  no `status` line, so it is given to every later run. Throws on a text with no front matter. */
+ *  no `status` or `retired_from` line, so it is given to every later run. Throws on a text with no front matter. */
 export function released(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
   return `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
 }
+
+/** The status a retired SKILL.md or draft README.md goes back to when a person restores it (`retired_from`, which its
+ *  retire recorded): `active` only when it was active; `pending` otherwise, a retire that recorded none among them (fail
+ *  closed: only an approval makes a skill or a draft active). */
+export function retiredFrom(text: string): "active" | "pending" {
+  const front = frontOf(text);
+  return typeof front !== "string" && front.value("retired_from") === "active" ? "active" : "pending";
+}
+
+/** `text`, a retired SKILL.md or draft README.md, as the host leaves it when a person restores it: back in the status its
+ *  retire recorded (retiredFrom), active, or waiting for its owner's OK. Throws on a text with no front matter. */
+export const restoredLearned = (text: string): string => (retiredFrom(text) === "active" ? released(text) : held(released(text)));
 
 /** What a SKILL.md or a draft's README.md says of itself: `pending` while it waits for its owner's OK, `retired` once a
  *  person retired it, else `active`. A run is given only an active one. */
@@ -144,13 +156,16 @@ export function learnedStatus(text: string): "active" | "pending" | "retired" {
   return status === "pending" ? "pending" : status === "retired" ? "retired" : "active";
 }
 
-/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter
- *  (any status line before it dropped), so no later run is given it. Throws on a text with no front matter. */
+/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` and `retired_from`, the
+ *  status it had (active, or pending while it waited for its owner's OK), last in its front matter (any such lines before
+ *  them dropped), so no later run is given it and its restore gives that status back. Throws on a text with no front
+ *  matter. */
 export function retiredLearned(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be retired: ${front}`);
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
-  return `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
+  const from = learnedStatus(text) === "pending" ? "pending" : "active";
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
+  return `---\n${[...kept, "status: retired", `retired_from: ${from}`].join("\n")}${front.lf.slice(front.end)}`;
 }
 
 /** A draft's `README.md` as the host writes it, from the workflow's name and the one-line description its block gives. */
