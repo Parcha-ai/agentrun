@@ -6,7 +6,7 @@
 // committed on the agent's main.
 import assert from "node:assert/strict";
 import { copyFile, readdir, readFile } from "node:fs/promises";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -98,7 +98,21 @@ async function ranWithSkill(api, data, id, harness, content) {
 }
 
 test("a codex run gets the skill its agent learned as Codex's own: seeded in its session's CODEX_HOME/skills, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: noSetpriv }, async (t) => {
-  const gw = await gateway(t, () => said("Codex answered."));
+  // Codex's home is the claim's (swept with the run's scratch at its end), so it is read while the run is live: each
+  // model request keeps a copy of the run's CODEX_HOME as it is then, and the last one is read once the run has ended.
+  let data;
+  const kept = [];
+  const counts = [];
+  const gw = await gateway(t, () => {
+    const homes = data ? codexHomes(data) : [];
+    counts.push(homes.length);
+    for (const home of homes) {
+      const copy = join(dir, "kept", String(kept.length), "codex-home");
+      cpSync(home, copy, { recursive: true });
+      kept.push(copy);
+    }
+    return said("Codex answered.");
+  });
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyStandIn(standIn);
@@ -110,12 +124,17 @@ test("a codex run gets the skill its agent learned as Codex's own: seeded in its
     AGENT_MODEL_API_KEY: GATEWAY_KEY,
     AGENT_MODEL_PRICE: "1,2,0.5",
   });
-  const { api, data } = await serve(t, { faux: undefined });
+  const served = await serve(t, { faux: undefined });
+  const { api } = served;
+  data = served.data;
   const { runId, rows } = await ranWithSkill(api, data, "codex-skilled", "codex", `call read_skill_file ${JSON.stringify(READ)}`);
-  // The run's CODEX_HOME, where the runner lends its session a directory: one, under the data directory.
-  const homes = codexHomes(data);
-  assert.equal(homes.length, 1, `one CODEX_HOME for the run ${runId}: ${JSON.stringify(homes)}`);
-  const home = homes[0];
+  // The run's CODEX_HOME, where the runner lends its session a directory: one, under the data directory, while the run
+  // was live (its last model request's copy, after the read), and none once its claim has ended.
+  assert.ok(counts.length >= 1 && counts.every((count) => count === 1), `one CODEX_HOME for the run ${runId} at each of its model requests: ${JSON.stringify(counts)}`);
+  // The claim's release follows the run's end, so it is waited for.
+  for (const by = Date.now() + 15_000; codexHomes(data).length && Date.now() < by; ) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(codexHomes(data), [], "none left once the run's claim has ended");
+  const home = kept.at(-1);
   assert.equal(existsSync(join(home, "skills", NAME, "SKILL.md")) ? readFileSync(join(home, "skills", NAME, "SKILL.md"), "utf8") : null, servedSkill(SKILL), "Codex finds the learned skill, as servedSkill writes it, where it lists a user's skills");
   const sessions = join(home, "sessions");
   const rollouts = (await readdir(sessions, { recursive: true })).filter((path) => path.endsWith(".jsonl"));

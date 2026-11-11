@@ -19,13 +19,12 @@
 // The snapshot's shape is SNAPSHOT.md's, v1: what the learning routes and a run's seed read.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   isWorkspaceError, type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace,
   learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
 } from "../workspace/index.js";
 import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { learnedFront, learnedName, learnedPlace, learnedStatus, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
+import { learnedFront, learnedName, learnedStatus, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
 /** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never a note's, never seeded. */
 export const HOST_DIR = ".agentrun";
