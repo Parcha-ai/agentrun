@@ -135,8 +135,8 @@ export interface WorkspaceFiles {
 
 /** A site use_website can open: configuration, never model input. */
 export type SiteInfo = { site: string; title: string; description: string };
-/** Runs one child agent that has the browser tools and no use_website, and answers its final text. The adapter supplies
- *  it: a pi session for the coding agent, a task-owned conversation for pi-durable. */
+/** Runs one child agent that has the browser tools and no use_website, and answers its final text. The durable adapter
+ *  supplies it: a task-owned conversation. */
 export type ChildRunner = (task: { site: string; requestId: string; prompt: string }, signal: AbortSignal) => Promise<string>;
 /** Runs a granted site's task and reports it, idempotent by `requestId`: exactly one of `run` (a task started elsewhere)
  *  or `report` (the result). A port that runs the child itself uses `ctx.runChild`; a broker ignores it. */

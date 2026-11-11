@@ -17,6 +17,9 @@
     "status": "completed",
     "state": "idle",
     "title": "Acme Outdoor Supply",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:41.636Z",
     "updated_at": "2026-10-28T21:19:54.561Z",
     "ended_at": "2026-10-28T19:33:45.460Z",

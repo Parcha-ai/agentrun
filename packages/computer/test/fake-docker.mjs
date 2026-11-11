@@ -2,7 +2,7 @@
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info, image inspect, pull and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -213,7 +213,14 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(
 		program,
 		`#!${process.execPath}
-const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+// Each state file is written whole to a file of this process's beside it, then renamed over it: a docker call reading it
+// meanwhile (another of this fake's processes) reads the old file or the new one, never a half-written one.
+const replace = (file, text) => {
+	const next = file + "." + process.pid + ".next";
+	writeFileSync(next, text);
+	renameSync(next, file);
+};
 const { createHash } = require("node:crypto");
 const config = ${config};
 const report = ${report.toString()};
@@ -221,12 +228,12 @@ const proxyReport = ${proxyReport.toString()};
 const args = process.argv.slice(2);
 appendFileSync(config.log, JSON.stringify(args) + "\\n");
 const load = () => JSON.parse(readFileSync(config.state, "utf8"));
-const save = (all) => writeFileSync(config.state, JSON.stringify(all));
+const save = (all) => replace(config.state, JSON.stringify(all));
 const loadVolumes = () => JSON.parse(readFileSync(config.volumeState, "utf8"));
-const saveVolumes = (all) => writeFileSync(config.volumeState, JSON.stringify(all));
+const saveVolumes = (all) => replace(config.volumeState, JSON.stringify(all));
 // The images on the host, or null when every image is.
 const loadImages = () => JSON.parse(readFileSync(config.imageState, "utf8"));
-const saveImages = (all) => writeFileSync(config.imageState, JSON.stringify(all));
+const saveImages = (all) => replace(config.imageState, JSON.stringify(all));
 // A container docker run made: saved and its id printed, or, for config.lateRun's kind, a CLI that never answers while
 // the daemon (a detached process here) still makes the container after the CLI is killed: once the cleanup that follows
 // has gone quiet (no docker call for 150 ms), so it lands after the provider's first removal looked and found nothing.
@@ -243,7 +250,7 @@ const commit = (made, kind) => {
 		"const alive = () => { try { process.kill(parent, 0); return true; } catch { return false; } };" +
 		"let size = -1; let since = Date.now();" +
 		"const wait = setInterval(() => { if (alive()) return; const now = fs.statSync(log).size; if (now !== size) { size = now; since = Date.now(); return; } if (Date.now() - since < 150) return;" +
-		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state, JSON.stringify(all)); fs.writeFileSync(dir + '/late-committed', made.Name); }, 20);";
+		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state + '.' + process.pid + '.next', JSON.stringify(all)); fs.renameSync(state + '.' + process.pid + '.next', state); fs.writeFileSync(dir + '/late-committed', made.Name); }, 20);";
 	require("node:child_process").spawn(process.execPath, ["-e", daemon], { detached: true, stdio: "ignore" }).unref();
 	setInterval(() => {}, 1000);
 };
@@ -463,7 +470,8 @@ switch (args[0]) {
 	const alter = (name, change) => {
 		const all = JSON.parse(readFileSync(state, "utf8"));
 		change(all.find((c) => c.Name === `/${name}`));
-		writeFileSync(state, JSON.stringify(all));
+		writeFileSync(`${state}.next`, JSON.stringify(all));
+		renameSync(`${state}.next`, state);
 	};
 	// The host the provider looks at for a container's signs is a clean fake root, so these tests run the same inside a
 	// container; egressOptions.hostRoot replaces it.
