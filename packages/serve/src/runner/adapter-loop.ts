@@ -1142,9 +1142,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           return answer;
         };
+        // A paid call's refusal is the call's result first: its pause is journaled at the model's next request (beforeRequest,
+        // pendingPause), once the harness has stored that result, so the run never reads waiting on a raise before its
+        // Timeline says why. A claim lost in between resumes the turn, and the cap refuses the call again.
         pauseFor = async (refusal) => {
           pendingPause = refusal;
-          await pauseAt(refusal);
         };
         async function pauseAt(answer: Refusal): Promise<void> {
           {

@@ -1,7 +1,8 @@
 // A paid call of the agent's own (a web search, a priced MCP call) that the run's cap refuses for room pauses the run as
 // main does (cap.ts paidCall, pauses by default: the run's next request is refused in the cap's words): on the runner's one
-// ledger the step's refusal goes to the adapter loop's pause (RunLedger.pause, through the call's Ledger), which journals
-// it at once and parks the run at its next request with the cap's figures; nothing is sent or booked. A person's
+// ledger the step's refusal goes to the adapter loop's pause (RunLedger.pause, through the call's Ledger), which holds it
+// until the call's result is stored and parks the run at its next request with the cap's figures; nothing is sent or
+// booked. A person's
 // take-over never pauses (adapter-ask-pause.test.mjs).
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -67,6 +68,41 @@ test("a paid web search the run's cap has no room for parks the run at its next 
   const run = await paidRun(t, 0.0005, search);
   assertParked(run, 0.0005, 0.001, /could cost up to \$0\.001/);
   assert.equal(reached, 0, "the search was never sent");
+});
+
+test("a refused paid call parks the run only once its result is stored: while the harness holds the refusal, the run is not parked and has no pause", async (t) => {
+  // The call's refusal held in the tool, its result not stored yet: what a person polling the run reads meanwhile.
+  let answeredNow;
+  const answeredYet = new Promise((resolve) => (answeredNow = resolve));
+  let go;
+  const going = new Promise((resolve) => (go = resolve));
+  const search = async () => {
+    try {
+      await paidRequest(parallelSearchFee(10), async () => new Response("{}", { status: 200 }));
+      return "searched";
+    } catch (error) {
+      answeredNow();
+      await going;
+      return String(error?.message ?? error);
+    }
+  };
+  let during;
+  const answered = [];
+  const script = [{ call: "pay" }, { say: "done" }];
+  const specOf = (sent) => async (claim, run) => piAdapterSpec({ script, tools: { pay: { name: "pay", replaySafe: false, run: async () => { const text = await search(); answered.push(text); return text; } } }, hooks: quiet }, { fetch: scriptedOrigin(script, sent) })(claim, run);
+  const runCap = { capUsd: 0.0005, park: (refusal) => cap.parkOf(refusal, 0.0005), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  const run = await capRun(t, {
+    script, specOf, cap: runCap, runCap: { capUsd: () => 0.0005, modelOf: () => FREE },
+    during: async (server) => {
+      await answeredYet;
+      during = { state: (await server.runs.get("run-1")).state, budgets: (await rootEntries(server, "agentrun.budget")).length };
+      go();
+    },
+  });
+  assert.deepEqual(during, { state: "running", budgets: 0 }, "refused, its result not stored yet: the run is still running, with no pause");
+  assert.equal(run.row.state, "parked", "then parked, at the model's next request");
+  assert.equal((await rootEntries(run.server, "agentrun.budget")).length, 1, "with one pause");
+  assert.match(answered[0] ?? "", /could cost up to \$0\.001/);
 });
 
 test("a priced MCP call the run's cap has no room for parks the run at its next request with the cap's figures, nothing sent", async (t) => {
