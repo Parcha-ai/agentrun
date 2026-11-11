@@ -5,7 +5,7 @@
 // model's code would run in the host's process. The snapshot and the actions are Browser Use Pi's (vendor/browser-use-pi,
 // MIT).
 //
-// The commands it sends: Target (to find or open its tab), Page (enable, navigate, frame tree, screenshot, layout,
+// The commands it sends: Target (to find, open or follow its tab), Page (enable, navigate, frame tree, screenshot, layout,
 // dialogs), Runtime (enable, evaluate and callFunctionOn of this file's and ax.ts's own functions, releaseObject),
 // Accessibility (the trees), DOM (resolveNode, scrollIntoViewIfNeeded, focus, getNodeForLocation, getBoxModel), Input
 // (mouse and key events, insertText) and Network.enable (to wait for a page to settle). A host that fences the DevTools
