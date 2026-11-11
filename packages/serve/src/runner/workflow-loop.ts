@@ -86,6 +86,12 @@ export interface WorkflowRunSpec {
    *  once, however the run ended (ended, stopped, failed, parked or interrupted), so a parked or resumed run starts fresh
    *  proxies on its next claim. Never throws out. Absent: nothing to let go. */
   readonly release?: () => Promise<void>;
+  /** Resolves once every model request the spec admitted has been booked, or a bound has passed (then a request left
+   *  unbooked reads at its hold and bound). A request its node let go of (a stop) is booked only once the provider's side
+   *  ends, which can be after the node ended: once the workflow's task is over, the loop waits for this before it closes
+   *  the Harness the bookings are written through. Not on a park or a lost claim: the next claim books a request left
+   *  open there as cut. Absent: nothing to wait for. */
+  readonly settle?: () => Promise<void>;
 }
 
 /** What the interpreter's host may ask of the loop while it runs. */
@@ -345,8 +351,10 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
       return { state: "interrupted" };
     }
 
-    // The task is terminal. Close the Harness, then read the run's view from its journal and write the end, both on a
-    // fresh journal of the same claim (the Harness closed its own).
+    // The task is terminal. Its model requests booked (a stopped one books once its provider's side ends, after the node
+    // let go of it), close the Harness, then read the run's view from its journal and write the end, both on a fresh
+    // journal of the same claim (the Harness closed its own).
+    await spec.settle?.().catch(() => undefined);
     await closeHarness();
     const endJournal = deps.journal(claim);
     // A person stopped or cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have
