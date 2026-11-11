@@ -1,5 +1,5 @@
 import { Plug } from "lucide-react";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -27,13 +27,12 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
 export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
-  const [unreadable, setUnreadable] = useState(false);
   const [loadError, setLoadError] = useState<Problem | null>(null);
   const [form, setForm] = useState<{ saved?: McpServer } | null>(null);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
-    v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setUnreadable(!!r.file_unreadable); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
+    v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The outcome is said once: a reload of the page does not say it again.
@@ -56,7 +55,6 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
           </p>
         )}
         {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-        {unreadable && <Warning>The file this server keeps its MCP servers in can't be read: restore it or remove it. Nothing is written over it.</Warning>}
         {loadError && (
           <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
             <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
@@ -73,9 +71,6 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
   );
 }
 
-const Warning = ({ children }: { children: ReactNode }) => (
-  <Banner tone="warning" role="alert">{children}</Banner>
-);
 const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
