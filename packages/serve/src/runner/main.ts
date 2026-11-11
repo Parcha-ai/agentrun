@@ -411,7 +411,7 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
     console.error(`agentrun-serve runner: ${(error as Error)?.message ?? String(error)}`);
     return error instanceof RunnerRefused && error.cause instanceof SchemaVersionUnknown ? 3 : 1;
   }
-  await hooks.started?.();
+  await hooks.started?.(started);
   // From here the handlers below take the stop, with nothing awaited between: no signal falls in a gap.
   unlisten();
   if (asked) {
@@ -429,4 +429,4 @@ const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 
 /** A test's hooks into runnerMain: `started`, awaited once the runner has started claiming and before its stop handlers
  *  take over from the ones its start listened on (the window a stop must not fall through). */
-export type RunnerMainHooks = { readonly started?: () => void | Promise<void> };
+export type RunnerMainHooks = { readonly started?: (process: RunnerProcess) => void | Promise<void> };
