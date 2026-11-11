@@ -11,4 +11,4 @@ export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./pa
 export type { LaunchCommand, ParentWatch } from "./parent-death.js";
 export { BoxError } from "./box.js";
 export type { BoxErrorCode, BoxRecord, BoxRecorder, Reaped } from "./box.js";
-export { checkedOnce, sha256OfFile } from "./pinned-binary.js";
+export { type BinaryCheck, type BinaryProbe, checkedOnce, checkedOnceAsync, sha256OfFile, sha256OfFileAsync } from "./pinned-binary.js";

@@ -45,6 +45,15 @@ test("box_allow round-trips the 'none' sentinel as well as a list", () => {
   assert.equal(read.boxAllow, "none");
 });
 
+test("box_allow_set round-trips the operator's marker, and a launch without it reads as the default's", () => {
+  const set = { input: {}, title: "", place: { mode: "runner" }, boxAllow: ["api.example.com"], boxAllowSet: true };
+  assert.equal(launchBody(set).box_allow_set, true);
+  assert.deepEqual(readLaunchBody(launchBody(set)), set);
+  const unset = readLaunchBody(launchBody({ input: {}, title: "", place: { mode: "runner" }, boxAllow: ["pypi.org"] }));
+  assert.equal(unset.boxAllowSet, undefined);
+  assert.equal(readLaunchBody({ place: { mode: "runner" }, box_allow: ["pypi.org"], box_allow_set: "yes" }).boxAllowSet, undefined, "only true marks it");
+});
+
 test("a built-in learning run's launch body reads without loss", () => {
   // The runner writes this exact body for a learning run; the factory picks by its harness.
   const body = { harness: "learning", input: { runId: "run-1" }, title: "Learn from run-1", place: { mode: "runner" } };

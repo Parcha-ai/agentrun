@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "../agent-rows.js";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
@@ -44,7 +44,7 @@ import { PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
-import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type BudgetData, type EndData, KINDS, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
@@ -57,7 +57,7 @@ import type { Store } from "../store/store.js";
 export const SUBMIT_TOOL = "submit";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
-const SESSION = "workflow";
+const SESSION = WORKFLOW_SESSION;
 /** A call node's tool failure and a cap-held effect, as app.ts's runEffect completed them (the loop's `failing` reads them). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
 const CAP_HELD = "agentrun_serve_cap_held";
@@ -293,13 +293,12 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const callEnv = callEnvOf(claimedEnv, claimed);
     const installed: Extension[] = [];
     const nodeHost: ToolHost = {
-      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } },
       env: callEnv,
       install: (extension) => void installed.push(extension),
       onConversation: () => {},
       beforeResume: () => {},
       beforeRelease: () => {},
-      handoverInJournal: true,
     };
     const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
     // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an
@@ -830,14 +829,37 @@ function nodeToolGate(names: readonly string[], policy: CallPolicy): Extension {
     name: "tool-gate",
     wraps: [...names].map((name) => wrapTool({ name } as ToolRegistration, (inner: ToolRegistration) => ({
       ...inner,
-      async execute(args: never, api: never, context: never) {
-        const { permission, denyFrom } = await policy(inner.name);
-        if (permission === "deny") return forModel(deniedText(inner.name, undefined, denyFrom), { isError: true });
-        if (permission === "ask") return forModel(modelNodeAskText(inner.name), { isError: true });
-        return inner.execute(args, api, context);
-      },
+      execute: gatedNodeCall(inner.name, policy, inner.execute as GatedExecute),
     } as ToolRegistration))),
   });
+}
+
+/** A model node's tool call as its pi-durable task runs it: its args, the task's api and the call's context. */
+type GatedExecute = (args: never, api: never, context: never) => Promise<unknown>;
+
+/** The task memo the gate keeps that it let a call through, before the call runs. */
+const LET_THROUGH = "agentrun.gate.let-through";
+/** The slice of a tool task's api the gate reads: its memos, kept with the task across claims (pi-durable's
+ *  ToolExecutionApi.memo). */
+type MemoApi = { memo(name: string, context: Context): Promise<unknown>; memo(name: string, candidate: true, context: Context): Promise<unknown> };
+
+/** `execute` behind the gate, for the tool `name`. A call it lets through is marked so in its task first, so when
+ *  pi-durable's recovery runs the same call again on a later claim (the first attempt cut with its claim, maybe after it
+ *  was sent) and the tool is now denied or set to ask, the refusal says that whether it took effect is not known
+ *  (RAN_UNKNOWN), never that it was not run or that nothing was sent and nothing was charged. */
+export function gatedNodeCall(name: string, policy: CallPolicy, execute: GatedExecute): GatedExecute {
+  return async (args, api, context) => {
+    const task = api as unknown as MemoApi;
+    const { permission, denyFrom } = await policy(name);
+    if (permission !== "allow") {
+      // A call an earlier attempt of which this gate let through may have reached its host: whatever refuses it now, its
+      // effect is not known, never "not run".
+      const ran = (await task.memo(LET_THROUGH, context as unknown as Context)) === true ? "unknown" : "no";
+      return forModel(permission === "deny" ? deniedText(name, undefined, denyFrom, ran) : modelNodeAskText(name, ran), { isError: true });
+    }
+    await task.memo(LET_THROUGH, true, context as unknown as Context);
+    return execute(args, api, context);
+  };
 }
 
 /** `binding`'s tools with each call's paid requests booked on the run's one ledger (Ledger.paid, the paid tool calls on

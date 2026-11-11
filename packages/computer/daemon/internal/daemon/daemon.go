@@ -63,7 +63,9 @@ type Egress struct {
 // ends every process, guards first, and returns 0, which ends the computer. deadline.extend moves the deadline, never
 // past the maximum the provider gave, and is refused once init has decided to end the computer. With a relay, init
 // refuses to start unless it can listen, and every program it starts is told the relay is its HTTP and HTTPS proxy.
-func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, logger *log.Logger) int {
+// fence is how init holds its programs off the computer's network (FenceNetwork, FenceUserNetwork; "" none), which hello
+// reports.
+func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fence string, logger *log.Logger) int {
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
 		logger.Printf("init: cannot become a child subreaper: %v", errno)
 		return 1
@@ -95,7 +97,7 @@ func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, log
 	defer cancel()
 	display := desktop.New(os.Getenv("DISPLAY"))
 	defer display.Close()
-	server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{}), methods.Options{Display: display, Deadline: deadline}), logger)
+	server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{}), methods.Options{Display: display, Deadline: deadline, Fence: fence}), logger)
 	go func() {
 		for {
 			conn, err := listener.Accept()

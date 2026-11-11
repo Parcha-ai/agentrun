@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { EPOCH_LABEL, RUN_LABEL, runLabels as claimLabels } from "../../labels.js";
 import { MOUNT_KINDS, type MountKind, type MountSpec, readBackOf, WORKSPACE } from "../../mount.js";
 import { MAX_OUTPUT_BYTES } from "../../protocol.js";
-import type { ComputerRef } from "../../provider.js";
+import type { ComputerRef, ComputerSpec } from "../../provider.js";
 import type { Case, CaseContext, RunFolder } from "../types.js";
 import { assertIsolated } from "./isolation.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
@@ -47,11 +47,12 @@ function labelsFor(t: CaseContext, folder: RunFolder, epoch: number, name: strin
 	return { ...t.runLabels, ...claimLabels(folder.run ?? ofFolder ?? `mount-${randomBytes(6).toString("hex")}`, epoch), [CASE_LABEL]: name };
 }
 
-/** A computer made with the folder's mount under `epoch`, after check() takes it; and its read-back, checked. */
-async function mounted(t: CaseContext, folder: RunFolder, epoch: number, name: string): Promise<{ ref: ComputerRef; labels: Record<string, string> }> {
+/** A computer made with the folder's mount under `epoch`, and `extra` (a GPU case's gpu), after check() takes it; and its
+ *  read-back, checked. */
+export async function mounted(t: CaseContext, folder: RunFolder, epoch: number, name: string, extra: Partial<ComputerSpec> = {}): Promise<{ ref: ComputerRef; labels: Record<string, string> }> {
 	const asked = folder.mount;
 	const labels = labelsFor(t, folder, epoch, name);
-	const spec = t.spec({ labels, mount: asked });
+	const spec = t.spec({ labels, mount: asked, ...extra });
 	const refusals = t.provider.check(spec);
 	tokenless(t, asked, refusals, "check's refusal of a spec that mounts the run's folder");
 	// A provider that declares the kind but whose host cannot give it (a Docker host that remaps user ids, for a bind)

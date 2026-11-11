@@ -99,7 +99,10 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		release: ["delete"],
 		mount: ["archil"],
 		vendorAgentPorts: [],
+		// A GPU computer is gVisor's (Modal's one GPU runtime), preemptible, and takes no mount yet.
+		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" },
 	});
+	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -148,8 +151,12 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	}
 	for (const workdir of ["work", "/my work", "/w$HOME", "/w\nx", "/w\0"]) assert.deepEqual(refused({ ...SPEC, workdir }), ["workdir"], `workdir ${JSON.stringify(workdir)}`);
 	for (const user of ["alice", "-1", "1000:", "4294967295"]) assert.deepEqual(refused({ ...SPEC, user }), ["user"], `user ${user}`);
-	assert.deepEqual(refused({ ...SPEC, gpu: "A100" }), ["gpu"]);
-	assert.match(words({ ...SPEC, gpu: "A100" }, "gpu"), /gVisor/);
+	// A GPU is { type, count }: a type Modal offers, a count from 1 to 8.
+	for (const gpu of ["A100", { type: "A100" }, { type: "V100", count: 1 }, { type: "H100!", count: 1 }, { type: "T4", count: 0 }, { type: "T4", count: 9 }, { type: "T4", count: 1.5 }]) {
+		assert.deepEqual(refused({ ...SPEC, gpu }), ["gpu"], `gpu ${JSON.stringify(gpu)}`);
+	}
+	assert.match(words({ ...SPEC, gpu: { type: "V100", count: 1 } }, "gpu"), /not one this provider offers: T4, L4/);
+	assert.match(words({ ...SPEC, gpu: { type: "T4", count: 9 } }, "gpu"), /from 1 to 8/);
 	assert.deepEqual(refused({ ...SPEC, region: "us-east-1" }), ["region"]);
 	assert.deepEqual(fake.calls, [], "check made no SDK call");
 });
@@ -202,6 +209,60 @@ test("create: one VM sandbox with the daemon as its command, its tags, the drift
 	assert.equal(fake.stdinClosed, 1, "the drift check's connection was closed");
 	assert.equal(made.running, true);
 	assert.equal(made.terminated, 0);
+});
+
+test("create of a GPU computer: Modal's GPU option on its gVisor runtime, recorded in the spec tag, read back by attach; a VM's kernel on it is drift", async () => {
+	const gpu = { type: "A100-80GB", count: 2 };
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.check({ ...SPEC, gpu }), []);
+	const created = await provider.create({ ...SPEC, gpu });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const params = createdParams(fake);
+	assert.equal(params.runtime, "gvisor", "Modal offers GPUs on gVisor only");
+	assert.equal(params.gpu, "A100-80GB:2", "the SDK's gpu: the type, then :count");
+	const recorded = JSON.parse(params.tags[SPEC_TAG]);
+	assert.deepEqual([recorded.runtime, recorded.gpu], ["gvisor", gpu], "the spec tag records the runtime and the GPUs");
+	assert.equal(params.command.at(-1), "--own-network", "one flag on every runtime: init picks how it makes the fence");
+	// gVisor's init made the fence inside a user namespace: hello read it back, and create says so in a note.
+	assert.ok(created.value.notes?.some((note) => note.startsWith("fence: userns-netns")), JSON.stringify(created.value.notes));
+	const attached = await provider.attach({ id: created.value.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reads back the GPUs create recorded");
+	// One GPU is the type alone, as Modal takes it.
+	const one = setup();
+	assert.equal((await one.provider.create({ ...SPEC, gpu: { type: "T4", count: 1 } })).ok, true);
+	assert.equal(createdParams(one.fake).gpu, "T4");
+	// A computer with no GPU stays on the VM runtime, with no gpu sent.
+	const plain = setup();
+	assert.equal((await plain.provider.create(SPEC)).ok, true);
+	assert.equal(createdParams(plain.fake).runtime, "vm");
+	assert.equal("gpu" in createdParams(plain.fake), false);
+	// A GPU computer whose probe reads a VM's kernel is not on Modal's GPU runtime: refused and terminated.
+	const drifted = setup({}, { box: { kernel: "7.2.6" } });
+	const refused = await drifted.provider.create({ ...SPEC, gpu });
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /runtime: declared gVisor \(a GPU computer\), read back another kernel/);
+	assert.equal(only(drifted.fake).running, false, "the drifted sandbox was terminated");
+});
+
+test("check() refuses a GPU with an Archil mount on Modal: its gVisor runtime has no proven Archil mount", () => {
+	const { provider } = setup();
+	const mount = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-modal-archil-0123456789abcdef" };
+	const spec = { ...SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "1" }, mount, gpu: { type: "T4", count: 1 } };
+	const refusals = provider.check(spec);
+	assert.ok(refusals.some((r) => r.field === "gpu" && /a GPU computer here takes no archil mount: it is not proven/.test(r.message)), JSON.stringify(refusals));
+	assert.ok(!JSON.stringify(refusals).includes(mount.token));
+});
+
+test("check() and create() refuse a GPU spec with mount null in words, never by throwing (review: null mounts throw)", async () => {
+	const { provider, fake } = setup();
+	const spec = { ...SPEC, mount: null, gpu: { type: "T4", count: 1 } };
+	const refusals = provider.check(spec);
+	assert.ok(refusals.some((r) => r.field === "mount"), JSON.stringify(refusals));
+	const created = await provider.create(spec);
+	assert.equal(created.ok, false);
+	assert.equal(created.error.code, "refused", "check's refusal, as a result");
+	assert.equal(fake.sandboxes.size, 0, "nothing made");
 });
 
 test("create: sizes, user and workdir map onto Modal's fields; open makes nothing", async () => {
@@ -355,6 +416,9 @@ test("create: drift in the daemon's hello terminates the sandbox and refuses, fi
 	await driftedCreate({ box: { hello: { ...HELLO, groups: ["exec", "files"] } } }, /groups lack processes/);
 	await driftedCreate({ box: { hello: { ...HELLO, groups: [...HELLO.groups, "screen"] } } }, /offers groups screen/);
 	await driftedCreate({ box: { hello: { ...HELLO, kind: "desktop" } } }, /kind desktop, expected linux/);
+	// init --own-network says which fence holds its programs; a daemon that says none, or another, is not this one.
+	await driftedCreate({ box: { hello: { ...HELLO, fence: undefined } } }, /fence nothing: init was started with --own-network/);
+	await driftedCreate({ box: { hello: { ...HELLO, fence: "none" } } }, /fence none: /);
 });
 
 test("create: a sandbox whose kernel is gVisor's is refused as another runtime", async () => {
@@ -401,6 +465,22 @@ test("create: a sandbox whose own command has already ended is refused with its 
 	// A sandbox that ended with no output says so, in words.
 	const quiet = await driftedCreate({ running: false, ended: { exitCode: 0 } }, /finished/);
 	assert.match(quiet.message, /its command exited 0, with no output/);
+});
+
+test("create: a sandbox Modal is shutting down when the bridge's exec starts (its init exited) is waited for, and refused with init's exit code and words", async () => {
+	// The Modal GPU live run (gVisor): the bridge's exec was refused with FAILED_PRECONDITION "Modal Sandbox is shutting
+	// down" while poll still read null, so the failure said nothing of why init ended.
+	const words = "computerd init: cannot make a network namespace of its own for init and its programs: operation not permitted";
+	const initExits = { exitCode: 1, stderr: `${words}\n`, polls: 3 };
+	for (const spec of [SPEC, { ...SPEC, gpu: { type: "T4", count: 1 } }]) {
+		const error = await driftedCreate({ initExits }, /shutting down/, spec, { timeouts: { endedMs: 2000, releasePollMs: 1 } });
+		assert.equal(error.code, "gone");
+		assert.match(error.message, /its command exited 1/);
+		assert.ok(error.message.includes(words), error.message);
+	}
+	// Bounded: a sandbox that is still shutting down when endedMs runs out is refused without its words, and terminated.
+	const slow = await driftedCreate({ initExits: { ...initExits, polls: 1_000_000 } }, /shutting down/, SPEC, { timeouts: { endedMs: 50, releasePollMs: 1 } });
+	assert.doesNotMatch(slow.message, /its command exited/);
 });
 
 test("create: a sandbox that is not running after create, or has no daemon, is refused", async () => {
@@ -690,6 +770,11 @@ function runLocally(argv, { input, onSpawn } = {}) {
 		child.stderr.on("data", (chunk) => (stderr += chunk));
 		child.on("close", (code) => resolve({ code, stdout, stderr, pid: child.pid }));
 		onSpawn?.(child);
+		// A script that refuses before it reads its input exits with its stdin unread: the write's EPIPE is that exit, which
+		// the close above reports, never a failure of the run.
+		child.stdin.on("error", (error) => {
+			if (error.code !== "EPIPE") throw error;
+		});
 		child.stdin.end(input);
 	});
 }
@@ -917,6 +1002,8 @@ test("attach refuses a drifted computer in words and leaves it running", async (
 		[{ deadline: "soon" }, /deadline/],
 		[{ tags: { [SPEC_TAG]: "not json" } }, /spec/],
 		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "gvisor" }) } }, /runtime/],
+		// A computer an earlier version made records no runtime: refused, never read as vm (the breaking change).
+		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work" }) } }, /runtime: the tag agentrun\.computer\.spec says nothing/],
 	];
 	for (const [options, pattern] of cases) {
 		const { provider, fake } = setup({}, { sandboxes: [seeded(options)] });
