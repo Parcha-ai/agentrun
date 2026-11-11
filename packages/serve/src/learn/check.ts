@@ -5,7 +5,7 @@
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { learnedSecretShapes, redactLearned, secretShapes, valueMatcher } from "./secrets.js";
+import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
 import { type DraftDryRun, draftProblems, type DraftReader, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
@@ -162,7 +162,8 @@ function frontScanned(path: string, text: string, refused: (text: string) => boo
   for (const value of frontValues(text)) {
     const hidden = hiddenCharacter(value);
     if (hidden) found = (add("invisible_unicode", `its front matter, read as YAML reads it, holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
-    for (const kind of secretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
+    // Learning's shapes, a bank's numbers beside their words too (learnedSecretShapes), as the text's own scan reads them.
+    for (const kind of learnedSecretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
     if (refused(value)) found = (add("secret_value", "its front matter, read as YAML reads it, holds a value the host named as secret", path), true);
   }
   return found;
