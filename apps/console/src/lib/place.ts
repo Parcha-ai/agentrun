@@ -48,8 +48,8 @@ export const newAgentPlace = (places: Places | null | undefined): Place | undefi
  *  default place in words. */
 export const placeLabel = (place: Place | undefined) => (!place ? "Where this server's default place is" : place.mode === "sandbox" ? `In a ${place.box} box` : "On the server");
 
-/** Where a run ran, as its header says it: "in a docker box" or "on the server". Nothing for a run kept without a place
- *  (an older server). */
+/** Where a run ran, as its header says it: "in a docker box" or "on the server". Every run view names its place (the
+ *  served Run requires it); a run with none is one of the recorded fixtures (fixtures/README.md), which predate it. */
 export function runPlaceWords(run: Place | undefined): string | undefined {
   if (!run) return undefined;
   return run.mode === "sandbox" ? `in a ${run.box} box` : "on the server";

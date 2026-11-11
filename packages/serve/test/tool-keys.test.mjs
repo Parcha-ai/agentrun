@@ -381,14 +381,14 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
   const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
   const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
-  const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
+  const unset = { name: "browser", nodes: false, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
 
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
-  assert.deepEqual(await browser(), { name: "browser", nodes: true, calls: false, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
+  assert.deepEqual(await browser(), { name: "browser", nodes: false, calls: false, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);

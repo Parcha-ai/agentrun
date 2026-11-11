@@ -1,12 +1,23 @@
 // The arguments the cdp provider starts a local Chrome with, in one place, so a host that starts its own Chrome for Stagehand can
-// take the same list rather than copy it.
+// take the same list rather than copy it; and where that Chrome is installed (findChrome).
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrowserFailureError } from "../core/custody.js";
 import { browserFailure } from "../core/failures.js";
 import { nonEmpty } from "./shared.js";
+
+const LINUX_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+
+/** The local Chrome to start: the one `PI_BROWSER_CHROME` or `CHROME_PATH` names when it exists, else the first install found
+ *  on PATH or at a fixed place; null when there is none. */
+export function findChrome(env: NodeJS.ProcessEnv = process.env, exists: (file: string) => boolean = existsSync): string | null {
+  for (const named of [env.PI_BROWSER_CHROME, env.CHROME_PATH]) if (named && exists(named)) return named;
+  const onPath = (env.PATH ?? "").split(path.delimiter).filter(Boolean).flatMap((dir) => LINUX_NAMES.map((name) => path.join(dir, name)));
+  const fixed = ["/opt/google/chrome/chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"];
+  return [...onPath, ...fixed].find((file) => exists(file)) ?? null;
+}
 
 /** Stagehand 4.1.0's DEFAULT_CHROME_FLAGS (packages/sdk-ts/src/browser/localBrowser.ts, MIT, see NOTICE), less its
  *  `--remote-allow-origins=*`, which the launch below narrows to the extension's own Origin. Without them

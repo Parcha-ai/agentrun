@@ -89,7 +89,10 @@ backticks, so a code block inside it stays in it) and one workflow draft in a ` 
 matter with its `description:`, then the JSON. The host reads nothing else: no file the run wrote, in its copy of the
 folder or anywhere, is ever read. It hands each note, the skill's `SKILL.md` and the draft's two files to the checker as
 changes against the commit the run started from; a skill or a draft given with the very text the folder holds is no
-change. A run gives a skill or a draft whole, new or changed, and may only add notes:
+change. Once a learned skill the run was offered has been offered to 3 of its agent's earlier runs (each run's launch
+names the skills its seed offered it), and no learned workflow of that name is on main, active or pending, the prompt
+gains one line asking for that skill's job as a workflow draft under its name (`draftFor`: one skill at most, the first
+due in the seed's order). A run gives a skill or a draft whole, new or changed, and may only add notes:
 
 - one note per block, in the format above, named for a file at the folder's top;
 - to replace a note, a new note whose `supersedes` names it; the old one stays, and the host marks it;
