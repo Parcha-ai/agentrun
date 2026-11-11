@@ -207,13 +207,14 @@ test("a pi run is untouched: it still folds its usage row, which a CLI run has n
 });
 
 // A paid MCP tool charge the runner books in the kernel cap's paid-tools session (TOOL_SESSION), read back as the Tool cost
-// row the file path had on the run's root. The session's runner.request names the tool (model "paid:<name>") and the call
-// it ran under, and who charged for it (charged_by); its runner.turn carries the cost; the charge is placed under that
-// call, joined by `call`.
-const paidSession = (convId, skId, reqId, turnId, { name = "mcp:fake/paid", call = "c1", usd = 0.05, chargedBy = "fake", turn = {} } = {}) => [
+// row the file path had on the run's root. The session's runner.request names what was paid for (model "paid:<name>":
+// a fee's name, Parallel's search, or an MCP tool's catalog name), the call it ran under, who charged for it (charged_by),
+// and the tool it names of its own where it names one (`tool`); its runner.turn carries the cost; the charge is placed
+// under that call, joined by `call`, and named for the tool that call ran unless its request names its own.
+const paidSession = (convId, skId, reqId, turnId, { name = "mcp:fake/paid", call = "c1", usd = 0.05, chargedBy = "fake", tool, turn = {} } = {}) => [
   { type: "conversation", value: { id: convId } },
   { type: "entry", value: { id: skId, conversationId: ROOT, kind: "agentrun.session.key", data: { key: "paid-tools", conversation: convId } } },
-  { type: "entry", value: { id: reqId, conversationId: convId, kind: "runner.request", data: { turn: 1, model: `paid:${name}`, call, heldUsd: usd, charged_by: chargedBy } } },
+  { type: "entry", value: { id: reqId, conversationId: convId, kind: "runner.request", data: { turn: 1, model: `paid:${name}`, call, heldUsd: usd, charged_by: chargedBy, ...(tool ? { tool } : {}) } } },
   { type: "entry", value: { id: turnId, conversationId: convId, kind: "runner.turn", data: { turn: 1, usd, ...turn } } },
 ];
 
@@ -240,7 +241,7 @@ test("a pi run's paid MCP charge renders a Tool cost row under its call, from th
   assert.equal(rows[cost].tool_use_id, "c1");
 });
 
-test("a paid web_search charge's Tool cost row names who charged, from its record's charged_by", async (t) => {
+test("a paid web_search charge's Tool cost row names who charged, from its record's charged_by, and the tool its call ran, not the fee's name", async (t) => {
   const { store } = await storeOn(t);
   const claim = await claimed(store, { harness: "pi", runId: "run-1" });
   const j = store.journal(claim);
@@ -248,7 +249,7 @@ test("a paid web_search charge's Tool cost row names who charged, from its recor
     { type: "conversation", value: { id: ROOT } },
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "search", timestamp: T0 }] } },
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "web_search", arguments: {} }], timestamp: T0 + 1 }] } },
-    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), { name: "web_search", usd: 0.005, chargedBy: "parallel" }),
+    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), { name: "Parallel's search", usd: 0.005, chargedBy: "parallel" }),
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: "c1", content: "ok", timestamp: T0 + 2 }] } },
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }], timestamp: T0 + 3 }] } },
   ], context);
@@ -259,8 +260,9 @@ test("a paid web_search charge's Tool cost row names who charged, from its recor
   assert.equal(cost?.summary, "Tool cost: parallel charged $0.0050 for web_search", JSON.stringify(shown(rows)));
 });
 
-/** A pi run with one web_search call whose paid-tools turn is `usd` (with `turn`'s other fields), ended; its charge rows. */
-async function chargeRowsFor(t, usd, turn = {}) {
+/** A pi run with one web_search call whose paid-tools turn, Parallel's search, is `usd` (with `turn`'s other fields),
+ *  booked under `tool` where given; ended. Its charge rows. */
+async function chargeRowsFor(t, usd, turn = {}, tool) {
   const { store } = await storeOn(t);
   const claim = await claimed(store, { harness: "pi", runId: "run-1" });
   const j = store.journal(claim);
@@ -268,7 +270,7 @@ async function chargeRowsFor(t, usd, turn = {}) {
     { type: "conversation", value: { id: ROOT } },
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "search", timestamp: T0 }] } },
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: "c1", name: "web_search", arguments: {} }], timestamp: T0 + 1 }] } },
-    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), { name: "web_search", usd, chargedBy: "parallel", turn }),
+    ...paidSession(await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), { name: "Parallel's search", usd, chargedBy: "parallel", turn, tool }),
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: "c1", content: "ok", timestamp: T0 + 2 }] } },
     { type: "entry", value: { id: await j.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }], timestamp: T0 + 3 }] } },
   ], context);
@@ -278,6 +280,10 @@ async function chargeRowsFor(t, usd, turn = {}) {
 }
 
 // A paid record's outcomes, each as main's timeline renders it (pi-durable-agent timeline.ts, the TOOL_COST row).
+test("a paid charge whose request names a tool of its own keeps it: the call's tool names only a charge that names none", async (t) => {
+  assert.deepEqual(await chargeRowsFor(t, 0.005, {}, "web_fetch"), ["Tool cost: parallel charged $0.0050 for web_fetch"]);
+});
+
 test("a paid hold given back unused shows no charge row", async (t) => {
   assert.deepEqual(await chargeRowsFor(t, 0, { givenBack: true }), [], "nothing sent, no row");
 });
