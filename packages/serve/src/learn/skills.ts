@@ -325,7 +325,15 @@ export function retiredLearned(text: string): string {
 }
 
 /** A draft's `README.md` as the host writes it, from the workflow's name and the one-line description its block gives. */
-export const readmeOf = (name: string, description: string): string => `---\nname: ${name}\ndescription: ${description}\n---\n`;
+export const readmeOf = (name: string, description: string): string => `---\nname: ${name}\n${frontLine("description", description)}\n---\n`;
+
+/** `key: value` as a front matter line the one reader (frontMatter) reads back as `value`: plain when it does, else
+ *  quoted as JSON writes it, whose escapes frontMatter decodes. A value the block quoted (`"\"a\" plus"`) is written
+ *  quoted again, never as a plain line that reads another way or no way. */
+function frontLine(key: string, value: string): string {
+  const plain = `${key}: ${value}`;
+  return frontMatter(`---\n${plain}\n---\n`)?.get(key) === value ? plain : `${key}: ${JSON.stringify(value)}`;
+}
 
 /** A workflow block's two files: its `description:` front matter written as the draft's README.md (readmeOf), and the
  *  JSON after it as its workflow.json. A block with no front matter, or none that says what the draft is for, gives a

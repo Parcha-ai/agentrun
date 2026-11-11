@@ -356,9 +356,14 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
-  const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
+  const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
+
+/** Skills as OpenCode is handed them (opencodeOf): each SKILL.md as servedSkill writes it, its other files as they are.
+ *  Its table entry's check reads this same form, so a set the check takes is never one that grew past its limit after. */
+export const servedSkills = (skills: readonly SkillFiles[]): SkillFiles[] =>
+  skills.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
 
 /** `harness`'s adapter for a run, as its entry in the harness table builds it (harness-table.ts). */
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {

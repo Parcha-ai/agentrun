@@ -167,7 +167,12 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
     pins: async () => (await import("./adapters.js")).codexPins(),
   }),
   [openCodeFacts.id]: adapterEntry(openCodeFacts, async (env, needs) => (await import("./adapters.js")).opencodeOf(env, needs), {
-    skillCheck: async () => (await import("./adapters.js")).packageSkillCheck(() => import("./harness-opencode/index.js")),
+    // Checked as OpenCode is handed them (servedSkills, opencodeOf's): one size check on what it gets.
+    skillCheck: async () => {
+      const { packageSkillCheck, servedSkills } = await import("./adapters.js");
+      const check = await packageSkillCheck(() => import("./harness-opencode/index.js"));
+      return check && ((skills) => check(servedSkills(skills)));
+    },
   }),
 } as Record<HarnessId, HarnessEntry>);
 
