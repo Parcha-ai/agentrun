@@ -633,7 +633,7 @@ export function buildToolHost(opts: {
   return {
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
-    where: { root, work: root, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+    where: { root, work: root, ref: { id: claim.runId } },
     env: opts.env,
     install: (extension) => run.registry.install(extension),
     onConversation: life.register.onConversation,

@@ -7,7 +7,7 @@
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Confinement } from "@parcha/pi-durable-disk/internals";
+import { Confinement } from "./confine.js";
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
