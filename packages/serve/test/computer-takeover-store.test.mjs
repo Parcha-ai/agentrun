@@ -30,7 +30,11 @@ const { ApiError } = await import("../dist/errors.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// The runner's claim outlives any stall of this process: a 600 ms lease lapsed when a loaded machine paused the test's
+// thread for a second or more, the runner lost the run mid-take, and its next pass ended it under the person's hand ("the
+// run waits for the hand-back: ended"). One runner holds the run here and nothing tests a lapse, so the lease is the
+// runner's own default (runner.ts, 30 s).
+const TIMING = { leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const OWNER = { ownerSession: true, token: false, accounts: true };
 after(closeOpenSessions);
