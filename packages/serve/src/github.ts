@@ -101,11 +101,13 @@ const REPO_URL = /https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0
 
 /** The repository a run is about, from its first message: the GitHub event it was started for (the server's own payload
  *  tag, the first one, with its installation and repository), else the first https://github.com/<owner>/<repo> its owner's
- *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. */
-export function githubTargetOf(content: unknown): { installation?: number; repo: string } | undefined {
+ *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. The tag is read only
+ *  for a run a github trigger started (`payload`, from its launch's inputOrigin): anyone may write the tag's text into a
+ *  run of their own, and it names an installation. */
+export function githubTargetOf(content: unknown, { payload = false }: { payload?: boolean } = {}): { installation?: number; repo: string } | undefined {
   if (typeof content !== "string") return undefined;
   const at = content.indexOf("<trigger-payload ");
-  if (at >= 0) {
+  if (at >= 0 && payload) {
     const tag = content.slice(at, content.indexOf(">", at) + 1);
     const attrs = Object.fromEntries([...tag.matchAll(/ ([a-z][a-z0-9_-]*)="([^"]*)"/g)].map((m) => [m[1]!, unescapeAttr(m[2]!)]));
     if (attrs.source === "github" && typeof attrs.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(attrs.repo)) return { repo: attrs.repo, ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}) };

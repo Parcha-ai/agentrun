@@ -25,7 +25,6 @@ import {
   type Id,
   type Page,
   type Seq,
-  type Storage,
   StorageRequestError,
   type StorageWrite,
   type StoredDocument,

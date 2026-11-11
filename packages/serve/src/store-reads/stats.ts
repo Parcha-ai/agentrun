@@ -3,7 +3,7 @@
 // row) and its revision's harness. Nothing under a run's journal is read: the figures are the row's, so a run's cost and
 // tokens are what its end carried back, never recomputed here. Every number but archivedAgents and archivedRuns leaves
 // out what is archived; a run's archive is its own or its agent's.
-import type { RunRow, Store } from "../store/store.js";
+import type { Store } from "../store/store.js";
 import { runReadState, type RunReadState } from "./runs.js";
 
 /** The run states the stats count by, as the old store named them. */

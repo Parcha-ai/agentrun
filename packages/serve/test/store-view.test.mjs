@@ -391,9 +391,11 @@ test("the moment of a run parked at its cap reads paused with the pause words, s
   assert.equal(moment.paused, true);
   assert.equal(moment.pausedWords, "Out of budget. Raise the cap to at least $1.30 to continue.");
   assert.equal(moment.maxCostUsd, 0.5);
-  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main.
+  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main, and names the
+  // follow-up the runner sends for this pause: its budget entry's id (moment.pause).
+  assert.equal(moment.pause, String(budget.id));
   const result = await raiseCap(store, moment, 11);
-  assert.deepEqual(result, { resumed: true });
+  assert.deepEqual(result, { resumed: true, messageId: `agentrun:raise:${budget.id}` });
   // Right after the raise, before its runner takes it, the run reads as going on: never input_required on the cap it
   // was just raised past (a client's runs.wait right after the raise returned input_required again).
   const raised = await viewOverStore(store, "run-1", deps);

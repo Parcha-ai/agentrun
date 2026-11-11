@@ -18,7 +18,7 @@ import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.m
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, whenFree, withEnv } from "./support.mjs";
 import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
@@ -44,9 +44,9 @@ async function addFake(t, api, prices) {
 
 /** Agent `id` granted `tools` (and `extra`), and one run of it asking `content` (with `run`'s fields). */
 async function started(api, id, tools, content, { extra = {}, run = {} } = {}) {
-  const made = await api("POST", "/agents", agent(id, { tools, ...extra }));
+  const made = await whenFree(() => api("POST", "/agents", agent(id, { tools, ...extra })));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const started = await api("POST", `/agents/${id}/runs`, { input: { content }, ...run });
+  const started = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content }, ...run }));
   assert.equal(started.status, 202, JSON.stringify(started.body));
   return started.body.run_id;
 }

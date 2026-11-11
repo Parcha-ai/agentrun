@@ -352,7 +352,7 @@ test("the agent's ask on its desktop: the run waits on it with pending kind comp
   assert.equal((await world.read()).pending, null, "the run waits on nothing once it ended");
 });
 
-// SKIP (follow-up #2078): the runner's onComputerHold signal does not give the take-over and hand-back rows as before
+// SKIP (follow-up #2432): the runner's onComputerHold signal does not give the take-over and hand-back rows in order
 test.skip("the runner's change signal (onComputerHold): a take-over row, then a hand-back row, are seen pending, person, then agent ended given, each after its journal entry; unsubscribed, nothing more", async (t) => {
   const world = await setup(t);
   // The second look waits too, so the run is still going (its desktop up) after the hand-back.

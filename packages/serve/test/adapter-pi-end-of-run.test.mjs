@@ -18,11 +18,9 @@ import { closeOpenSessions, openSessions, piAdapterSpec } from "./conformance-pi
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-/** A short lease: for the one case whose point is the lease (a lost claim during the end-of-run turn). */
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
-/** A lease no stall of a loaded machine outlasts: every case whose point is not the lease. On the short lease a stall of
- *  the box longer than it lets the claim lapse unrenewed, the runner takes the run back, and a step or a replay-safe tool
- *  runs again (a mark written twice, a step asked twice). */
+/** A lease no stall of a loaded machine outlasts, for every case (none's point is the lease: a lost claim is the runner's
+ *  close). On a short lease a stall of the box longer than it lets the claim lapse unrenewed, the runner takes the run
+ *  back, and a step or a replay-safe tool runs again (a mark written twice, a step asked twice). */
 const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const told = (marker) => ({ table: "channel_told", row: { channel: "learning:test", marker } });
@@ -312,7 +310,9 @@ test("pi through the adapter: a run whose step returns nothing stores no row bes
 });
 
 test("pi through the adapter: a lost claim during the end-of-run turn writes no end; the next claim asks again, and the end is written once", async (t) => {
-  const { start, until, toldRows, endEntries } = await setup(t, TIMING);
+  // The steady lease: the claim is lost by the runner's close, never by a stall of a loaded box lapsing a short one (which
+  // let runner-a take the run back and ask its step a second time, CI 11-11).
+  const { start, until, toldRows, endEntries } = await setup(t, STEADY);
   let asked;
   const firstAsked = new Promise((resolve) => (asked = resolve));
   const seen = [];

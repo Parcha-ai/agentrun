@@ -136,7 +136,7 @@ test.skip("claude-agent on the faux harness: a turn that ends on the request aft
   assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the follow-up's first request carried the note, once");
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on the faux harness: a note taken after the first request was priced ($0.40, due by the measured typical) is worded as the run's spend says, \"finish now\", and a side call admitted between its take and the admission of the request carrying it leaves it told once, with one row", { timeout: 180_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("side-h", { harness: "claude-agent", instructions: "Wrap up with a side call in between." }))).status, 201);
@@ -173,13 +173,13 @@ test("pi on Sonnet 4.5 under $1: no wrap-up at step 0. Nothing priced yet, the t
   assert.deepEqual(rows.map((row) => row.text), [], "no note: $1 is over 3 times the step-0 typical request");
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("pi on Sonnet 4.5 under $0.10: due at step 0, told in the budget's words, never \"finish now\"", { timeout: 120_000 }, async (t) => {
   const { rows } = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 0.1, id: "s45-pi-small" });
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")]);
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on Sonnet 4.5 under $0.10: due at step 0, judged on its first request itself as pi judges it, and told in that request in the budget's words; then nothing more", { timeout: 120_000 }, async (t) => {
   const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-cc-small" });
   assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
@@ -189,7 +189,7 @@ test.skip("claude-agent on Sonnet 4.5 under $0.10: due at step 0, judged on its 
   assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.10")]], "in request 1, the request it was judged on");
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("pi and claude-agent on the same model under the same $0.10, the first request due at step 0: the same note, in the same words, in request 1 (parity)", { timeout: 120_000 }, async (t) => {
   const pi = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 0.1, id: "s45-parity-pi" });
   const cli = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-parity-cc" });
@@ -198,7 +198,7 @@ test.skip("pi and claude-agent on the same model under the same $0.10, the first
   assert.deepEqual(noteRequests(cli.data, cli.runId).map(([request]) => request), [0], "the CLI's in its first request, as pi's is");
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on Sonnet 4.5 under $0.11, the next request taking its note before the first request's cost came in: judged at step 0 on itself, and told in the budget's words", { timeout: 120_000 }, async (t) => {
   const booked = join(await scratch(t), "booked");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
@@ -218,7 +218,7 @@ test.skip("claude-agent on Sonnet 4.5 under $0.11, the next request taking its n
   assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$0.08")]);
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the measured typical makes it due, and request 2 is told to finish (a guard)", { timeout: 120_000 }, async (t) => {
   const { data, runId, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code spends four cents first.", cap: 0.1, id: "s45-cc-four" });
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP("$0.06")]);
@@ -226,7 +226,7 @@ test.skip("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the me
   assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.06")]);
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each need 10,240 output tokens and cost half a cent: the wrap-up comes before the cap refuses the next request, while what is left still buys about two of them", { timeout: 180_000 }, async (t) => {
   const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Make sixty half-cent calls that each need 10,240 output tokens at least.", cap: 0.4, id: "s45-least" });
   // Its measured typical ($0.005) never makes it due: 3 x $0.005 is under what the next request needs at least (about
@@ -237,7 +237,7 @@ test.skip("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that ea
   assert.deepEqual(notesOf(data, runId), [rows[0].text]);
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on the faux harness: at step 0, with no previous request in hand, the next request's least is priced uncached, and it alone makes the wrap-up due, in the budget's words (a pin)", { timeout: 180_000 }, async (t) => {
   const booked = join(await scratch(t), "booked");
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
@@ -257,7 +257,7 @@ test.skip("claude-agent on the faux harness: at step 0, with no previous request
   assert.deepEqual(notesOf(data, runId), rows);
 });
 
-// SKIP (follow-up #2078): the run stays paused at its cap after the raise: a raise does not resume it on the runner
+// SKIP (follow-up #2080): the run stays paused at its cap after the raise: a raise does not resume it on the runner
 test.skip("claude-agent on the faux harness: paused at its cap, let go and raised, the first request after the raise, in the process the raise opens, is told when it alone is due by its least: the least of the request being taken, never of one admitted in an earlier process", { timeout: 180_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("raised-least", { harness: "claude-agent", instructions: "Make two requests needing 10,240 output tokens." }))).status, 201);
@@ -275,7 +275,7 @@ test.skip("claude-agent on the faux harness: paused at its cap, let go and raise
   assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$1.50")]);
 });
 
-// SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner
+// SKIP (follow-up #2080): the cap's wrap-up note is not told or recorded as before on the runner
 test.skip("claude-agent on the faux harness: a side call that comes first (the harness's own title request) neither takes the note nor is judged as the request taking it: the session's first request carries it, judged at step 0 on its own bound (a pin)", { timeout: 180_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("side-first-h", { harness: "claude-agent", instructions: "Wrap up after a side call comes first." }))).status, 201);
