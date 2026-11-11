@@ -455,9 +455,9 @@ go through `work/` by path.
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
   server's uid:gid, so what it writes in `work/` stays this server's. It starts from [the box's image](#the-boxs-image).
   It may use 2 CPUs' time, 4 GiB of memory, swap included, and 1,024 processes and threads (`--cpu-period 100000
-  --cpu-quota 200000 --memory 4g --memory-swap 4g --pids-limit 1024`), so a runaway build or a fork bomb stops in the
-  box. `AGENTRUN_BOX_CPUS` (at least `0.01`), `AGENTRUN_BOX_MEMORY` (with its unit, such as `8g`, and at least `6m`) and
-  `AGENTRUN_BOX_PIDS` (at most 4,194,304) change them; any other value refuses the start. `AGENTRUN_BOX_CPUS` caps CPU
+  --cpu-quota 200000 --memory 4096m --memory-swap 4096m --pids-limit 1024`), so a runaway build or a fork bomb stops in
+  the box. `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY` and `AGENTRUN_BOX_PIDS` change them, for Docker computers only
+  ([a Docker computer's size](#computers)). `AGENTRUN_BOX_CPUS` caps CPU
   time, as a CFS quota (the cap `--cpus` sets), so it holds whatever CPU count Docker's VM has, and where the kernel
   gives Docker no CPU controller (a rootless Docker without one delegated), Docker ignores it with a warning.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
@@ -627,10 +627,8 @@ is Modal's default sandbox runtime (gVisor), not a virtual machine: the server d
   show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
 - A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
   with the run's `work/`. The call that met the gone box fails, saying so.
-- Each Modal sandbox reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
-  the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
-  `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
-  no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
+- A Modal sandbox is the size Modal makes it, which the provider bills for while the box lives: `AGENTRUN_BOX_CPUS`,
+  `AGENTRUN_BOX_MEMORY` and `AGENTRUN_BOX_PIDS` size Docker computers only. Its lifetime is 24 hours, as every box's is.
 - A start copies back, then ends, the sandbox of every run that has ended or is archived.
 
 ### The box's image
@@ -722,7 +720,12 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
-refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
+daemon on this server: where none answers `docker version` (Render and most hosted services run none), Docker is not
+ready and says to use a vendor's computer. The server asks again every 30 s, so a daemon that stops is seen. A daemon
+started after the server is taken at the next restart, since the start's checks of Docker (its host, this server's
+paths and addresses) ran without it.
+`GET /v2/computers` lists each kind,
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
@@ -732,6 +735,15 @@ the provider with them and starts nothing. A key set in the server's environment
 `KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
+
+**A Docker computer's size.** A Docker computer, a sandbox or a desktop, may use 2 CPUs' time, 4 GiB of memory with swap
+included, and 1,024 processes and threads, unless the server's environment says otherwise: `AGENTRUN_BOX_CPUS` (at least
+`0.01`, such as `1.5`), `AGENTRUN_BOX_MEMORY` (a size with its unit, `b`, `k`, `m` or `g`, such as `8g`: at least `6m`,
+a fraction of a MiB dropped) and `AGENTRUN_BOX_PIDS` (from 1 to 4,194,304). The claim puts them on the computer's spec,
+and the Docker provider runs the container with them (`--cpu-quota`, `--memory` and `--memory-swap`, `--pids-limit`).
+They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
+size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
+the provider's words.
 
 **GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
 "count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
@@ -878,11 +890,13 @@ it starts:
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
-`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
-it is never off, and a model node that names its own thinking level keeps it. An agentic run started with an `effort` also
-gets a short note on how to work, right after its instructions, on every harness (`src/effort-guidance.ts`): `low`
-answers directly, `medium` plans briefly and checks once, `high` plans each part, fills the gaps and reviews. A run
-started with none gets no note.
+`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING` (one of those
+levels exactly), else at its harness's own default; it is never off, and a model node that names its own thinking level
+keeps it. The level is fixed in the run's launch when it starts, and its metrics name the level its harness ran at: one
+above the harness's highest runs at that highest (Codex and OpenCode stop at `xhigh`). An agentic run whose level is
+`low`, `medium` or `high` also gets a short note on how to work, right after its instructions, on every harness
+(`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
+the gaps and reviews. A run with no level, or one above `high`, gets no note.
 
 ## Tools
 
@@ -1947,7 +1961,7 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -2232,15 +2246,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
-comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
-the rest of the store page's data), for a
-script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
+comes through `/v2`. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
 token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
 `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
-`/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
+`/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 

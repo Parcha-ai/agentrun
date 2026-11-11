@@ -43,7 +43,7 @@ describe("the E2B provider's commands in a root desktop container", { skip: LIVE
 		const most = new Date(deadline.getTime() + 600_000);
 		const commands = childCommands({ staging: STAGING, deadline: deadline.toISOString(), user: "1000:1000", display: ":7", maxDeadline: most.toISOString() });
 
-		assert.equal(docker("exec", name, "sh", "-c", commands.install).trim(), `sha256 ${sha}`);
+		assert.equal(docker("exec", name, "sh", "-c", commands.install).trim(), `installer 0 root\nsha256 ${sha}`);
 		docker("exec", "--detach", name, "sh", "-c", commands.init);
 		const child = spawn("docker", ["exec", "-i", name, "sh", "-c", commands.stdio], { stdio: ["pipe", "pipe", "pipe"] });
 		children.push(child);

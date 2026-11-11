@@ -220,6 +220,8 @@ export type RunTools = {
   /** The run's registry: the kernel's definitions, words and limits, over this run's hands and executors. */
   readonly registry: Registry;
   readonly hands: Hands;
+  /** Where the run's shell is (runHands' shell): its gate reads its defaults by it (tool-gate.ts defaultPermission). */
+  readonly shell: ShellPlace;
   /** The tools the claimed computer brings by its kind, as its groups offer them: a desktop's (desktop_screen,
    *  desktop_input, computer_request_handoff) or a phone's, by the kernel registry's own list. None with no computer, for
    *  a sandbox, or for a browser (its own binding lists its tools). An agent names its computer, never these tools
@@ -250,6 +252,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     workspace: run.workspace,
     registry,
     hands: run.hands,
+    shell: run.shell,
     kindTools: registry.list().map((def) => def.name).filter((name) => brought.has(name)),
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
     async end() {

@@ -4,7 +4,7 @@
 // that finds one changed refuses to start, naming it. A runner applies nothing; it reads the version and refuses one it does
 // not know (SchemaVersionUnknown), as on SQLite.
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type pg from "pg";
 import { SchemaVersionUnknown } from "../store.js";
 import { SCHEMA_NAME } from "./connection.js";
@@ -21,6 +21,10 @@ export interface Migration {
   readonly name: string;
   readonly sql: string;
   readonly sha256: string;
+  /** The migration's check (NNNN_name.check.sql beside it), run just before it: a query whose rows are the reasons the
+   *  schema cannot take the migration yet, each in a `refusal` column, in words that name what holds it back and what to do.
+   *  Not part of the file's hash: it runs only before the migration applies. */
+  readonly check?: string;
 }
 
 const FILE = /^(\d{4})_([a-z0-9_]+)\.sql$/;
@@ -33,7 +37,9 @@ export function migrationsIn(dir: URL = new URL("./migrations/", import.meta.url
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => {
       const sql = readFileSync(new URL(match[0], dir), "utf8");
-      return { version: Number(match[1]), name: match[2]!, sql, sha256: createHash("sha256").update(sql).digest("hex") };
+      const checkFile = new URL(`${match[1]}_${match[2]}.check.sql`, dir);
+      const check = existsSync(checkFile) ? readFileSync(checkFile, "utf8") : undefined;
+      return { version: Number(match[1]), name: match[2]!, sql, sha256: createHash("sha256").update(sql).digest("hex"), ...(check === undefined ? {} : { check }) };
     })
     .sort((a, b) => a.version - b.version);
   found.forEach((migration, index) => {
@@ -117,6 +123,10 @@ export async function migrate(client: pg.ClientBase, schema: string, at: number,
       }
     }
     for (const migration of migrations.slice(top ?? 0)) {
+      if (migration.check !== undefined) {
+        const refusals = (await client.query(migration.check)).rows.map((row: { refusal?: unknown }) => String(row.refusal));
+        if (refusals.length > 0) throw new Error(`${placeOf(schema)} cannot take migration ${String(migration.version).padStart(4, "0")}_${migration.name}.sql, so nothing was applied: ${refusals.join("; ")}`);
+      }
       await client.query(migration.sql);
       await client.query("INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, $2, $3, $4)", [migration.version, migration.name, migration.sha256, at]);
     }

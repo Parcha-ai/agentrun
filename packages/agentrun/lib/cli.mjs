@@ -8,8 +8,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
-import { FLAGS, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
-import { SECRETS, guarded } from "./login.mjs";
+import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
+import { SECRETS, guarded, refusalExit } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
 import { TEMPLATE_EVAL, TEMPLATE_VALIDATE } from "./template.mjs";
 
@@ -63,8 +63,9 @@ const HELP = () => {
     "Keys and other secrets are set in the console, signed in: the token can't write one, so no command does.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
     "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",
-    "refused, or the config file, the server's record or its token file was refused. runs wait and runs start --wait",
-    "print the run once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed (it goes on),",
+    "refused, or the config file, the server's record or its token file was refused, 5 the server does not offer the",
+    "command here (501, unsupported_here; the error says why). runs wait and runs start --wait print the run once it",
+    "ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed (it goes on),",
     "8 it waits on a person (a question, its spend cap, a stopped turn, a paused workflow). runs timeline --follow prints",
     "the timeline's pages as they come, one JSON object per line, until the run ends: 0 completed, 1 failed or cancelled.",
   ].join("\n");
@@ -85,6 +86,7 @@ function commandHelp(entry) {
     const value = f.type === "boolean" ? "" : ` ${f.enum ? f.enum.join("|") : f.type.toUpperCase()}`;
     return [`--${flag(f.name)}${value}`, `${f.required ? "(required) " : ""}${f.description}`];
   });
+  if (ALL.listing(entry)) flags.push(ALL.help);
   if (entry.hasBody) {
     flags.push([BODY, entry.secretBody ? "the body, from stdin or a file only: it holds a secret" : "the body, inline, from a file or from stdin; flags win over a JSON body's fields"]);
     flags.push(["--body-type TYPE", `the body's type: ${entry.bodyTypes.join(", ")} (default ${defaultType(entry.bodyTypes)}); any other than JSON is sent as given`]);
@@ -265,12 +267,32 @@ function clientOf(target, io) {
     // Only the cause's code: a fetch error's message can quote a header, the token's among them.
     unreachable: (error) => new Exit(3, target.unreachable ?? `Cannot reach the server at ${target.base} (${error?.cause?.code ?? error?.name}); ${START}.`),
     refused(response, bytes) {
+      // A 501 is no refusal: the server does not offer the operation here. Its error's JSON says so, with the capability
+      // that is off when it names one; exit 5.
+      if (response.status === 501) return io.stderr.write(`${JSON.stringify(unsupported(bytes))}\n`), refusalExit(501);
       io.stderr.write(bytes.length ? bytes : `${response.status} ${response.statusText}`);
       if (!bytes.length || bytes.at(-1) !== 10) io.stderr.write("\n");
-      return response.status === 401 || response.status === 403 ? 4 : 1;
+      return refusalExit(response.status);
     },
     print: (value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`),
   };
+}
+
+/** A 501's error as this CLI prints it: the server's error object (when its body is one) with its status, its code
+ *  unsupported_here unless it names another, and its message, which says why; a body with no message gets one of this
+ *  CLI's own, naming the capability that is off when the error names one. */
+function unsupported(bytes) {
+  let error = {};
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8"))?.error;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) error = parsed;
+  } catch {
+    // not JSON: no error object to keep
+  }
+  const capability = typeof error.capability === "string" && /^[\w.-]+$/.test(error.capability) ? error.capability : undefined;
+  const code = typeof error.code === "string" ? error.code : "unsupported_here";
+  const message = typeof error.message === "string" && error.message.trim() ? error.message : `The server does not offer this here${capability ? `: ${capability} is off` : ""}.`;
+  return { error: { ...error, code, status: 501, message } };
 }
 
 /** One request: `{ response, bytes }`, `{ code }` once it was refused (its error on stderr), or `{ late: true }` once
@@ -300,6 +322,38 @@ async function send(client, req) {
   if (json && io.stdout.isTTY) io.stdout.write(`${JSON.stringify(json.value, null, 2)}\n`);
   else if (json) io.stdout.write(bytes.at(-1) === 10 ? bytes : Buffer.concat([bytes, Buffer.from("\n")]));
   else io.stdout.write(bytes);
+  return 0;
+}
+
+/** `--all`: every page of a list, each array of each page in one list, the first page's other fields kept, next_cursor null.
+ *  A cursor the server answers twice, or a next page past MAX_PAGES, ends it, exit 1, and prints nothing: a server that
+ *  keeps answering a cursor never keeps it reading. A page refused is that refusal's exit code. */
+async function listAll(client, req, entry) {
+  const at = new URL(req.path, "http://host");
+  const name = `agentrun ${entry.command.join(" ")} --all`;
+  const lists = new Map();
+  // The cursors read so far, a --cursor it started from among them.
+  const cursors = new Set(at.searchParams.has("cursor") ? [at.searchParams.get("cursor")] : []);
+  let first;
+  for (let page = 1; ; page++) {
+    if (page > MAX_PAGES) return client.io.stderr.write(`${name}: the server still had a next page after ${MAX_PAGES}; stopped there and printed nothing. Narrow the list with its filters, or page it with --cursor.\n`), 1;
+    const got = await request(client, { ...req, path: `${at.pathname}${at.search}` });
+    if (got.code !== undefined) return got.code;
+    const value = JSON_TYPE.test(got.response.headers.get("content-type") ?? "") ? jsonOf(got.bytes)?.value : undefined;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return client.io.stderr.write(`${name}: page ${page} is not a JSON object; printed nothing.\n`), 1;
+    first ??= value;
+    for (const [key, items] of Object.entries(value)) {
+      if (!Array.isArray(items)) continue;
+      if (!lists.has(key)) lists.set(key, []);
+      for (const item of items) lists.get(key).push(item);
+    }
+    const next = value.next_cursor;
+    if (next === null || next === undefined) break;
+    if (typeof next !== "string" || next === "" || cursors.has(next)) return client.io.stderr.write(`${name}: the server answered the same next_cursor twice, or one that is not a cursor; stopped and printed nothing.\n`), 1;
+    cursors.add(next);
+    at.searchParams.set("cursor", next);
+  }
+  client.print({ ...first, ...Object.fromEntries(lists), next_cursor: null });
   return 0;
 }
 
@@ -377,6 +431,7 @@ async function command(entry, argv, env, io) {
   for (const f of [...entry.query, ...entry.headers, ...entry.bodyFlags]) options[flag(f.name)] = { type: f.type === "boolean" ? "boolean" : "string" };
   if (entry.hasBody) Object.assign(options, { body: { type: "string" }, "body-type": { type: "string" } });
   Object.assign(options, FLAGS[entry.operationId]?.options);
+  if (ALL.listing(entry)) options.all = { type: "boolean" };
   const { values, positionals } = parse(argv, options);
   if (values.help) return io.stdout.write(`${commandHelp(entry)}\n`), 0;
   const args = positionals.slice(entry.command.length);
@@ -428,6 +483,7 @@ async function command(entry, argv, env, io) {
   const client = entry.secretBody || landed ? guarded(clientOf, target, io, body, (entry.secretBody ? entry : landed).publicFields) : clientOf(target, io);
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
+  if (values.all) return listAll(client, req, entry);
   if (!values.wait) return send(client, req);
   // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
   // wait's requests is.

@@ -161,6 +161,14 @@ export type Verdict = { readonly merge: boolean; readonly reason: string; readon
 /** Why a verdict is no merge when the grader's answer could not be read at all: the host asks once more on it. */
 export const UNREADABLE_REASON = "the grader's verdict could not be read";
 const UNREADABLE: Verdict = Object.freeze({ merge: false, reason: UNREADABLE_REASON, items: Object.freeze([]) });
+/** Why a verdict is no merge when the grader kept every item and still said no merge: its answer contradicts itself, so
+ *  the host asks once more on it, the contradiction named (CONTRADICTION_ASK), as it does on an answer it cannot read. */
+export const CONTRADICTED_REASON = "the grader's verdict contradicted itself: it kept every item and said not to merge";
+/** Why a verdict is no merge when the grade, asked again because it contradicted itself, contradicted itself again: the
+ *  learning run sets it (runner/learning-loop.ts), never parseVerdict, which reads one answer. */
+export const CONTRADICTED_TWICE_REASON = "the grader's verdict contradicted itself twice: it kept every item and said not to merge, asked again";
+/** What the grade is told when it is asked again after an answer that kept every item and said no merge. */
+export const CONTRADICTION_ASK = 'Your last answer said "merge": false while it kept every item (each one keep or pending). Both cannot hold: merge is true when any item is kept or pending. Answer again in the same format: keep or hold each item that may be kept, and drop each one that may not, with its question.';
 
 /** The longest reason, and the longest `why` or `question`, a verdict carries, in UTF-16 units. */
 const REASON_MAX = 500;
@@ -689,7 +697,8 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
   // Planted named on any item, kept, held or dropped, however worded: the run read something hostile, and nothing it
   // proposed is kept. A drop that names no question says not why, so nothing is kept either (fail closed).
   if (items.some((item) => PLANTED.test(item.question ?? "")) || items.some((item) => !item.keep && !item.question?.trim())) return { merge: false, reason, items };
-  // Every item kept, and the grader said no merge: its no stands for the whole.
-  if (kept.length === items.length && !answer.merge) return { merge: false, reason, items };
+  // Every item kept, and the grader said no merge: its answer contradicts itself. Nothing merges on it, and its own
+  // reason (which may well say the items can be kept) is never the words: the host asks once more (CONTRADICTED_REASON).
+  if (kept.length === items.length && !answer.merge) return { merge: false, reason: CONTRADICTED_REASON, items };
   return { merge: true, reason, items };
 }
