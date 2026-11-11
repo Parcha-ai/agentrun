@@ -82,7 +82,7 @@ describe("Settings → Workspace", () => {
     expect(host.textContent).not.toMatch(/workspace:|computer:/);
     // No key input until Paste.
     expect(host.querySelectorAll('input[type="password"]')).toHaveLength(0);
-    expect(host.querySelector('input[name="image"]')!.getAttribute("placeholder")).toBe("Archil's default (recommended)");
+    expect(host.querySelector('input[name="image"]')!.getAttribute("placeholder")).toBe("serve's default, Debian with git 2.47 (recommended)");
   });
 
   it("says Archil is on with its region, and fills the fields from the server; no server-wide disk field", async () => {

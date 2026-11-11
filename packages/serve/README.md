@@ -752,11 +752,14 @@ this server's run folder says why there. The save checks the shape, and only a s
 and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
 computer is made with the GPUs asked.
 
-- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
-  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
-  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
-  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
-  its network allowlist, are not yet proven live.
+- **Daytona** gives one `H100`, the GPU of its GPU snapshot `daytona-gpu` (the computer package's `DAYTONA_GPU`:
+  `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
+  made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
+  deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
+  run on one can be cut short. The Daytona org needs GPU credits. It takes no mount (`mounts: []`: the snapshot's user
+  is not root and has no Archil client), so it can't hold the run's folder from Archil: in Mode 2 this server refuses a
+  Daytona sandbox with a `gpu`, and `GET /v2/computers` says why in Daytona's `gpu.why`. In Mode 1 a sandbox runs on
+  Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -766,9 +769,12 @@ computer is made with the GPUs asked.
   it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
 - **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
-  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than Archil's default);
-  `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from its disk with a mount credential
-  minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
+  `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
+  because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts
+  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
+  it cannot mount the disk.
 
 **Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
 it, never when the agent is made, in the account key's region, named `agentrun-<server id>-i-<agent id>` (an id with
@@ -2711,6 +2717,17 @@ with the token, an archived agent's too:
   too (`Approved-Via: console`). The learning view gives each item `last_change` (`{kind, by, at}`: `approved`,
   `edited`, `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired`
   (`{at, by}`, the time of its retire, which an edit since moves not).
+- `POST .../learning/workflows/{name}/promote` (`{name?}`) makes an active learned workflow an agent of its own: a new
+  agent, as `POST /agents` makes one, whose revision is a workflow revision of the workflow's `workflow.json`, so its
+  runs run the workflow's nodes with no agent loop, answer the workflow's output, and can be started by a trigger or a
+  pipeline like any agent's. Only an active one: a workflow that waits for its owner's OK, or was retired, is 409
+  `learned_not_active`. Its files are checked again as a restore checks them, and its workflow as the learning checker
+  checks a run's draft against the agent's tools and gate (400 with `problems`), then as any workflow revision's save
+  (422, or 409 `agent_not_runnable`). The new agent's `tools` are the ones its call nodes call, and it keeps the source
+  agent's policy as it is now (its `tool_settings`, `approvals`, `max_cost_usd` and `cap_mode`), never more. Its id is the
+  workflow's name, with `-2`, `-3` and on past an agent's id or name already here, and its name `name` or the same. It
+  answers 201 with the agent; the learned workflow stays in the folder, unchanged. It takes the owner's password session
+  alone, as an approval does.
 - `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
