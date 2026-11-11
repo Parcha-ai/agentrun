@@ -71,8 +71,12 @@ name: the tools its definition grants that a workflow's call node runs on this s
 server's tool settings and the agent's own): a draft whose call node calls one, a composed workflow's inner node too, is
 refused in the words a workflow revision's call node is, and the end-of-run prompt offers only tools set to allow. A model node that names any tool is refused: a learned
 workflow's model node runs without tools. So is a node the learned runner cannot run: a learned workflow runs model
-and tool-call nodes, and a judge, pick or sift node (or a route by question, a verify, an ask) needs a decision provider a
-run is not given. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
+and tool-call nodes, and decision nodes (a judge, pick or sift node, a route by question, a verify, an ask) on a run
+that has decision providers. A decision node's provider (the one it names, else the run's default) must be one the
+run has a key for and answer what the node asks, and the run's gate holds it under the provider's id as a call node's
+tool is held by its name: set to ask or deny, the draft is refused in the gate's words. Each decision is admitted on
+the run's one cap before it is sent and booked at what it charged (`learned-workflow.ts`); one the cap has no room for
+is never sent, and the run pauses on the refusal. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
 starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 

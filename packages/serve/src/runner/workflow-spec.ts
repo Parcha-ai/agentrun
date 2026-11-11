@@ -713,8 +713,10 @@ function decisionWorkflowCap(getCap: () => RunDecisions | undefined, providers: 
  *  what the answer charged (its hold when it reports none, the way `charged:held` books it). A refusal for room parks the
  *  run through the loop's hook (as a model node's does); a refusal for no price fails it; a price the catalog could not
  *  read fails the decision node as a connection error, never the cap's stop. A request the driver answers from what it
- *  decided before (a route's, or one an earlier process admitted that did not fail) holds nothing (askedBefore). */
-function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; hooks?: Pick<WorkflowHostHooks, "paused" | "pause">; driver?: DecisionDriver }): F {
+ *  decided before (a route's, or one an earlier process admitted that did not fail) holds nothing (askedBefore).
+ *  learned-workflow.ts wraps a learned workflow's decisions in it too (LS-07), over the agent run's ledger.decisions,
+ *  with no driver (a learned_workflow call is never run again). */
+export function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; hooks?: Pick<WorkflowHostHooks, "paused" | "pause">; driver?: DecisionDriver }): F {
   const judge = inner as (params: JudgeParams) => Promise<JudgeResult>;
   return (async (params: JudgeParams) => {
     if (deps.driver && askedBefore(deps.driver, params)) return judge(params);

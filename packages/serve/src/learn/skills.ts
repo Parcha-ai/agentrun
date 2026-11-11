@@ -204,9 +204,58 @@ const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
 export const LEARNED_OUTPUT_PATH = "its output names no path: a learned workflow's output is the value at output.path";
 
 /** What a learned workflow is refused with when a node needs more than its runner gives the DSL (learned-workflow.ts:
- *  runNode and runEffect alone): a judge, pick or sift node, a route by question, a verify or an ask needs a decision
- *  provider (runJudge) a run is not given. Refused at learn time and before a call runs any node, never after. */
-export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes";
+ *  runNode, runEffect, and runJudge only when the run has decision providers): a judge, pick or sift node, a route by
+ *  question, a verify or an ask on a run with none. Refused at learn time and before a call runs any node, never after. */
+export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes, and decision nodes on a run with decision providers";
+
+/** A learned draft's decisions as its check reads them (LS-07): the decision providers the run has (by id, the DSL's
+ *  DecisionProvider each, decisions.ts decisionProvidersIn over its keys) and the one a node that names none is asked
+ *  of; `gated`, the provider ids the run's gate holds to ask or deny (by its setting, the provider's id as its settings
+ *  key, as a call node's tool is held by its name), and `deniedBy`, where each deny was set. With none, a decision node
+ *  is refused (LEARNED_NODES). */
+export type DraftDecisions = {
+  readonly providers: Readonly<Record<string, unknown>>;
+  readonly default: string;
+  readonly gated?: Readonly<Record<string, string>>;
+  readonly deniedBy?: Readonly<Record<string, SettingFrom>>;
+};
+
+/** Each decision a draft asks, by the node that asks it (the DSL's inspection lists each node and its pointer, a composed
+ *  workflow's inner ones too): its kind, its pointer and its provider's id, the one it names or else `fallback`, the
+ *  run's default. A judge, pick or sift node; a route by question (not by value); a loop's or an escalate's ask
+ *  predicate; a model node's verify (asked of the default). */
+export function decisionsAsked(dsl: Pick<DraftReader, "inspectWorkflow">, doc: unknown, fallback: string): { kind: string; path: string; provider: string }[] {
+  return dsl.inspectWorkflow(doc).nodes.flatMap((node) => {
+    const fields = (at(doc, node.path) as Record<string, unknown> | undefined) ?? {};
+    const named = (choice: unknown) => {
+      const provider = (choice as { provider?: unknown } | undefined)?.provider;
+      return typeof provider === "string" ? provider : fallback;
+    };
+    const asked = (choice: unknown) => [{ kind: node.kind, path: node.path, provider: named(choice) }];
+    if (node.kind === "judge" || node.kind === "pick" || node.kind === "sift") return asked(fields);
+    if (node.kind === "route" && typeof fields.valuePath !== "string") return asked(fields);
+    if (node.kind === "loop" && (fields.until as { predicate?: unknown } | undefined)?.predicate === "ask") return asked(fields.until);
+    if (node.kind === "escalate" && (fields.when as { predicate?: unknown } | undefined)?.predicate === "ask") return asked(fields.when);
+    if (fields.verify && typeof fields.verify === "object") return [{ kind: node.kind, path: node.path, provider: fallback }];
+    return [];
+  });
+}
+
+/** What a decision node asking `provider` is refused with when the run's gate holds it to `setting` (ask or deny), worded
+ *  as a call node's tool is (gatedNodes), with the node's place. */
+export const gatedDecisionWords = (provider: string, setting: string, from: SettingFrom | undefined, kind: string, path: string): string =>
+  `${setting === "deny"
+    ? `This workflow's decision node asks ${provider}, which is set to deny ${denyPlace(from)}.`
+    : `This workflow's decision node asks ${provider}, which is set to ask, and a decision node can't wait for an approval: set it to allow for this agent.`} (the ${kind} node at ${path})`;
+
+/** A draft's decision nodes whose provider the run's gate holds to ask or deny (`decisions.gated`). */
+const gatedDecisions = (dsl: DraftReader, doc: unknown, decisions: DraftDecisions | undefined): DraftProblem[] => {
+  if (!decisions?.gated) return [];
+  return decisionsAsked(dsl, doc, decisions.default).flatMap(({ kind, path, provider }) => {
+    const setting = Object.hasOwn(decisions.gated!, provider) ? decisions.gated![provider] : undefined;
+    return setting ? [{ rule: "workflow" as const, detail: gatedDecisionWords(provider, setting, decisions.deniedBy?.[provider], kind, path) }] : [];
+  });
+};
 
 /** Where a deny was set (tool-gate.ts SettingFrom), and its words (tool-gate.ts denyPlace), kept here so the learn
  *  module needs no import of the gate. */
@@ -247,9 +296,12 @@ const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
 
 /** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
  *  makes before any node runs) with the runner's deps: none when it can run every one. */
-const unrunnableNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] => {
+const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisions): DraftProblem[] => {
   const workflow = dsl.desugarWorkflow(doc as Workflow);
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}) };
+  // With the run's decision providers, a decision node is runnable when its provider is one of them and answers what it
+  // asks (the DSL's checkDecisionProviders): the same registry the call's judge is built on.
+  const judging = decisions ? { runJudge: async () => ({}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
+  const runner = { runNode: async () => ({}), runEffect: async () => ({}), ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];
@@ -267,9 +319,10 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked),
  *  and with `tools`, so a node that names a tool outside them is its error: a harness's own tool (Bash, exec_command,
  *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
- *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
+ *  learned runner cannot run (LEARNED_NODES: a judge's on a run with no `decisions`; with them, one whose provider the run
+ *  lacks or its gate holds to ask or deny). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}): DraftProblem[] {
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, decisions?: DraftDecisions): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -283,7 +336,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy)];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions)];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
