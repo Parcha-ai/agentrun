@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readWorkflowRun } from "../dist/workflow-run.js";
 import { startServe } from "../dist/index.js";
-import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, storeRun } from "./support.mjs";
+import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const start = async (api, id, input, workflow = answerFlow()) => {
@@ -84,8 +84,7 @@ test.skip("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, t
   assert.equal(storeRun(data, started.run_id).summary, "draft, answer");
 });
 
-// SKIP (follow-up #2078): a workflow run's result, message refusal or tiers read differently on the runner
-test.skip("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
+test("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
   const { api, baseUrl, data, close } = await serve(t);
   const gated = answerFlow();
   gated.schemas.In.properties.amount = { type: "number" };
@@ -112,6 +111,20 @@ test.skip("an escalated workflow run is completed on /v2 with no error and a rev
   const read = client(again.baseUrl, again.token);
   assert.deepEqual((await read("GET", "/runs")).body.runs.map((r) => [r.status, r.error, r.review]), [["completed", null, review]], "read from the store's row and serve.json");
   assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.review, review);
+});
+
+test("an escalated run's review is cut of a key the server holds, in its node and kind as in its reason", async (t) => {
+  const KEY = `not-a-secret-review-${"k".repeat(24)}`;
+  withEnv(t, { PARALLEL_API_KEY: KEY });
+  const { api } = await serve(t);
+  const gated = answerFlow();
+  gated.schemas.In.properties.amount = { type: "number" };
+  gated.root.steps.unshift({ node: "escalate", label: `too big ${KEY}`, when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: `needs a person, ${KEY}` });
+  const started = await start(api, "gated-key", { question: "What is six times seven?", amount: 600 }, gated);
+  await follow(api, started.run_id, ["completed"]);
+  for (const review of [(await api("GET", `/runs/${started.run_id}`)).body.review, (await api("GET", "/runs?status=completed")).body.runs[0].review]) {
+    assert.deepEqual([review.kind, review.node, review.reason], ["review", "too big [redacted]", "needs a person, [redacted]"], JSON.stringify(review));
+  }
 });
 
 // SKIP (follow-up #2078): a workflow run's result, message refusal or tiers read differently on the runner
