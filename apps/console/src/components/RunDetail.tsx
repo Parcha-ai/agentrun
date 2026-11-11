@@ -70,13 +70,10 @@ const NOT_THE_ASK = {
 };
 
 /** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
- *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
- *  read) waits for the person, whatever its state; one that asked a question (named so, or from a server that sends no
- *  `pending`) waits for the answer, in the box below where the server takes one from here; a stopped one (input
- *  required, idle) stopped before it wrote one, and a message continues it; a paused workflow run starts no step until
- *  it is resumed. */
+ *  that asked a question (named so, or with no `pending` served) waits for the answer, in the box below where the server
+ *  takes one from here; a stopped one (input required, idle) stopped before it wrote one, and a message continues it; a
+ *  paused workflow run starts no step until it is resumed. */
 function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunView): { title: string; note: string; spin: boolean } {
-  const kind = (run.pending as { kind?: unknown } | null | undefined)?.kind;
   // Paused at its spend cap: what it spent of its cap, from the served figures (without them, said without them).
   if (run.status === "input_required" && run.pending?.kind === "budget") {
     // Each figure only as served: a pause sent with its kind alone says so without an amount, as its banner does.
@@ -86,11 +83,10 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
     return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
   }
   // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
-  if (run.status === "input_required" && kind === "approval") return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
+  if (run.status === "input_required" && run.pending?.kind === "approval") return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
   // The agent's ask at its computer: the card above says what, and Done answers it.
   const ask = askOf(run);
   if (ask) return { title: `Waiting for you at the ${askedAt(ask)}`, note: "The run continues once you answer the ask above, or hand the computer back on the Screen tab.", spin: false };
-  if (run.status === "input_required" && kind !== undefined && kind !== "question") return { title: "Waiting for you", note: "The run continues once you give it what it waits on.", spin: false };
   if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
   if (run.status === "input_required") return { title: "Stopped", note: `Stopped before it wrote an answer.${view.canMessage ? " Send a message below to continue it." : ""}`, spin: false };
   if (run.status === "paused") return { title: "Paused", note: "No new step starts until it's resumed. The answer appears here when it finishes.", spin: false };

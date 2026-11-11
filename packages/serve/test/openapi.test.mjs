@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
+import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -59,7 +59,7 @@ test("approving a note is the owner's password session alone, from the console w
   assert.deepEqual(doc.components.securitySchemes.bearer, VENDORED.components.securitySchemes.bearer, "the contract's scheme is as vendored");
 });
 
-test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why", async (t) => {
+test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out", async (t) => {
   const { doc } = await served(t);
   const ops = operations(doc);
   for (const route of ROUTES) {
@@ -76,8 +76,10 @@ test("every route the server serves is in the document, and every operation in i
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
     if (route.capability) assert.equal(op["x-agentrun-serve-unsupported"].capability, route.capability);
   }
-  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 4, "the four this server answers 501");
-  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 4);
+  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 1, "the one this server answers 501: quotes");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported, ["POST /quotes"]);
+  assert.deepEqual(doc.info["x-agentrun-serve"].not_served, ["GET /agents/{agent_id}/home", "PUT /agents/{agent_id}/home", "POST /runs/{run_id}/kill"]);
+  for (const id of ["exportHome", "importHome", "killRun"]) assert.ok(!ops.some(({ op }) => op.operationId === id), `${id} is not in the document`);
 });
 
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
@@ -210,7 +212,10 @@ test("the contract's operations are as vendored; this server's own are added and
     const { requestBody: _c, parameters: _d, ...vendoredSame } = original;
     assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for its named changes`);
   }
-  assert.equal(vendored.size + own.length, operations(doc).length, "no contract operation is gone");
+  // No contract operation is gone but those this server does not serve (NOT_SERVED), which the document lists.
+  const notServed = doc.info["x-agentrun-serve"].not_served;
+  assert.deepEqual(notServed.map((at) => vendored.get(at.replace(/^\S+/, (method) => method.toLowerCase()))?.operationId), ["exportHome", "importHome", "killRun"]);
+  assert.equal(vendored.size - notServed.length + own.length, operations(doc).length, "no other contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.
@@ -225,7 +230,7 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
-  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
+  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT, CAPABILITIES_SENT, Run.place) may be, so a required addition anywhere else still fails this comparison.
   const unrequired = [];
   const notes = [];
   const strip = (schema, at) => {
@@ -298,8 +303,15 @@ test("the contract's operations are as vendored; this server's own are added and
     for (const field of fields) assert.ok(!components.schemas[name].required.includes(field), `${name}.${field} is optional here`);
     components.schemas[name].required = VENDORED.components.schemas[name].required;
   }
+  // A contract property this server always sends (CAPABILITIES_SENT's `models`) is required here though the contract's is
+  // not: taken out of the required list, and listed with the rest.
+  const capabilities = components.schemas.Capabilities;
+  for (const field of CAPABILITIES_SENT.filter((name) => capabilities.required.includes(name) && !VENDORED.components.schemas.Capabilities.required.includes(name))) {
+    capabilities.required = capabilities.required.filter((name) => name !== field);
+    unrequired.push(`Capabilities.${field}`);
+  }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
@@ -593,8 +605,7 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
     assert.ok(op.responses["404"] && op.responses["401"], `${name} answers 401 and 404`);
   }
   assert.ok(file.put.responses["403"] && file.put.responses["413"] && file.delete.responses["403"], "a write answers 403, and a PUT 413");
-  assert.deepEqual(Object.keys(doc.paths["/agents/{agent_id}/home"]).sort(), Object.keys(VENDORED.paths["/agents/{agent_id}/home"]).sort(), "the contract's packed home keeps its path and methods");
-  assert.equal(doc.paths["/agents/{agent_id}/home"].get["x-agentrun-serve-unsupported"].capability, "home.export");
+  assert.equal(doc.paths["/agents/{agent_id}/home"], undefined, "the contract's packed home is not served here");
   assert.equal(doc.components.schemas.Capabilities.properties.home["x-agentrun-serve"], "home/1");
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.home"));
 
