@@ -1,6 +1,7 @@
 // A learned workflow's call nodes are held to the run's tool policy, which every run must give (#2153): its type makes
 // `policy` and `denyFrom` required (test/learned-workflow-policy.types.ts holds that to the typecheck), and a run that
-// reaches it with none anyway (a caller past the types) runs nothing, saying why: never a tool on a default of allow.
+// reaches it with none anyway (a caller past the types) runs nothing, saying why, with no node of it run (`nodes` empty):
+// never a tool on a default of allow.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -14,7 +15,7 @@ const run = { workflows: [flow], granted: ["web_fetch"], env: {}, work: "/nonexi
 test("a learned workflow run with no tool policy runs nothing and says why; never a call node on a default of allow", async () => {
   for (const missing of [{}, { policy: () => "allow" }, { denyFrom: () => "default" }]) {
     const out = await runLearned({ ...run, ...missing }, flow, { url: "http://127.0.0.1:9/" });
-    assert.deepEqual(out, { text: "The learned workflow fetch-one was not run: its run gave no tool policy for its call nodes", isError: true }, JSON.stringify(Object.keys(missing)));
+    assert.deepEqual(out, { text: "The learned workflow fetch-one was not run: its run gave no tool policy for its call nodes", isError: true, nodes: [] }, JSON.stringify(Object.keys(missing)));
   }
 });
 
