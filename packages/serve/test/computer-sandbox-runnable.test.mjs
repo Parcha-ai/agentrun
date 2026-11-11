@@ -114,7 +114,7 @@ test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's sta
 // server whose AGENTRUN_BOX_ALLOW is none, the operator's word for no network at all, its run is refused at the start in
 // words naming the setting, as the claim refuses it; under the default list (the setting unset) or the operator's own
 // list it is not, and runs open (the claim's networkOf).
-const noNetwork = (what) => `This agent's computer is a ${what}, which runs only on an open network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list (a computer that runs only on an open network then runs open: the list doesn't narrow it).`;
+const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.`;
 const NO_NETWORK_PHONE = noNetwork("Phone harness phone");
 for (const boxAllow of ["none", undefined, "pypi.org"]) {
   const refused = boxAllow === "none";
@@ -134,9 +134,9 @@ for (const boxAllow of ["none", undefined, "pypi.org"]) {
   });
 }
 
-// Local Chrome declares network "open" alone too (public addresses from this machine, through its egress proxy): under
-// none, the operator's word for no network at all, a browser on it is refused at the start in the same words, by its own
-// name; under the default list or the operator's own it is not refused for its network (it runs open).
+// Local Chrome declares "open" and "allow", never "none" (public addresses from this machine, through its egress proxy):
+// under none, the operator's word for no network at all, a browser on it is refused at the start in the same words, by
+// its own name; under the default list (open) or the operator's own (that list) it is not refused for its network.
 for (const boxAllow of ["none", undefined, "pypi.org"]) {
   const refused = boxAllow === "none";
   test(`a Local Chrome browser is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {

@@ -4,7 +4,8 @@
 // writes the arguments it was given to argv.json in its profile, and, given a proxy, asks it for a cloud's metadata
 // address and for its own loopback port, writing each status line to probe.json, so a test reads what the fence did.
 // FAKE_CHROME_MODE: "sandbox" exits as a Chrome that cannot start its sandbox does; "hang" runs and never opens its
-// debugging port; anything else starts.
+// debugging port; anything else starts. FAKE_CHROME_LIST_PROBES set (a browser made with an allowlist): it also asks for
+// a name off the list and for loopback on port 443, both refused before any lookup, so no probe waits on DNS.
 import { createHash, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -102,6 +103,12 @@ server.listen(0, "127.0.0.1", async () => { // key-gate: loopback-rule a test's 
 	const proxy = flag("proxy-server");
 	if (proxy) {
 		const probe = { metadata: await through(proxy, "169.254.169.254:80"), loopback: await through(proxy, `127.0.0.1:${port}`) }; // key-gate: denylist a refused test target
+		if (process.env.FAKE_CHROME_LIST_PROBES) {
+			// A name off the list, and loopback on a port a list takes: each refused before any lookup.
+			Object.assign(probe, { unlisted: await through(proxy, "unlisted.example:443") });
+			const onListedPort = await through(proxy, "127.0.0.1:443"); // key-gate: loopback-rule a refused test target on a port a list takes
+			Object.assign(probe, { loopback443: onListedPort });
+		}
 		writeFileSync(join(profile, "probe.json"), JSON.stringify(probe));
 	}
 	writeFileSync(join(profile, "DevToolsActivePort"), `${port}\n${path}`);

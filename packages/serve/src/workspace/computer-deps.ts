@@ -23,13 +23,13 @@ import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
-import { boxAllowOf } from "../box-settings.js";
+import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-import { type ComputerSettingKind, type KindRegistry, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
+import { type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
 
@@ -116,6 +116,7 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
   const current = (): readonly string[] | "none" => boxAllowOf(env as NodeJS.ProcessEnv);
+  const currentSet = (): boolean => boxAllowSetIn(env as NodeJS.ProcessEnv);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
     if (entry.id === "docker" && named !== undefined) return named;
     // Docker's sandbox: the package's own recipe, which serve builds (the registry gives Docker no default).
@@ -129,7 +130,7 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
     image: imageOf(entry, kind),
     // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
     lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
-    network: networkOf(entry, kind, run, current),
+    network: networkOf(entry, kind, run, current, currentSet),
   });
 }
 
@@ -138,17 +139,20 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
  *  was stamped with it) allows what this server allows now (`current`), never "open"; a sandbox with none still has no
  *  network, as it always had. A remote computer (Daytona's or E2B's, each one whose capabilities' network is ["none"])
  *  runs its programs in a network of their own, so an open or listed network is one it refuses at create; "none" reaches
- *  less than the run allows, never more. The one exception is a vendor-hosted computer that runs only on the vendor's own
- *  network (its capabilities' network is ["open"]: a cloud phone, a hosted browser): under a list, the default or the
- *  operator's, it is "open", since this server's list can't reach it, and Settings says so (computers.ts networkWords);
- *  under "none", the operator's word for no network at all, it is refused in words (noNetworkRefusal), as the run's
- *  start refuses it (resolve-computer.ts computerReadiness). */
-function networkOf(entry: ProviderEntry, kind: ComputerKindOf, run: ComputerRun, current: () => readonly string[] | "none"): ComputerSpec["network"] {
+ *  less than the run allows, never more. Under "none", the operator's word for no network at all, a computer whose
+ *  provider makes no "none" (a cloud phone, a hosted browser, Local Chrome) is refused in words (noNetworkRefusal), as
+ *  the run's start refuses it (resolve-computer.ts computerReadiness). A vendor-hosted computer that runs only on the
+ *  vendor's own network (its capabilities' network is ["open"]) is "open" under a list, the default or the operator's,
+ *  since this server's list can't reach it, and Settings says so (computers.ts networkWords). A browser whose provider
+ *  makes both "open" and "allow" (Local Chrome, behind its own egress proxy) is held to the operator's list
+ *  (`boxAllowSet`, the launch's, or this server's now for a launch that names no box_allow) and is "open" under the
+ *  default list, which is a sandbox's package-install list and no browsing policy. */
+function networkOf(entry: ProviderEntry, kind: ComputerKindOf, run: ComputerRun, current: () => readonly string[] | "none", currentSet: () => boolean): ComputerSpec["network"] {
   const boxAllow = run.boxAllow ?? (kind === "sandbox" ? "none" : current());
-  if (vendorNetworkOnly(run.networks)) {
-    if (boxAllow === "none") throw refused(noNetworkRefusal(entry.label, kind));
-    return "open";
-  }
+  const set = run.boxAllow !== undefined ? run.boxAllowSet === true : currentSet();
+  if (boxAllow === "none" && needsNetwork(run.networks)) throw refused(noNetworkRefusal(entry.label, kind));
+  if (vendorNetworkOnly(run.networks)) return "open";
+  if (kind === "browser" && boxAllow !== "none" && run.networks?.includes("open") && run.networks.includes("allow")) return set ? { allow: [...boxAllow] } : "open";
   const allowed: ComputerSpec["network"] = boxAllow === "none" ? "none" : { allow: [...boxAllow] };
   const form = allowed === "none" ? "none" : "allow";
   return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
@@ -167,8 +171,9 @@ export const claimComputer = async (
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> => {
   if (launch.boxAllow !== undefined || !store.runs) return computerForClaim(launch, store, deps);
-  const boxAllow = readLaunchBody((await store.runs.launch(launch.runId)).body)?.boxAllow;
-  return computerForClaim(boxAllow === undefined ? launch : { ...launch, boxAllow }, store, deps);
+  const body = readLaunchBody((await store.runs.launch(launch.runId)).body);
+  const boxAllow = body?.boxAllow;
+  return computerForClaim(boxAllow === undefined ? launch : { ...launch, boxAllow, ...(body?.boxAllowSet ? { boxAllowSet: true as const } : {}) }, store, deps);
 };
 
 /** The kind registry a claim composed with `options` resolves a setting against: --faux's when it is given faux, else a

@@ -41,11 +41,11 @@ import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, read
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
@@ -1241,6 +1241,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     approvers: options.accounts === true,
     ...(documents ? { documents: resolve(documents) } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
+    // Whether that is the operator's own setting, not the default: a browser is held to an operator's list alone.
+    ...(boxAllowSetIn(process.env) ? { boxAllowSet: true as const } : {}),
     modelOf,
     // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
     // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
