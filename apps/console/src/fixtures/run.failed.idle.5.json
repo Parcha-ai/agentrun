@@ -17,6 +17,9 @@
     "status": "failed",
     "state": "idle",
     "title": "Check invoice INV-1049 from the hosting vendor: hosting 440.00, 6 support hours…",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:22.579Z",
     "updated_at": "2026-10-28T21:19:54.748Z",
     "ended_at": "2026-10-28T19:33:26.803Z",

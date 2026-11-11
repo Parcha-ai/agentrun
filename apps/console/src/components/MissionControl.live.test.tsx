@@ -29,7 +29,7 @@ async function open() {
     const u = new URL(url, "http://serve.test");
     if (u.pathname === "/v2/stats") asked.push(u.search);
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/stats") return json(200, stats());
     if (u.pathname === "/v2/runs" || u.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
     return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
