@@ -163,8 +163,3 @@ export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => lau
  *  STOPPED.notCopied). */
 export type SeedFailed = "unreadable" | "not_copied";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied"];
-
-/** Why `start`'s seed failed, or undefined when it did not: its `seedFailed`, else (a start that names no reason, no
- *  commit and no seedNotes) `not_copied`. */
-export const seedFailed = (start: NonNullable<RunLaunch["learning"]>): SeedFailed | undefined =>
-  start.seedFailed ?? (start.seed === null && start.seedNotes === undefined ? "not_copied" : undefined);

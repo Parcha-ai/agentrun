@@ -1,7 +1,7 @@
 // A learning run whose seed failed at its start says why at its end, in main's words (learning-words.ts STOPPED), from
 // the reason its launch's learning start records (run-launch.ts seedFailed): its agent's learning folder could not be
 // read ("the agent's notes could not be read"), or what was read could not be made into its start ("could not be
-// copied into the run"). A start that names no reason (an older launch) says the latter, as before.
+// copied into the run").
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -24,8 +24,4 @@ test("a start that could not be made from the seed it read: dropped seed_failed,
   const proposal = await endOf({ given: [], seed: null, section: "", seedFailed: "not_copied" });
   assert.deepEqual(proposal, { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) });
   assert.match(proposal.detail, /could not be copied/);
-});
-
-test("an older launch whose failed start names no reason says not copied, as it did", async () => {
-  assert.equal((await endOf({ given: [], seed: null, section: "" })).detail, said.stopped(STOPPED.notCopied));
 });
