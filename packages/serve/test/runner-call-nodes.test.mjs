@@ -226,7 +226,7 @@ test("a paid web_search call node on Parallel: its search sent once, and booked 
   assert.deepEqual(chargeRows(await row.timeline()), [`Tool cost: parallel charged $${parallelSearchFee(3).usd.toFixed(4)} for ${paid[0].model.slice("paid:".length)}`], "one charge row, Parallel's");
 });
 
-test("past the cap, an llm call node's hold is refused before its effect is admitted: the run parks with nothing sent, and a raise sends it once", async (t) => {
+test("past the cap, an llm call node's hold is refused: its effect ends held with nothing sent, the run parks, and a raise sends the call once", async (t) => {
   // Its hold: 32,000 output tokens (none named) at $100 a million, $3.20, over a $1 cap.
   const origin = wordsOrigin(["CALL-ONE"]);
   let atPark;

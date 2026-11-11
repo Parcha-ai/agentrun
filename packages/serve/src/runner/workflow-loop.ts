@@ -92,7 +92,7 @@ export interface WorkflowRunSpec {
 export interface WorkflowHostHooks {
   /** A step the cap holds for a raise lets go here, with the cap's refusal: the loop parks the run (parkOf's pending
    *  budget, in the cap's words) and a later claim resumes the workflow from its journal (the held step was never admitted,
-   *  so nothing is half done), with the raised cap. The caller must let the node's signal, which the loop aborts, end the
+   *  or ended held with nothing sent, so nothing is half done), with the raised cap. The caller must let the node's signal, which the loop aborts, end the
    *  step's wait. */
   park(refusal: CapRefusal): void;
   /** Whether a person's pause is in force (POST /runs/{id}/pause: a `pause` command taken with no `resume` after it). The
