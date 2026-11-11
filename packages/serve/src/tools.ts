@@ -682,7 +682,7 @@ export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TO
 
 /** The sandbox-only tools a run whose shell is `shell` has (resolve-computer.ts shellPlaceOf): every one in a computer
  *  that mounts its folder, bash alone on Mode 2's Archil exec ("local"), none with no shell. The kernel registry's
- *  hostToolDefs says which, the one list the run's tools are bound from. */
+ *  hostToolDefs says which, the one list the run's tools are bound from. The save check asks it for "local" alone. */
 export const shellTools = (shell: ShellPlace): ReadonlySet<string> => new Set(hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name).filter((name) => toolOf(name)?.sandboxOnly));
 
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */

@@ -113,9 +113,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}`), host: true, ...(place.box ? { box: place.box } : {}) });
   }
   // The sandbox-only tools a run on the runner has a shell for here, where its computer setting ({kind: none} for a place
-  // alone) has its shell now (shellOf): bash on Archil's serverless exec in Mode 2; none in Mode 1, which has no shell.
+  // alone) has its shell now (shellOf): bash on Archil's serverless exec in Mode 2 ("local"); none in Mode 1, which has no
+  // shell. A computer that mounts the folder from a runner place (a desktop) is not let here: its shell would share this
+  // server's folder with the runner-only tools, which the runnerOnly check below holds to a sandbox place alone.
   const onRunner = revision.kind === "agentic" && shellOf && (place?.mode ?? "runner") === "runner";
-  const runnerShell = onRunner ? shellTools(await shellOf(revision.computer ?? { kind: "none" })) : new Set<string>();
+  const runnerShell = onRunner && (await shellOf(revision.computer ?? { kind: "none" })) === "local" ? shellTools("local") : new Set<string>();
   /** A shell tool the runner does not run: a box this server runs in is the fix; with none, why it has none
    *  (capabilities' default_reason) and both ways out, fixing that or keeping the agent on the runner without the tool.
    *  Where the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
