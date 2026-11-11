@@ -16,6 +16,7 @@ import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, endedBy, type Journal, type Loop, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
+import { clearWaitEnded } from "../browser-wait-ended.js";
 import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 
@@ -450,6 +451,8 @@ export function startRunner(options: RunnerOptions): Runner {
       if (mayWithdraw) throw new EndNotWithdrawn(claim.runId, error);
       await store.runs.update(claim, { state: data.state, summary: data.summary }, take.length ? { take } : undefined);
     }
+    // An ended run's Screen has no ended-while-waiting state to keep (browser-wait-ended.ts): its row goes with the end.
+    if (store.settings) await clearWaitEnded(store.settings, claim.runId).catch(() => undefined);
   };
 
   /** Ends the run under `claim` stopped on its untaken `stop` (or cancel) row (endRun). False when that end may withdraw a

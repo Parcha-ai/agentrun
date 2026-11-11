@@ -29,8 +29,18 @@ export async function clearWaitEnded(settings: WaitEndedSettings, runId: string)
   await settings.remove(keyOf(runId));
 }
 
-/** The server, for a going run's `none` browser: the ended state, or undefined. One settings read; a value of another
- *  shape is no ended state. */
+/** The server's Screen read: for a run that has ended, nothing, and its row goes (a run that ended with no browser after
+ *  the wait leaves none behind: the runner removes it at the end too, this catches any end that didn't); for a going
+ *  run, the ended state. */
+export async function screenWaitEnded(settings: WaitEndedSettings, runId: string, terminal: boolean): Promise<WaitEnded | undefined> {
+  if (terminal) {
+    await settings.remove(keyOf(runId)).catch(() => undefined);
+    return undefined;
+  }
+  return readWaitEnded(settings, runId);
+}
+
+/** The ended state, or undefined. One settings read; a value of another shape is no ended state. */
 export async function readWaitEnded(settings: Pick<WaitEndedSettings, "get">, runId: string): Promise<WaitEnded | undefined> {
   const value = await settings.get(keyOf(runId));
   if (!value || typeof value !== "object") return undefined;

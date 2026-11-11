@@ -204,6 +204,9 @@ export function personHands(options: {
   const ledgers = new Map<string, Ledger>();
   /** The runs' waits in their claim on the person's answer (wait), by user: the sessions each keeps open, and its lapse. */
   const waits = new Map<string, { tags: ReadonlySet<string>; lapse(words: string): void }>();
+  /** A wait of this process's ended with its browser let go (its window, the cap, its session gone): the run parks on
+   *  its question, and the Screen tab's ended state stays for it (waitEndedHere). */
+  let waitEndedHere = false;
   /** The sessions let go (sessionEnded), by tag: a wait whose hold was being admitted as one went still sees it. */
   const ended = new Set<string>();
   /** `work` on `ledger` once every extension before it is done. */
@@ -550,6 +553,7 @@ export function personHands(options: {
       const end = (words: string, row: string) => {
         if (over) return;
         over = true;
+        waitEndedHere = true;
         settle(words);
         const at = now();
         void note(HOST_PHASE, { summary: row, at });
@@ -571,6 +575,12 @@ export function personHands(options: {
       };
     },
     /** Session `tag` was let go (its release, whatever made it): a wait that kept it open for the person lapses. */
+    /** Whether a wait of this process ended with its browser let go: its claim then parks on the question, and the
+     *  Screen tab's ended state is kept for it; any other release of the claim (the run's end, a park for another
+     *  reason) lets that state go (tools.ts beforeRelease). */
+    waitEndedHere(): boolean {
+      return waitEndedHere;
+    },
     sessionEnded(tag: string): void {
       ended.add(tag);
       for (const wait of [...waits.values()]) if (wait.tags.has(tag)) wait.lapse(WAIT_SESSION_GONE);

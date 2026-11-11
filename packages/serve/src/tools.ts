@@ -564,6 +564,10 @@ const browserTool: ToolEntry = {
         // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
         await spend.ledgerIdle();
       } finally {
+        // The Screen tab's ended state stays only for a claim whose wait just let the browser go (the run parks on its
+        // question); any other release of the claim (the run's end, a park for another reason) lets it go, so a run that
+        // ends with no browser after its wait leaves no row behind (browser-wait-ended.ts).
+        if (host.store && host.claim && !hands.waitEndedHere()) await clearWaitEnded(host.store.settings, host.claim.runId).catch(() => undefined);
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
         // holds go. The asks are the journal's, and stay there with their answers.
         await view.close();

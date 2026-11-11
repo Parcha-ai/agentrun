@@ -148,6 +148,19 @@ test("the wait in the claim is bounded as a hand-over is: past the bound the bro
   assert.equal(await w.server.store.settings.get(`browser_wait_ended:${w.runId}`), undefined, "the new session's launch cleared the ended state");
 });
 
+test("a run parked past its wait that ends with no browser again leaves no ended-state row behind", { timeout: 180_000 }, async (t) => {
+  const w = await asking(t, "Browse the example page.", { FAUX_BROWSER_PERSON_MS: "3000,60000" });
+  await released(w, "parked");
+  assert.ok(await w.server.store.settings.get(`browser_wait_ended:${w.runId}`), "the wait's end kept its row while the run is parked");
+  // Stopped while parked: no new browser opens, and the end itself lets the row go (the runner's endRun).
+  const stopped = await w.server.api("POST", `/runs/${w.runId}/stop`, {});
+  assert.ok(stopped.status < 300, `stop: ${stopped.status} ${JSON.stringify(stopped.body)}`);
+  await released(w, "stopped");
+  assert.equal(w.ops().filter((op) => op.op === "create").length, 1, "no new browser for the end");
+  await until(async () => (await w.server.store.settings.get(`browser_wait_ended:${w.runId}`)) === undefined, "the row removed at the run's end");
+  assert.equal((await w.computer()).ended, undefined, "the ended run's Screen says nothing of the wait");
+});
+
 for (const [act, state] of [["stop", "stopped"], ["cancel", "stopped"]]) {
   test(`a ${act} while the run waits in its claim ends it cleanly: the browser let go and drained before the seal, no orphan session`, { timeout: 180_000 }, async (t) => {
     const w = await asking(t, "Browse the example page.");

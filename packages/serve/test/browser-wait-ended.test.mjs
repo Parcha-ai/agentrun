@@ -3,7 +3,7 @@
 // run's journal; any other `none` says nothing more.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clearWaitEnded, markWaitEnded, readWaitEnded } from "../dist/browser-wait-ended.js";
+import { clearWaitEnded, markWaitEnded, readWaitEnded, screenWaitEnded } from "../dist/browser-wait-ended.js";
 import { computerView } from "../dist/computer-view.js";
 import { personHands } from "../dist/browser-person.js";
 
@@ -37,6 +37,16 @@ test("marked as the wait ends, read back for the run, and gone once any new sess
   await clearWaitEnded(store.settings, "run-a");
   store.rows.set("browser_wait_ended:run-c", { at: 5, why: null });
   assert.equal(await readWaitEnded(store.settings, "run-c"), undefined, "a value of another shape is no ended state");
+});
+
+test("the Screen read of an ended run answers nothing and removes the run's row, so none is left behind", async () => {
+  const store = storeOf();
+  await markWaitEnded(store.settings, "run-done", ENDED);
+  assert.deepEqual(await screenWaitEnded(store.settings, "run-done", false), ENDED, "a going run's ended state is read");
+  assert.ok(store.rows.has("browser_wait_ended:run-done"));
+  assert.equal(await screenWaitEnded(store.settings, "run-done", true), undefined, "an ended run has no ended-while-waiting state");
+  assert.equal(store.rows.has("browser_wait_ended:run-done"), false, "and its row is gone");
+  assert.equal(await screenWaitEnded(store.settings, "run-none", true), undefined, "a run with no row: nothing to remove");
 });
 
 test("each Screen poll's ended state is one settings read, never the run's journal", async () => {
