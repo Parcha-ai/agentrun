@@ -91,6 +91,37 @@ export function bookedCapSpend(entries: readonly EntryLike[]): number | null {
   return spent;
 }
 
+/** The bound of a run's requests since its spend last fit under `capUsd`, as the kernel's overCapOf reads it: each model
+ *  request, in each model session's order, at the figure the cap counts it at, after what the paid tools and decisions
+ *  spent; reset to 0 whenever the spend fits, else grown by each request's bound. What its over-cap row (run-view.ts
+ *  withOverCap) reads to tell a cache miss within that bound from a run that spent past its cap. 0 when nothing ran. */
+export function overCapBound(entries: readonly EntryLike[], capUsd: number): number {
+  const keyed = sessionConversations(entries);
+  const paidConv = keyed.get(TOOL_SESSION);
+  const decisionsConv = keyed.get(DECISION_SESSION);
+  const others = [paidConv, decisionsConv].reduce<number>((sum, conversation) => {
+    if (conversation === undefined) return sum;
+    const read = sessionSpendOf(recordsIn(entries, conversation)).spentUsd;
+    return sum + (read ?? 0);
+  }, 0);
+  const booking = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn).map((e) => Number(e.conversationId)));
+  let running = others;
+  let bound = 0;
+  for (const conversation of booking) {
+    if (conversation === paidConv || conversation === decisionsConv) continue;
+    const read = sessionSpendOf(recordsIn(entries, conversation));
+    for (const { turn, usd } of read.figures) {
+      running += usd ?? 0;
+      bound = running <= capUsd ? 0 : bound + (read.bounds.get(turn) ?? 0);
+    }
+  }
+  return bound;
+}
+
+/** The booking records of `conversation`, as the kernel's session readers take them. */
+const recordsIn = (entries: readonly EntryLike[], conversation: number): SessionRecord[] =>
+  entries.filter((e) => Number(e.conversationId) === conversation && e.kind !== KINDS.sessionKey).map((e) => ({ kind: e.kind, data: (e.data ?? null) as SessionRecord["data"] }));
+
 /** A run's metrics as the end commit writes them (the StoredMetrics JSON on the run row): the timeline's count, with the
  *  effort the run ran at and, on a harness other than pi, the model its revision named. */
 export type RunMetricsStored = RunMetrics & { effort?: string; model?: string };
