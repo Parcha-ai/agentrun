@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import pg from "pg";
 import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
 import { client as pgClient, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
@@ -141,6 +142,71 @@ test("a deploy on Postgres: a second server waits for the first's owner lock ins
   const code = await Promise.race([first.exited, new Promise((resolve) => setTimeout(() => resolve("still running"), 30_000))]);
   assert.equal(code, 1, `the first exits 1 once another server holds its schema: ${first.err.join("\n")}`);
   assert.ok(first.err.some((line) => /another server took the store in the Postgres schema/.test(line)), "saying why");
+});
+
+/** `text` on the test database as `url`'s role, answered with its rows, or the error it was refused with. */
+async function asRole(url, text) {
+  const c = new pg.Client({ connectionString: url });
+  c.on("error", () => undefined);
+  await c.connect();
+  try {
+    return await c.query(text).then((result) => result.rows, (error) => error);
+  } finally {
+    await c.end();
+  }
+}
+
+test("a least-privilege deployment (a host's three roles): the server as the schema's owner with no CREATE on the database migrates and serves; a runner as a write-only role runs what the server started and may not change the schema; a reader with no grants reads nothing", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
+  // The roles a host makes (grep's agentrun_migrator, agentrun_runtime, grep_agentrun_reader): none may create a schema.
+  const migrator = await roleWithoutCreate(t);
+  const runtime = await roleWithoutCreate(t);
+  const reader = await roleWithoutCreate(t);
+  // The schema made ahead by an administrator, owned by the migrator. The runtime role reads and writes the migrator's
+  // tables through its default privileges, set before the server makes any; the reader is granted nothing.
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  await admin(`CREATE SCHEMA ${schema} AUTHORIZATION ${migrator.role}`);
+  await admin(`REVOKE ALL ON SCHEMA ${schema} FROM PUBLIC`);
+  await admin(`GRANT USAGE ON SCHEMA ${schema} TO ${runtime.role}`);
+  await admin(`ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator.role} IN SCHEMA ${schema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${runtime.role}`);
+  await admin(`ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator.role} IN SCHEMA ${schema} GRANT USAGE, SELECT ON SEQUENCES TO ${runtime.role}`);
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const server = cli(t, ["--data", data, "--port", "0", "--faux", FAUX, "--no-runner"], storeEnv(root, migrator.url, schema));
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(await printed(server, /^Open /m))[1]);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "the server migrated the schema and serves");
+  const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
+  assert.equal((await api("POST", "/agents", agent("plain", { place: { mode: "runner" } }))).status, 201);
+  const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The runner as the runtime role: it claims, journals and ends the run on its grants alone.
+  const runner = cli(t, ["runner", "--data", data], { ...storeEnv(root, runtime.url, schema), AGENTRUN_RUNNER_NAME: "runner-runtime", AGENTRUN_SERVE_FAUX: FAUX });
+  const err = [];
+  createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
+  const runnerExit = new Promise((resolve) => runner.once("exit", (code) => (err.push(`exited ${code}`), resolve(code))));
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed", "cancelled"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", `the run, under the runtime role: ${last.status} ${err.join("\n")}`);
+  // A faux run ends before the runner's first renew tick, so the renew is driven here, with the runner stopped: a run
+  // started through the API is claimed, its claim renewed (its lease moving on) and released, all as the runtime role.
+  runner.kill("SIGTERM");
+  await runnerExit;
+  const queued = await api("POST", "/agents/plain/runs", { input: { content: "Again." } });
+  assert.equal(queued.status, 202, JSON.stringify(queued.body));
+  const runtimeStore = await openPostgresStore({ url: runtime.url, schema, role: "runner" });
+  t.after(() => runtimeStore.close());
+  const claim = await runtimeStore.claim(queued.body.run_id, "runner-runtime", { leaseMs: 30_000 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const [renewed] = await runtimeStore.renewMany([claim], { leaseMs: 30_000 });
+  assert.ok(renewed.until > claim.until, `the runtime role renews a claim, its lease moved on: ${claim.until} -> ${renewed.until}`);
+  await runtimeStore.release(renewed);
+  // The runtime role may not change the schema, and the reader may not read or open it.
+  const ddl = await asRole(runtime.url, `CREATE TABLE ${schema}.extra (id int)`);
+  assert.equal(ddl?.code, "42501", `the runtime role may not create a table: ${ddl?.message ?? "created"}`);
+  const drop = await asRole(runtime.url, `DROP TABLE ${schema}.runs`);
+  assert.equal(drop?.code, "42501", `nor drop one: ${drop?.message ?? "dropped"}`);
+  const read = await asRole(reader.url, `SELECT id FROM ${schema}.runs`);
+  assert.equal(read?.code, "42501", `the reader reads nothing: ${read?.message ?? "read"}`);
+  await assert.rejects(openPostgresStore({ url: reader.url, schema, role: "runner" }), "and opens no store");
 });
 
 test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {

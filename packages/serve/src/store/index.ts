@@ -1,5 +1,5 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
-export { AgentArchived, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RunFinal, SchemaVersionUnknown, SIGN_IN_TOMBSTONES_KEPT, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, TriggerFull } from "./store.js";
+export { AgentArchived, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, TriggerFull } from "./store.js";
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpOauth, McpOauthPendingRow, McpPinRow,

@@ -15,7 +15,7 @@ const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 
 const GOLDEN = JSON.parse(readFileSync(new URL("./fixtures/learning-end-golden.json", import.meta.url), "utf8"));
-/** What the server kept on a run's learning before its end (learning.ts KEPT_LEARNING): the run's, not its end's. */
+/** What a run's learning kept before its end (its given and read notes, its seed count, its answer's time and costs): the run's, not its end's. */
 const KEPT = ["given", "read", "seed_notes", "answered_at", "job_cost_usd", "look_back_usd"];
 /** The end's fields as compared: its time and the merge commit's id put aside (`merged` read as whether it is a sha). */
 const comparable = (learning) => {

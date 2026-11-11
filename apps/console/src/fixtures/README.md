@@ -1,8 +1,14 @@
 # Recorded fixtures
 
-Responses of AgentRun Server's `agentrun.v2/0`, recorded from the serve package's dev kit (`packages/serve/dev`: the
-seed on its scripted model; synthetic content, no key, no network). Each file is `{request, status, headers, body}`
-exactly as the server answered. Nothing here is hand-written: re-record instead of editing.
+Responses of AgentRun Server's `agentrun.v2/0`, recorded from a seeded server on its scripted model (synthetic content,
+no key, no network) with the dev kit that has since been removed. Each file is `{request, status, headers, body}` as the
+server answered.
+
+They are kept in step with the contract by editing, not by recording again: when the served document makes a field
+required, it is added to every fixture that answers that shape, with the value today's server sends on the faux model.
+That is how a run's `place` (`{"mode": "runner"}`) and capabilities' `places` (with `default_place`) and `learning` came
+in on 2026-11-11. No test checks the fixtures against the document, so an edit to the contract that changes a shape
+these files hold edits them in the same change. Keep the rest as recorded.
 
 Names: `run.<status>.<state>.<n>` is a run in that status and state, with `.timeline` and `.files` for the same run.
 `run.with-files.*` is a run with an output file and that file's bytes. `error.*` are the server's typed errors.

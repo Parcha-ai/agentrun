@@ -25,6 +25,8 @@ const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
+const { runReflect } = await import("../dist/store-reads/journal.js");
+const { said } = await import("../dist/learning-words.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -105,7 +107,10 @@ async function cliRun(t, { tools, instructions, learned }) {
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) all.push(record);
   const requests = all.filter((record) => record.kind === "runner.request").map((record) => record.data);
   const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
-  return { row, requests, turns };
+  // The run's learning as its end kept it, and its end-of-run turn's submission (none when it was not asked).
+  const kept = await server.learning.proposal(RUN);
+  const reflect = await runReflect(server, RUN, ctx);
+  return { row, requests, turns, kept, reflect, gateway: gw };
 }
 
 test("a CLI run's learned_workflow model node books on the run's one ledger, labelled learned_workflow and priced by the session", async (t) => {
@@ -132,4 +137,11 @@ test("a CLI turn that ends on its own error fails the run in main's words: the h
   const { row } = await cliRun(t, { tools: ["read"], instructions: `Fail with: ${said}`, learned: false });
   assert.equal(row.state, "failed", `the run failed: ${JSON.stringify(row)}`);
   assert.equal(row.summary, `${HARNESS}: ${said}`, "the run's error names its harness first");
+});
+
+test("a CLI run whose only work is its learned workflow, answering, is not asked its end-of-run turn: its learning reads nothing new, at no cost", async (t) => {
+  const { row, kept, reflect } = await cliRun(t, { tools: ["read"], instructions: "Use the learned workflow answer on What is six times seven.", learned: true });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.equal(reflect, undefined, "no end-of-run turn was placed");
+  assert.deepEqual({ state: kept?.proposal?.state, reason: kept?.proposal?.reason, detail: kept?.proposal?.detail, look_back_usd: kept?.proposal?.look_back_usd }, { state: "dropped", reason: "empty", detail: said.onlyWorkflow, look_back_usd: 0 }, JSON.stringify(kept?.proposal));
 });
