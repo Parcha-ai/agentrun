@@ -302,6 +302,20 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
   return { sql, params, expect: { kind: "fenced", runId: claim.runId, epoch: claim.epoch } };
 }
 
+/** `connection` as one read-only snapshot: every read goes through `tx`, a write is refused, and a transaction opened
+ *  inside it is the snapshot itself (Store.snapshot). */
+function snapshotOf(connection: StoreConnection, tx: Tx): StoreConnection {
+  return {
+    dialect: connection.dialect,
+    where: connection.where,
+    get: (sql, ...params) => tx.get(sql, ...params),
+    all: (sql, ...params) => tx.all(sql, ...params),
+    write: () => Promise.reject(new Error("a store snapshot only reads")),
+    transaction: (callback) => callback(tx),
+    close: () => Promise.resolve(),
+  };
+}
+
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
 export function storeOver(connection: StoreConnection, now: () => number): Store {
@@ -1420,6 +1434,10 @@ class SqliteStore implements Store {
    *  readers of one run never share ids, since neither mints any. A run with no journal yet reads as empty. */
   readJournal(runId: string): JournalReads {
     return new RunStorage(this.#db, { runId, epoch: 0 }, this.#now);
+  }
+
+  async snapshot<T>(read: (store: Store) => Promise<T>): Promise<T> {
+    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now)), { read: true });
   }
 
   /** How many journals the store keeps (open, of a claim not released). */
