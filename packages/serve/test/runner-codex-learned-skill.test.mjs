@@ -9,7 +9,7 @@
 // it. On Codex's stand-in (no Codex binary) and a loopback gateway: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -68,6 +68,17 @@ function findAll(dir, name, found = []) {
   return found;
 }
 
+/** The claim's spec, its release first keeping a copy of each CODEX_HOME under `dir` in `kept`: the release sweeps the
+ *  CLI's scratch folder, its home with it, so the test reads the home the run had once the run has settled. */
+function keepingHomes(spec, dir, kept) {
+  return {
+    ...spec,
+    release: async () => {
+      for (const home of findAll(dir, "codex-home")) cpSync(home, join(kept, String(readdirSync(kept).length), "codex-home"), { recursive: true });
+      await spec.release?.();
+    },
+  };
+}
 
 /** A codex learning run on the runner path, on Codex's stand-in, whose model calls read_skill_file with `read` (its
  *  first message is the stand-in's call), the learned skill on the agent's main. Waits for the run to settle (ended, or
@@ -77,6 +88,7 @@ async function codexRead(t, read) {
   standInGuard(t);
   const origin = await gateway(t, "Codex answered.");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-codex-learned-"));
+  const kept = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-codex-learned-homes-"));
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyStandIn(standIn);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -87,6 +99,7 @@ async function codexRead(t, read) {
     await store.close().catch(() => {});
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
+    rmSync(kept, { recursive: true, force: true });
   });
 
   // The learned skill on the agent's learning folder's main: the seed the run's learning start pins.
@@ -121,7 +134,7 @@ async function codexRead(t, read) {
     stopMarginMs: 5_000,
     createLoop: createDispatchLoop({
       launchOf: (runId) => store.runs.launch(runId),
-      resolve: (name, given) => (name === "codex" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined),
+      resolve: (name, given) => (name === "codex" ? createAdapterLoop(async (claim, run) => keepingHomes(await cliRunSpecFromLaunch(given, run, deps, claim), dir, kept)) : undefined),
     }),
   });
   const end = Date.now() + 90_000;
@@ -134,8 +147,10 @@ async function codexRead(t, read) {
   }
   assert.ok(["ended", "parked"].includes(row.state), `the run did its turn (ended, or parked for the next message): ${JSON.stringify(row)}; log ${JSON.stringify(log)}`);
 
-  // Codex's own home for the session, and its session record.
-  const homes = findAll(dir, "codex-home");
+  // Codex's own home for the session, and its session record, as the claim's release found them (keepingHomes): the
+  // release follows the run's end commit, so it is waited for.
+  for (const by = Date.now() + 15_000; !findAll(kept, "codex-home").length && Date.now() < by; ) await new Promise((resolve) => setTimeout(resolve, 25));
+  const homes = findAll(kept, "codex-home");
   assert.equal(homes.length, 1, `one CODEX_HOME for the run: ${JSON.stringify(homes)}`);
   const rollouts = readdirSync(join(homes[0], "sessions"), { recursive: true }).map(String).filter((path) => path.endsWith(".jsonl"));
   assert.ok(rollouts.length >= 1, "Codex recorded its session");

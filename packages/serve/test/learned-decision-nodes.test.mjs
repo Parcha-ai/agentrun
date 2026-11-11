@@ -70,16 +70,16 @@ const learned = (doc) => ({ name: doc.name, description: "Checks a claim", workf
 test("a learned draft with a judge node passes the learn-time check when the run has decision providers, and is refused with none", async (t) => {
   const { registry } = await providers(t);
   const text = JSON.stringify(judgeFlow());
-  assert.deepEqual(draftProblems(dsl, text, [], {}, {}, { providers: registry.providers, default: registry.default }), [], "proposed");
+  assert.deepEqual(draftProblems(dsl, text, [], {}, {}, undefined, { providers: registry.providers, default: registry.default }), [], "proposed");
   assert.match(draftProblems(dsl, text, []).map((p) => p.detail).join("; "), /judge node "check" requires runJudge/, "no decision providers: refused as before");
 });
 
 test("a learned draft whose decision node's provider the run's gate holds to deny is refused at learn time, in the gate's words; one it has no key for too", async (t) => {
   const { registry } = await providers(t);
   const decisions = { providers: registry.providers, default: registry.default };
-  const denied = draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, { ...decisions, gated: { jev: "deny" }, deniedBy: { jev: "agent" } });
+  const denied = draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, undefined, { ...decisions, gated: { jev: "deny" }, deniedBy: { jev: "agent" } });
   assert.match(denied.map((p) => p.detail).join("; "), /This workflow's decision node asks jev, which is set to deny for this agent\. \(the judge node at \/root\/steps\/0\)/);
-  const keyless = draftProblems(dsl, JSON.stringify(judgeFlow("parallel")), [], {}, {}, decisions);
+  const keyless = draftProblems(dsl, JSON.stringify(judgeFlow("parallel")), [], {}, {}, undefined, decisions);
   assert.match(keyless.map((p) => p.detail).join("; "), /names the decision provider parallel, which this host does not have/);
 });
 
@@ -168,7 +168,7 @@ test("a decision provider is a settings key of its own (jev, parallel, openroute
 test("a decision node's provider is refused only on deny: one the gate answers ask for runs, as the runtime hands its keys (policy !== deny)", async (t) => {
   const { registry, sent } = await providers(t);
   const decisions = { providers: registry.providers, default: registry.default };
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, { ...decisions, gated: { jev: "ask" } }), [], "ask is no refusal");
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, undefined, { ...decisions, gated: { jev: "ask" } }), [], "ask is no refusal");
   const book = booking();
   const flow = learned(judgeFlow());
   const out = await runLearned(runOf(flow, { providers: registry, book }, (name) => (name === "jev" ? "ask" : "allow")), flow, { claim: "Six times seven is 42." });

@@ -78,3 +78,14 @@ test("a stop with no runs left says no count, and a deadline after a clean end d
   quiet.stop();
   assert.deepEqual(quiet.said, ["stopping now; runs resume on the next start"]);
 });
+
+test("a stop asked earlier (a signal during the start, handed over once the start is done) keeps its own time: a second signal a window after it stops at once", async () => {
+  const h = harness();
+  h.at(5_000);
+  h.stop(3_000);
+  assert.equal(h.closes(), 1);
+  h.at(5_100);
+  h.stop();
+  assert.deepEqual(h.codes, [130], "a window past the first signal, though not past the hand-over");
+  assert.match(h.said[0], /^stopping now; runs resume on the next start/);
+});
