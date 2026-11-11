@@ -34,7 +34,14 @@ export class SynthesisTooLarge extends Error {
   override name = "SynthesisTooLarge";
 }
 type Spend = { values: number; chars: number; readonly limit: SynthesisBudget };
-const spendOf = (limit: Partial<SynthesisBudget> = {}): Spend => ({ values: 0, chars: 0, limit: { ...SYNTHESIS_BUDGET, ...limit } });
+/** A budget's limits, each field the default unless given as a number (a field given as undefined keeps the default). */
+const spendOf = (limit: Partial<SynthesisBudget> = {}): Spend => ({
+  values: 0,
+  chars: 0,
+  limit: { values: typeof limit.values === "number" ? limit.values : SYNTHESIS_BUDGET.values, chars: typeof limit.chars === "number" ? limit.chars : SYNTHESIS_BUDGET.chars },
+});
+/** A literal's characters as the value it is (a const, an enum's first): its serialized size. */
+const literalChars = (value: unknown): number => JSON.stringify(value)?.length ?? 0;
 function charge(spend: Spend, values: number, chars: number): void {
   spend.values += values;
   spend.chars += chars;
@@ -50,21 +57,24 @@ export function synthesizeInstance(schema: unknown, definitions: Record<string, 
 }
 
 function synthesize(schema: unknown, definitions: Record<string, unknown>, depth: number, spend: Spend): unknown {
-  // Every value it makes is counted before it is made: past the budget it throws, having built no more than the budget.
-  charge(spend, 1, 0);
-  if (depth > 12 || !schema || typeof schema !== "object") return null;
+  // Every value it makes is counted before it is made, once (a $ref, an anyOf or a oneOf is the value it leads to, not one
+  // of its own): past the budget it throws, having built no more than the budget.
+  if (depth > 12 || !schema || typeof schema !== "object") return (charge(spend, 1, 0), null);
   const spec = schema as Record<string, any>;
   if (typeof spec.$ref === "string") {
     const match = /^#\/definitions\/(.+)$/.exec(spec.$ref);
-    return match && definitions[match[1]] ? synthesize(definitions[match[1]], definitions, depth + 1, spend) : null;
+    return match && definitions[match[1]] ? synthesize(definitions[match[1]], definitions, depth + 1, spend) : (charge(spend, 1, 0), null);
   }
-  if (spec.const !== undefined) return spec.const;
-  if (Array.isArray(spec.enum) && spec.enum.length) return spec.enum[0];
+  // A literal is charged its serialized size: one written long in the schema does not escape the character budget.
+  if (spec.const !== undefined) return (charge(spend, 1, literalChars(spec.const)), spec.const);
+  if (Array.isArray(spec.enum) && spec.enum.length) return (charge(spend, 1, literalChars(spec.enum[0])), spec.enum[0]);
   if (Array.isArray(spec.anyOf) && spec.anyOf.length) {
     const branch = spec.anyOf.find((candidate: any) => candidate?.type !== "null") ?? spec.anyOf[0];
     return synthesize(branch, definitions, depth + 1, spend);
   }
   if (Array.isArray(spec.oneOf) && spec.oneOf.length) return synthesize(spec.oneOf[0], definitions, depth + 1, spend);
+  // The one value made below.
+  charge(spend, 1, 0);
   const type = Array.isArray(spec.type) ? spec.type[0] : spec.type;
   if (type === "object" || (!type && spec.properties)) {
     const out: Record<string, unknown> = Object.create(null);
@@ -176,6 +186,13 @@ export type DryRunOptions = {
   /** What the whole dry run may synthesize (SynthesisBudget): its input and every step's answer together. Past it the dry
    *  run stops, as not run ("the schema is too large to synthesize"). SYNTHESIS_BUDGET by default. */
   budget?: Partial<SynthesisBudget>;
+  /** The longest the dry run may take by the clock (ms): past it, it stops at its next node or step, as not run. Read
+   *  from the clock at each, never from a timer, so a dry run that never yields still stops. 60,000 by default. */
+  deadlineMs?: number;
+  /** The most node visits (a loop's body each iteration, a map's body for each item, any node run), whether or not they
+   *  ask anything, before the dry run stops, as not run: a loop whose body asks nothing is no step, so maxSteps alone
+   *  never ends it. Ten times maxSteps by default. */
+  maxVisits?: number;
 };
 
 
@@ -236,10 +253,27 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       throw error;
     }
   };
+  const deadlineMs = opts.deadlineMs ?? 60_000;
+  const deadline = Date.now() + deadlineMs;
+  const maxVisits = opts.maxVisits ?? maxSteps * 10;
+  let visits = 0;
+  const pastDeadline = () => {
+    if (Date.now() > deadline) stop(`The dry run stopped past its ${deadlineMs} ms deadline.`);
+  };
+  /** A node's visit (a loop's body each iteration, a map's body for each item), counted against maxVisits and the
+   *  deadline, so a loop whose body asks nothing (no step) still ends. Synchronous: it reads the clock, never a timer, so
+   *  a run that never yields still stops. */
+  const visit = () => {
+    if (opts.signal?.aborted) stop("The dry run was stopped before it finished.");
+    visits += 1;
+    if (visits > maxVisits) stop(`The dry run stopped after ${maxVisits} node visits: on synthetic values the workflow's loops or maps go on further, asking nothing. Supply input, or lower a loop's maxIters.`);
+    pastDeadline();
+  };
   const step = async () => {
     if (opts.signal?.aborted) stop("The dry run was stopped before it finished.");
     steps += 1;
     if (steps > maxSteps) stop(`The dry run stopped after ${maxSteps} synthetic steps: on synthetic values the workflow's loops or maps go on further. Supply input, or lower a loop's maxIters.`);
+    pastDeadline();
     if (steps % 64 === 0) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (opts.signal?.aborted) stop("The dry run was stopped before it finished.");
@@ -248,6 +282,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
   const runCode = opts.runCode;
   try {
     const result = await runWorkflow(workflow, input, {
+      onVisit: () => visit(),
       sop: opts.sop,
       ...(runCode ? { runCode: async (...args: Parameters<typeof runCode>) => { await step(); return runCode(...args); } } : {}),
       onEvent: (event) => { if (typeof event.label === "string") currentLabel = event.label; },

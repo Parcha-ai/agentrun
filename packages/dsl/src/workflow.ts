@@ -419,6 +419,9 @@ export type WorkflowDeps = {
   sop?: string;
   skill?: string;
   signal?: AbortSignal;
+  /** Called at each node's visit, before it runs (a loop's body each iteration, a map's body for each item): a host that
+   *  bounds the work a run does (a dry run's steps and deadline) counts it here, and throws to stop the run. */
+  onVisit?: (node: WorkflowNode) => void;
   /** Best-effort observation only: thrown errors and rejected promises are ignored.
    * Observers are never awaited. Use required checkpoints for durable lifecycle gates. */
   onEvent?: (event: WorkflowEvent) => void;
@@ -2635,6 +2638,7 @@ function forwardObserver(observer: NonNullable<WorkflowDeps["onEvent"]>, transfo
 }
 
 async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
+  deps.onVisit?.(node);
   deps = withExecutionLocation(deps);
   const observer = deps.onEvent;
   if (observer && !guardedObservers.has(observer)) {

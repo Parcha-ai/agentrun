@@ -46,3 +46,75 @@ test('the budget is the whole dry run\'s and can be set: a small one stops a wor
   notRunTooLarge(await dryRunWorkflow(flow, { input: { question: 'q' }, budget: { values: 20 } }));
   notRunTooLarge(await dryRunWorkflow(flow, { input: { question: 'q' }, budget: { chars: 100 } }));
 });
+
+test('a const or an enum literal is charged its size: a long literal does not escape the character budget', () => {
+  const long = 'x'.repeat(5_000);
+  assert.throws(() => synthesizeInstance({ const: long }, {}, 0, { chars: 1_000 }), { name: 'SynthesisTooLarge' });
+  assert.throws(() => synthesizeInstance({ enum: [{ text: long }] }, {}, 0, { chars: 1_000 }), { name: 'SynthesisTooLarge' });
+  assert.equal(synthesizeInstance({ const: 'short' }, {}, 0, { chars: 1_000 }), 'short');
+});
+
+test('a budget field given as undefined keeps the default: it never lifts the limit', () => {
+  assert.throws(() => synthesizeInstance(grid, {}, 0, { values: undefined, chars: undefined }), { name: 'SynthesisTooLarge' });
+});
+
+test('a $ref, an anyOf or a oneOf is no value of its own: one value is charged per value produced', () => {
+  const definitions = { N: { type: 'number' } };
+  // Each wraps one number: exactly one value, so a budget of one value holds it.
+  for (const schema of [{ $ref: '#/definitions/N' }, { anyOf: [{ type: 'null' }, { type: 'number' }] }, { oneOf: [{ $ref: '#/definitions/N' }] }]) {
+    assert.equal(synthesizeInstance(schema, definitions, 0, { values: 1 }), 0, JSON.stringify(schema));
+  }
+});
+
+test('the budget is shared by the whole dry run: an input and two answers that each fit alone stop it together', async () => {
+  const rows = { type: 'array', minItems: 30, items: { type: 'number' } };
+  const Rows = { type: 'object', properties: { rows }, required: ['rows'] };
+  const flow = {
+    v: 2, name: 'shared', schemas: { Rows },
+    input: { schemaId: 'Rows' }, output: { schemaId: 'Rows', path: 'second' },
+    root: { node: 'chain', steps: [
+      { node: 'extract', label: 'first', instructions: 'Copy.', out: 'Rows', as: 'first' },
+      { node: 'extract', label: 'second', instructions: 'Copy.', out: 'Rows', as: 'second' },
+    ] },
+  };
+  // One Rows is 32 values (the object, the array, 30 numbers): each of the three fits 40 alone; together they are 96.
+  assert.doesNotThrow(() => synthesizeInstance(Rows, {}, 0, { values: 40 }));
+  notRunTooLarge(await dryRunWorkflow(flow, { budget: { values: 40 } }));
+  notRunTooLarge(await dryRunWorkflow(flow, { budget: { values: 80 } }));
+  assert.equal((await dryRunWorkflow(flow, { budget: { values: 100 } })).status, 'passed');
+});
+
+test('a loop whose body asks for nothing (a map over an empty list) and never ends stops at its node visits\' bound, within a time bound', async () => {
+  const Q = { type: 'object', properties: { items: { type: 'array', maxItems: 0, items: { type: 'string' } }, done: { type: 'boolean' } }, required: ['items', 'done'] };
+  const flow = {
+    v: 2, name: 'spin', schemas: { Q, Answer },
+    input: { schemaId: 'Q' }, output: { schemaId: 'Answer', path: 'answer' },
+    root: { node: 'chain', steps: [
+      { node: 'loop', label: 'spin', maxIters: 100_000_000, until: { predicate: 'field_true', path: 'done' }, body: { node: 'map', label: 'each', itemsPath: 'items', as: 'seen', body: { node: 'extract', label: 'one', instructions: 'x', out: 'Answer', as: 'one' } } },
+      { node: 'extract', label: 'answer', instructions: 'Answer.', out: 'Answer', as: 'answer' },
+    ] },
+  };
+  const started = Date.now();
+  const result = await dryRunWorkflow(flow, { input: { items: [], done: false }, maxSteps: 500 });
+  assert.ok(Date.now() - started < 5_000, `stopped in ${Date.now() - started} ms`);
+  assert.equal(result.status, 'not_run', JSON.stringify(result));
+  assert.ok(result.skipped?.some((reason) => /stopped after 5000 node visits/.test(reason)), `ten times maxSteps by default: ${JSON.stringify(result.skipped)}`);
+  const capped = await dryRunWorkflow(flow, { input: { items: [], done: false }, maxVisits: 50 });
+  assert.ok(capped.skipped?.some((reason) => /stopped after 50 node visits/.test(reason)), JSON.stringify(capped.skipped));
+});
+
+test('a dry run stops by the clock too: past its deadline it ends not run', async () => {
+  const Q = { type: 'object', properties: { items: { type: 'array', maxItems: 0, items: { type: 'string' } }, done: { type: 'boolean' } }, required: ['items', 'done'] };
+  const flow = {
+    v: 2, name: 'slow', schemas: { Q, Answer }, input: { schemaId: 'Q' }, output: { schemaId: 'Answer', path: 'answer' },
+    root: { node: 'chain', steps: [
+      { node: 'loop', label: 'spin', maxIters: 100_000_000, until: { predicate: 'field_true', path: 'done' }, body: { node: 'map', label: 'each', itemsPath: 'items', as: 'seen', body: { node: 'extract', label: 'one', instructions: 'x', out: 'Answer', as: 'one' } } },
+      { node: 'extract', label: 'answer', instructions: 'Answer.', out: 'Answer', as: 'answer' },
+    ] },
+  };
+  const started = Date.now();
+  const result = await dryRunWorkflow(flow, { input: { items: [], done: false }, maxSteps: 1e12, maxVisits: 1e12, deadlineMs: 200 });
+  assert.ok(Date.now() - started < 5_000, `stopped in ${Date.now() - started} ms`);
+  assert.equal(result.status, 'not_run', JSON.stringify(result));
+  assert.ok(result.skipped?.some((reason) => /past its 200 ms deadline/.test(reason)), JSON.stringify(result.skipped));
+});
