@@ -76,8 +76,7 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
 export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 /** Each note's count of runs that were given it and that read it, by its file, over runs' note files (usage.ts
- *  notesOf, lineNotesOf): a held run's from its learning, an ended one's from its ledger line. A run counts a note
- *  once each way. */
+ *  notesOf). A run counts a note once each way. */
 export function noteRuns(runs: readonly (NoteFiles | null | undefined)[]): NoteRuns {
   const out: NoteRuns = new Map();
   for (const files of runs) {
@@ -96,7 +95,10 @@ export function noteRuns(runs: readonly (NoteFiles | null | undefined)[]): NoteR
 /** What a run's learning tells its impact (learning-run.ts ofAgent), from memory or from its ledger line: how it
  *  ended and when, how many notes it started from, when its answer was final and its costs; `grade_usd` once it ended
  *  (0 when nothing was graded), and `look_back_usd` 0 for a run that never looked back. */
-export type ImpactLearning = { state: string; reason: string | null; at: string; seed_notes?: number; answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null; grade_usd?: number | null };
+export type ImpactLearning = { state: string; reason: string | null; at: string; seed_notes?: number; seed_skills?: number; seed_workflows?: number; answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null; grade_usd?: number | null };
+/** How many learned items a run started from: its notes, the learned skills it was offered and the learned workflows its
+ *  learned_workflow tool could run. */
+const seededItems = (learning: ImpactLearning | null | undefined): number => (learning?.seed_notes ?? 0) + (learning?.seed_skills ?? 0) + (learning?.seed_workflows ?? 0);
 /** A completed run as its impact counts it: from its start to its answer, its job's own cost, and what its learning
  *  cost (undefined for a run with learning off; null when unknown). */
 type Figures = { seconds: number; cost: number | null; learning?: number | null };
@@ -132,15 +134,16 @@ function figuresOf(row: RunRow, learning: ImpactLearning | null | undefined): Fi
   return { seconds: (answered - Date.parse(row.startedAt)) / 1000, cost, learning: typeof back === "number" && typeof grade === "number" ? back + grade : null };
 }
 /** What learning changed for an agent, from its run rows (`rows`) and what its runs' learning says (`learningOf`),
- *  never a run's files. `after`: its completed agentic runs that started from at least one active note. `before`: its
- *  completed agentic runs that started before its first note, the earlier of its first merge's end and the start of its
- *  first run that started from a note (a person's note comes first that way); none of them could have. Each side's
+ *  never a run's files. `after`: its completed agentic runs that started from at least one learned item: an active note,
+ *  a learned skill it was offered or a learned workflow its learned_workflow tool could run (seededItems). `before`: its
+ *  completed agentic runs that started before its first item, the earlier of its first merge's end and the start of its
+ *  first run that started from one (a person's note comes first that way); none of them could have. Each side's
  *  figures (sideOf, figuresOf): its time to the answer in seconds to a tenth, its job's own cost, what learning cost.
  *  An imported or archived run is on neither side, nor is a later one with learning off or seeded with no note (every
  *  note retired), nor one whose learning predates these figures. Null unless both sides hold 2 runs or more. */
 export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow) => ImpactLearning | null | undefined): Impact {
   const done = rows.filter((row) => row.kind === "agentic" && !row.importedFrom && !row.archivedAt && row.state === "completed" && row.endedAt);
-  const after = done.filter((row) => (learningOf(row)?.seed_notes ?? 0) > 0);
+  const after = done.filter((row) => seededItems(learningOf(row)) > 0);
   const merges = rows.flatMap((row) => {
     const learning = learningOf(row);
     return learning?.state === "merged" ? [Date.parse(learning.at)] : [];

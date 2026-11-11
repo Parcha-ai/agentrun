@@ -827,7 +827,7 @@ function sectionFor<D extends PageDriver>(c: Custody<D>, names: ReadonlySet<stri
       if (!input.agent.tools.some((tool) => names.has(tool.name))) return undefined;
       const config = await input.read.snapshot(c.Config, input.conversationId, context);
       const offered = (tool: string) => input.agent.tools.some((t) => t.name === tool && names.has(tool));
-      return [browserSection({ idleReleaseS: config?.policy.idleReleaseS ?? UNCONFIGURED.policy.idleReleaseS }, { downloads: offered("browser_downloads"), upload: offered("browser_upload") }), c.options.section?.addendum].filter(Boolean).join("\n\n");
+      return [browserSection({ idleReleaseS: config?.policy.idleReleaseS ?? UNCONFIGURED.policy.idleReleaseS }, { downloads: offered("browser_downloads"), upload: offered("browser_upload"), signedIn: c.options.signIns ?? !!c.options.sessionVault }), c.options.section?.addendum].filter(Boolean).join("\n\n");
     },
   };
 }

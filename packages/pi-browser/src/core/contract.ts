@@ -43,8 +43,16 @@ const snapshot: ToolContract = {
  *  cookies across pages always, its agent's saved sign-ins only on a plane that has them (a local Chrome keeps none). */
 export const BROWSER_KEEPS = Object.freeze({
   cookies: "It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies.",
-  signIns: "It keeps this agent's saved sign-ins and cookies: use it for anything behind a sign-in, or a page that depends on an earlier one.",
+  signIns: "This browser opens with this agent's saved browser profile: a site the agent was signed in to there opens signed in here, and only here (web_fetch reads every page signed out). Use it for anything behind a sign-in, or a page that depends on an earlier one.",
 });
+
+/** The prompt section's line for a browser that opens with its agent's saved profile: said once, before the tools, so the
+ *  model knows of it when it picks between the browser and web_fetch (a description alone was not enough). It promises no
+ *  sign-in: on an agent's first run the profile is new and holds none (sign-ins-store.ts makes it), so the claim is
+ *  conditional, and the steer away from web_fetch holds either way. A sign-in page means this session has none, never
+ *  that none is saved: a vault restore that fails starts the session signed out and leaves the saved sign-in as it was. */
+export const SIGNED_IN_LINE =
+  "This browser opens with this agent's saved browser profile, so a site the agent was signed in to there opens signed in here. For a page that needs you signed in, use the browser (run, snapshot, browser_read), not web_fetch: web_fetch reads every page signed out. If the browser shows a sign-in page, this session has no sign-in for that site.";
 
 const runDescription = (signIns: boolean): string =>
   `Browse and automate websites in the persistent browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
@@ -201,13 +209,14 @@ export const browserToolsFor = (signIns: boolean): readonly ToolContract[] =>
 export const BROWSER_TOOL_NAMES = Object.freeze(BROWSER_TOOLS.map((tool) => tool.name));
 
 /** Depends only on configuration, never live state, so every request renders the same text and keeps the prompt cache. */
-export function browserSection(policy: { readonly idleReleaseS: number }, offered: { readonly downloads?: boolean; readonly upload?: boolean } = {}): string {
+export function browserSection(policy: { readonly idleReleaseS: number }, offered: { readonly downloads?: boolean; readonly upload?: boolean; readonly signedIn?: boolean } = {}): string {
   const idle = Math.round(policy.idleReleaseS);
   const download = offered.downloads
     ? " A file the page offers as a download: click its link, then call browser_downloads, which copies it into the workspace under downloads/ (listed in downloads/manifest.json); open it with read."
     : " A file the page offers as a download cannot be collected from the browser: take the link's URL from the page and fetch it with `web_fetch` when that tool is offered, or cite the page that links it.";
   return [
     "You control one remote browser:",
+    ...(offered.signedIn ? [SIGNED_IN_LINE] : []),
     "- snapshot: the active page's accessibility tree, with bracketed element IDs for run actions.",
     "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\" (a goto action \"op\" and \"url\"), never \"kind\" or \"ref\". An agent's browser computer takes actions only.",
     "- screenshot: the rendered page as an image.",
