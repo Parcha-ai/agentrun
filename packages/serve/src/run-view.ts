@@ -323,7 +323,7 @@ export interface RunFacts {
   budgetWaiting(): boolean;
   /** A workflow run paused in its process (pausedIn(run.dir)). */
   paused(): boolean;
-  /** The ask its agent made for the person in its browser the run waits on (askShown(run.dir, run.rows)). */
+  /** The ask its agent made for the person in its browser the run waits on (browser-commands.ts browserAsk, over its journal). */
   browserAsk(): PendingAsk | undefined;
   /** The ask its agent made for the person on its desktop or phone the run waits on (computer-commands.ts computerAsk). */
   computerAsk?(): ComputerAsk | undefined;

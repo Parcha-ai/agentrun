@@ -299,7 +299,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       onConversation: () => {},
       beforeResume: () => {},
       beforeRelease: () => {},
-      handoverInJournal: true,
     };
     const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
     // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an
