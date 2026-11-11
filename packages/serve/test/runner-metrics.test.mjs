@@ -115,3 +115,22 @@ test("a CLI run's metrics are its booking's tokens and requests, each request of
   const none = cliRunMetrics(root, bookedSpend(root, "model"), { model: "anthropic/claude-haiku-5-5" });
   assert.deepEqual([none.requests, none.input, none.models], [0, 0, {}]);
 });
+
+// #2480 review (spendcap-1): a CLI run's model requests are counted by the model each one was sent on (its runner.request's
+// model), never all on the run's: a learned node on another tier (#2408) or the hosted web_search runs on another model.
+test("a CLI run's models count each request on the model its booking names: the run's model, and a tier model beside it, each once", async () => {
+  const { bookedSpend, cliRunMetrics } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const root = [e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 })];
+  const all = [
+    ...root,
+    e(7, 2, "runner.request", { turn: 1, model: "claude-haiku-5-5" }),
+    e(7, 3, "runner.turn", { turn: 1, usd: 0.002, bookedUsd: 0.002, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
+    e(7, 4, "runner.request", { turn: 2, model: "claude-sonnet-5-5" }),
+    e(7, 5, "runner.turn", { turn: 2, usd: 0.004, bookedUsd: 0.004, usage: { input: 20, output: 8, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
+  ];
+  const metrics = cliRunMetrics(root, bookedSpend(all, "model"), { model: "anthropic/claude-haiku-5-5" });
+  assert.deepEqual(metrics.models, { "anthropic/claude-haiku-5-5": 1, "claude-sonnet-5-5": 1 });
+  assert.equal(metrics.model, "anthropic/claude-haiku-5-5", "the run's model");
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 30, 13], "tokens stay totalled");
+});
