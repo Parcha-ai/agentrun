@@ -5,12 +5,14 @@
 //
 // --before records into <file> the id of every sandbox E2B lists with the provider's label agentrun.computer=1
 // (Sandbox.list with that metadata, running and paused ones: e2b@2.63.0 dist/index.mjs:5974-5986, 5793-5835). --after
-// lists them again, kills (Sandbox.kill) every one whose id is not in <file>, then reads each of those back with getInfo
-// until E2B no longer has it (SandboxNotFoundError, index.mjs:5431) and no longer lists it, up to 60 s each, and prints
-// one JSON line, {"swept":n,"gone":m,"stillThere":[ids]}: swept is every labelled sandbox it found that was not there
-// before, and gone + stillThere.length = swept. A sandbox in <file> is never touched: no call names it. Exit 0 when
-// every swept sandbox is gone, 1 when one is still there, 2 on a usage error, a before file it cannot read, a missing
-// key, or a listing E2B refused (nothing is killed then).
+// lists them again, kills (Sandbox.kill) every one whose id is not in <file> and whose metadata carries a conformance
+// run's label (agentrun.conformance, RUN_LABEL), then reads each of those back with getInfo until E2B no longer has it
+// (SandboxNotFoundError, index.mjs:5431) and no longer lists it, up to 60 s each, and prints one JSON line,
+// {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}: swept is every conformance sandbox it found that was not there
+// before, gone + stillThere.length = swept, and leftAlone counts the new labelled sandboxes with no conformance label,
+// which another user of the account made during the run: never touched. A sandbox in <file> is never touched either:
+// no call names it. Exit 0 when every swept sandbox is gone, 1 when one is still there, 2 on a usage error, a before
+// file it cannot read, a missing key, or a listing E2B refused (nothing is killed then).
 //
 // It reads COMPUTER_E2B_API_KEY and COMPUTER_E2B_DOMAIN as the conformance module does (settingsFromEnv in ./e2b.ts)
 // and builds the provider with create(): the key passed to every SDK call explicitly, an ambient E2B_SANDBOX_URL
@@ -20,6 +22,7 @@ import { COMPUTER_LABEL } from "../drift.js";
 import { create, type E2BProvider, type E2BSandboxClass } from "../e2b.js";
 import { isCommand } from "../entry.js";
 import { E2B_ENV as ENV, settingsFromEnv } from "./e2b.js";
+import { RUN_LABEL } from "./runner.js";
 import { waitUntil } from "../wait.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -42,8 +45,9 @@ export interface SweepIo {
 
 const USAGE = `usage: node packages/computer/dist/conformance/e2b-sweep.js --before <file> | --after <file>
   --before <file>  record the id of every sandbox E2B lists with ${COMPUTER_LABEL}=1 into <file>
-  --after <file>   kill every sandbox listed with ${COMPUTER_LABEL}=1 whose id is not in <file>, read each back until
-                   E2B no longer has it (up to 60 s each), and print {"swept":n,"gone":m,"stillThere":[ids]}
+  --after <file>   kill every sandbox listed with ${COMPUTER_LABEL}=1 and ${RUN_LABEL} whose id is not in <file>, read
+                   each back until E2B no longer has it (up to 60 s each), and print
+                   {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}; a new one with no ${RUN_LABEL} is left alone
   settings: ${ENV.key} (required) and ${ENV.domain}, as the conformance module reads them; never E2B_API_KEY
 exit: 0 every swept sandbox is gone, 1 one is still there, 2 usage error, unreadable before file, no key, or a refused listing`;
 
@@ -109,7 +113,10 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		return 0;
 	}
 	const known = before;
-	const fresh = listed.value.filter((sb) => !known.has(sb.id)).map((sb) => sb.id);
+	const added = listed.value.filter((sb) => !known.has(sb.id));
+	// Only a conformance run's computers: one another user of the account made during the run is not this sweep's.
+	const fresh = added.filter((sb) => Object.hasOwn(sb.labels, RUN_LABEL)).map((sb) => sb.id);
+	const leftAlone = added.length - fresh.length;
 	for (const id of fresh) {
 		const killed = await provider.killById(id);
 		if (!killed.ok) await write(stderr, `${id} was not killed: ${killed.error.message}\n`);
@@ -133,7 +140,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		}),
 	);
 	const stillThere = fresh.filter((_, i) => !gone[i]);
-	await write(stdout, `${JSON.stringify({ swept: fresh.length, gone: fresh.length - stillThere.length, stillThere })}\n`);
+	await write(stdout, `${JSON.stringify({ swept: fresh.length, gone: fresh.length - stillThere.length, stillThere, leftAlone })}\n`);
 	return stillThere.length === 0 ? 0 : 1;
 }
 
