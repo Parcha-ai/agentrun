@@ -574,8 +574,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             // item alone: said as takenOnMain says it, and nothing of it learned.
             // A merge already on main (a resume after its commit): what it wrote is what its files say, so each note is
             // settled by the files: one written is kept as the grade kept it, one not written is left out (as takenOnMain
-            // or the commit says why).
-            const settled = result.already ? resumedOf(proposal, graded.verdict, verdict, result, onMain) : leftOf(merging, verdict, result.left ?? []);
+            // or the commit says why). It starts from the grade as the first attempt merged by it: a pair dropped whole
+            // (pairedOf) stays dropped.
+            const settled = result.already ? resumedOf(proposal, pairedOf(graded.verdict, together), verdict, result, onMain) : leftOf(merging, verdict, result.left ?? []);
             if (!settled.verdict.items.some((item) => item.keep) && !result.files.length) {
               await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(settled.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
               return { state: "ended" };
