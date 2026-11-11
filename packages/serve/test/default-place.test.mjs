@@ -1,6 +1,5 @@
 // A new agent's place: the box is the default machine. An agentic definition that names no place is saved with the
-// Docker box as its place wherever this server has docker (ready, or preparing: its first run waits for the image with
-// one timeline row), and one that names no tools gets a shell (bash). Where docker is not there, a new agent is saved as
+// Docker box as its place wherever this server has docker, and one that names no tools gets a shell (bash). Where docker is not there, a new agent is saved as
 // before, with no place, and runs on the runner; capabilities say why (places.default_reason). The default is stamped on
 // the revision at its create, so an agent saved before keeps running where it ran: a stored revision with no place is the
 // runner, whatever this server has now. A workflow is never given a box, and an explicit runner is kept. Everything runs
@@ -19,7 +18,6 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const DOCKER = { mode: "sandbox", box: "docker" };
 const RUNNER = { mode: "runner" };
-const BUILDING = "Preparing the box image: building it (python, git, curl, node, npm, rg)…";
 /** What a new agent in the box that names no tools gets: bash, and the background tools (background.ts). */
 const SHELL = ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
 

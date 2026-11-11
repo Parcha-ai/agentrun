@@ -91,11 +91,9 @@ node packages/serve/dist/cli.js
 Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker (on by default; set
 AGENTRUN_BOXES to change). docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
 github.com, and codeload.github.com.` (on Linux; elsewhere it says why the box has no
-network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
-about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
-(building the box image (python, git, curl, node, npm, rg)).`, and the log `event=box_image ... state=preparing`, then
-`state=ready` with how long it took; a later start finds it built. A run that needs its box sooner waits for it, with a
-row on its timeline saying so. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
+network: [Sandbox](#sandbox)). The first sandbox run builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
+about 300 MB, a minute or two, the build alone on the network), with a row on its timeline saying so; a later run finds
+it built. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
 where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a sandbox agent,
 run it, watch it, and read the file it wrote:
 
@@ -140,9 +138,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
 `wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
-One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)), and with a Docker box,
-`event=box_image` says whether its image is `ready`, `preparing` (being built or pulled) or `unavailable` and why, again
-when that ends; quiet keeps them too.
+One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -305,8 +301,7 @@ remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox"
 place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
 The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
-(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
-run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
+(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker. The place is written on the agent's first revision, so its answers
 show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
 "bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
 ([background processes](#background-processes)). A definition that
@@ -334,8 +329,8 @@ the sandbox place as its `fix`), and a workflow's place is `runner` or none (`42
 its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
 each box's own reason) when no box this server has can run it.
 
-`GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready`,
-`preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
+`GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready` or
+`unavailable`) and, when it is unavailable, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
 `capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
@@ -625,25 +620,19 @@ is Modal's default sandbox runtime (gVisor), not a virtual machine: the server d
 
 ### The box's image
 
-A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
-its digest) with git, curl, node and npm (Debian's `nodejs` and `npm`), rg (`ripgrep`), `socat` (the relay to the box's
-network proxy, when it has one) and their certificates, about 360 MB. Its
-recipe is `BOX_RECIPE` in `src/box-image.ts`, its base `BOX_BASE` there. The server builds it on first use
-(`docker build`, at most 10 minutes, its context a private directory under `TMPDIR` holding the recipe alone as its
-`Dockerfile`, removed after), tags it with the recipe's hash (`agentrun-box:<12 hex>`) and labels it with the whole hash
-(`agentrun.box-image`), and builds again only when the recipe changes: a start that finds the image with this recipe's
-hash uses it. To move the base, read the tag's index digest again from Docker Hub (the comment beside `BOX_BASE` says
-how) and put it there: the recipe's hash changes, and so does the image's tag, so the next start builds it. The build
-reaches the network, for the base image and apt; a box made from it never does through Docker's (`--network none`). A build that fails
-leaves the box unavailable with the reason ([Boxes](#boxes)). Images of older recipes stay until you remove them:
-`docker image ls --filter label=agentrun.box-image` lists them all, and `docker image rm agentrun-box:<12 hex>` removes
-one.
+A Docker box's computer starts from the computer package's own image by default: python 3.12 (`python:3.12-slim`,
+pinned by its digest) with git, curl, node and npm, rg and `socat` (the relay to the computer's egress proxy), about
+360 MB. Its recipe is `DOCKER_RECIPE` in `packages/computer/src/docker/image.ts`. The Docker provider builds it on the
+first run that needs it, tags it with the recipe's hash (`agentrun-computer:<12 hex>`) and labels it with the whole hash
+(`agentrun.computer.recipe`), and builds again only when the recipe changes; the run waiting on the build shows it on its
+timeline. Nothing is built or pulled at the server's start. Images of older recipes stay until you remove them:
+`docker image ls --filter label=agentrun.computer.recipe` lists them. An `agentrun-box:*` image an earlier server built
+is used by nothing: `docker image rm` it.
 
-A box reaches its package registries (on Linux), so `pip install` and `npm install` work in it, but not `apt-get`: the
-box runs as this server's user, with no root. For other tools, name another image
-in `AGENTRUN_DOCKER_IMAGE`: the server then pulls it when Docker has none (at most 10 minutes) and builds nothing.
-This image, its build and the wait for it are the Docker box's alone: a Daytona box is made by the server from
-Daytona's own image, and a Daytona run never waits on this one.
+A box reaches its package registries, so `pip install` and `npm install` work in it, but not `apt-get`: the box runs as
+this server's user, with no root. For other tools, name another image in `AGENTRUN_DOCKER_IMAGE`: the provider then pulls
+it on the first run that needs it, and builds nothing. This image is the Docker box's alone: a Daytona or Modal box
+starts from its provider's own.
 
 ```sh
 AGENTRUN_DOCKER_IMAGE=python:3.12-bookworm AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
@@ -770,7 +759,7 @@ own network, whatever the list says.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
 `npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers
-(`ready`, or `preparing` while its image is built or pulled, as [the box's image](#the-boxs-image) says); `AGENTRUN_BOXES`,
+(`ready`); `AGENTRUN_BOXES`,
 when set, lists what it probes, and `AGENTRUN_BOXES=none` probes nothing. One log line says what it found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...

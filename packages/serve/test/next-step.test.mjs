@@ -170,19 +170,17 @@ test("the banner says in words which boxes are ready: none with nothing enabled,
   assert.deepEqual([bash.available, bash.reason], [true, undefined], "a box can run it");
 });
 
-test("the banner's words for each mix of boxes: ready, preparing (a box whose image is still pulled), listed and not ready", () => {
+test("the banner's words for each mix of boxes: ready, listed and not ready", () => {
   const off = (id, reason) => ({ id, available: false, reason });
   const docker = { id: "docker", available: true };
   const rest = [off("bwrap", "the bwrap box is not in this release yet: use the docker box"), off(VM, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`), off("daytona", "needs DAYTONA_API_KEY")];
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"])), "Boxes: docker is ready, so sandbox agents run their tools there.");
   assert.equal(boxesLine([docker, ...rest], new Set(["docker", "daytona"])), "Boxes: docker is ready, so sandbox agents run their tools there. daytona: needs DAYTONA_API_KEY.", "a listed box that is not ready says why");
-  assert.equal(boxesLine([{ ...docker, state: "preparing", reason: "pulling debian:bookworm-slim" }, ...rest], new Set(["docker"])), "Boxes: docker is preparing (pulling debian:bookworm-slim).");
   assert.equal(boxesLine([off("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun"), ...rest], new Set(["docker"])), `Boxes: none is ready, so sandbox agents do not run here. docker: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun. ${VM}: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}. daytona: needs DAYTONA_API_KEY.`);
   // AGENTRUN_BOXES not set at all: docker alone, said to be on by default, or why new agents run on the runner.
   const ON = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"]), "none", true), ON);
-  assert.equal(boxesLine([{ ...docker, state: "preparing", reason: "pulling debian:bookworm-slim" }, ...rest], new Set(["docker"]), "none", true), `${ON} docker is preparing (pulling debian:bookworm-slim).`);
-  assert.equal(boxesLine([{ ...docker, network: "none", network_reason: "a Docker in a VM" }, ...rest], new Set(["docker"]), "none", true), `${ON} docker boxes have no network: a Docker in a VM.`);
+  assert.equal(boxesLine([{ ...docker, network: "none", network_reason: "AGENTRUN_BOX_ALLOW is none" }, ...rest], new Set(["docker"]), "none", true), `${ON} docker boxes have no network: AGENTRUN_BOX_ALLOW is none.`);
   const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
   assert.equal(boxesLine([off("docker", NO_DOCKER), ...rest], new Set(["docker"]), "none", true), `Boxes: none, so new agents run on the runner. ${NO_DOCKER}.`);
 });

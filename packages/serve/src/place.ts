@@ -9,7 +9,7 @@
 // mode.
 //
 // The box is a new agent's default machine: an agentic definition that names no place is saved, at its create, with the
-// Docker box as its place wherever this server has docker (ready, or preparing), and with bash when it names no tools
+// Docker box as its place wherever this server has docker, and with bash when it names no tools
 // (newAgentPlace). A revision that names no place resolves the same way at each run (defaultPlaceOf): this server's
 // default_place, so where docker is there now it runs in the Docker box, and the runner where it is not. A workflow, and a
 // revision with a tool the box refuses, run on the runner.
@@ -35,8 +35,7 @@ export function boxAvailability(registry: readonly BoxOffer[]): BoxOffer[] {
   });
 }
 
-/** The place a new agentic definition that names none is saved with: the Docker box where this server has it, ready or
- *  preparing (its first run waits for the image); else none, so the agent runs on the runner as it did before, with
+/** The place a new agentic definition that names none is saved with: the Docker box where this server has it; else none, so the agent runs on the runner as it did before, with
  *  `reason` saying why, in docker's own words. A workflow is never given one. */
 export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } | { reason: string } {
   const docker = boxAvailability(registry).find((box) => box.id === "docker");
@@ -67,19 +66,13 @@ export function noBoxReason(registry: readonly BoxOffer[]): string | undefined {
   return `no box is set up on this server: ${boxes.map((box) => `${box.id} is unavailable (${box.reason ?? "no reason given"})`).join("; ")}`;
 }
 
-/** The start banner's words on the boxes: which are ready for a sandbox agent's tools, which are still preparing (an
- *  available box whose `state` says so, with its reason: what it is pulling), then why each box is not that
- *  AGENTRUN_BOXES lists (`listed`), or, when none is ready or preparing, each box runs execute in, with what to do.
+/** The start banner's words on the boxes: which are ready for a sandbox agent's tools, then why each box is not that
+ *  AGENTRUN_BOXES lists (`listed`), or, when none is ready, each box runs execute in, with what to do.
  *  `byDefault`, with AGENTRUN_BOXES not set at all: short, docker alone, said to be on by default, or why it is not. */
 export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>, allow: readonly string[] | "none" = "none", byDefault = false): string {
   const boxes = boxAvailability(registry);
-  const preparing = (box: BoxOffer) => (box as { state?: unknown }).state === "preparing";
-  const ready = boxes.filter((box) => box.available && !preparing(box)).map((box) => box.id);
-  const coming = boxes.filter((box) => box.available && preparing(box));
-  const said = [
-    ...(ready.length ? [`${new Intl.ListFormat("en", { type: "conjunction" }).format(ready)} ${ready.length === 1 ? "is" : "are"} ready, so sandbox agents run their tools there.`] : []),
-    ...coming.map((box) => sentence(`${box.id} is preparing${box.reason ? ` (${box.reason})` : ""}`)),
-  ];
+  const ready = boxes.filter((box) => box.available).map((box) => box.id);
+  const said = ready.length ? [`${new Intl.ListFormat("en", { type: "conjunction" }).format(ready)} ${ready.length === 1 ? "is" : "are"} ready, so sandbox agents run their tools there.`] : [];
   const none = !said.length;
   const why = boxes.filter((box) => !box.available && (listed.has(box.id) || (none && RUN_BOXES.includes(box.id))));
   // What an available box's programs reach, as capabilities say (`network`, `network_reason`, `places.allow`).
@@ -89,8 +82,7 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
   if (byDefault) {
     const docker = boxes.find((box) => box.id === "docker");
     if (!docker?.available) return `Boxes: none, so new agents run on the runner. ${sentence(docker?.reason ?? "Docker is not set up")}`;
-    const coming = preparing(docker) ? ` docker is preparing${docker.reason ? ` (${docker.reason})` : ""}.` : "";
-    return [`Boxes: docker (on by default; set ${BOXES_ENV} to change).${coming}`, ...reach].join(" ");
+    return [`Boxes: docker (on by default; set ${BOXES_ENV} to change).`, ...reach].join(" ");
   }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
 }
@@ -102,12 +94,11 @@ export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[]
   const fresh = newAgentPlace(registry);
   return { modes: [...PLACE_MODES], ...("place" in fresh ? { default_place: fresh.place } : { default_place: { mode: "runner" } as Place, default_reason: fresh.reason }), boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
 };
-/** A box with its state: what the server set (a Docker box whose image is coming is `preparing`), else `ready` when it
- *  is available and `unavailable` when not; and, on an available box, its network as the server set it, with
+/** A box with its state, `ready` when it is available and `unavailable` when not; and, on an available box, its network as the server set it, with
  *  `network_reason` when it is none for a cause of its own. */
-const stated = ({ state, network, network_reason, ...offer }: BoxOffer): BoxOffer => ({
+const stated = ({ state: _state, network, network_reason, ...offer }: BoxOffer): BoxOffer => ({
   ...offer,
-  state: offer.available ? (state ?? "ready") : "unavailable",
+  state: offer.available ? "ready" : "unavailable",
   ...(offer.available && network ? { network } : {}),
   ...(offer.available && network === "none" && network_reason ? { network_reason } : {}),
 });

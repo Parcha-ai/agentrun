@@ -66,7 +66,7 @@ test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answerin
   const { api } = server;
   const places = await placesOf(api);
   assert.equal(dockerOf(places).available, true, JSON.stringify(dockerOf(places)));
-  assert.ok(["ready", "preparing"].includes(dockerOf(places).state));
+  assert.equal(dockerOf(places).state, "ready");
   assert.deepEqual(places.default_place, DOCKER);
   assert.equal("default_reason" in places, false);
   assert.ok(server.boxesLine.startsWith(ON_BY_DEFAULT), server.boxesLine);

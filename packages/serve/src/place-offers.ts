@@ -24,18 +24,18 @@ export const remoteNoList = (id: "daytona" | "modal"): string => `a ${id === "da
 export const BOX_IDS = ["bwrap", "docker", "modal", "daytona"] as const;
 export type BoxId = (typeof BOX_IDS)[number];
 
-/** A box as capabilities show it: whether this server has it, and why when not (or how it was checked). `state`, set
- *  where the server knows more than the probe did (box-image.ts): `preparing` is available, its image still coming. `network`: what an available box reaches (BOX_NETWORKS), with `network_reason` when
- *  it is available and has none for a cause of its own (a Docker in a VM, a daemon elsewhere; a Daytona that could not
- *  keep its domain list). `host_addresses`: for Docker from a container (compose.yaml), the Docker host's own addresses
+/** A box as capabilities show it: whether this server has it, and why when not (or how it was checked); `state`, which
+ *  capabilities derive from it (place.ts stated). `network`: what an available box reaches (BOX_NETWORKS), with
+ *  `network_reason` when it is available and has none for a cause of its own (a daemon elsewhere; a remote box, whose
+ *  computer is never made with a host list). `host_addresses`: for Docker from a container (compose.yaml), the Docker host's own addresses
  *  its computers' egress proxy refuses as the host's (docker-host-addresses.ts: the read through the socket and
  *  AGENTRUN_DOCKER_HOST_ADDRESSES). */
 export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string; host_addresses?: string[] };
 /** What an available box reaches: the hosts of `places.allow` (`allowlist`), or nothing (`none`). */
 export const BOX_NETWORKS = ["allowlist", "none"] as const;
 export type BoxNetwork = (typeof BOX_NETWORKS)[number];
-/** A box's state in capabilities: ready, preparing (available; a run's first box waits for its image), or unavailable. */
-export const BOX_STATES = ["ready", "preparing", "unavailable"] as const;
+/** A box's state in capabilities: ready (available) or unavailable. */
+export const BOX_STATES = ["ready", "unavailable"] as const;
 export type BoxState = (typeof BOX_STATES)[number];
 
 /** The remote boxes' keys: secrets the server holds and its computer providers read, which no run is handed
