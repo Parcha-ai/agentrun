@@ -197,12 +197,14 @@ skill whose note file the run's own kept note takes is dropped, saying so: one f
 A new note named like one main holds when the grade reads main (another run merged it after the seed) is left out of
 the grade and settled alone, never a drop of the whole proposal. At the merge, every note the verdict keeps (a new
 note, or a skill re-filed as one) whose file main already holds is settled alone (the learning run's `takenOnMain`),
-never a refusal of the whole merge: the same text is no change, dropped unsaid; a note whose front matter supersedes
+never a refusal of the whole merge: the same rule (its body, whitespace and case aside, as `ruleOf` reads it, whatever
+its front matter) is no change, dropped unsaid; a note whose front matter supersedes
 the note of its own name is a modification, written over it (the merge's `replace`, main's blob checked as graded);
 any other is dropped, saying a note of that name was added since or was there already. The rest merges. A run whose
 own merge is on main already (the learning run stopped after its commit and before it recorded it) is not settled
-against main again: its notes there are its merge's, and that merge's files settle each item, one item a file as the first attempt
-settled it (a re-filed skill whose note file the run's own note takes is left out), so what it wrote is learned. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
+against main again: its notes there are its merge's, and each item is settled by the text main holds at its file (its rule there, not
+only a path the merge changed, such as a note it marked superseded), one item a file as the first attempt settled it
+(a re-filed skill whose note file the run's own note takes is left out), so what it wrote is learned and nothing else. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
 each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts `ruleOf`), is
 exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the seed's active
 notes, and of two new notes the same, the second), and the merge's own computation leaves it out unsaid, against the
