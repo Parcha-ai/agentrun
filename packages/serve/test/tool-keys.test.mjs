@@ -54,7 +54,6 @@ const OWN = Object.fromEntries(TOOL_KEYS.filter((row) => row.kind === "model").m
 const fieldsOf = (view) => Object.fromEntries(view.keys.flatMap((key) => key.fields.map(({ name, ...field }) => [name, field])));
 const STORED = { set: true, source: "stored" };
 const UNSET = { set: false, source: null };
-const AGAIN = { set: false, source: null, stored_unreadable: true };
 /** GET's answer meets the schema the served document gives it. */
 async function meetsDocument(api, view) {
   const doc = (await api("GET", "/openapi.json")).body;

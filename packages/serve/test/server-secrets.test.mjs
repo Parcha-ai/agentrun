@@ -3,12 +3,12 @@
 // sealed secret that will not open is said, never dropped in silence.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { seal } from "../dist/sealing.js";
-import { agent, client, FAUX, follow, runDir, scratch, secretWritePath, serve, startServe, triggerStore, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, secretWritePath, serve, startServe, triggerStore, withEnv } from "./support.mjs";
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);

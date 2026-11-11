@@ -34,8 +34,5 @@ export const notedRequests = (file) => {
   return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 };
 
-/** The requests noted in `file` for run `runId`, in order. */
-export const requestsOf = (file, runId) => notedRequests(file).filter((request) => request.run === runId);
-
 /** `requests` in a failure message: each one's roles and its last message's text length. */
 export const rolesOf = (requests) => requests.map((request) => `${request.roles}(last ${request.last})`).join(" ") || "(none noted)";

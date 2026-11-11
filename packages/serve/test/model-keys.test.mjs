@@ -14,7 +14,7 @@ import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, launchFor, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { modelOn, providerFor } from "../dist/provider.js";
+import { modelOn } from "../dist/provider.js";
 /** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
 const fakeKey = (name) => ["not-a-secret", name].join("-");
 

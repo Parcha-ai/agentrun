@@ -3,16 +3,13 @@
 // the new cap; the refused request was never sent, so nothing is paid for twice. A working run's live process keeps
 // its cap until its next process, and the answer says so. A server started again raises a paused run's cap the same.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-kernel/host";
 import { REQUEST_STARTED } from "../dist/timeline/index.js";
 import { spentIn } from "../dist/cap.js";
-import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, startServe, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
@@ -20,10 +17,6 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const raise = (api, runId, body) => api("PATCH", `/runs/${runId}`, body);
-/** The cap's wrap-up (cap.ts wrapUpWords), with `left` of the cap: a raised run is told it once. Its follow-up's request
- *  is its first priced one, so its typical cost is that request's expected cost, which the faux model's 16,384 tokens
- *  clamp to nearly all that is left: under 3 times it, the note is due there, and its row follows the follow-up's. */
-const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
 /** The same told while nothing is priced (step 0, cap.ts wrapUpWords' `nonePriced`): a run paused at its first request
  *  has none, so its raised follow-up is told in these words, on pi in that request, on a faux CLI in the next (its proxy
  *  places the note before the guard has priced anything), in the same words: the note came due at step 0. Under a $2
@@ -129,10 +122,8 @@ test.skip("a server started again raises a paused run's cap the same: the run go
 /** The output-priced faux model in a process that cannot exit until EXIT_GATE exists: a paused run's let-go held open. */
 const SLOW_EXIT = new URL("./fixtures/faux-output-priced-slow-exit.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CONTINUE = (cap) => `The cap was raised to ${cap}; continue the task.`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const holderPid = (data, runId) => runRecordOf(data, runId).holder.pid;
 /** What the person's side of the run says, in order: its user messages' text. */
 /** The run's messages in order: the person's (user_message) and the server's own (its "AgentRun: …" row, MessageOrigin). */
 const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
@@ -164,18 +155,6 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.deepEqual([run.status, run.error, run.cost.cap_usd, run.result?.final_answer], ["completed", null, 1, "Read it."], JSON.stringify(run));
     assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP_FIRST("$1")]);
   });
-}
-
-/** The bin on `data`, as an operator starts it, in a process this test can kill. */
-async function serverProcess(data, env, faux = SLOW_EXIT) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_ACCOUNTS: "0", ...env } });
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=/.test(out); i++) {
-    assert.ok(i < 400 && child.exitCode === null, `the server did not start: ${out}`);
-    await sleep(50);
-  }
-  return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
 // SKIP (follow-up #2078): the run stays paused at its cap after the raise: a raise does not resume it on the runner
@@ -253,8 +232,6 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-/** The output-priced faux model, whose run process, while the file LAUNCH_KILL names exists, kills its server as it comes up. */
-const LAUNCH_KILL_FAUX = new URL("./fixtures/faux-output-priced-launch-kill.mjs", import.meta.url).pathname;
 const ENDED = ["completed", "failed", "cancelled"];
 
 /** Rewrites the run's refusal mark's figures, its server stopped: as the cap counted them, say, with a hold in flight. */
@@ -340,69 +317,6 @@ for (const harness of ["pi", "claude-agent"]) {
   });
 }
 
-/** A seam for the raise's own save (the first serve.json write naming its follow-up): its paused process lets go and is
- *  gone, the run settled, then the write succeeds or fails. */
-function raiseSaveAfterExit(gate, data, runId, fail, during) {
-  let armed = true;
-  return async (id, meta) => {
-    if (!armed || id !== runId() || !meta.cap_continue) return;
-    armed = false;
-    const pid = holderPid(data, id);
-    await writeFile(gate, "");
-    for (let i = 0; processAlive(pid); i++) {
-      assert.ok(i < 400, "the paused process let go");
-      await sleep(50);
-    }
-    // Its settlement and the refresh after it, while the write is still to come.
-    await sleep(1_500);
-    await during?.();
-    if (fail) throw new Error("no space left on device");
-  };
-}
-
-// SKIP (follow-up #2078): a raise of a run paused at its cap is not answered or applied as before on the runner
-test.skip("a raise whose save fails while the paused process exits sends no follow-up: the PATCH errors, and the run stays paused at its cap", { timeout: 120_000 }, async (t) => {
-  const gate = join(await scratch(t), "exit");
-  withEnv(t, { EXIT_GATE: gate });
-  let id;
-  const data = join(await scratch(t), "agents");
-  // While the write is held, the raise is not yet taken: a person's message is still 409 budget_reached, and the run
-  // still reads its old cap.
-  const seen = [];
-  let api;
-  const during = async () => {
-    // Raced against 5 s: a message the run took could wait on this very write, which waits on this.
-    const sent = await Promise.race([api("POST", `/runs/${id}/messages`, { content: "go on" }), sleep(5_000).then(() => ({ status: "no answer in 5 s" }))]);
-    const run = await view(api, id);
-    seen.push([sent.status, sent.body?.error?.code, run.cost.cap_usd, run.pending?.kind]);
-  };
-  ({ api } = await serve(t, { data, faux: SLOW_EXIT, beforeMetaSave: raiseSaveAfterExit(gate, data, () => id, true, during) }));
-  id = await paused(api, "save-fails");
-  const raised = await raise(api, id, { max_cost_usd: 1 });
-  assert.ok(raised.status >= 500, `not kept: ${raised.status} ${JSON.stringify(raised.body)}`);
-  assert.deepEqual(seen, [[409, "budget_reached", 0.05, "budget"]], "while the raise was being written");
-  const after = await api("POST", `/runs/${id}/messages`, { content: "go on" });
-  assert.deepEqual([after.status, after.body?.error?.code], [409, "budget_reached"], "once it failed");
-  await sleep(3_000);
-  const { rows } = await follow(api, id, SETTLED, { deadlineMs: 30_000 });
-  const run = await view(api, id);
-  assert.deepEqual([run.status, run.state, run.pending?.kind, run.cost.cap_usd, said(rows)], ["input_required", "waiting", "budget", 0.05, ["Write one.md"]], JSON.stringify(run));
-});
-
-// SKIP (follow-up #2078): the run stays paused at its cap after the raise: a raise does not resume it on the runner
-test.skip("a raise whose save is slow while the paused process exits sends its follow-up once the save is done, once", { timeout: 120_000 }, async (t) => {
-  const gate = join(await scratch(t), "exit");
-  withEnv(t, { EXIT_GATE: gate });
-  let id;
-  const data = join(await scratch(t), "agents");
-  const { api } = await serve(t, { data, faux: SLOW_EXIT, beforeMetaSave: raiseSaveAfterExit(gate, data, () => id, false) });
-  id = await paused(api, "save-slow");
-  const raised = await raise(api, id, { max_cost_usd: 1 });
-  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
-  const { rows } = await follow(api, id, ENDED, { deadlineMs: 60_000 });
-  assert.deepEqual([(await view(api, id)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")]]);
-});
-
 test("the suggested raise is above the cap by more than a float's tail, so a PATCH with it is always a raise", async () => {
   const { suggestedCap } = await import("../dist/run-view.js");
   // $0.05 needed, nothing spent: 10 × $0.05 is $0.50, up to $1, a hair (5e-10) above a 0.9999999995 cap: no raise.
@@ -410,18 +324,6 @@ test("the suggested raise is above the cap by more than a float's tail, so a PAT
   // The next dollar above a cap a hair under $2 is $3: $2 is within the tail of it, and no raise.
   assert.equal(suggestedCap(1.9999999995, 0, 0.01), 3);
 });
-
-/** What the server writes to stderr from now until the test ends (its warn lines, runs.ts). */
-function stderrLines(t) {
-  const seen = [];
-  const write = process.stderr.write;
-  process.stderr.write = function (chunk, ...rest) {
-    seen.push(String(chunk));
-    return write.call(this, chunk, ...rest);
-  };
-  t.after(() => void (process.stderr.write = write));
-  return () => seen.join("").split("\n");
-}
 
 // SKIP (follow-up #2078): a raise of a run paused at its cap is not answered or applied as before on the runner
 test.skip("a retry of a raise once the run has paused anew under it is no raise of the new pause: it answers resumed false, and the run stays paused", { timeout: 120_000 }, async (t) => {

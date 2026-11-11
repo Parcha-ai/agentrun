@@ -3,12 +3,12 @@
 // cost is known, `unpriced` how many have none, on the run, its timeline's usage row and its list row (read back from the
 // run's meta once the server no longer holds the run). No ceiling is claimed. A run whose every cost is known has neither.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { metersIn } from "../dist/cap.js";
 import { readRunDbSync } from "../dist/run-db.js";
-import { agent, client, follow, runDir, runRecordOf, scratch, serve, startServe, withEnv } from "./support.mjs";
+import { agent, client, follow, runDir, scratch, serve, startServe } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -16,7 +16,6 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const usageRow = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage;
-const round = (usd) => Math.round(usd * 1e6) / 1e6;
 
 /** Waits for `check`, up to `ms`. */
 async function until(what, check, ms = 60_000) {

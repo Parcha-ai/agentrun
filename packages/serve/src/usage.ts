@@ -41,9 +41,6 @@ export const notesOf = (learning: { given?: unknown; read?: unknown }): NoteFile
 /** A ledger line's notes (files): an entry that is not a string is skipped. */
 export const lineNotesOf = (line: { given?: unknown; read?: unknown }): NoteFiles => filesOf(line, (entry) => entry);
 
-/** The `notes` line of run `run` of agent `agent`: its files as `learning` says them now. */
-export const notesLineOf = (run: string, agent: string, learning: Learning): NotesLine => ({ run, agent, notes: true, ...notesOf(learning) });
-
 /** The line of run `run` of agent `agent`, whose learning ended as `learning` says. */
 export const outcomeOf = (run: string, agent: string, learning: Ended): Outcome => ({
   run, agent, state: learning.state, reason: learning.reason, at: learning.at,
