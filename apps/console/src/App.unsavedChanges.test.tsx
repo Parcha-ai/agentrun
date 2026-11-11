@@ -23,7 +23,7 @@ function serve() {
     const method = init?.method ?? "GET";
     if (method !== "GET") writes.push(`${method} ${u.pathname}`);
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], features: {} });
+    if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true }], features: {} });
     if (u.pathname === "/v2/agents" && method === "POST") return json(201, made);
     if (u.pathname === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
     if (u.pathname === "/v2/agents/calc/definition" && method === "PUT") {
