@@ -7,6 +7,7 @@ import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
 import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
@@ -121,13 +122,13 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
   // Its tool: the one the request names (`tool`: a browser step's "browser", which the renderer folds into its call's row
   // with its session `tag`, as main's browser charge), else its paid name.
-  const named = new Map<number, { tool: string; call?: string; chargedBy?: string; tag?: string }>();
+  const named = new Map<number, { tool: string; own?: true; call?: string; chargedBy?: string; tag?: string }>();
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
     const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string; tool?: string; tag?: string };
-    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}), ...(typeof d.tag === "string" && d.tag ? { tag: d.tag } : {}) });
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { ...(typeof d.tool === "string" && d.tool ? { tool: d.tool, own: true as const } : { tool: d.model.slice("paid:".length) }), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}), ...(typeof d.tag === "string" && d.tag ? { tag: d.tag } : {}) });
   }
-  const charges: { turn: number; tool: string; call?: string; chargedBy?: string; tag?: string; usd: number | null }[] = [];
+  const charges: { turn: number; tool: string; own?: true; call?: string; chargedBy?: string; tag?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { turn?: number; usd?: number | null; givenBack?: boolean };
@@ -139,13 +140,29 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     charges.push({ ...req, turn: d.turn as number, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
   }
   if (!charges.length) return [...entries];
+  // The tool each call ran, by its id, from the model's answers (a CLI run's record shaped as pi's: piShaped).
+  const toolOfCall = new Map<string, string>();
+  for (const e of entries) {
+    if (e.kind !== "pi.assistant") continue;
+    for (const message of (e.model ?? []) as { content?: unknown }[]) {
+      for (const part of Array.isArray(message.content) ? message.content : []) {
+        const call = part as { type?: unknown; id?: unknown; name?: unknown };
+        if (call.type === "toolCall" && typeof call.id === "string" && typeof call.name === "string") toolOfCall.set(call.id, call.name);
+      }
+    }
+  }
   const out = [...entries];
   for (const charge of charges) {
     // Who charged: the request's own charged_by, which the cap writes as main's charge label names it (parallel, monid, an
     // MCP server, a browser vendor).
     const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
-    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.tag ? { tag: charge.tag } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    // Named for its call's tool where the request names none of its own: by what was paid for where that is the tool
+    // itself (an MCP tool's catalog name, whose wire name the call carries), else by the call's tool (web_fetch, for
+    // Parallel's extract). A request that names its tool (a browser step's "browser") keeps it.
+    const called = !charge.own && charge.call !== undefined ? toolOfCall.get(charge.call) : undefined;
+    const tool = called !== undefined && wireName(charge.tool) !== called ? called : charge.tool;
+    const data = { tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.tag ? { tag: charge.tag } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
     const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}#${charge.turn}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }

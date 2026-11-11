@@ -1128,11 +1128,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
    *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
    *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
-   *  reason, which says how to fix it. */
+   *  reason, which says how to fix it. The provider whose computers run on this machine's container engine is the one
+   *  whose descriptor declares `local`. */
   const dockerDaemon = dockerDaemonCheck({ env });
   const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+    const local = COMPUTER_PROVIDERS.find((one) => one.id === provider)?.local === true;
+    if (local && !fauxBox && (enabledBoxes(env) as ReadonlySet<string>).has(provider)) {
       const daemon = await dockerDaemon();
       if (!daemon.up || box?.available) return daemon;
     } else if (box?.available) return { up: true };
@@ -1159,12 +1161,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
-  const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
+  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
     computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1607,19 +1609,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> {
     const revision = (entry ?? (await needAgent(id))).revision;
-    if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
+    if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
+    const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
     const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
     const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
-    const { tools, gated, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"), undefined, undefined, { mcp: true, approvers: await readApprovers(store.settings) });
+    const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
+    // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
+    const { tools, gated, deniedBy, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    return { tools, gated, ask: { asked, fits: learnedAskFits } };
+    return { tools, gated, deniedBy, ask: { asked, fits: learnedAskFits } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
