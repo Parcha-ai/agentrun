@@ -43,13 +43,15 @@ const snapshot: ToolContract = {
  *  cookies across pages always, its agent's saved sign-ins only on a plane that has them (a local Chrome keeps none). */
 export const BROWSER_KEEPS = Object.freeze({
   cookies: "It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies.",
-  signIns: "This agent has a saved sign-in, and this browser opens with it: a page behind a sign-in opens signed in here, and only here (web_fetch reads every page signed out). Use it for anything behind a sign-in, or a page that depends on an earlier one.",
+  signIns: "This browser opens with this agent's saved browser profile: a site the agent was signed in to there opens signed in here, and only here (web_fetch reads every page signed out). Use it for anything behind a sign-in, or a page that depends on an earlier one.",
 });
 
-/** The prompt section's line for a browser that opens with its agent's saved sign-in: said once, before the tools, so the
- *  model knows the sign-in exists when it picks between the browser and web_fetch (a description alone was not enough). */
+/** The prompt section's line for a browser that opens with its agent's saved profile: said once, before the tools, so the
+ *  model knows of it when it picks between the browser and web_fetch (a description alone was not enough). It promises no
+ *  sign-in: on an agent's first run the profile is new and holds none (sign-ins-store.ts makes it), so the claim is
+ *  conditional, and the steer away from web_fetch holds either way. */
 export const SIGNED_IN_LINE =
-  "This agent has a saved browser sign-in, and this browser opens with it. For a page that needs you signed in, use the browser (run, snapshot, browser_read): it opens signed in. Do not use web_fetch for such a page: it reads every page signed out, so it sees the sign-in page instead.";
+  "This browser opens with this agent's saved browser profile, so a site the agent was signed in to there opens signed in here. For a page that needs you signed in, use the browser (run, snapshot, browser_read), not web_fetch: web_fetch reads every page signed out. If the browser shows a sign-in page, the profile holds no sign-in for that site.";
 
 const runDescription = (signIns: boolean): string =>
   `Browse and automate websites in the persistent browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +

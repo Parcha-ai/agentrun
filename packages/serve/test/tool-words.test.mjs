@@ -26,21 +26,25 @@ test("the browser with no saved sign-in says it keeps cookies across pages and c
   assert.ok(signedIn.includes(BROWSER_KEEPS.signIns), signedIn);
 });
 
-test("handed its agent's saved sign-in, the browser says the sign-in exists, that it opens with it, and that web_fetch reads signed out", () => {
+test("handed its agent's saved profile, the browser says it opens with it, conditionally signed in, and that web_fetch reads signed out", () => {
   const signedIn = runOf(true).description;
-  assert.match(signedIn, /This agent has a saved sign-in, and this browser opens with it/);
+  assert.match(signedIn, /This browser opens with this agent's saved browser profile: a site the agent was signed in to there opens signed in here/);
   assert.match(signedIn, /web_fetch reads every page signed out/);
-  assert.doesNotMatch(runOf(false).description, /saved sign-in/, "no sign-in claimed without one");
+  assert.doesNotMatch(runOf(false).description, /saved browser profile|signed in to there/, "no profile claimed without one");
 });
 
-test("the browser's prompt section says the agent has a saved sign-in, before the tools, only when the browser opens with one", () => {
+test("the browser's prompt section names the agent's saved profile, before the tools, only when the browser opens with one, and promises no sign-in", () => {
   const signedIn = browserSection({ idleReleaseS: 180 }, { signedIn: true });
   const lines = signedIn.split("\n");
   assert.equal(lines[0], "You control one remote browser:");
   assert.equal(lines[1], SIGNED_IN_LINE, "said once, before the tools");
-  assert.match(SIGNED_IN_LINE, /Do not use web_fetch for such a page: it reads every page signed out/);
-  // The line names no profile, pointer or account: the sign-in's existence only.
-  assert.doesNotMatch(SIGNED_IN_LINE, /default|pointer|profile|context|@/);
+  assert.match(SIGNED_IN_LINE, /use the browser \(run, snapshot, browser_read\), not web_fetch: web_fetch reads every page signed out/);
+  // A profile on an agent's first run is new and holds no sign-in: the line says what a sign-in page then means, and
+  // never claims the browser "opens signed in" outright.
+  assert.match(SIGNED_IN_LINE, /If the browser shows a sign-in page, the profile holds no sign-in for that site/);
+  assert.doesNotMatch(SIGNED_IN_LINE, /it opens signed in\b/);
+  // It names no profile id, pointer or account.
+  assert.doesNotMatch(SIGNED_IN_LINE, /default|pointer|context|@/);
   assert.ok(!browserSection({ idleReleaseS: 180 }).includes(SIGNED_IN_LINE), "no sign-in line without one");
   assert.ok(!browserSection({ idleReleaseS: 180 }, { signedIn: false }).includes(SIGNED_IN_LINE));
 });
