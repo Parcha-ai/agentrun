@@ -4,7 +4,7 @@
 // are shaped as pi writes them (mirroring pi-durable-agent's agent-store-metrics fixtures).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST } from "../dist/timeline/index.js";
 import { runMetrics } from "../dist/runner/metrics.js";
 
 const answer = { conversationId: 1, id: 2, kind: "pi.assistant", model: [{ role: "assistant", provider: "anthropic", model: "claude-opus-5-5", content: [{ type: "toolCall", id: "c1", name: "read", arguments: {} }], stopReason: "toolUse", usage: { input: 100, output: 20, cacheRead: 40, cacheWrite: 3, cost: { total: 0.02 } } }] };

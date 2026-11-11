@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
 import { beforeRequestOf, capRun, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
-import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf } from "../dist/timeline/index.js";
 
 after(closeOpenSessions);
 const ROOM = "spend_cap_reached (out of budget): ";
