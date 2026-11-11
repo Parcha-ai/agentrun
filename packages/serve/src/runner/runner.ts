@@ -120,10 +120,13 @@ export interface RunnerOptions {
 }
 
 /** A runner's memory budget and its runs' weights, in MiB (RunnerOptions.memory). `weigh` answers each id it is given; an
- *  id it leaves out weighs nothing. */
+ *  id it leaves out weighs nothing. `refuses`, after a weigh: why a run this memory can never hold is not run here, in
+ *  words; such a run is claimed only to fail it with them, never held. Without it (or for a run it leaves out) a run
+ *  heavier than the whole budget is claimed alone when the runner holds nothing. */
 export interface RunnerMemory {
   readonly budgetMib: number;
   weigh(runIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  refuses?(runId: string): string | undefined;
 }
 
 export type RunnerEvent =
@@ -703,7 +706,10 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   /** Up to `free` waiting runs, oldest first, while they fit `memory`'s budget beside what this runner holds (a lost
    *  claim's loop still running holds its weight too): each claimed on its own, its weight put in `weights`. The first that
-   *  does not fit ends the claim, unless the runner holds nothing: then it is claimed alone. */
+   *  does not fit ends the claim, unless the runner holds nothing: then it is claimed alone. A run the memory refuses
+   *  (RunnerMemory.refuses: its harness never fits here) is claimed only to end it failed in those words, never held,
+   *  weighing nothing, and the runs behind it are tried: a runner in a smaller container never starts a run its limit
+   *  would kill it for. */
   const claimByMemory = async (budget: RunnerMemory, free: number, weights: Map<string, number>): Promise<Claim[]> => {
     const waiting = await store.runs.claimable({ limit: free });
     if (waiting.length === 0) return [];
@@ -713,8 +719,13 @@ export function startRunner(options: RunnerOptions): Runner {
     const claims: Claim[] = [];
     for (const runId of waiting) {
       const mib = weighed.get(runId) ?? 0;
-      if (holding > 0 && heldMib + mib > budget.budgetMib) break;
+      const never = budget.refuses?.(runId);
       if (closed || killed) break;
+      if (never) {
+        await refuseClaim(runId, never);
+        continue;
+      }
+      if (holding > 0 && heldMib + mib > budget.budgetMib) break;
       // Another runner may have taken it since the read: then it is not this one's, and the next is tried. A claim that
       // throws ends this poll's claims, keeping those that landed: they are held below, never left claimed and unstarted.
       let claim: Claim | null;
@@ -731,6 +742,26 @@ export function startRunner(options: RunnerOptions): Runner {
       holding += 1;
     }
     return claims;
+  };
+  /** Claims `runId` and ends it failed with `why` (endRun: its end in the journal, final), then releases it: no loop is
+   *  made and nothing is held. A run another runner took since the read is left to it. */
+  const refuseClaim = async (runId: string, why: string): Promise<void> => {
+    let claim: Claim | null;
+    try {
+      claim = await store.claim(runId, name, { leaseMs });
+    } catch (error) {
+      emit({ type: "error", runId, step: "claim", message: message(error) });
+      return;
+    }
+    if (!claim) return;
+    try {
+      await endRun(claim, { state: "failed", summary: why }, []);
+      await store.flush();
+    } catch (error) {
+      emit({ type: "error", runId, step: "end", message: message(error) });
+    }
+    await store.release(claim, {}).catch(() => {});
+    emit({ type: "released", runId, epoch: claim.epoch, end: "failed" });
   };
   /** The poll's claim in flight, if any: close() waits for it, so a runner whose close resolved claims nothing after it. */
   let claiming: Promise<void> | undefined;

@@ -5,7 +5,7 @@
 // measured, and the host's OOM kill would take every run on it; by weight it holds 6 and the rest wait queued.
 import { DEFAULT_HARNESS, harnessOfBody } from "../harness.js";
 import { builtinHarness } from "../harness-table.js";
-import { hostMemory, runsMemoryMib } from "../host.js";
+import { hostMemory, neverFits, runsMemoryMib } from "../host.js";
 import type { Store } from "../store/store.js";
 import type { RunnerMemory } from "./runner.js";
 
@@ -17,8 +17,11 @@ export function claimMibOf(harness: string): number {
 
 /** The runner's memory budget over `store`: `memory` bytes (default the host's, hostMemory) less the server's own, each
  *  waiting run weighed by the harness its launch names (store.runs.launch). A run whose launch cannot be read weighs a pi
- *  run: its claim fails it at once (dispatch.ts), holding nothing for long. */
+ *  run: its claim fails it at once (dispatch.ts), holding nothing for long. A run of a table harness that never fits this
+ *  memory (host.ts neverFits: an opencode run, 704 MiB, on a runner limited to 512 MB) is refused, in those words: the
+ *  server's own admission reads the server's memory, and a runner in a container of its own may hold less. */
 export function runnerMemory(store: Pick<Store, "runs">, memory: number = hostMemory()): RunnerMemory {
+  const refused = new Map<string, string>();
   return {
     budgetMib: runsMemoryMib(memory),
     weigh: async (runIds) =>
@@ -29,9 +32,13 @@ export function runnerMemory(store: Pick<Store, "runs">, memory: number = hostMe
               (row) => harnessOfBody((row.body ?? {}) as { harness?: string }),
               () => DEFAULT_HARNESS,
             );
+            const why = builtinHarness(harness) ? neverFits(harness, memory) : undefined;
+            if (why) refused.set(runId, why);
+            else refused.delete(runId);
             return [runId, claimMibOf(harness)];
           }),
         ),
       ),
+    refuses: (runId) => refused.get(runId),
   };
 }
