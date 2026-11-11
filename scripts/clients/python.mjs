@@ -3,6 +3,8 @@
 // offers, its request and response types as TypedDicts, Literals and aliases, a method on its resource group named in
 // snake_case (`client.runs.start(agent_id, body)`, `client.mcp_servers.save(name, body)`), and the table the
 // hand-written runtime reads. An omitted operation, or one this server turns off, gets no method, as it gets no command.
+// One the document marks browser-only (x-agentrun-browser-only: an MCP sign-in's start, Connect GitHub and its returns)
+// gets no method either, and stays in the table.
 // Python has no anonymous object type and no intersection, so an object type with no name of its own is named for where
 // it sits (`CreateAgentBodyDefinition`), and an allOf of objects is one TypedDict holding every part's fields.
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
@@ -247,7 +249,9 @@ export function pythonText(ops, map, commandOf, hash) {
     ] : [`def ${name}(${signature()}) -> ${result}:`];
     const self = group === null ? 'self._operation' : 'self._call';
     const method = [...lines, `    ${docstring(doc)}`, `    return ${self}(${call})`];
-    groups.set(group, [...(groups.get(group) ?? []), method]);
+    // A browser-only operation (x-agentrun-browser-only) gets no method; it stays in the table, so a raw call's body bound
+    // for it, a secret route, is still cut.
+    if (!op.browserOnly) groups.set(group, [...(groups.get(group) ?? []), method]);
     table.push(`    ${str(id)}: Operation(method=${str(op.method)}, path=${str(op.path)}, path_params=${tuple(pathParams)}, multi_segment=${tuple(map.multiSegment[id] ? [map.multiSegment[id]] : [])}, query=${tuple(query.map((p) => p.name))}, headers=${tuple(headers.map((p) => p.name))}, body=${op.body ? `OperationBody(required=${op.body.required ? 'True' : 'False'}, types=${tuple(op.body.types)})` : 'None'}, answer=${str(answer)}, secret=${secret ? 'True' : 'False'}, public_fields=${tuple(secret ? map.publicFields[id] ?? [] : [])}, tagged=${tagged && !download ? 'True' : 'False'}),`);
   }
   if (types.problems.length) throw new Error(`generate-clients: the Python client's types: ${[...new Set(types.problems)].join('; ')}`);

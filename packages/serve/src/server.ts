@@ -1230,8 +1230,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (git), and the host's secrets as they are shown now to cut the notes a run is given, a loopback address kept (local),
     // as the run's .learning/ files keep it: the run's own machine, which an agent with no read tool learns of only here.
     // runs-over-store.learningStartFor pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed
-    // that cannot be read starts the run with nothing learned (a fault never refuses it). INERT until the runner installs learning-1's learningEndOfRun as its
-    // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
+    // that cannot be read starts the run with nothing learned (a fault never refuses it). The runner's spec builders read
+    // it back as the run's end-of-run step (runner/learning-end.ts learningEndOfRun, in adapter-run-spec.ts and
+    // cli-run-spec.ts).
     learning,
     learningBudget,
     // The model the server names to grade what a run proposes (capabilities' learning.grade_model), carried on each learning
