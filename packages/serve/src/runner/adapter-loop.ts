@@ -1462,6 +1462,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               let bound: NodeJS.Timeout | undefined;
               await Promise.race([deps.deliverNow().catch(() => undefined), new Promise<void>((resolve) => (bound = setTimeout(resolve, DELIVER_NOW_MS)))]);
               clearTimeout(bound);
+              // A stop or cancel among them: the run ends stopped in its words, its row taken, never completed. Its turn
+              // has ended, so there is nothing to settle. Read past the narrowing TypeScript did before the delivery.
+              const cutBy = stopReason as StopReason | undefined;
+              if (cutBy?.kind === "command") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(cutBy.cancel) }, [cutBy.commandId], await cutRows(claim, spec, "stopped"));
+              if (cutBy || deps.signal.aborted) return await interrupted(cutBy?.kind ?? "its claim's signal aborted");
             }
             // A message taken while the turn ran (afterTurn): the run's next turn, on the same session, before its end.
             const next = cut ? undefined : afterTurn.shift();

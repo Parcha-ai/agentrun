@@ -425,13 +425,13 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   }
 }
 
-/** Writes run `runId` with `write`, its files (launch.files) held for it first (StartDeps.files): a write that fails, or
- *  that answers another run (an origin key's run started before), lets go of the hold. */
+/** Writes run `runId` with `write`, its files (launch.files) held for it first (StartDeps.files): a hold that fails part
+ *  way, a write that fails, or one that answers another run (an origin key's run started before), lets go of the hold. */
 async function withHeldFiles(deps: StartDeps, runId: string, launch: RunLaunch, write: () => Promise<RunRow>): Promise<RunRow> {
   const ids = launch.files ?? [];
   if (!ids.length || !deps.files) return await write();
-  await deps.files.hold(runId, ids);
   try {
+    await deps.files.hold(runId, ids);
     const row = await write();
     if (row.id !== runId) await deps.files.release(runId);
     return row;
