@@ -39,6 +39,8 @@ export interface BrowserComputerOptions {
   readonly signIn?: { readonly name: string; readonly pointer: string };
   /** A headless browser where the provider offers one. */
   readonly headless?: boolean;
+  /** Where a server behind a browser gateway holds the sockets of Browserbase's connect hosts (BROWSERBASE_CONNECT_BASE_URL). */
+  readonly connectBaseUrl?: string;
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -64,7 +66,7 @@ const goneCode = (error: unknown) => {
 const sockets = new Map<string, CdpSession>();
 const opening = new Map<string, Promise<void>>();
 /** Who saves to a saved sign-in now, by provider and pointer. */
-type Saver = { tag: string; running?: () => Promise<boolean>; settle?: () => Promise<void> };
+type Saver = { tag: string; owner: string; running?: () => Promise<boolean>; settle?: () => Promise<void> };
 const savers = new Map<string, Saver>();
 
 const freeSaver = (tag: string) => {
@@ -83,13 +85,20 @@ async function within(work: Promise<void>, ms: number): Promise<boolean> {
 }
 
 /** The one-saver rule: a holder that no longer runs is replaced once its settle time is waited out; the same tag keeps it;
- *  any other is refused. */
-async function claimSaver(key: string, tag: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<void> {
+ *  the same owner's successor (a relaunch asks for its replacement while the old session is still being released) waits
+ *  for the release; any other is refused. */
+async function claimSaver(key: string, tag: string, owner: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<void> {
   for (const end = Date.now() + SAVER_WAIT_MS; ; ) {
     const held = savers.get(key);
-    if (!held || held.tag === tag) return void savers.set(key, { tag });
+    if (!held || held.tag === tag) return void savers.set(key, { tag, owner });
     const running = held.running ? await held.running().catch(() => true) : true;
-    if (running) throw new BrowserFailureError(browserFailure("refused", `browser profile: ${ONE_SAVER}`));
+    if (running) {
+      if (held.owner !== owner) throw new BrowserFailureError(browserFailure("refused", `browser profile: ${ONE_SAVER}`));
+      if (Date.now() > end) throw new BrowserFailureError(browserFailure("refused", `browser profile: ${STILL_ENDING}`));
+      signal?.throwIfAborted();
+      await sleep(100);
+      continue;
+    }
     if (held.settle && !(await within(held.settle(), end - Date.now()))) throw new BrowserFailureError(browserFailure("refused", `browser profile: ${STILL_ENDING}`));
     if (savers.get(key) === held) savers.delete(key);
     signal?.throwIfAborted();
@@ -131,7 +140,7 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
         throw new BrowserFailureError(browserFailure("refused", `browser profile: this run has no saved sign-in named "${profile.name}" to open. No session was started.`));
       }
       const pointer = profile ? options.signIn!.pointer : undefined;
-      if (profile?.save && pointer) await claimSaver(`${computer.provider}|${pointer}`, spec.tag, signal, sleep);
+      if (profile?.save && pointer) await claimSaver(`${computer.provider}|${pointer}`, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal, sleep);
       const session: BrowserSpec = {
         viewport: { width: spec.viewport.width, height: spec.viewport.height },
         ...(features.stealth && spec.verified ? { stealth: true } : {}),
@@ -145,9 +154,15 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
       try {
         id = await computer.open(spec.tag, lifetimeS, session, signal);
       } catch (error) {
-        // A refusal made nothing; any other failure's computer, if it was made, was found by the provider's create label
-        // and released: either way no session saves now.
-        freeSaver(spec.tag);
+        // A refusal made nothing, so no session saves. Any other failure may have left its computer running (the provider
+        // looks it up by its create label and releases it, and may fail at that too): the claim stays, held by whether the
+        // tag still finds a computer, so the next saver replaces it only once none is left.
+        if ((error as { code?: unknown } | null)?.code === "denied") freeSaver(spec.tag);
+        else if (isSaver(spec.tag)) {
+          for (const one of savers.values()) {
+            if (one.tag === spec.tag) Object.assign(one, { running: async () => (await computer.find(spec.tag, AbortSignal.timeout(2_000))).length > 0, ...(settle ? { settle } : {}) });
+          }
+        }
         throw withStatus(error);
       }
       const ref = { id, tag: spec.tag };
@@ -166,7 +181,7 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
 
     async attach(ref, signal): Promise<AttachTarget> {
       signal?.throwIfAborted();
-      const url = await statused(computer.url(ref.id));
+      const url = rewriteConnectUrl(await statused(computer.url(ref.id)), options.connectBaseUrl);
       // A provider that keeps a session's downloads keeps only what the browser was told to save into its folder, and
       // that lasts as long as the socket that told it: one per session, held until its release. A failure costs the
       // files, not the session.
@@ -219,7 +234,28 @@ export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Pro
   const keys = Object.fromEntries((KEY_TABLE.keys[vendor] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
   const options = providerOptions(vendor, keys);
   if (!options.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${options.error.message}.`));
-  return providerFor(vendor as never, options.options as never);
+  // A server behind a browser gateway names its API address (BROWSERBASE_BASE_URL, KERNEL_BASE_URL): the key checks and the
+  // sign-in creation already use it, so the browser's sessions do too.
+  const gateway = vendor === "browserbase" ? env.BROWSERBASE_BASE_URL : vendor === "kernel" ? env.KERNEL_BASE_URL : undefined;
+  const apiUrl = typeof gateway === "string" && gateway.trim() !== "" ? { apiUrl: gateway.trim().replace(/\/+$/, "") } : {};
+  return providerFor(vendor as never, { ...(options.options as object), ...apiUrl } as never);
+}
+
+/** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with
+ *  the signing query kept. */
+export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined): string {
+  if (!connectBaseUrl) return connectUrl;
+  try {
+    const target = new URL(connectBaseUrl);
+    const url = new URL(connectUrl);
+    if (!/(?:^|\.)browserbase\.com$/i.test(url.hostname)) return connectUrl;
+    url.protocol = target.protocol;
+    url.host = target.host;
+    url.pathname = target.pathname.replace(/\/$/, "") + url.pathname;
+    return url.toString();
+  } catch {
+    return connectUrl;
+  }
 }
 
 /** A run's browser over `provider`, a browser computer provider (the plane's vendor, or a test's stand-in), as the claim

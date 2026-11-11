@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { claimBrowserProvider, planeBrowser, resetBrowserComputerHoldings } = await import("../dist/browser-computer.js");
+const { claimBrowserProvider, planeBrowser, resetBrowserComputerHoldings, rewriteConnectUrl } = await import("../dist/browser-computer.js");
 
 /** The label a session's custody tag rides on (workspace/computer-for-claim.ts). */
 const TAG_LABEL = "agentrun.session";
@@ -143,11 +143,40 @@ test("one session at a time saves to a sign-in: a second saver is refused while 
   const s = stand(ALL, { releaseRuns: false });
   const provider = claimBrowserProvider(planeBrowser(s.provider, RUN), { signIn: { name: "default", pointer: "ctx-7" }, sleep: async () => {} });
   const first = await provider.create({ ...SPEC, profile: { name: "default", save: true } }, signal());
-  await assert.rejects(provider.create({ ...SPEC, tag: "ar-run-1-2", profile: { name: "default", save: true } }, signal()), /one session at a time may save/);
+  const other = { ...SPEC, tag: "ar-run-2-1", metadata: { run: "run-2", label: "run" } };
+  await assert.rejects(provider.create({ ...other, profile: { name: "default", save: true } }, signal()), /one session at a time may save/);
   // One that does not save opens beside it.
   await provider.create({ ...SPEC, tag: "ar-run-1-3", profile: { name: "default", save: false } }, signal());
   s.browsers.get(first.id).running = false;
-  await provider.create({ ...SPEC, tag: "ar-run-1-2", profile: { name: "default", save: true } }, signal());
+  await provider.create({ ...other, profile: { name: "default", save: true } }, signal());
+});
+
+test("the same owner's replacement (a relaunch) waits for the old saver's release; it does not refuse", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand(ALL, { releaseRuns: false });
+  let first;
+  const provider = claimBrowserProvider(planeBrowser(s.provider, RUN), { signIn: { name: "default", pointer: "ctx-7" }, sleep: async () => { s.browsers.get(first.id).running = false; } });
+  first = await provider.create({ ...SPEC, profile: { name: "default", save: true } }, signal());
+  const next = await provider.create({ ...SPEC, tag: "ar-run-1-2", profile: { name: "default", save: true } }, signal());
+  assert.notEqual(next.id, first.id);
+});
+
+test("a create that failed may have left its browser: the saver's claim stays until no browser carries its tag", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand(ALL, { createFails: { code: "unreachable", message: "stand did not answer" } });
+  const provider = claimBrowserProvider(planeBrowser(s.provider, RUN), { signIn: { name: "default", pointer: "ctx-7" }, sleep: async () => {} });
+  await assert.rejects(provider.create({ ...SPEC, profile: { name: "default", save: true } }, signal()), /did not answer/);
+  s.browsers.set("lost", { labels: s.calls.find((call) => call.op === "create").spec.labels, running: true });
+  const other = { ...SPEC, tag: "ar-run-2-1", metadata: { run: "run-2", label: "run" }, profile: { name: "default", save: true } };
+  await assert.rejects(provider.create(other, signal()), /one session at a time may save/);
+  s.browsers.get("lost").running = false;
+  await assert.rejects(provider.create(other, signal()), /did not answer/, "it opens (and here fails at the stand's create) once nothing carries the tag");
+});
+
+test("a Browserbase connect URL moves onto the credential proxy, its signing query kept; another host's is left alone", () => {
+  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?sessionId=s&signingKey=k", "https://proxy.example/ws/"), "https://proxy.example/ws/?sessionId=s&signingKey=k");
+  assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1");
+  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", undefined), "wss://connect.browserbase.com/?x=1");
 });
 
 test("a provider that is no browser, or a browser that declares no features, is refused in browser_unavailable's words", () => {

@@ -395,7 +395,7 @@ const browserTool: ToolEntry = {
         })();
     const refused = "refused" in made ? made.refused : undefined;
     const parts = {
-      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
+      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(host.env.BROWSERBASE_CONNECT_BASE_URL ? { connectBaseUrl: host.env.BROWSERBASE_CONNECT_BASE_URL } : {}), ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
       driver: stand ? stand.driver : cdpDriver(),
     };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
