@@ -1,6 +1,5 @@
-// The workflow a new decision agent starts from. Adapted from the repository's smallest decision demo
-// (examples/decision-demos/workflows/jury.json): one typed question (a judge node) on the server's decision provider
-// (Jev, the default, or Parallel where Jev does not run) instead of four jurors on two providers. Its answer decides the
+// The workflow a new decision agent starts from: one typed question (a judge node) on the server's decision provider
+// (Jev, the default, or Parallel where Jev does not run). Its answer decides the
 // case; an unclear answer, or one below the confidence the decision needs, stops the run for a person (escalate nodes
 // and their predicates). It has no code node: a server runs code nodes only when its operator allows them
 // (--allow-code-nodes), and refuses the run of a workflow that holds one otherwise. Edit it in the Workflow step once the
