@@ -277,7 +277,12 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(docker("exec", user.name, "stat", "-c", "%u:%g %a %s", "/opt/agentrun/computerd").trim(), `0:0 755 ${daemon().bytes.length}`, "the daemon is as uploaded");
 
 			const { name } = sandbox(image, { user: "0:0" });
-			upload(name);
+			// Init refuses as soon as the daemon is moved into place, and ends the container while the upload still reads it
+			// back: the upload's own exit is not this case's (as with the bounding set's, below). It wrote and checked the
+			// daemon before the rename.
+			const { bytes, sha } = daemon();
+			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
+			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
 			const code = exitCodeOf(name);
 			assert.equal(code, "1", "init refused to start, and the container ended");
 			assert.match(spawnSync("docker", ["logs", name], { encoding: "utf8" }).stderr, /init refuses to start: --own-network refuses uid 0 for init's programs/);
