@@ -7,7 +7,7 @@
 // codex the real adapter against its stand-in for Codex's app-server and a faux gateway on loopback.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -16,7 +16,7 @@ import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { entriesOf, git, resnap, CLI_TOOLS_TODO } from "./learn-support.mjs";
-import { agent, answerFlow, call, cookieOf, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, call, cookieOf, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";

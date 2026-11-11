@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** The gateway's key in these tests: no real one. */
@@ -151,9 +151,6 @@ test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].body.model, "team/model", "the gateway gets its own id, as configured");
 });
-
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
 
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
