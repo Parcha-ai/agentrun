@@ -75,7 +75,7 @@ async function landSeed(data, { note = NOTE, more = {}, held = false } = {}) {
       const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-learned", reason: "Learned.", files: [{ path: "ask-first.md", text: PENDING }], held: ["ask-first.md"], graded: {} });
       assert.equal(merged.ok, true, JSON.stringify(merged));
       const oid = (await readSnapshot(folder.workspace)).notes.find((one) => one.file === "old-way.md").oid;
-      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED), ifMatch: oid });
+      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED, "active"), ifMatch: oid });
       assert.equal(retired.ok, true, JSON.stringify(retired));
     }
   } finally {

@@ -175,7 +175,7 @@ export function folderSuite(backend, make) {
     const lines3 = odd.split("\n").slice(0, -1);
     assert.deepEqual((await readRunDiff(ws, "run-c")).files, [{ path: "odd.md", status: "added", patch: `@@ -0,0 +1,${lines3.length} @@\n${lines3.map((l) => `+${l}\n`).join("")}` }]);
     // A person's write keeps no diff file.
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd, "active") }));
     assert.deepEqual((await ws.list(DIFFS_DIR)).map((e) => e.name), ["run-a.json", "run-b.json", "run-c.json"]);
     await matchesMain(ws);
   });
@@ -208,7 +208,7 @@ export function folderSuite(backend, make) {
     const ops = [];
     folderTestHooks.exec = (argv) => ops.push(argv[2]);
     try {
-      await writeLearning(ws, async ({ snapshot }) => ({ result: null, change: personChange("retired", "quote-sources.md", { "check-units.md": edited, "quote-sources.md": retire(SOURCES) }) }));
+      await writeLearning(ws, async ({ snapshot }) => ({ result: null, change: personChange("retired", "quote-sources.md", { "check-units.md": edited, "quote-sources.md": retire(SOURCES, "active") }) }));
     } finally {
       folderTestHooks.exec = undefined;
     }
@@ -243,7 +243,7 @@ export function folderSuite(backend, make) {
     files["ask-first.md"] = approve(files["ask-first.md"]);
     snap = await step(personChange("approved", "ask-first.md", files, true), "approve");
     assert.deepEqual(snap.log[0].by, { user: true, via: "console" });
-    files["check-units.md"] = retire(files["check-units.md"]);
+    files["check-units.md"] = retire(files["check-units.md"], "active");
     snap = await step(personChange("retired", "check-units.md", files), "retire");
     const retired = snap.notes.find((n) => n.file === "check-units.md");
     assert.deepEqual([retired.status, retired.history.retire?.kind, retired.history.person?.kind], ["retired", "retired", "retired"]);
@@ -448,7 +448,7 @@ export function folderSuite(backend, make) {
     await learningInit(ws);
     const one = await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
     const atMain = await seedBase(ws, one.main);
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS, "active") }));
     const older = await execsOf(() => seedBase(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
     assert.deepEqual({ files: [...older.result.base.files], active: older.result.base.active.map((n) => n.file), kept: older.result.kept }, { files: [...atMain.base.files], active: atMain.base.active.map((n) => n.file), kept: atMain.kept }, "the same base from git's own read as from the snapshot it had");
@@ -475,7 +475,7 @@ export function folderSuite(backend, make) {
     // Held: every entry at the seed's top, the pending note's file among them (never laid, but main holds it).
     const top = ["MEMORY.md", "ask-first.md", "check-units.md", "skills"];
     assert.deepEqual({ ...atMain.result, held: [...atMain.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "a pending note and a held skill are never laid");
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS, "active") }));
     const older = await execsOf(() => readSeed(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
     assert.deepEqual({ ...older.result, held: [...older.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "the same files, read by git at the seed");
