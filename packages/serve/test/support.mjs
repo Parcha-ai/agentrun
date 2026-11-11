@@ -777,6 +777,12 @@ export function runDir(data, runId) {
   return join(data, "disk", "agents", folder, "runs", runId);
 }
 
+/** Run `runId`'s scratch folder in data directory `data`, where a CLI harness's process works on the runner:
+ *  `<data>/scratch/<agent>/<run>` (workspace/paths.ts scratchFolder), its agent's folder name as runDir finds it. */
+export function scratchDir(data, runId) {
+  return join(data, "scratch", basename(dirname(dirname(runDir(data, runId)))), runId);
+}
+
 /** The run folders' names on the disk of data directory `data`, across its agents' folders. */
 export function runIds(data) {
   const agents = join(data, "disk", "agents");
