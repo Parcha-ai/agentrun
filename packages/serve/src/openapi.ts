@@ -4,7 +4,7 @@
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { TRIGGER_SOURCES } from "@parcha/pi-durable-agent/timeline";
+import { TRIGGER_SOURCES } from "./timeline/index.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
@@ -1419,6 +1419,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set.", "x-agentrun-secret": true } } } } } },
       responses: { "200": json(closed({ authorization_url: { type: "string", format: "uri" } }), "The page the owner opens."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
+      // Started anywhere but the owner's browser, the sign-in can never finish: the cookie its callback requires is set on
+      // this answer, to whoever sent it. The generated CLI and SDKs (scripts/generate-clients.mjs) give it no method.
+      "x-agentrun-browser-only": "The sign-in's cookie, which its callback requires, is set on the answer to whoever starts it, so it must start in the owner's browser: use the console's MCP page.",
     },
   },
   "/settings/mcp-servers/oauth/callback": {
@@ -1451,6 +1454,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { org: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$", description: "The GitHub organization to make the App under; absent, the signed-in GitHub user." } } } } } },
       responses: { "200": json(closed({ action: { type: "string", format: "uri" }, manifest: { type: "object", description: "GitHub's app manifest, posted as the form's `manifest` field." }, state: { type: "string" } }), "The form to post to GitHub."), ...errors(400, 401, 409, 415, 422, 429, 500) },
       ...GITHUB_MARK,
+      "x-agentrun-browser-only": "Its state is bound by a cookie to the browser that posts the form to GitHub, which sends that browser back to the callback: Connect GitHub runs in the console.",
     },
   },
   "/integrations/github/callback": {
@@ -1460,6 +1464,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: ["code", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
       responses: { "302": { description: "To GitHub, to install the App; or to the console's GitHub settings with `github=error&reason=state_invalid`, `conversion_failed` or `already_connected`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
+      "x-agentrun-browser-only": "GitHub sends the owner's browser here with the new App's code; it takes no token, and its state and cookie are that browser's.",
     },
   },
   "/integrations/github/installed": {
@@ -1469,6 +1474,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: ["installation_id", "setup_action", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
       responses: { "302": { description: "To the console's GitHub settings: `github=connected`, or `github=error&reason=installation_unverified`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
+      "x-agentrun-browser-only": "GitHub sends the browser here once the App is installed; it takes no token, and it checks the cookie the callback set in that browser.",
     },
   },
   "/settings/mcp-servers/oauth/client.json": {
@@ -1549,7 +1555,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/approvals/{approval_id}": {
     post: {
       operationId: "answerApproval", tags: ["runs"], summary: "Answer a tool call that waits for the owner's approval",
-      description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's result. allow runs the call once, then resumes the session with one message that names the call and carries its result; deny resumes it with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run resumes in one turn with the refusal and their words, its row reads `Declined by your message`, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
+      description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
       parameters: [ref("parameters/RunId"), { name: "approval_id", in: "path", required: true, description: "The run's pending.id.", schema: { type: "string" } }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." } } } } } },
       responses: { "204": { description: "Answered: the run goes on." }, ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500) },
