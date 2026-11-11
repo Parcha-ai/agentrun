@@ -224,7 +224,13 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   const paid = bookedSpend(entries, "paid");
   const at = rows.findIndex((row) => row.kind === "usage");
   const kept = rows.filter((row) => row.kind !== "usage");
-  if (!model.requests && !paid.requests) return kept;
+  if (!model.requests && !paid.requests) {
+    // A run whose cap refused its first request (its park at the cap, an agentrun.budget entry) says it sent none, as a
+    // pi run's usage line does: never a request it did not make, and never silence about why nothing ran.
+    if (!entries.some((entry) => entry.kind === KINDS.budget) || kept.length === 0) return kept;
+    const last = kept[kept.length - 1]!;
+    return [...kept, { ...last, id: `${last.conversation_id ?? 0}:usage`, kind: "usage", summary: "no model request sent", agent_label: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, usage: { usd: 0, requests: 0 } }];
+  }
   const usd = model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
   const unpriced = model.unpriced + paid.unpriced;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
