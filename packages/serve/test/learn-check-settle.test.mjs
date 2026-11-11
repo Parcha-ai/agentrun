@@ -2,9 +2,9 @@
 // one holder a rule with the rest as alternates, then the holders' shared checks, a refused holder's next alternate
 // holding its rule in its place. A property over every small answer of 3 or 4 notes, drawn from new rules, repeats,
 // notes superseding a note of the seed, two superseding the same one, a supersede of a note the seed does not hold and a
-// repeat of the seed's own rule, on a seed whose index is at 199 or 200 lines: run as proposeRun runs the checks (each
-// pass leaves out what it names), what is kept is a valid set, one note a rule, and no left-out note of a rule nothing
-// kept holds could have been kept beside it.
+// repeat of the seed's own rule, on a seed whose index is well under its cap, at 199 or at 200 lines: run as proposeRun runs the checks (each
+// pass leaves out what it names), what is kept is a valid set, each rule with a valid holder keeps exactly one copy, and
+// a note left out as a duplicate repeats a note that is kept (or the seed's), never a holder that was refused.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkProposal } from "../dist/learn/check.js";
@@ -39,15 +39,21 @@ const change = (note) => ({ path: note.file, status: "added", mode: "100644", by
  *  notes) or names none it can leave out (nothing kept). */
 function survivors(base, notes) {
   let kept = [...notes];
-  for (let pass = 0; pass <= notes.length; pass++) {
-    if (!kept.length) return [];
-    const result = checkProposal({ base, changes: kept.map(change) });
-    if (result.ok) return result.notes.map(({ file }) => file);
-    const named = new Set(result.problems.flatMap(({ path }) => (path === undefined ? [] : [path])));
-    if (!named.size || result.problems.some(({ path }) => path === undefined)) return [];
-    kept = kept.filter(({ file }) => !named.has(file));
-  }
-  assert.fail("the passes never settled");
+  // Each note left out as a duplicate, by the note it was said to repeat.
+  const duplicates = new Map();
+  const settle = () => {
+    for (let pass = 0; pass <= notes.length; pass++) {
+      if (!kept.length) return [];
+      const result = checkProposal({ base, changes: kept.map(change) });
+      if (result.ok) return result.notes.map(({ file }) => file);
+      for (const { rule, path, detail } of result.problems) if (rule === "duplicate") duplicates.set(path, /^it says what (\S+) says$/.exec(detail)?.[1]);
+      const named = new Set(result.problems.flatMap(({ path }) => (path === undefined ? [] : [path])));
+      if (!named.size || result.problems.some(({ path }) => path === undefined)) return [];
+      kept = kept.filter(({ file }) => !named.has(file));
+    }
+    assert.fail("the passes never settled");
+  };
+  return { files: settle(), duplicates };
 }
 
 /** Whether `set` may join `base` as it is, read here apart from the checks: what each note supersedes is active and
@@ -76,20 +82,28 @@ function* picks(pool, k, taken = []) {
   for (const note of pool) if (!taken.includes(note)) yield* picks(pool, k, [...taken, note]);
 }
 
-for (const lines of [INDEX_LINES - 1, INDEX_LINES]) {
-  test(`every answer of 3 or 4 notes on a seed of ${lines} lines keeps a valid set, one note a rule, and no left-out note that could have been kept`, () => {
+for (const lines of [10, INDEX_LINES - 1, INDEX_LINES]) {
+  test(`every answer of 3 or 4 notes on a seed of ${lines} lines keeps a valid set, one copy of each rule with a valid holder, and no copy lost to a refused holder`, () => {
     const base = seedOf(lines);
     let cases = 0;
     for (const k of [3, 4]) {
       for (const answer of picks(POOL, k)) {
         cases += 1;
-        const kept = survivors(base, answer).map((file) => answer.find((note) => note.file === file));
+        const { files, duplicates } = survivors(base, answer);
+        const kept = files.map((file) => answer.find((note) => note.file === file));
         const said = `${lines} lines, ${answer.map(({ file }) => file).join(" ")}: kept ${kept.map(({ file }) => file).join(" ") || "nothing"}`;
         assert.ok(valid(base, lines, kept), `what is kept is valid: ${said}`);
-        const held = new Set(kept.map(({ body }) => ruleOf(body)));
-        for (const note of answer) {
-          if (held.has(ruleOf(note.body))) continue;
-          assert.ok(!valid(base, lines, [...kept, note]), `${note.file} could have been kept beside the rest: ${said}`);
+        // Each rule with a valid holder (a note of it the rest of what is kept has room for) keeps exactly one copy.
+        for (const rule of new Set(answer.map(({ body }) => ruleOf(body)))) {
+          const copies = kept.filter(({ body }) => ruleOf(body) === rule).length;
+          assert.ok(copies <= 1, `one copy of a rule at most: ${said}`);
+          const others = kept.filter(({ body }) => ruleOf(body) !== rule);
+          const holdable = answer.some((note) => ruleOf(note.body) === rule && valid(base, lines, [...others, note]));
+          if (holdable) assert.equal(copies, 1, `a rule with a valid holder keeps one copy: ${said}`);
+        }
+        // A note left out as a duplicate repeats a note that is kept, or one of the seed's: never a refused holder.
+        for (const [file, holder] of duplicates) {
+          assert.ok(files.includes(holder) || /^old-\d+\.md$/.test(holder), `${file} was left out as a repeat of ${holder}, which is not kept: ${said}`);
         }
         const any = answer.some((note) => valid(base, lines, [note]));
         if (any) assert.ok(kept.length > 0, `a note could have been kept alone, and nothing was: ${said}`);
