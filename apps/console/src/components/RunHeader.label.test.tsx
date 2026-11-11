@@ -7,7 +7,7 @@ import type { Run } from "@/lib/v2";
 // A run's short label (the run page's header and the Playground's run panel, which is the same header) tells apart two
 // runs started in the same second. Run ids are UUIDv7s: their leading digits are the start time, the same for runs
 // started within about a minute, so the label is the random tail.
-const run = (run_id: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (run_id: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Name three primes above 100.",
   created_at: "2026-11-04T21:14:00Z", ended_at: "2026-11-04T21:14:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 } as Run);

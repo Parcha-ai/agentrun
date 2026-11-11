@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Archive, Bot, Copy, History, LayoutDashboard, MoreHorizontal, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { Block, Themes } from "@/design/Themes";

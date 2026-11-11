@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MissionControl } from "@/components/MissionControl";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { StartHere } from "@/components/StartHere";

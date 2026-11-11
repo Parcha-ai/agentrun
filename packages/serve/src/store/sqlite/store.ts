@@ -17,7 +17,7 @@ import {
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
-  RevisionMoved, SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
+  RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
@@ -1254,8 +1254,8 @@ class SqliteStore implements Store {
             agentId, provider, live.pointer_sealed, at,
           );
           await tx.run("DELETE FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
-          // The newest kept, the oldest dropped first (per agent, across providers).
-          await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ? AND id NOT IN (SELECT id FROM sign_in_tombstones WHERE agent_id = ? ORDER BY id DESC LIMIT ?)", agentId, agentId, SIGN_IN_TOMBSTONES_KEPT);
+          // Every tombstone is kept: what the agent learned is cut of each pointer it ever held (handed-values.ts
+          // agentPointers), and a dropped one would be shown again.
           return signInTombstoneOf(tomb!);
         }),
       handedHolder: async (hash, options) => (await handedHolderIn(db, hash, { settleMs: options?.settleMs ?? 0, now: options?.at !== undefined ? { sql: d.bigintParam, params: [options.at] } : clock() }))?.id,
