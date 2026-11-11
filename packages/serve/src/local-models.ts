@@ -13,9 +13,9 @@ export type ToolsAs = "native" | "text";
  *  tools (`toolsAs`, absent: native). pi-ai 1.5.0 lists particle-ai/particle-1 at
  *  OpenRouter's current promotional price ($0.05 input, $0.003 cache read, $0.50 output). A run's cap holds each request
  *  at its worst case, priced from the catalog, before it is sent, and a hold must never price below what can be billed:
- *  the promotion can end before the catalog follows. So the hold takes Particle's list price. What a request is booked
- *  at once it answers stays pi-ai's: OpenRouter's billed total (Usage.cost.totalFromProvider), and this price only
- *  where OpenRouter reports none. */
+ *  the promotion can end before the catalog follows. So the hold takes Particle's list price, and so does the booking:
+ *  a request that answers is booked at pi-ai's calculateCost on this same catalog entry, its list price, not at what
+ *  OpenRouter bills during the promotion. */
 export const PRICE_OVERRIDES: readonly { readonly provider: string; readonly id: string; readonly cost: Model<Api>["cost"]; readonly toolsAs?: ToolsAs }[] = [
   // Particle-1 takes its tools as text: Particle AI, its one provider on OpenRouter, caches no prefix of a request that
   // carries a tools parameter (measured 2026-11-11: such a request renders to a prompt whose token count varies by send,

@@ -77,10 +77,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
   const target = models.getModel(chosen.model.provider, chosen.model.modelId) as unknown as PiModel | undefined;
   if (!target) throw new Error(`no model ${chosen.model.provider}/${chosen.model.modelId} here`);
-  const price = (_model: string, used: RouteUsage): number => {
-    const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    return calculateCost(target as never, usage as never).total;
-  };
+  const price = (_model: string, used: RouteUsage): number => priceOn(target, used);
   // What the model takes as input and its input limits, on every wire: pi's session sends a model that takes no images
   // pi-ai's placeholder in place of one, and pi's read holds an image to the model's limits (port-models.ts sessionModel).
   const sees = { ...(target.input ? { input: target.input } : {}), ...(target.inputLimits ? { inputLimits: target.inputLimits } : {}) };
@@ -176,10 +173,16 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
           }
           if (asText) {
             // The reply whole, then its text and its calls as Messages blocks. A reply that opens a call block and
-            // holds no call it can read is asked again, at most TEXT_TOOL_TRIES times in all, its usage summed.
+            // holds no call it can read is asked again, at most TEXT_TOOL_TRIES times in all, its usage summed, and
+            // only out of what the cap held for this one request (reaskTokens): the re-ask's output limit is what is
+            // left of it once the tries so far and the re-ask's own input, uncached, are paid.
             const tools = built.tools ?? [];
             const used = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+            const outputHeld = body.max_tokens ?? target.maxTokens;
+            let heldUsd = 0;
+            let spentUsd = 0;
             let replies = events;
+            let nextTokens = 0;
             for (let attempt = 1; ; attempt++) {
               let again = false;
               for await (const event of replies) {
@@ -189,16 +192,22 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                   sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
                   break;
                 }
-                const part = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+                const given = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+                const part = { input: given.input, output: given.output, cacheRead: given.cacheRead ?? 0, cacheWrite: given.cacheWrite ?? 0 };
                 used.input += part.input;
                 used.output += part.output;
-                used.cacheRead += part.cacheRead ?? 0;
-                used.cacheWrite += part.cacheWrite ?? 0;
+                used.cacheRead += part.cacheRead;
+                used.cacheWrite += part.cacheWrite;
+                if (attempt === 1 && outputHeld !== undefined) heldUsd = priceOn(target, { ...part, output: outputHeld });
+                spentUsd += priceOn(target, part);
                 const said = (message.content ?? []).filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
                 const read = callsOfText(said, tools);
-                if (read.broken && attempt < TEXT_TOOL_TRIES) {
-                  again = true;
-                  break;
+                if (read.broken && attempt < TEXT_TOOL_TRIES && outputHeld !== undefined) {
+                  nextTokens = reaskTokens(target, part, heldUsd - spentUsd, outputHeld);
+                  if (nextTokens > 0 && nextTokens >= part.output) {
+                    again = true;
+                    break;
+                  }
                 }
                 if (read.text) {
                   const index = blocks++;
@@ -217,7 +226,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 send({ type: "message_stop" });
               }
               if (!again) break;
-              replies = models.streamSimple(target as never, context as never, streamOptions as never);
+              replies = models.streamSimple(target as never, context as never, { ...streamOptions, maxTokens: nextTokens } as never);
             }
           }
         } catch (error) {
@@ -303,3 +312,25 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
 
 /** How many times a text-tools reply is asked for when it opens a call block that holds no call it can read. */
 const TEXT_TOOL_TRIES = 3;
+
+/** `used` priced on `target`'s catalog entry: pi-ai's calculateCost, tiers included (the proxy's booking, and the cap's). */
+function priceOn(target: PiModel, used: RouteUsage): number {
+  const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  return calculateCost(target as never, usage as never).total;
+}
+
+/** A text-tools re-ask's output limit: the most tokens it may answer with when what is left of the request's hold is
+ *  `leftUsd` (its first try's input as it was billed and its output limit `outputHeld`, less every try so far) and its
+ *  input, the prompt `last` was asked with, is priced uncached at the dearer of the input and cache-write prices, as the
+ *  cap prices a fresh input. Never more than `outputHeld`; 0 when nothing is left. So the one hold the cap took for
+ *  the request covers every try it makes. */
+export function reaskTokens(target: PiModel, last: RouteUsage, leftUsd: number, outputHeld: number): number {
+  const prompt = last.input + last.cacheRead + last.cacheWrite;
+  const at = (output: number) => Math.max(priceOn(target, { input: prompt, output, cacheRead: 0, cacheWrite: 0 }), priceOn(target, { input: 0, output, cacheRead: 0, cacheWrite: prompt }));
+  const inputUsd = at(0);
+  const perToken = (at(1_000_000) - inputUsd) / 1_000_000;
+  const room = leftUsd - inputUsd;
+  if (room < 0) return 0;
+  if (!(perToken > 0)) return outputHeld;
+  return Math.max(0, Math.min(outputHeld, Math.floor(room / perToken)));
+}

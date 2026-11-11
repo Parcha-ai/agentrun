@@ -118,6 +118,30 @@ test("a reply that opens a call block holding no call it can read is asked again
   const route = await routeOf(MODEL, { OPENROUTER_API_KEY: KEY }, "default", undefined, upstream);
   const events = await eventsOf(route.fetch, route.provider.origin);
   assert.equal(sent.length, 2, "asked twice");
+  assert.equal(sent[1].max_tokens ?? sent[1].max_completion_tokens, 211, "the re-ask's limit: what the hold has left (256 held, 20 out and 100 in spent, 100 in again)");
   assert.deepEqual(events.filter((event) => event.type === "content_block_start").map((event) => event.content_block.type), ["text", "tool_use"]);
   assert.equal(events.find((event) => event.type === "message_delta").usage.input_tokens, 200, "both requests' input");
+});
+
+test("a re-ask is paid out of the one request's hold: its output limit is what is left, and none goes when nothing is", async () => {
+  const { reaskTokens } = await import("../dist/runner/model-route.js");
+  const models = await providerModels({ OPENROUTER_API_KEY: KEY });
+  const particle = models.getModel("openrouter", "particle-ai/particle-1");
+  // List price: $0.25/M input, $1/M output. Held: 100 input + 256 output = $0.000281; spent: 100 + 20 = $0.000045; the
+  // re-ask's 100 input uncached is $0.000025, so $0.000211 is left for its output: 211 tokens.
+  const last = { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 };
+  assert.equal(reaskTokens(particle, last, 0.000281 - 0.000045, 256), 211);
+  assert.equal(reaskTokens(particle, last, 0.00002, 256), 0, "the re-ask's input alone passes what is left");
+  assert.equal(reaskTokens(particle, last, 1, 256), 256, "never more than the request's own limit");
+  // On the route: a reply that spends its whole limit and breaks is not asked again (nothing left would answer as much).
+  const sent = [];
+  const broken = '<function_calls>\n<parameter name="zzz">1</parameter>\n</function_calls>';
+  const upstream = async (_url, init = {}) => {
+    sent.push(JSON.parse(String(init.body)));
+    const chunk = (delta, finish, usage) => `data: ${JSON.stringify({ id: "gen-1", object: "chat.completion.chunk", created: 0, model: "particle-ai/particle-1", choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}`;
+    return new Response([chunk({ role: "assistant", content: broken }, null), chunk({}, "length", { prompt_tokens: 100, completion_tokens: 256, total_tokens: 356 }), "data: [DONE]", "", ""].join("\n\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const route = await routeOf(MODEL, { OPENROUTER_API_KEY: KEY }, "default", undefined, upstream);
+  await eventsOf(route.fetch, route.provider.origin);
+  assert.equal(sent.length, 1, "no re-ask past the hold");
 });
