@@ -2,13 +2,16 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
+import { McpToolPicker } from "./McpToolPicker";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import type { McpServer } from "@/lib/mcp";
 
-// The agent editor's Tools & skills grid: every collapsed card is one height. Each holds the tool's name, ONE human
-// line (the served `blurb`, else its description clamped to two lines), its state as a one-line tag ("Sandbox-only",
-// "Workflow only", else the reason itself, cut to one line) with the full reason in
-// the tag's title, and Details, which shows the model-facing description and the reason in place, on that card alone.
-// jsdom has no layout, so the structure is pinned here; the walk measures heights and overflow in Chromium.
+// The agent editor's Tools & skills grid: every collapsed card is one fixed height, the same component for every source
+// (a built-in tool, an MCP server's). Each holds the tool's name, ONE human line (the served `blurb`, else its description
+// clamped to three lines), its state as a one-line tag ("Sandbox-only", "Workflow only", else the reason itself, cut to
+// one line) with the full reason in the tag's title, and More, which shows the rest in place, on that card alone.
+// jsdom has no layout, so the structure is pinned here; the console e2e's tool-cards flow measures heights and widths in
+// Chromium.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
@@ -17,11 +20,11 @@ const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => 
 const FETCH_SUMMARY = "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked, a part at a time.";
 const LONG_NAME = "a_very_long_tool_name_for_the_worst_case_card";
 const MCP_NAME = "mcp:github-enterprise/list_repository_collaborators_with_permissions";
-const LONG_SUMMARY = "A tool with no blurb, whose description is the model's and runs well past two lines of a card: it says what it takes, what it returns, and every limit it has, at length.";
+const LONG_SUMMARY = "A tool with no blurb, whose description is the model's and runs well past three lines of a card: it says what it takes, what it returns, and every limit it has, at length, and then some more.";
 const RAW = [
   { name: "web_fetch", available: true, summary: FETCH_SUMMARY, blurb: "Read a public web page", harnesses: ["pi"] },
   { name: "bash", available: true, summary: "Run a bash command in the run's box, from its work/.", blurb: "Run shell commands", sandbox_only: true, harnesses: ["pi"] },
-  // The worst case: a long name, no blurb (the two-line fallback) and a tag.
+  // The worst case: a long name, no blurb (the three-line fallback) and a tag.
   { name: LONG_NAME, available: true, summary: LONG_SUMMARY, sandbox_only: true, harnesses: ["pi"] },
   // Unavailable for a long reason: the tag is that reason, cut to one line by CSS, never a word in its place.
   { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], summary: "Drive a hosted browser.", blurb: "Browse the web", harnesses: ["pi"] },
@@ -40,6 +43,7 @@ async function open() {
   const card = (name: string) => grid.querySelector(`input[value="${name}"]`)!.closest("li")!.firstElementChild as HTMLElement;
   return { host, grid, card };
 }
+const button = (card: HTMLElement, label: string) => [...card.querySelectorAll("button")].find((b) => b.textContent === label);
 
 describe("the editor's tool cards", () => {
   it("reads the served blurb", () => {
@@ -49,16 +53,16 @@ describe("the editor's tool cards", () => {
   it("are one fixed height, top-aligned in their row, with no description while collapsed", async () => {
     const { grid, card } = await open();
     expect(grid.classList.contains("items-start")).toBe(true);
-    for (const name of ["web_fetch", "bash", LONG_NAME]) expect(card(name).classList.contains("h-32"), name).toBe(true);
+    for (const name of ["web_fetch", "bash", LONG_NAME]) expect(card(name).classList.contains("h-36"), name).toBe(true);
     expect(card("web_fetch").textContent).not.toContain(FETCH_SUMMARY);
   });
 
-  it("show one human line: the blurb on one line, else the description clamped to two", async () => {
+  it("show one human line: the blurb on one line, else the description clamped to three", async () => {
     const { card } = await open();
     const blurb = [...card("web_fetch").querySelectorAll("span")].find((s) => s.textContent === "Read a public web page")!;
     expect(blurb.classList.contains("truncate")).toBe(true);
     const fallback = [...card(LONG_NAME).querySelectorAll("span")].find((s) => s.textContent === LONG_SUMMARY)!;
-    expect(fallback.classList.contains("line-clamp-2")).toBe(true);
+    expect(fallback.classList.contains("line-clamp-3")).toBe(true);
   });
 
   it("say their state in a short tag, the full reason in its title; the worst case's name and tag hold one line each", async () => {
@@ -78,31 +82,88 @@ describe("the editor's tool cards", () => {
     expect(needs.classList.contains("truncate")).toBe(true);
   });
 
-  it("Details shows the description and the reason on that card alone, which may grow, and never ticks the tool", async () => {
+  it("More shows the description and the reason on that card alone, which may grow, and never ticks the tool; Less closes it", async () => {
     const { host, card } = await open();
-    const details = [...card("bash").querySelectorAll("button")].find((b) => b.textContent === "Details")!;
-    await act(async () => { details.click(); });
-    expect(card("bash").classList.contains("h-32")).toBe(false);
+    await act(async () => { button(card("bash"), "More")!.click(); });
+    expect(card("bash").classList.contains("h-36")).toBe(false);
     expect(card("bash").textContent).toContain("Run a bash command in the run's box, from its work/.");
     expect(card("bash").textContent).toMatch(/Sandbox-only: /);
-    expect([...card("bash").querySelectorAll("button")].some((b) => b.textContent === "Hide details")).toBe(true);
-    expect(card("web_fetch").classList.contains("h-32")).toBe(true);
+    expect(button(card("bash"), "Less")).toBeTruthy();
+    expect(card("web_fetch").classList.contains("h-36")).toBe(true);
     expect(host.querySelector<HTMLInputElement>("input[value='bash']")!.checked).toBe(false);
+    await act(async () => { button(card("bash"), "Less")!.click(); });
+    expect(card("bash").classList.contains("h-36")).toBe(true);
+    expect(button(card("bash"), "More")).toBeTruthy();
   });
 
-  it("a long name is cut to one line on the card, whole in its title, and whole, wrapping, in Details", async () => {
+  it("a long name is cut to one line on the card, whole in its title, and whole, wrapping anywhere, under More", async () => {
     const { card } = await open();
     const name = () => [...card(MCP_NAME).querySelectorAll("span")].find((s) => s.textContent === MCP_NAME && !s.querySelector("span"))!;
     expect(name().classList.contains("truncate")).toBe(true);
     expect(name().getAttribute("title")).toBe(MCP_NAME);
-    expect(card(MCP_NAME).classList.contains("h-32")).toBe(true);
-    const details = [...card(MCP_NAME).querySelectorAll("button")].find((b) => b.textContent === "Details")!;
-    await act(async () => { details.click(); });
+    expect(card(MCP_NAME).classList.contains("h-36")).toBe(true);
+    await act(async () => { button(card(MCP_NAME), "More")!.click(); });
     expect(name().classList.contains("truncate")).toBe(false);
-    expect(name().classList.contains("break-all")).toBe(true);
+    expect(name().classList.contains("[overflow-wrap:anywhere]")).toBe(true);
     expect(name().textContent).toBe(MCP_NAME);
     // Only the open card wraps its name: the others keep theirs to one line.
     const other = [...card(LONG_NAME).querySelectorAll("span")].find((s) => s.textContent === LONG_NAME && !s.querySelector("span"))!;
     expect(other.classList.contains("truncate")).toBe(true);
+  });
+});
+
+// Manuel's beta.33 report: an MCP server's tools (Linear's create_attachment, list_comments) printed their whole
+// description, some cards 60 lines tall, and only built-in tools had More. The MCP picker's cards are the same ToolCard.
+describe("an MCP server's tool cards", () => {
+  const LONG = "Create attachment (deprecated): Deprecated fallback for tiny files only. Accepts base64 file content, verifies SHA-256 checksum, and uploads it through the MCP worker. Prefer `prepare_attachment_upload` plus direct PUT plus `create_attachment_from_upload`. ".repeat(6);
+  const UNBROKEN = "QUJD".repeat(500);
+  const server: McpServer = { name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, not_metered: ["create_attachment", "list_comments", "get_team", "upload_blob"],
+    tools: [
+      { name: "create_attachment", description: LONG },
+      { name: "get_team", description: "Get a team by id." },
+      { name: "upload_blob", description: `Example: ${UNBROKEN}` },
+      { name: "list_comments", description: LONG },
+    ] } as McpServer;
+  function picker() {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} })));
+    const card = (tool: string) => host.querySelector<HTMLElement>(`[data-tool-card="mcp:linear/${tool}"]`)!;
+    const line = (tool: string) => card(tool).querySelector<HTMLElement>("[data-line]");
+    return { host, card, line };
+  }
+
+  it("a long description is clamped to three lines, whole in its title, on a card of the same fixed height", () => {
+    const { card, line } = picker();
+    expect(card("create_attachment").classList.contains("h-36")).toBe(true);
+    expect(line("create_attachment")!.classList.contains("line-clamp-3")).toBe(true);
+    expect(line("create_attachment")!.getAttribute("title")).toBe(LONG);
+    expect(card("create_attachment").textContent).toContain("not metered");
+  });
+
+  it("More opens that card alone, Less closes it; the others stay clamped", async () => {
+    const { card } = picker();
+    await act(async () => { button(card("create_attachment"), "More")!.click(); });
+    expect(card("create_attachment").classList.contains("h-36")).toBe(false);
+    expect(card("create_attachment").querySelector("[data-more]")!.textContent).toContain(LONG.trim());
+    expect(card("list_comments").classList.contains("h-36")).toBe(true);
+    expect(button(card("list_comments"), "More")).toBeTruthy();
+    await act(async () => { button(card("create_attachment"), "Less")!.click(); });
+    expect(card("create_attachment").classList.contains("h-36")).toBe(true);
+  });
+
+  it("a short description keeps the card's height, with no More", () => {
+    const { card } = picker();
+    expect(card("get_team").classList.contains("h-36")).toBe(true);
+    expect(button(card("get_team"), "More")).toBeUndefined();
+  });
+
+  it("a 2000-character unbroken string wraps anywhere in a card that can't grow wider than its column, collapsed and open", async () => {
+    const { card, line } = picker();
+    expect(card("upload_blob").classList.contains("min-w-0")).toBe(true);
+    expect(card("upload_blob").closest("li")!.classList.contains("min-w-0")).toBe(true);
+    expect(line("upload_blob")!.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
+    await act(async () => { button(card("upload_blob"), "More")!.click(); });
+    expect([...card("upload_blob").querySelectorAll("[data-more] span")].find((s) => s.textContent?.includes(UNBROKEN))!.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
   });
 });

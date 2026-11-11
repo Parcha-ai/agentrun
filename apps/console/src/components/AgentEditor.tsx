@@ -7,6 +7,7 @@ import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
+import { ToolCard } from "@/components/ToolCard";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { Field as UiField, Input, Textarea } from "@/components/ui/field";
@@ -365,7 +366,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     // (cut to one line); the reason in full is its title, and in Details.
                     const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
                     return (
-                      <li key={t.name}><ToolCard name={t.name} blurb={t.blurb} summary={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
+                      <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
                         onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
                     );
                   })}
@@ -527,33 +528,3 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
  *  the group; `named`: what it holds is a radiogroup with that name already. */
 const Field = ({ named, ...props }: Omit<React.ComponentProps<typeof UiField>, "group"> & { named?: boolean }) => <UiField {...props} group={props.id ? false : named ? "heading" : true} />;
 
-/** One tool in the editor's grid. Collapsed, every card is one height: its name, ONE human line (the served `blurb`; an
- *  MCP server's tool has none, so its description, clamped to two lines), its state as a short tag (the full reason its
- *  title), and Details. Details shows the model-facing description and the reason in place, and that card grows; Details
- *  never ticks it. */
-function ToolCard({ name, blurb, summary, why, tag, on, disabled, onToggle }: { name: string; blurb?: string; summary?: string; why?: string; tag?: string; on: boolean; disabled: boolean; onToggle: () => void }) {
-  const [open, setOpen] = useState(false);
-  const toggle = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); };
-  return (
-    <label title={why} className={cn("flex flex-col border px-3 py-2.5 font-mono text-body", open ? "min-h-32" : "h-32 overflow-hidden", on && "border-foreground", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-      <span className="flex min-w-0 items-center gap-3">
-        <input type="checkbox" value={name} checked={on} disabled={disabled} onChange={onToggle} className="shrink-0 accent-primary" />
-        {/* Cut to one line on the card, whole in its title; whole, wrapping, once Details opens (an MCP tool's id has no
-            spaces, and tools from one server share a long prefix). */}
-        <span title={name} className={cn("min-w-0", open ? "break-all" : "truncate")}>{name}</span>
-      </span>
-      {blurb ? <span className="mt-1 truncate font-sans text-small text-muted-foreground">{blurb}</span>
-        : summary && !open ? <span className="mt-1 line-clamp-2 font-sans text-label text-muted-foreground" title={summary}>{summary}</span> : null}
-      {tag && <span data-tag title={why} className="mt-1 max-w-full self-start truncate border px-1.5 text-micro text-muted-foreground">{tag}</span>}
-      {open && (
-        <span className="mt-2 space-y-1 font-sans text-label text-muted-foreground">
-          {summary && <p className="whitespace-pre-wrap break-words">{summary}</p>}
-          {why && <p className="break-words">{why}</p>}
-        </span>
-      )}
-      {(summary || why) && (
-        <button type="button" onClick={toggle} className="mt-auto self-start pt-1 font-sans text-label underline underline-offset-2 hover:text-foreground">{open ? "Hide details" : "Details"}</button>
-      )}
-    </label>
-  );
-}
