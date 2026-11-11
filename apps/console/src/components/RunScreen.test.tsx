@@ -322,7 +322,8 @@ describe("the run page's Screen tab, for a browser", () => {
     const panel = p.host.querySelector('section[aria-label="Screen"]') as HTMLElement;
     expect(panel).toBeTruthy();
     expect(panel.querySelector("[data-browser-actions]")).toBeNull();
-    expect(panel.querySelector("button")).toBeNull();
+    // No Take over or Hand back of its own: its only button sizes the view (fill the window).
+    expect([...panel.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Fill the window"]);
     // The served hold doesn't follow a take in the browser's viewer: the header doesn't say who drives.
     expect(panel.querySelector("header")!.textContent).not.toMatch(/drives|You drive/);
     expect(panel.querySelector("header")!.textContent).toContain("take over in the view below");
@@ -479,5 +480,79 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     expect(p.selected()).toBe("Timeline");
     await p.click("Open the screen");
     expect(p.selected()).toBe("Screen");
+  });
+});
+
+// Fill the window: a live screen of any kind grows to the whole window and back. The viewer inside draws the page as
+// large as it fits at its own shape and maps each click through the canvas it drew (pi-browser's live-view test checks
+// that a click lands exactly after the window grows), so here: the same iframe (never reloaded, so the session goes on),
+// its frame filling the window, and Esc, from this page or from inside the viewer, or the same button, putting it back.
+describe("the live view fills the window", () => {
+  const LIVE: RunComputer = { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" };
+  const fillButton = (host: HTMLElement) => host.querySelector('button[aria-label="Fill the window"]') as HTMLButtonElement | null;
+  const exitButton = (host: HTMLElement) => host.querySelector('button[aria-label="Exit full window (Esc)"]') as HTMLButtonElement | null;
+  const frameBox = (host: HTMLElement) => host.querySelector('[data-testid="screen-frame"]') as HTMLElement | null;
+  const filling = (host: HTMLElement) => /\bfixed\b/.test(frameBox(host)?.className ?? "") && /\binset-0\b/.test(frameBox(host)?.className ?? "");
+
+  it("the button fills the window with the same viewer, and the same button puts it back", async () => {
+    const p = await page(async () => LIVE, working, "screen");
+    const before = p.frame();
+    expect(before, "the viewer").not.toBeNull();
+    expect(filling(p.host)).toBe(false);
+    await act(async () => { fillButton(p.host)!.click(); });
+    expect(filling(p.host), "the frame fills the window").toBe(true);
+    expect(frameBox(p.host)!.getAttribute("role")).toBe("dialog");
+    expect(p.frame(), "the same iframe: the viewer isn't reloaded").toBe(before);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
+    expect(p.frame()!.className).toMatch(/\bflex-1\b/);
+    expect(p.frame()!.className, "no fixed shape: the viewer letterboxes the page itself").not.toMatch(/aspect-/);
+    await act(async () => { exitButton(p.host)!.click(); });
+    expect(filling(p.host)).toBe(false);
+    expect(p.frame()).toBe(before);
+    nowhereBut(p.frame(), VIEWER);
+  });
+
+  it("Esc puts it back, whether this page or the viewer inside has the keyboard", async () => {
+    const p = await page(async () => LIVE, working, "screen");
+    await act(async () => { fillButton(p.host)!.click(); });
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host), "Esc on the page").toBe(false);
+    await act(async () => { fillButton(p.host)!.click(); });
+    expect(filling(p.host)).toBe(true);
+    const inner = p.frame()!.contentWindow! as Window & typeof globalThis;
+    await act(async () => { inner.dispatchEvent(new inner.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host), "Esc inside the viewer").toBe(false);
+    await act(async () => { fillButton(p.host)!.click(); });
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); });
+    expect(filling(p.host), "another key leaves it filling the window").toBe(true);
+  });
+
+  it("a desktop's Take over is on the full-window bar too, and the view leaves full window when the screen closes", async () => {
+    let takes = 0;
+    let up = true;
+    const desktop = { ...working, computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, { run: desktop, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: async () => (up ? { state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" } : { state: "none", kind: "desktop", hold: "agent" }), computerEvery: 20, tab: "screen", onTakeOver: async () => { takes += 1; return { hold: "pending" }; } } as never)); });
+    await settle();
+    await act(async () => { fillButton(host)!.click(); });
+    expect(filling(host)).toBe(true);
+    const take = [...frameBox(host)!.querySelectorAll("button")].find((b) => b.textContent === "Take over");
+    expect(take, "Take over on the full-window bar").toBeTruthy();
+    expect([...host.querySelectorAll("button")].filter((b) => b.textContent === "Take over")).toHaveLength(1);
+    await act(async () => { take!.click(); });
+    await settle();
+    expect(takes).toBe(1);
+    up = false;
+    await settle(100);
+    expect(host.querySelector("iframe"), "the screen closed").toBeNull();
+    expect(frameBox(host), "no full-window frame left over").toBeNull();
+    expect(fillButton(host), "nothing to fill the window with").toBeNull();
+  });
+
+  it("there is no button while there is no live screen", async () => {
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }), working, "screen");
+    expect(p.frame()).toBeNull();
+    expect(fillButton(p.host)).toBeNull();
   });
 });
