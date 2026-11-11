@@ -50,6 +50,13 @@ export const LEARNED_ASK_CARD_BYTES = ARGS_PREVIEW_BYTES - 128;
 /** Whether every MCP tool set to ask that the workflow can call fits on its card (learnedAskShown, LEARNED_ASK_CARD_BYTES). */
 export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteLength(JSON.stringify(learnedAskShown(asks)), "utf8") <= LEARNED_ASK_CARD_BYTES;
 
+/** The MCP tools a person's approval of a learned_workflow call covers: exactly those its card named (learnedAskShown's
+ *  `mcp_calls`, read from the card they approved, host-calls.ts HostCalls.approved). None when no person approved it,
+ *  or the card named none. A tool set to ask that the card did not name (one set to ask after the card was shown) is
+ *  never run under that approval. */
+export const learnedApprovedTools = (card: Readonly<Record<string, unknown>> | undefined): ReadonlySet<string> =>
+  new Set(Array.isArray(card?.mcp_calls) ? card.mcp_calls.filter((name): name is string => typeof name === "string") : []);
+
 /** An MCP tool's catalog name, `mcp:<server>/<tool>`: a call node that names one runs it through the run's own MCP. */
 const MCP_TOOL = /^mcp:[^/]+\/.+$/;
 
@@ -258,12 +265,12 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   if (typeof run.policy !== "function" || typeof run.denyFrom !== "function") return refuse("its run gave no tool policy for its call nodes");
   const { tools, gated, deniedBy } = learnedDraftTools(run.granted, run.policy, run.plane, run.denyFrom);
   // The run's MCP tools, held to the same gate: one set to allow may be named, and one set to ask only when a person
-  // approved this call (its ask is the call's own: adapter-run-spec.ts adapterRunGate); one set to deny is refused in its
-  // words. One the run's pin does not hold is no tool of the run at all.
-  const approved = hostCalls()?.approved === true;
+  // approved this call with a card that named it (its ask is the call's own: adapter-run-spec.ts adapterRunGate); one set
+  // to deny is refused in its words. One the run's pin does not hold is no tool of the run at all.
+  const approved = learnedApprovedTools(hostCalls()?.approved);
   for (const name of run.mcpTools ?? []) {
     const setting = run.policy(name);
-    if (setting === "allow" || (setting === "ask" && approved)) tools.push(name);
+    if (setting === "allow" || (setting === "ask" && approved.has(name))) tools.push(name);
     else {
       gated[name] = setting;
       if (setting === "deny") deniedBy[name] = run.denyFrom(name) as DenyFrom;
@@ -305,11 +312,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
       if (!send || !run.decide) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
       // The gate's whole decision of this call with the arguments the workflow resolved, as the harness's own call of the
       // tool gets it: its deny, its argument pins (a messaging tool held to one channel), its ask, or no one to approve.
-      // The call's approval lifts only an ask, never a pin or a deny.
+      // The call's approval lifts only an ask, never a pin or a deny, and only for a tool its card named: one set to ask
+      // since the card was shown was never approved.
       await run.refresh?.();
       const verdict = await run.decide(tool, given);
       if (typeof verdict === "object") throw new Error(verdict.deny);
-      if (verdict === "ask" && hostCalls()?.approved !== true) throw new Error(`This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
+      const card = hostCalls()?.approved;
+      if (verdict === "ask" && !learnedApprovedTools(card).has(tool)) {
+        throw new Error(card ? `This ${tool} call needs a person's approval, and the approval given for this learned workflow did not cover it: its card did not name ${tool}. It was not run.` : `This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
+      }
       const answer = await send(given, { callId, signal: own });
       if (answer.isError) throw new Error(answer.text);
       return mcpValue(answer.text);

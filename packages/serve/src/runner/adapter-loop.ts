@@ -656,8 +656,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
-  /** The calls of this run a person approved (an ask answered allow, on this claim or read from the journal on a resume). */
-  const approvedCalls = new Set<string>();
+  /** The calls of this run a person approved (an ask answered allow, on this claim or read from the journal on a resume),
+   *  each with the arguments its approval card showed (its journaled ask's): an approval covers what that card named. */
+  const approvedCalls = new Map<string, Readonly<Record<string, unknown>>>();
+  /** Each answered call's ask as journaled (the card the person saw), set by answerOf as it reads or writes the answer. */
+  const askedArgs = new Map<string, unknown>();
   /** An MCP tool of the run as the claim's pass wrapped it, by its catalog name (set once its tools are wrapped). */
   let mcpHosted: HostCalls["mcp"] = () => undefined;
   let mcpStale = false;
@@ -1133,7 +1136,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 // refused for room pauses the run (Ledger.pause, the run's pause), as main's paidCall does.
                 // The calls it may make of the run's other tools (a learned workflow's MCP nodes: host-calls.ts), each as this
                 // loop wrapped it, and whether a person approved this call.
-                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => withHostCalls({ mcp: mcpHosted, approved: approvedCalls.has(toolContext.callId) }, () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }))),
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => withHostCalls({ mcp: mcpHosted, approved: approvedCalls.get(toolContext.callId) },() => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }))),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -1542,8 +1545,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const answer = await answerOf({ ...call, tool, args }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as
-      // approved with it (host-calls.ts).
-      if (answer.approved) approvedCalls.add(call.callId);
+      // approved with it (host-calls.ts), as far as the card they approved named it: its ask as journaled, the card they
+      // saw, never one built again now.
+      if (answer.approved) {
+        const seen = askedArgs.get(call.callId);
+        approvedCalls.set(call.callId, seen && typeof seen === "object" && !Array.isArray(seen) ? (seen as Record<string, unknown>) : {});
+      }
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
     };
   }
@@ -1554,9 +1561,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
+    const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
+    // The card the person answers is the ask as first journaled: kept for the caller, which scopes an approval to it.
+    if (first) askedArgs.set(call.callId, first.args);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
-    const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
     // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price };
