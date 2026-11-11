@@ -479,4 +479,4 @@ export function create(options: LocalBrowserOptions = {}): LocalBrowserProvider 
 }
 
 /** The conformance CLI's module for the local browser: its live switch, its image and its notes. */
-export const conformance = () => import("./conformance/local.js");
+export const conformance = () => import("./conformance/local-chrome.js");

@@ -1,4 +1,4 @@
-// The local browser (src/local.ts) over a fake Chrome (fake-chrome.mjs): a create starts it under a supervisor with a
+// The local browser (src/local-chrome.ts) over a fake Chrome (fake-chrome.mjs): a create starts it under a supervisor with a
 // fresh profile, its debugging port on loopback and the fence's arguments; connect hands over its DevTools URL; release
 // ends it and removes its files; its deadline ends it though the process that made it is gone; a Chrome that cannot start
 // its sandbox, root and a missing executable are refused in words. No real Chrome: test/local-chrome-live.test.mjs is
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import { CHROME_FLAGS, chromeFence, findChrome, NO_CHROME } from "../dist/chrome.js";
 import { PROVIDERS } from "../dist/kinds.js";
-import { create, LocalBrowserProvider } from "../dist/local.js";
+import { create, LocalBrowserProvider } from "../dist/local-chrome.js";
 import { providerModule } from "../dist/providers.js";
 
 const FAKE = fileURLToPath(new URL("./fake-chrome.mjs", import.meta.url));
@@ -196,7 +196,7 @@ test("a browser made with an allowlist: its proxy reaches only the listed hosts,
 test("the deadline ends the browser though the process that made it is gone: a crashed run leaves no Chrome", async () => {
 	const root = join(scratch, "crashed");
 	// A process that makes a browser of 1.5 s and exits at once, without releasing it.
-	const maker = `import { LocalBrowserProvider } from ${JSON.stringify(new URL("../dist/local.js", import.meta.url).href)};
+	const maker = `import { LocalBrowserProvider } from ${JSON.stringify(new URL("../dist/local-chrome.js", import.meta.url).href)};
 const made = await new LocalBrowserProvider({ executablePath: ${JSON.stringify(CHROME)}, root: ${JSON.stringify(root)}, uid: ${UID} }).create({ image: "chromium", lifetimeMs: 1500, network: "open" });
 process.stdout.write(JSON.stringify(made));
 process.exit(0);`;

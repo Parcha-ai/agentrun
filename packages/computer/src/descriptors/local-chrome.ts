@@ -18,5 +18,5 @@ export const LOCAL = defineProvider({
 	// Where it finds this machine's Chrome (chrome.ts CHROME_ENV, then PATH): the server's own values of these, and no
 	// other. Written out, so reading the descriptor loads no provider code (kinds.test holds the two lists together).
 	hostEnv: ["PI_BROWSER_CHROME", "CHROME_PATH", "PATH"],
-	load: () => import("../local.js"),
+	load: () => import("../local-chrome.js"),
 });

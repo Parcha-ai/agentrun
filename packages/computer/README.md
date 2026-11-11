@@ -2134,7 +2134,7 @@ AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
 
 ## A local browser: this machine's Chrome, no keys
 
-The `local-chrome` provider (Local Chrome, `local.ts`) is a computer of kind `browser` that is the Chrome or Chromium
+The `local-chrome` provider (Local Chrome, `local-chrome.ts`) is a computer of kind `browser` that is the Chrome or Chromium
 on the machine AgentRun runs on. No vendor, no key, nothing billed.
 
 ```ts

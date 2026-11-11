@@ -29,7 +29,7 @@ import {
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
 import { KernelProvider } from "../dist/kernel.js";
-import { LocalBrowserProvider } from "../dist/local.js";
+import { LocalBrowserProvider } from "../dist/local-chrome.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";

@@ -63,8 +63,8 @@
       "default": "./dist/kernel.js"
     },
     "./local-chrome": {
-      "types": "./dist/local.d.ts",
-      "default": "./dist/local.js"
+      "types": "./dist/local-chrome.d.ts",
+      "default": "./dist/local-chrome.js"
     },
     "./package.json": "./package.json"
   },

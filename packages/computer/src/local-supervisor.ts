@@ -1,4 +1,4 @@
-// One local browser's supervisor: a detached Node process of its own per browser (local.ts starts it), so the browser
+// One local browser's supervisor: a detached Node process of its own per browser (local-chrome.ts starts it), so the browser
 // outlives neither its deadline nor its release, whatever becomes of the process that made it. It reads the browser's
 // directory (browser.json), starts the browser's egress proxy (docker/egress-proxy.ts: with no list, every public host
 // and nothing else; with the record's list, only its hosts, public ones still) on a Unix socket in that directory, with
@@ -6,7 +6,7 @@
 // (Chrome takes a proxy over TCP alone; the relay passes each connection to the socket unread, the proxy decides), then
 // starts Chrome behind that fence (chrome.ts chromeFence) with a fresh profile in the directory and a debugging port
 // Chrome picks on 127.0.0.1. Once Chrome's DevTools socket answers it writes state.json and one line on stdout, which
-// local.ts waits for; a Chrome that never does is reported on that line in words and nothing is left.
+// local-chrome.ts waits for; a Chrome that never does is reported on that line in words and nothing is left.
 //
 // It then ends the browser (Chrome's whole process group, the proxy, the relay, Chrome's singleton socket directory and
 // the browser's directory) at the first of: the deadline in browser.json, SIGTERM (a release), or Chrome's own exit. So a
@@ -22,7 +22,7 @@ import { alive, chromeFence, killTree, NO_SANDBOX, ownDebugger, answeringPath, s
 import { startEgressProxy } from "./docker/egress-proxy.js";
 import { isCommand } from "./entry.js";
 
-/** The browser's record, written by local.ts before the supervisor starts: the label a list finds it by. */
+/** The browser's record, written by local-chrome.ts before the supervisor starts: the label a list finds it by. */
 export const BROWSER_FILE = "browser.json";
 /** What the supervisor writes once Chrome answers: the pids and ports a connect and a release read. */
 export const STATE_FILE = "state.json";
@@ -46,7 +46,7 @@ const RELAY_HOST = "127.0.0.1"; // key-gate: loopback-rule the local Chrome's re
 /** How long Chrome has to answer on its debugging port. */
 export const READY_MS = 20_000;
 
-/** What local.ts writes in browser.json. */
+/** What local-chrome.ts writes in browser.json. */
 export interface BrowserRecord {
 	provider: "local-chrome";
 	id: string;

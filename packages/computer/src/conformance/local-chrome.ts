@@ -3,7 +3,7 @@
 // AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1. The provider reads no environment: this module reads its own
 // COMPUTER_LOCAL_CHROME_* names, and PATH to find a Chrome, and passes each to create() as its option.
 import { BROWSER_IMAGE } from "../descriptors/shared.js";
-import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local.js";
+import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local-chrome.js";
 
 /** The environment this module reads, by name, each for the option its comment names, and the live switch. */
 export const LOCAL_ENV = {
