@@ -2,7 +2,7 @@
 // The server-wide durable-file plumbing and the data-directory location moved to server-fs.ts; this module re-exports it
 // so callers that still reach for it here keep working until they are pointed at server-fs.ts.
 import { createHash } from "node:crypto";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 export { DATA_ENV, SERVER_FILE, TOKEN_FILE, agentFolderOf, defaultData, readJson, removeOwnRecord, serialBy, syncDir, tempOf, writeDurable, writeDurableSync, writeWhole } from "./server-fs.js";
 
@@ -23,13 +23,11 @@ export const LAUNCH_LOST = "server_lost_at_launch";
 /** Why a run fails that the store has running with no serve.json: its server went down before it set the run up. */
 export const SETUP_LOST = "server_lost_at_setup";
 
-/** The data directory a run's folder is in: `<data>/disk/agents/<agent>/runs/<run>` (pi-durable-agent runDirIn). */
-export const dataOfRun = (runDir: string): string => resolve(runDir, "..", "..", "..", "..", "..");
 
 export const HOMES_DIR = "homes";
 /** Paths in an agent's home that only the host reads and writes (another component owns them): the home API reads and
  *  writes neither, and lists each by its name alone. `learning` (learning.ts, read through its own API) and `sign-ins`
- *  (sign-ins.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
+ *  (sign-ins-store.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
  *  GET /agents/{id}). */
 export const HOME_HOST_OWNED = ["learning", "sign-ins"];
 /** An agent's home directory's name: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ only

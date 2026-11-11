@@ -1,7 +1,7 @@
 // The agent body validator (store/agent-body.ts, the P4 fold of pi-durable-agent's bodyOf): everything the old validator
 // accepted it accepts — harness, tool settings, place, content-addressed skills, a default cap, the learning switch.
-// The agent-level argument pin is NOT handled here: it is wired through tool-plane's pinIssues + canonicalToolSettings (the
-// one copy) when AGENT_LAYER_PINS flips, so until then a pin is refused like any unknown tool setting. Ported from
+// The agent-level argument pin is NOT handled here: agents-store.ts checks and keeps it through tool-plane's pinIssues +
+// canonicalToolSettings (the one copy). Ported from
 // pi-durable-agent/test/agent-store.test.mjs's revision checks, tested on bodyOf directly.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -49,6 +49,15 @@ test("a revision keeps the place it names, {mode, box?}; one that names none kee
   for (const place of ["runner", null, {}, { mode: "Runner" }, { mode: "sandbox", box: "" }, { mode: "sandbox", box: 3 }, { mode: "runner", home: "x" }]) {
     assert.throws(() => bodyOf({ ...A, place }), refused(/place/), JSON.stringify(place));
   }
+});
+
+test("a revision's computer keeps a sandbox's gpu, {type, count}: a GPU type name and a whole count from 1; anything else is refused", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu: { count: 2, type: "H100" } } }).body.computer, { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona" } }).body.computer, { kind: "sandbox", provider: "daytona" }, "no gpu named, none kept");
+  for (const gpu of ["H100", null, { type: "H100" }, { type: "", count: 1 }, { type: "H 100", count: 1 }, { type: "H100", count: 0 }, { type: "H100", count: 1.5 }, { type: "H100", count: 1, region: "earth" }]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu } }), refused(/gpu is not \{type, count\}/), JSON.stringify(gpu));
+  }
+  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", image: "x" } }), refused(/not \{kind, provider\?, gpu\?\}/));
 });
 
 test("a revision keeps a default spend cap and its mode, and the learning switch, when they are set; bad values are refused", () => {

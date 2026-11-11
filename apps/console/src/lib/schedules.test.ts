@@ -152,6 +152,6 @@ describe("a 422, by field", () => {
     });
   });
   it("is the whole message for any other refusal", () => {
-    expect(issuesOf(new ClientError(409, "store_unreadable", "triggers.json does not read"))).toEqual({ fields: {}, rest: ["store_unreadable: triggers.json does not read"] });
+    expect(issuesOf(new ClientError(409, "scope_taken", "another trigger listens there"))).toEqual({ fields: {}, rest: ["scope_taken: another trigger listens there"] });
   });
 });

@@ -14,15 +14,15 @@ export type PickerOption = { value: string; label: string; disabled?: boolean; t
  *  Field's own label, hint and error are wired to it. `disabled` turns
  *  it off whole; `name` puts its value in a form (a hidden input). `placeholder` is what the field reads while
  *  nothing is picked, in the muted text a field's placeholder has, so the field is never a blank box. The field and
- *  each option carry their value (data-value). */
-export function Picker({ value, onChange, options, label, id, className, disabled = false, name, small = false, placeholder }: {
-  value: string; onChange: (value: string) => void; options: PickerOption[]; label: string; id?: string; className?: string; disabled?: boolean; name?: string; small?: boolean; placeholder?: string;
+ *  each option carry their value (data-value). `autoFocus`: a Dialog opens with the keyboard on this field. */
+export function Picker({ value, onChange, options, label, id, className, disabled = false, name, small = false, placeholder, autoFocus }: {
+  value: string; onChange: (value: string) => void; options: PickerOption[]; label: string; id?: string; className?: string; disabled?: boolean; name?: string; small?: boolean; placeholder?: string; autoFocus?: boolean;
 }) {
   const picked = options.find((o) => o.value === value);
   const wiring = useFieldWiring();
   return (
     <Listbox value={value} onChange={onChange} disabled={disabled} name={name}>
-      <ListboxButton id={id ?? wiring?.id} aria-label={label} aria-describedby={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
+      <ListboxButton id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} aria-describedby={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
         className={cn("flex min-w-0 items-center justify-between gap-2 border border-input bg-background text-left font-mono hover:border-foreground/60 focus-visible:outline-offset-0 disabled:opacity-60 data-[open]:border-foreground",
           small ? "h-control-sm px-2 text-small" : "h-control-md px-3 text-body", className)}>
         <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>

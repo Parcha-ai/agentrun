@@ -7,6 +7,9 @@
 - A run parked at its spend cap no longer shows a "Model request failed: 400 {…agentrun_proxy…}" row in its Timeline. The model proxy refused that request before it was sent, and the park's row already says what happened. That refused request also no longer counts as a model request in the run's usage line.
 
   The cap's refusal now carries its code through to the proxy as a field: the runner's `Refusal.code`, then `HarnessRunError.refusal`. The proxy writes `code: "spend_cap_reached"` in its refusal body. The Timeline matches on that code and `type: "agentrun_proxy"`, never on the words. Every other model failure, a provider's 400 included, keeps its row.
+- A tool call refused before it ran now reads as refused in the run's Timeline, never as a call that ran and failed. This covers a tool set to deny on the server or the agent, and a call a person denied. The row reads "Refused: write deny.md: Permission denied: write is set to deny on this server…" instead of "Wrote deny.md failed: …". Every tool reads that way, named by what it would have acted on: a path, a command, a page, or the tool's name alone.
+
+  pi's adapter marks a refused call's result in its `details` with the new `CALL_REFUSED` key (from `@parcha/pi-durable-agent/timeline`). The model never reads that field, and the Timeline matches on it, never on the refusal's words. A call that ran and errored still reads "<label> failed: <error>".
 
 ## 0.1.0-beta.32 (2026-11-10)
 

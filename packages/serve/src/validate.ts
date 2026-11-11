@@ -4,7 +4,7 @@ import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
-import { AGENT_LAYER_PINS, AGENT_PIN_LATER, settingsIssues } from "./tool-plane.js";
+import { settingsIssues } from "./tool-plane.js";
 import { CAP_MODES } from "./cap.js";
 import { APPROVALS } from "./approvals.js";
 
@@ -86,22 +86,15 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
   if (d.tool_settings !== undefined) {
-    const settings = settingsIssues(d.tool_settings, `${at}.tool_settings`, "agent");
-    out.push(...settings);
-    // An agent's own pin, once its store keeps one (AGENT_LAYER_PINS); until then a pin that is one is the server's to set.
-    if (!AGENT_LAYER_PINS && isObject(d.tool_settings)) {
-      for (const [name, setting] of Object.entries(d.tool_settings)) {
-        const field = `${at}.tool_settings.${name}.pin`;
-        if (isObject(setting) && setting.pin !== undefined && !settings.some((one) => one.field === field || one.field.startsWith(`${field}.`))) out.push(issue(field, "not_set_up_here", AGENT_PIN_LATER));
-      }
-    }
+    // An agent's own pin among them, kept as given (the gate holds its runs to it).
+    out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`, "agent"));
   }
   // Whether the agent's runs ask a person (the gate as its settings say) or run unattended, an ask allowed: never over a
   // deny. An edit that leaves it out asks, as one that leaves out tool_settings keeps none: no edit makes an agent
   // unattended by saying nothing.
   if (d.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(d.approvals)) out.push(issue(`${at}.approvals`, "not_an_option", `${at}.approvals is one of ${APPROVALS.join(", ")}: ask, the default, waits for a person where a tool is set to ask; never runs the agent unattended, each such tool allowed, while a deny still refuses`));
   // The agent's default cap of each run started without one of its own: above 0 sets it, 0 clears it (no default), and
-  // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
+  // an edit that leaves it out keeps the agent's (agents-store.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
   }

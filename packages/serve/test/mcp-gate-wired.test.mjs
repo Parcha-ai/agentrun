@@ -109,8 +109,7 @@ for (const harness of HARNESSES) {
     assert.equal(calls(fake).length, 0, "nothing was sent");
   });
 
-  // Codex's parked call through its own MCP client writes no call record yet (its rows have no call to read).
-  test(`${harness}: with no setting the call asks and parks, the MCP server sees nothing, and the owner's allow runs it exactly once`, { timeout: 240_000, skip: harness === "codex" && "#21: a parked door call writes its call record (MCP, next)" }, async (t) => {
+  test(`${harness}: with no setting the call asks and parks, the MCP server sees nothing, and the owner's allow runs it exactly once`, { timeout: 240_000 }, async (t) => {
     const { api, fake, answer, run, model } = await setup(t, harness);
     const runId = await run(`ask-${harness}`);
     const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });

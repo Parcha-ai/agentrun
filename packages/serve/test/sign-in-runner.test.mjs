@@ -60,7 +60,7 @@ async function runner(t) {
     const root = join(s.dir, "runs", run);
     mkdirSync(join(root, "work"), { recursive: true });
     const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }) };
-    const host = { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, handoverInJournal: true, store: s.store, claim, sealKey: KEY };
+    const host = { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, store: s.store, claim, sealKey: KEY };
     const before = signInLines().count;
     await TOOLS.browser.bind(host);
     return { env, lines: signInLines(before).lines };
@@ -127,12 +127,11 @@ test("a stale or lost claim reads no sign-in, and writes no hand", async (t) => 
   assert.equal((await r.bind("run-a", "browserbase", taken)).lines[0]?.ref, r.refs.a, "the claim that holds the run reads it");
 });
 
-test("runSignIn: the run's agent's pointer for the vendor under the claim, or none: no seal key, another key, a local Chrome, a stale claim; and a sign-in forgotten while the hand is written is never handed", async (t) => {
+test("runSignIn: the run's agent's pointer for the vendor under the claim, or none: another key, a local Chrome, a stale claim; and a sign-in forgotten while the hand is written is never handed", async (t) => {
   const r = await runner(t);
   const { runSignIn } = signIns;
   assert.equal(typeof runSignIn, "function", "sign-ins-store.ts exports runSignIn");
   assert.deepEqual(await runSignIn(r.store, KEY, r.claims["run-a"], "browserbase"), { provider: "browserbase", ref: r.refs.a, save: true });
-  assert.equal(await runSignIn(r.store, undefined, r.claims["run-b"], "kernel"), undefined, "no seal key");
   assert.equal(await runSignIn(r.store, randomBytes(32), r.claims["run-b"], "kernel"), undefined, "another key: it does not open");
   assert.equal(await runSignIn(r.store, KEY, r.claims["run-b"], "chrome"), undefined, "a local Chrome keeps none");
   assert.equal(await runSignIn(r.store, KEY, r.claims["run-c"], "browserbase"), undefined, "its agent has none");
@@ -206,7 +205,7 @@ test("bound through a host whose lifecycle is the adapter loop's hostLifecycle()
   const root = join(r.dir, "runs", "run-a");
   mkdirSync(join(root, "work"), { recursive: true });
   const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) };
-  const host = { where: { root, work: join(root, "work"), ref: { id: "run-a" } }, env, install() {}, ...lifecycle.register, handoverInJournal: true, store: r.store, claim: r.claims["run-a"], sealKey: KEY };
+  const host = { where: { root, work: join(root, "work"), ref: { id: "run-a" } }, env, install() {}, ...lifecycle.register, store: r.store, claim: r.claims["run-a"], sealKey: KEY };
   const before = readFileSync(r.log, "utf8").split("\n").filter(Boolean).length;
   await TOOLS.browser.bind(host);
   assert.deepEqual([lifecycle.onConversation.length, lifecycle.beforeResume.length, lifecycle.beforeRelease.length], [1, 1, 1], "one of each, collected for the loop");

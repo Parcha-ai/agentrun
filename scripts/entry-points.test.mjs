@@ -68,7 +68,6 @@ const bare = new Map([
   ['scripts/is-main.mjs', 'reads it, and where Node has none refuses the command'],
   ['scripts/is-main.test.mjs', 'names it in comments and checks that this runtime sets it'],
   ['scripts/check-node.mjs', 'names it in a comment, on why it refuses Node 23 and 24.0-24.1'],
-  ['examples/decision-demos/build.mjs', copiedOut],
   ['examples/research-eval.mjs', copiedOut],
   ['examples/research-live.mjs', copiedOut],
   ['examples/run-rank-candidates.mjs', copiedOut],
@@ -78,7 +77,6 @@ const bare = new Map([
   ['packages/pi-durable-agent/test/fixtures/serve-sample.mjs', ownPackage],
   ['packages/pi-durable-agent/test/fixtures/store-sample.mjs', ownPackage],
   ['packages/pi-durable-disk/test/fixtures/paid-api.ts', ownPackage],
-  ['packages/serve/test/record-door-one-input.mjs', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);

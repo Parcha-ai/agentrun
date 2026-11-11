@@ -17,7 +17,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const BUILDING = "building the box image (python, git, curl, node, npm, rg)";
 type Docker = { available: boolean; state: "ready" | "preparing" | "unavailable"; reason?: string };
 const capsWith = (docker: Docker) => ({
-  harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } },
+  harnesses: [], models: { source: "providers", ready: true }, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } },
   places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "bwrap", available: false, state: "unavailable", reason: "not listed" }, { id: "docker", ...docker }], allow: [] },
 });
 const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", title: "Hi", status: "completed", state: "idle", created_at: "2026-11-06T09:00:00Z", ended_at: "2026-11-06T09:00:05Z", result: null, error: null, cost: null, archived_at: null };

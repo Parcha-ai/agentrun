@@ -14,10 +14,13 @@ import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
 import { BOX_KEYS } from "../dist/place-offers.js";
-import { ToolKeys } from "../dist/tool-keys.js";
+import { toolKeysOverStore } from "../dist/tool-keys-store.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
+import { client as pgClient, PG_URL, postgresOnly } from "./store-target.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
@@ -158,7 +161,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
   // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
-  const child = spawn(LAUNCHER, typeof args === "function" ? args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
+  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
   // Whether the launcher's pid is still its own: once it exits and Node reaps it, that number, and so its group's id, can
   // be given to another process (on this box the PIDs wrap in minutes under test load, so another lane's), and a kill of
   // it or of the group, or a walk from it, would reach that process. Each is done only while it is alive.
@@ -267,22 +270,54 @@ test.skip("started by its launcher, no process of its user holds a secret in its
   assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
 });
 
-// SKIP (follow-up #2078): the launcher's store URL names db.invalid, which the store now tries to open as Postgres, so the server exits at start
-test.skip("started by its launcher with a store URL that holds a database password, no process of its user holds the URL in its environment or command line, and its store opens", { timeout: 120_000 }, async (t) => {
-  const password = `nak-store-${process.pid}-${Date.now().toString(36)}`;
+// The store URL holds a database password: it reaches the server over the launcher's pipe, so no process of the user holds it in
+// its environment or command line, and the store it names opens. On Postgres only (CI's Postgres job, `npm run test:pg`): a role of
+// its own with a password of its own (the test database's is a well-known one), a schema of its own, both gone after.
+test("started by its launcher with a store URL that holds a database password, no process of its user holds the URL in its environment or command line, and its store opens", { timeout: 120_000, ...postgresOnly("a store URL with a database password") }, async (t) => {
+  const suffix = `${process.pid}_${Date.now().toString(36)}`;
+  const role = `nak_role_${suffix}`;
+  const schema = `nak_store_${suffix}`;
+  const password = `nak-store-${process.pid}-${Date.now().toString(36)}-${"p".repeat(16)}`;
   const token = `nak-token-${process.pid}-${"t".repeat(32)}`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_STORE_URL: `postgres://agentrun:${password}@db.invalid:5432/agentrun` });
+  const admin = await pgClient();
+  try {
+    const database = (await admin.query("SELECT current_database() AS name")).rows[0].name;
+    await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
+    await admin.query(`GRANT CREATE ON DATABASE "${database}" TO ${role}`);
+  } finally {
+    await admin.end();
+  }
+  t.after(async () => {
+    const cleanup = await pgClient();
+    try {
+      await cleanup.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await cleanup.query(`DROP OWNED BY ${role}`);
+      await cleanup.query(`DROP ROLE IF EXISTS ${role}`);
+    } finally {
+      await cleanup.end();
+    }
+  });
+  const url = new URL(PG_URL);
+  url.username = role;
+  url.password = password;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_STORE_URL: url.toString(), AGENTRUN_STORE_SCHEMA: schema });
   assert.equal((await api("POST", "/agents", { definition: { id: "store-url", version: 1, name: "store-url", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201, "its store opens");
   assert.ok(!read(`/proc/${root}/environ`).toString().split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the server's environment");
   noSecretAnywhere(root, password);
 });
 
 /** The launcher's arguments for a server whose data directory holds `saved` (by key id, its fields) as tool keys already,
- *  sealed under `key`: written as the server writes them, before it starts. */
-const savedBefore = (key, saved) => (data) => {
+ *  sealed under `key`: written into its store as the server writes them, before it starts. */
+const savedBefore = (key, saved) => async (data) => {
   mkdirSync(data, { recursive: true, mode: 0o700 });
-  const keys = new ToolKeys(data, { AGENTRUN_SEAL_KEY: key }, () => undefined);
-  for (const [id, values] of Object.entries(saved)) keys.save(id, { values });
+  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server" });
+  try {
+    const keys = toolKeysOverStore(store, { AGENTRUN_SEAL_KEY: key }, () => undefined);
+    await keys.load();
+    for (const [id, values] of Object.entries(saved)) await keys.save(id, { values });
+  } finally {
+    await store.close();
+  }
   return ["--data", data, "--port", "0", "--faux", CUSTODY];
 };
 
@@ -646,7 +681,7 @@ function onlyTheServerHolds(root, canary) {
   return under.map((p) => p.cmdline.toString().replaceAll("\0", " "));
 }
 
-/** The names of `names` shaped like a key (the one rule: the env cut's, the import cut's and pi-durable-disk's). */
+/** The names of `names` shaped like a key (the one rule, secret-name.ts: the env cut's and the import cut's). */
 const keyShapedIn = (names) => names.filter((name) => keyShaped(name));
 
 // SKIP (follow-up #2078): the launcher's custody report for the run is never written on the runner
@@ -777,88 +812,6 @@ test("a pi run on Amazon Bedrock hands each request the AWS keys its process hol
   given = undefined;
   await models.completeSimple(chat, { messages: [{ role: "user", content: "Hi.", timestamp: Date.now() }] }, {}).catch(() => undefined);
   assert.equal(given?.AWS_SECRET_ACCESS_KEY, keys.AWS_SECRET_ACCESS_KEY, "and a completion's");
-});
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, a workflow run's judges get the TypeSafe and Parallel keys the server holds, and no process holds either in its environment or command line", { timeout: 120_000 }, async (t) => {
-  const dir = await scratch(t);
-  const calls = join(dir, "jev-calls.jsonl");
-  const parallelCalls = join(dir, "parallel-calls.jsonl");
-  const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
-  // The server as the launcher's COMMAND, with the tests' fake Jev and Parallel: the launcher hands it its secrets over
-  // the pipe.
-  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
-const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, fauxParallel: ${JSON.stringify(FAUX_PARALLEL)}, drainTimeout: "5s" });
-process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, TYPESAFE_API_KEY: JEV_CANARY, PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: parallelCalls }, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
-  const coi = {
-    v: 2, name: "coi-check",
-    schemas: {
-      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-      Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is \`doc\` a certificate of incorporation?" } } },
-    },
-    input: { schemaId: "In" },
-    output: { schemaId: "Coi", path: "coi" },
-    root: { node: "chain", steps: [{ node: "judge", label: "coi-parallel", state: { doc: "{question}" }, out: "Coi", as: "coi_parallel", provider: "parallel" }, { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
-  };
-  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
-  const { body: started } = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
-  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
-  const run = (await api("GET", `/runs/${started.run_id}`)).body;
-  assert.equal(last.status, "completed", JSON.stringify(run.error));
-  assert.deepEqual(run.result.output, { is_coi: true });
-  const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => call.authorized), [true], "Jev answered on the key the server holds, handed on the decision descriptor");
-  const parallelSent = readFileSync(parallelCalls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(parallelSent.map((call) => call.authorized), [true], "and Parallel on its own");
-  // The launcher's own processes only: the tests' keys are every decision test's canaries, and another file's server,
-  // started with it in its environment, may be running now.
-  const tree = treeOf(root);
-  const ours = processes().filter((p) => tree.has(p.pid));
-  assert.ok(ours.length >= 1, "the server is found");
-  for (const p of ours) {
-    for (const key of [JEV_CANARY, PARALLEL_CANARY]) {
-      assert.ok(!p.environ.includes(key), `pid ${p.pid}'s environment holds a key: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
-      assert.ok(!p.cmdline.includes(key), `pid ${p.pid}'s command line holds a key`);
-    }
-  }
-});
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, with OPENROUTER_API_KEY its only decision key, a workflow run's Jev judge answers on that key through OpenRouter", { timeout: 120_000 }, async (t) => {
-  const dir = await scratch(t);
-  const calls = join(dir, "jev-calls.jsonl");
-  const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
-  // The server as the launcher's COMMAND, with the tests' fake Jev. OPENROUTER_API_KEY is on the launcher's list, so the
-  // server and each run's process hold it with their secrets, never in their environment.
-  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
-const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, drainTimeout: "5s" });
-process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
-  // No TypeSafe key anywhere the launcher could take one from: OpenRouter is Jev's only route.
-  const typesafe = process.env.TYPESAFE_API_KEY;
-  delete process.env.TYPESAFE_API_KEY;
-  t.after(() => typesafe !== undefined && (process.env.TYPESAFE_API_KEY = typesafe));
-  const env = { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: JEV_CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls };
-  const { api } = await launched(t, env, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
-  const coi = {
-    v: 2, name: "coi-check",
-    schemas: {
-      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-      Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is \`doc\` a certificate of incorporation?" } } },
-    },
-    input: { schemaId: "In" },
-    output: { schemaId: "Coi", path: "coi" },
-    root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
-  };
-  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
-  const { body: started } = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
-  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
-  const run = (await api("GET", `/runs/${started.run_id}`)).body;
-  assert.equal(last.status, "completed", JSON.stringify(run.error));
-  const sent = (existsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/api/v1/systemone", true]], "one System One request to OpenRouter, on the key the server holds");
 });
 
 test("the launcher run through a link, as a package manager installs a bin, finds the server beside its real path", async (t) => {

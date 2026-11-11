@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+On a Postgres store, a recreate deploy hands the schema over at once, and a lost owner connection is taken back. A server started while another holds the schema waits up to 2 minutes for the old one to let go, saying so once, then serves, instead of exiting at once with "another server holds the store". Deploy the server with recreate (stop the old, start the new). API calls fail for the few seconds the new server takes to start, so a launcher should retry them. A deploy that waits for the new server's health before stopping the old one can't hand a schema over. A server whose owner-lock connection is lost (a failover, a database restart) refuses calls while it takes the lock back on a fresh connection, then serves again. If another server took the schema meanwhile, the schema was migrated past this build, or the lock can't be taken back within 2 minutes, it exits 1 so its platform restarts it, rather than answering 503 for as long as it runs.

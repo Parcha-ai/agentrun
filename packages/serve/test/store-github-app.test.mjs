@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { seal } from "@parcha/pi-durable-agent";
+import { seal } from "../dist/sealing.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,7 +115,7 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   assert.ok(step.secrets.has("Bearer not-a-secret-ghs-token"), "in the run's redaction set");
   const work = mkdtempSync(join(tmpdir(), "github-app-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
-  const answer = await mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  const answer = await mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   assert.deepEqual(answer, { content: [{ type: "text", text: "2" }] }, "the server took the App's token");
   assert.deepEqual(github.asked.map((a) => a.url), ["/app/installations/777/access_tokens"], "minted once, for the run's repository");
 });

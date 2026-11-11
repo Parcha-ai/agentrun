@@ -22,7 +22,7 @@
 // latest fires if it is within the trigger's catch-up window and the rest are one `missed` row; the schedule goes on from
 // now. A failed firing queues a trigger.failed webhook message.
 import { createHash, randomBytes } from "node:crypto";
-import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
@@ -114,7 +114,7 @@ export type TriggerDeps = {
   runOf(key: string): Promise<{ run_id: string } | null>;
   /** Queues a trigger.failed webhook message under `key`, the firing's (webhooks.ts emitTrigger): `off` when there is no
    *  webhook to send it to; `unsaved` or `closed` when it is not in the outbox. */
-  notify(failed: TriggerFailed, key: string): "queued" | "unsaved" | "off" | "closed";
+  notify(failed: TriggerFailed, key: string): Promise<"queued" | "unsaved" | "off" | "closed">;
   say(fields: Record<string, string | number>): void;
   clock?: TriggerClock;
   /** The sources this engine reads: the registry's (trigger-adapters.ts), unless a test gives its own. */
@@ -302,7 +302,7 @@ export class Triggers {
     if (enabled) await this.needAgentOn(agentId);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
-    // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
+    // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
     const minted = await this.mint(source, id);
     const name = typeof body.name === "string" ? body.name.trim() : id;
     let row: TriggerRow;
@@ -756,7 +756,7 @@ export class Triggers {
     const firing = await this.store.triggers.firing(triggerId, key);
     const trigger = await this.find(triggerId);
     if (!firing || !trigger || firing.status !== "failed" || firing.notified) return;
-    const told = this.deps.notify({ trigger_id: trigger.id, name: trigger.name, firing_key: key, nominal_at: second(firing.nominalAt), error: firing.error ?? { code: "internal", message: "" }, auto_paused: firing.paused }, key);
+    const told = await this.deps.notify({ trigger_id: trigger.id, name: trigger.name, firing_key: key, nominal_at: second(firing.nominalAt), error: firing.error ?? { code: "internal", message: "" }, auto_paused: firing.paused }, key);
     // A mark that does not land (the outbox's write failed) is tried again at the next tick, under the same key, which
     // the outbox holds once: a restart then finds it marked.
     if (told === "queued" || told === "off") await this.store.triggers.settle(triggerId, key, { notified: true });

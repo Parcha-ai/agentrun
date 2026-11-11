@@ -6,7 +6,7 @@
 // The input's origin keeps its fail-safe on read (#1856): a run started by a trigger keeps an origin only when it names
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
-import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
@@ -38,6 +38,9 @@ export interface RunLaunch {
   readonly documents?: string;
   /** What a run's box may reach, as the server resolved it: the list, or "none". */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set AGENTRUN_BOX_ALLOW (box-settings.ts boxAllowSetIn): `boxAllow` is theirs, not the default. A
+   *  browser is held to an operator's list and runs open under the default. Absent: the default. */
+  readonly boxAllowSet?: true;
   /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
@@ -46,8 +49,12 @@ export interface RunLaunch {
    *  shows them); `seed`, the learning commit's sha (or null when the seed could not be read); and `section`, the exact
    *  # Learned text to lay into the prompt for those notes (what the old layLearned laid), within the learning budget; and
    *  `seedNotes`, the count of all notes in the seed before the budget picked `given` (present with a read seed; absent when
-   *  the seed could not be read). Absent when the run does not learn. */
-  readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number };
+   *  the seed could not be read); `skills`, the names of the learned skills the seed offers the run (each active one that
+   *  fits a run's skill budget at all; its claim lays them), absent when none; `gradeModel`, the model the server names
+   *  to grade what the run proposes (learning.ts gradeModelOf: --grade-model, else AGENTRUN_SERVE_GRADE_MODEL, else
+   *  AGENT_MODEL_STRONG), absent when it names none and the agent's own grades it; and `seedFailed`, why it starts with
+   *  nothing learned when it does (SeedFailed). Absent when the run does not learn. */
+  readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number; readonly skills?: readonly string[]; readonly gradeModel?: string; readonly seedFailed?: SeedFailed };
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -104,22 +111,25 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
+    ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
-    ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}) } } : {}),
+    ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}) , ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}) } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
   };
 }
 
-/** The learning start a launch body names, as read back: its given notes (each {file, name}), its seed sha and its # Learned
- *  section text, or undefined when the body names none (a run that does not learn). */
-function readLearning(value: unknown): { given: readonly { file: string; name: string }[]; seed: string | null; section: string; seedNotes?: number } | undefined {
+/** The learning start a launch body names, as read back: its given notes (each {file, name}), its seed sha, its # Learned
+ *  section text, the learned skills it was offered, its grade model and why its seed failed, or undefined when the body
+ *  names none (a run that does not learn). */
+function readLearning(value: unknown): { given: readonly { file: string; name: string }[]; seed: string | null; section: string; seedNotes?: number; skills?: readonly string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined {
   if (!isObject(value)) return undefined;
   const given = Array.isArray(value.given) ? value.given.flatMap((note) => (isObject(note) && typeof note.file === "string" && typeof note.name === "string" ? [{ file: note.file, name: note.name }] : [])) : [];
   const seed = typeof value.seed === "string" ? value.seed : null;
   const section = typeof value.section === "string" ? value.section : "";
-  return { given, seed, section, ...(typeof value.seedNotes === "number" ? { seedNotes: value.seedNotes } : {}) };
+  const skills = Array.isArray(value.skills) ? value.skills.filter((name): name is string => typeof name === "string") : [];
+  return { given, seed, section, ...(typeof value.seedNotes === "number" ? { seedNotes: value.seedNotes } : {}), ...(skills.length ? { skills } : {}), ...(typeof value.gradeModel === "string" && value.gradeModel !== "" ? { gradeModel: value.gradeModel } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}) };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
@@ -145,6 +155,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(typeof stored.approvers === "boolean" ? { approvers: stored.approvers } : {}),
     ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
+    ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null, section: "" } } : {}),
     ...(trigger ? { trigger } : {}),
@@ -156,3 +167,13 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
 /** The run's learning start (its given notes, its seed sha and its # Learned section), read from one place by learning's
  *  routes and the runner; undefined when the run does not learn. */
 export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => launch.learning;
+
+/** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
+ *  (`unreadable`, STOPPED.unreadable), or what was read could not be made into its start (`not_copied`,
+ *  STOPPED.notCopied). */
+export type SeedFailed = "unreadable" | "not_copied";
+const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied"];
+
+/** A learning start with no seed (no commit of main, runs-over-store.ts learningStartFor): the run learns nothing, is
+ *  never asked what to keep, and so is never told it learns. Why is its `seedFailed`, when its start records one. */
+export const seedFailed = (start: NonNullable<RunLaunch["learning"]>): boolean => start.seed === null;

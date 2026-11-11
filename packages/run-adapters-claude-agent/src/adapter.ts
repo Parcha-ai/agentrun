@@ -9,14 +9,13 @@
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
+import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
@@ -194,8 +193,15 @@ export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgen
   return checkedOnce(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
 }
 
-/** The CLI at `path` against `pins`' sha256 and version. */
-function checkCli(path: string, pins: { sha256?: string; version: string }): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
+/** verifyClaudeAgentCli without holding the event loop (the kernel's checkedOnceAsync): what a host awaits before it
+ *  makes the adapter, whose own check then answers from what this kept. */
+export async function verifyClaudeAgentCliAsync(path: string | undefined, pins = claudeAgentCliPins()): Promise<{ path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled> {
+  if (!path) return verifyClaudeAgentCli(path, pins);
+  return checkedOnceAsync(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
+}
+
+/** The CLI at `path` against `pins`' sha256 and version, as the steps it reads (the kernel's BinaryCheck). */
+function* checkCli(path: string, pins: { sha256?: string; version: string }): Generator<BinaryProbe, { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled, string> {
   try {
     if (!statSync(path).isFile()) throw new Error("not a file");
     accessSync(path, constants.R_OK);
@@ -205,7 +211,7 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
   if (pins.sha256) {
     let found: string;
     try {
-      found = sha256OfFile(path);
+      found = yield { kind: "sha256", path };
     } catch {
       return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
     }
@@ -213,7 +219,7 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
   }
   let version: string;
   try {
-    version = execFileSync(path, ["--version"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, encoding: "utf8", timeout: 15_000 }).trim().split(/\s/)[0] ?? "";
+    version = (yield { kind: "run", path, args: ["--version"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, timeoutMs: 15_000 }).trim().split(/\s/)[0] ?? "";
   } catch (error) {
     return new ClaudeAgentPinMismatch("cli_version", pins.version, `unreadable (${String((error as Error)?.message ?? error).slice(0, 120)})`, path);
   }
@@ -394,7 +400,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-harness-claude: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
       // With skills, the model also reads their files (read_skill_file), from the session's own copy of them.
-      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
+      const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const calls = new CallsInFlight();
       // The remote MCP servers' granted tools, as the CLI names them: its own MCP client calls them at the proxy.

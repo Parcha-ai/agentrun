@@ -303,6 +303,56 @@
       "idempotency_ttl_s": 86400,
       "input_wait_s": null,
       "max_cost_usd": null
+    },
+    "places": {
+      "modes": [
+        "runner",
+        "sandbox"
+      ],
+      "default_place": {
+        "mode": "runner"
+      },
+      "default_reason": "new agents run on the runner, because the docker box is unavailable here: docker is not set up on this server",
+      "boxes": [
+        {
+          "id": "bwrap",
+          "available": false,
+          "reason": "bwrap is not set up on this server",
+          "state": "unavailable"
+        },
+        {
+          "id": "docker",
+          "available": false,
+          "reason": "docker is not set up on this server",
+          "state": "unavailable"
+        },
+        {
+          "id": "modal",
+          "available": false,
+          "reason": "modal is not set up on this server",
+          "state": "unavailable"
+        },
+        {
+          "id": "daytona",
+          "available": false,
+          "reason": "daytona is not set up on this server",
+          "state": "unavailable"
+        }
+      ],
+      "allow": [
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        "github.com",
+        "codeload.github.com"
+      ]
+    },
+    "learning": {
+      "grade_model": null,
+      "pending": true,
+      "approve": false,
+      "approve_needs": "password"
     }
   }
 }

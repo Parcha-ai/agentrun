@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** The vendored Stagehand facade (src/vendor/stagehand-facade/): upstream's files, byte for byte, at one commit of the
+/** The vendored Stagehand facade (src/vendor/stagehand-facade/): the upstream files the package uses, byte for byte, at one commit of the
  *  Stagehand monorepo (github.com/browserbase/stagehand, packages/integrations/core/src/facade). UPSTREAM.json names
  *  the commit, the release it is, and each file's git blob id and SHA-256; nothing else lives in the directory.
  *

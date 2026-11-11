@@ -36,6 +36,8 @@ export const UNAVAILABLE_BACKOFF_MS = [30_000, 120_000, 600_000, 1_800_000] as c
 export interface KeptProposal {
   readonly notes: readonly NoteText[];
   readonly files?: readonly NoteText[];
+  /** Each kept draft's dry run, by its workflow.json's path (learn/skills.ts draftDryRun), which the grader is told. */
+  readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
   readonly asked?: readonly string[];
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
@@ -186,14 +188,20 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
         const context: Context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
         const journal: Journal = deps.journal(claim);
         let rooted = false;
+        /** What the grade spent, as the run's learning end reads it (store-reads/learning.ts runLearningEnd): the graded
+         *  entry's, a failed or cut grade's (null: unknown), else nothing graded, 0. Kept as the learning run's cost when it
+         *  ends ended, failed or stopped, so what learning spent reads from the run rows alone (store learning.spend): a
+         *  stop seen after a paid grade never hides it. */
+        let spend: number | null = 0;
         /** One entry on the root, committed; `end` stages the run's state with it (keyed to this entry, its effect), and
-         *  `take` the stop row it applies. */
+         *  `take` the stop row it applies. An end that ends, fails or stops the run keeps what the grade spent as its cost. */
         const append = async (kind: string, data: unknown, end?: "ended" | "failed" | "stopped" | "parked", take?: number) => {
           const writes: StorageWrite[] = [];
+          if (kind === KINDS.learningDropped && data !== null && typeof data === "object" && "usd" in data) spend = (data as DroppedData).usd ?? null;
           if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } } as StorageWrite);
           const id = await journal.mintId();
           writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } } as StorageWrite);
-          if (end) journal.stage({ run: { state: end }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
+          if (end) journal.stage({ run: { state: end, ...(end === "parked" ? {} : { costUsd: spend }) }, effect: id, ...(take !== undefined ? { take: [{ command: take, effect: id }] } : {}) });
           const result = await journal.commit([writes], () => {}, context);
           if (result.stored === 0) throw result.refused;
           rooted = true;
@@ -235,6 +243,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
 
           // The grade: once. A verdict already in the journal is the one the merge goes on.
           let graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
+          if (graded) spend = graded.usd;
           if (!graded) {
             const main = await learning.readMain(ws, proposal);
             if ("problems" in main) {
@@ -244,7 +253,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(proposal.notes as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
@@ -271,6 +280,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               // An answer the host cannot read is asked once more, as the server's grade did.
               if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
             } catch (error) {
+              // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
+              spend = usd;
               const end = await halted();
               if (end) return end;
               await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
@@ -278,6 +289,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               return { state: "ended" };
             }
             graded = { source: source.runId, verdict, usd, tokens, graded: main.graded };
+            spend = usd;
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.
             await deps.flush();

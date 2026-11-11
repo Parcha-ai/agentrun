@@ -122,8 +122,7 @@ test("a restore checks the text again as a new note is checked: a retired note h
   assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("every item in the learning view says its last change, from the newest commit on its file: learned by a run, then approved, edited, retired and restored by a person, each with when", { timeout: 200_000 }, async (t) => {
+test("every item in the learning view says its last change, from the newest commit on its file: learned by a run, then approved, edited, retired and restored by a person, each with when", { timeout: 200_000 }, async (t) => {
   const PENDING = note("Buy from PaperDepot24 first", "Where to buy office paper", "Buy from PaperDepot24 first.\n", "origin: you\nstatus: pending\n");
   const { api, data, cookie, origin, port, restore, retire, etag } = await keeper(t, { "paperdepot24-first.md": PENDING });
   // A note a run's merge kept: learned, by the run.

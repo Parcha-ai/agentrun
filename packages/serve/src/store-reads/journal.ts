@@ -4,17 +4,19 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { CAPS, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
+import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
-import { labelled, type Reflect } from "../learning-run.js";
+import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
-import { KINDS } from "../runner/journal-kinds.js";
+import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
+import { bookedSpend, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
+import { waitingText } from "../tool-gate.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
@@ -27,7 +29,7 @@ export async function runEntries(store: Store, runId: string, context: Context):
  *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
 export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
   const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? []);
+  const from = reflectFrom(records.submissions ?? [], records.entries);
   if (from === undefined) return undefined;
   const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
   return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
@@ -38,9 +40,36 @@ export async function runReflect(store: Store, runId: string, context: Context):
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
+/** The calls the CLI record holds parked at their gate (a start marked parked) with no sent mark and no end. */
+function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
+  const parked = new Set<string>();
+  const past = new Set<string>();
+  for (const entry of entries) {
+    const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
+    if (typeof callId !== "string") continue;
+    if (entry.kind === KINDS.callStart && (entry.data as { parked?: unknown }).parked === true) parked.add(callId);
+    else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
+  }
+  for (const callId of past) parked.delete(callId);
+  return parked;
+}
+
 function piShaped(entries: readonly EntryLike[]): EntryLike[] {
-  return entries.map((entry) => {
+  const waiting = parkedUnsent(entries);
+  return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // A call through a CLI's own MCP client that its gate parked (adapter-loop.ts park): the CLI was answered the gate's
+    // waiting words (mcp-run.ts), which the record never keeps as the call's end, since an end is its outcome and the call
+    // is answered from it. While the call is parked and unsent, those words show as its result row from its ask on, as pi's
+    // parked call shows them; its sent mark or its end (run, refused, withdrawn) ends that.
+    // Once per call, at its first ask: a call asked again (a resume, a raise while it waits) shows one waiting result.
+    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.delete(data.callId)) {
+      const tool = typeof data.tool === "string" ? data.tool : "tool";
+      const timestamp = typeof data.requestedAt === "string" && Number.isFinite(Date.parse(data.requestedAt)) ? { timestamp: Date.parse(data.requestedAt) } : {};
+      // Its own id (the ask's, marked), so the renderer never takes it for the ask entry seen twice.
+      const result = { ...entry, id: `${String(entry.id)}:parked`, kind: "pi.tool-result", data: {}, model: [{ role: "tool", toolCallId: data.callId, content: waitingText(tool), ...timestamp }] } as unknown as EntryLike;
+      return [entry, result];
+    }
     // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
     const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
@@ -50,13 +79,22 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       const stopReason = data.stopReason === "length" ? "length" : "stop";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}), ...timestamp }] };
     }
+    // The end-of-run turn's answer, as the CLI record keeps it (adapter-loop.ts answered): a model turn that ended, so the
+    // timeline shows it as pi's end-of-run turn shows its own (labelled then marks it the learning's).
+    if (entry.kind === KINDS.endOfRunTurn && data.role === "model") {
+      const text = typeof data.text === "string" ? data.text : "";
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
+    }
     if (entry.kind === KINDS.callStart) {
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
-      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text.
+      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
+      // a crash cut, written with no output, reads in the words its model was given (endedAnswer: the kernel's interrupted
+      // text), as pi's own interrupted result does, never an empty failure.
       const failed = data.status !== undefined && data.status !== "done";
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content: data.output ?? "", ...(failed ? { isError: true } : {}), ...timestamp }] };
+      const content = data.output === undefined && data.status === "interrupted" ? endedAnswer("", { status: "interrupted" }).text : (data.output ?? "");
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...timestamp }] };
     }
     return entry;
   });
@@ -75,13 +113,15 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   const conv = session ? (session.data as { conversation?: unknown }).conversation : undefined;
   if (typeof conv !== "number") return [...entries];
   // Each paid request's tool and the call it ran under, by its turn; then each turn's cost, paired by turn.
-  const named = new Map<number, { tool: string; call?: string; chargedBy?: string }>();
+  // Its tool: the one the request names (`tool`: a browser step's "browser", which the renderer folds into its call's row
+  // with its session `tag`, as main's browser charge), else its paid name.
+  const named = new Map<number, { tool: string; call?: string; chargedBy?: string; tag?: string }>();
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.request) continue;
-    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string };
-    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}) });
+    const d = (e.data ?? {}) as { turn?: number; model?: string; call?: string; charged_by?: string; tool?: string; tag?: string };
+    if (typeof d.turn === "number" && typeof d.model === "string" && d.model.startsWith("paid:")) named.set(d.turn, { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(typeof d.call === "string" ? { call: d.call } : {}), ...(typeof d.charged_by === "string" && d.charged_by ? { chargedBy: d.charged_by } : {}), ...(typeof d.tag === "string" && d.tag ? { tag: d.tag } : {}) });
   }
-  const charges: { tool: string; call?: string; chargedBy?: string; usd: number | null }[] = [];
+  const charges: { turn: number; tool: string; call?: string; chargedBy?: string; tag?: string; usd: number | null }[] = [];
   for (const e of entries) {
     if (e.conversationId !== conv || e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { turn?: number; usd?: number | null; givenBack?: boolean };
@@ -90,7 +130,7 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // that ran is a charge at what it charged, $0 included (main's TOOL_COST of usd 0, a Parallel 4xx); one whose charge
     // is unknown (null) is a charge of an unknown amount (main's TOOL_COST with no usd).
     if (!req || d.givenBack === true) continue;
-    charges.push({ ...req, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
+    charges.push({ ...req, turn: d.turn as number, usd: typeof d.usd === "number" && Number.isFinite(d.usd) && d.usd >= 0 ? d.usd : null });
   }
   if (!charges.length) return [...entries];
   const out = [...entries];
@@ -99,24 +139,58 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
     // MCP server, a browser vendor).
     const by = charge.chargedBy;
     const at = charge.call === undefined ? -1 : out.findIndex((e) => e.kind === "pi.tool-result" && String((e.model?.[0] as { toolCallId?: unknown } | undefined)?.toolCallId ?? "") === charge.call);
-    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
-    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}` } as unknown as EntryLike;
+    const data = { tool: charge.tool, ...(by ? { charged_by: by } : {}), ...(charge.call ? { call: charge.call } : {}), ...(charge.tag ? { tag: charge.tag } : {}), ...(charge.usd !== null ? { usd: charge.usd } : {}) };
+    const entry = { conversationId: at >= 0 ? out[at]!.conversationId : conv, kind: TOOL_COST, data, id: `paid:${charge.call ?? charge.tool}#${charge.turn}` } as unknown as EntryLike;
     out.splice(at >= 0 ? at + 1 : out.length, 0, entry);
   }
   return out;
 }
 
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
- *  (withPaidCosts). The usage row the renderer folds from the model turns is dropped for a CLI run: its record carries no
- *  per-request cost, so the run's cost reads from its stored total (costView over no usage row), as it did before this
- *  rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the server labels them
- *  (learning-run.ts labelled). */
+ *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
+ *  costIsBooked) has the usage row the renderer folds from its model turns put in its booking's words (bookedUsage): its
+ *  model requests at what the run's model proxy booked them at, and its paid tool calls at what they charged, as a pi
+ *  run's usage row counts them; its decisions' rows and cost come from their receipts (decision-rows.ts withDecisions),
+ *  once. The end-of-run turn's rows are labelled as the server labels them (reflect-range.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
-  const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
-  const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
+  const cli = isCliRecord(entries);
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+}
+
+/** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every
+ *  session of the run but its decisions'): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
+ *  costsofar/1), in the renderer's words (`Cost` once ended, else `Cost so far`). The renderer's own row is replaced in
+ *  place; a run that booked a request and rendered none gets one at the end. One that booked none keeps its rows, with no
+ *  usage row. */
+function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
+  const model = bookedSpend(entries, "model");
+  const paid = bookedSpend(entries, "paid");
+  const at = rows.findIndex((row) => row.kind === "usage");
+  const kept = rows.filter((row) => row.kind !== "usage");
+  if (!model.requests && !paid.requests) return kept;
+  const usd = model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
+  const unpriced = model.unpriced + paid.unpriced;
+  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
+  const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
+  const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
+  const summary = `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
+  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+  const last = rows[rows.length - 1];
+  const base: TimelineEvent = at >= 0 ? rows[at]! : {
+    ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,
+    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null,
+  };
+  const row: TimelineEvent = { ...base, kind: "usage", summary, usage };
+  const out = [...kept];
+  out.splice(at >= 0 ? at : out.length, 0, row);
+  return out;
 }
 
 /** `rows` with none dated 1970: a row the renderer found no time for (an entry of a CLI record written before its entries

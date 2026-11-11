@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "../agent-rows.js";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
@@ -44,7 +44,8 @@ import { PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
-import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type BudgetData, type EndData, KINDS, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
+import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
@@ -57,7 +58,7 @@ import type { Store } from "../store/store.js";
 export const SUBMIT_TOOL = "submit";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
-const SESSION = "workflow";
+const SESSION = WORKFLOW_SESSION;
 /** A call node's tool failure and a cap-held effect, as app.ts's runEffect completed them (the loop's `failing` reads them). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
 const CAP_HELD = "agentrun_serve_cap_held";
@@ -219,7 +220,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
-    if (run?.redact) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
+    if (run?.redact && deps.sealKey) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
 
     // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
@@ -293,14 +294,12 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const callEnv = callEnvOf(claimedEnv, claimed);
     const installed: Extension[] = [];
     const nodeHost: ToolHost = {
-      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } },
       env: callEnv,
-      coding: { tools: [], extension: { name: "coding", tools: [] } } as unknown as ToolHost["coding"],
       install: (extension) => void installed.push(extension),
       onConversation: () => {},
       beforeResume: () => {},
       beforeRelease: () => {},
-      handoverInJournal: true,
     };
     const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
     // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an
@@ -384,6 +383,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         paidTools = await run.tools(await sessions.open(TOOL_SESSION), { flush: () => deps.store.flush() });
         hooks.setPort(booking.models as never);
       },
+      settle: async () => {
+        const left = await hooks.bookingsSettled();
+        // Past the bound: the end is written, and each request still unbooked counts at its hold and bound (never less).
+        if (left > 0) console.warn(`[runner] ${claim.runId}: ${left} model request(s) still unbooked ${CLOSE_MS} ms after the workflow ended; each counts at its hold and bound`);
+      },
       release: async () => {
         for (const proxy of proxies) await proxy.close().catch(() => undefined);
       },
@@ -452,18 +456,42 @@ export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, 
 
 /** The proxies start before the booking is wired; their hooks forward to the booking set at harnessReady. A request before
  *  then would be a bug (no model request runs before the workflow does), so it refuses loudly. `park` is the loop's hook,
- *  set at build, which a cap refusal calls. */
+ *  set at build, which a cap refusal calls. Each request admitted is counted until it is booked: a request a person's
+ *  stop cut short is booked only once its proxy sees the provider's side end, which can be after its node ended, and the
+ *  run's end waits for it (bookingsSettled), as the pi adapter's loop does. */
 function deferredHooks() {
   let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined } | undefined;
   let loop: WorkflowHostHooks | undefined;
+  let unbooked = 0;
+  const bookedAll: (() => void)[] = [];
   return {
     port: {
-      beforeRequest: (request: never) => (port ?? missing()).beforeRequest(request),
-      afterRequest: (usage: never, ticket?: never, ended?: never) => (port ?? missing()).afterRequest(usage, ticket, ended),
+      beforeRequest: async (request: never) => {
+        const ticket = await (port ?? missing()).beforeRequest(request);
+        unbooked += 1;
+        return ticket;
+      },
+      afterRequest: async (usage: never, ticket?: never, ended?: never) => {
+        try {
+          await (port ?? missing()).afterRequest(usage, ticket, ended);
+        } finally {
+          unbooked = Math.max(0, unbooked - 1);
+          if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
+        }
+      },
       responded: (ids: never, ticket?: never) => (port ?? missing()).responded?.(ids, ticket) ?? Promise.resolve(),
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
     },
     setPort: (p: typeof port) => { port = p; },
+    /** Waits, at most CLOSE_MS, until every request admitted is booked, and says how many are still not. Past the bound
+     *  the run's end is written anyway, and a request left unbooked reads at its hold and bound, the worst it can have cost. */
+    bookingsSettled: async (): Promise<number> => {
+      if (unbooked === 0) return 0;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+      clearTimeout(timer);
+      return unbooked;
+    },
     park: (refusal: CapRefusal) => loop?.park(refusal),
     // A person's pause, asked where the cap is (the loop's hooks): none before the loop hands its hooks over.
     paused: (): boolean => loop?.paused() ?? false,
@@ -630,7 +658,7 @@ function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Cl
   // Nothing read yet: unread, so a policy asked before the first read fails closed too.
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
   // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, undefined, true);
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, true);
   return async (tool) => {
     current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };
@@ -831,14 +859,37 @@ function nodeToolGate(names: readonly string[], policy: CallPolicy): Extension {
     name: "tool-gate",
     wraps: [...names].map((name) => wrapTool({ name } as ToolRegistration, (inner: ToolRegistration) => ({
       ...inner,
-      async execute(args: never, api: never, context: never) {
-        const { permission, denyFrom } = await policy(inner.name);
-        if (permission === "deny") return forModel(deniedText(inner.name, undefined, denyFrom), { isError: true });
-        if (permission === "ask") return forModel(modelNodeAskText(inner.name), { isError: true });
-        return inner.execute(args, api, context);
-      },
+      execute: gatedNodeCall(inner.name, policy, inner.execute as GatedExecute),
     } as ToolRegistration))),
   });
+}
+
+/** A model node's tool call as its pi-durable task runs it: its args, the task's api and the call's context. */
+type GatedExecute = (args: never, api: never, context: never) => Promise<unknown>;
+
+/** The task memo the gate keeps that it let a call through, before the call runs. */
+const LET_THROUGH = "agentrun.gate.let-through";
+/** The slice of a tool task's api the gate reads: its memos, kept with the task across claims (pi-durable's
+ *  ToolExecutionApi.memo). */
+type MemoApi = { memo(name: string, context: Context): Promise<unknown>; memo(name: string, candidate: true, context: Context): Promise<unknown> };
+
+/** `execute` behind the gate, for the tool `name`. A call it lets through is marked so in its task first, so when
+ *  pi-durable's recovery runs the same call again on a later claim (the first attempt cut with its claim, maybe after it
+ *  was sent) and the tool is now denied or set to ask, the refusal says that whether it took effect is not known
+ *  (RAN_UNKNOWN), never that it was not run or that nothing was sent and nothing was charged. */
+export function gatedNodeCall(name: string, policy: CallPolicy, execute: GatedExecute): GatedExecute {
+  return async (args, api, context) => {
+    const task = api as unknown as MemoApi;
+    const { permission, denyFrom } = await policy(name);
+    if (permission !== "allow") {
+      // A call an earlier attempt of which this gate let through may have reached its host: whatever refuses it now, its
+      // effect is not known, never "not run".
+      const ran = (await task.memo(LET_THROUGH, context as unknown as Context)) === true ? "unknown" : "no";
+      return forModel(permission === "deny" ? deniedText(name, undefined, denyFrom, ran) : modelNodeAskText(name, ran), { isError: true });
+    }
+    await task.memo(LET_THROUGH, true, context as unknown as Context);
+    return execute(args, api, context);
+  };
 }
 
 /** `binding`'s tools with each call's paid requests booked on the run's one ledger (Ledger.paid, the paid tool calls on

@@ -9,8 +9,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { spentOverStore } = await import("../dist/store-reads/cap.js");
+const { runGraphView } = await import("../dist/run-reads-over-store.js");
 
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
@@ -129,6 +133,60 @@ test("a codex run's calls read their end status and output: a success ok, a fail
   assert.equal(failResult.preview, "1 test failed");
   // The final answer is the last model message.
   assert.equal((await viewOverStore(store, "run-1", deps)).result.final_answer, "A test is failing.");
+});
+
+// #2061: a CLI's MCP call parked at its gate got the gate's waiting words as its result, which the record never kept as an
+// end (an end would be read as its outcome, and the call answered from it instead of run). The timeline shows those words
+// as the call's result row from its ask on, while it is parked and unsent, as pi's parked call shows them.
+test("a CLI's parked MCP call shows the gate's waiting words as its result row once asked; sent, it shows none until its end; ended, only its outcome", async (t) => {
+  const { store } = await storeOn(t);
+  const cli = await claimed(store);
+  const j = store.journal(cli);
+  const waitingWords = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
+  const base = [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Add 2 and 3." }),
+    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp__fake__add", input: { a: 2, b: 3 }, replaySafe: false, parked: true }),
+  ];
+  const ask = entry(await j.mintId(), "agentrun.ask", { callId: "c1", tool: "mcp:fake/add", args: { a: 2, b: 3 }, requestedAt: new Date(T0).toISOString() });
+  // At its gate, before its ask: the call's row only.
+  await commitWrites(j, base, context);
+  const kinds = async () => shown(await runTimeline(store, "run-1", context)).filter((r) => r.kind === "tool_use" || r.kind === "tool_result");
+  assert.deepEqual((await kinds()).map((r) => r.kind), ["tool_use"], "not asked yet: no result");
+  // Asked: the waiting words as its result row, after the ask.
+  await commitWrites(j, [ask], context);
+  const all = shown(await runTimeline(store, "run-1", context));
+  const result = all.find((r) => r.kind === "tool_result");
+  assert.ok(result, `the parked result shows: ${JSON.stringify(all.map((r) => r.kind))}`);
+  assert.equal(result.tool_name, "mcp__fake__add");
+  assert.equal(result.preview, waitingWords);
+  assert.notEqual(result.tool_status, "failed", "a parked call is no failure");
+  // Asked again while it waits (a resume, a cap raised meanwhile): still one waiting result for the call.
+  await commitWrites(j, [entry(await j.mintId(), "agentrun.ask", { callId: "c1", tool: "mcp:fake/add", args: { a: 2, b: 3 }, requestedAt: new Date(T0).toISOString() })], context);
+  assert.deepEqual((await kinds()).map((r) => [r.kind, r.preview ?? null]), [["tool_use", null], ["tool_result", waitingWords]], "asked twice: one waiting result");
+  // Allowed and sent: in flight, no result until its end.
+  await commitWrites(j, [entry(await j.mintId(), "agentrun.answer", { callId: "c1", decision: "allow" }), entry(await j.mintId(), "agentrun.call.sent", { callId: "c1" })], context);
+  assert.deepEqual((await kinds()).map((r) => r.kind), ["tool_use"], "sent: no waiting words, no result yet");
+  // Ended: its outcome, once.
+  await commitWrites(j, [entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "done", output: "5" })], context);
+  const ended = await kinds();
+  assert.deepEqual(ended.map((r) => [r.kind, r.preview ?? null]), [["tool_use", null], ["tool_result", "5"]]);
+});
+
+test("a CLI's parked MCP call ended without being sent (refused, or withdrawn by a stop) shows its end's words, never the waiting words too", async (t) => {
+  const { store } = await storeOn(t);
+  const cli = await claimed(store);
+  const j = store.journal(cli);
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Add 2 and 3." }),
+    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp__fake__add", input: { a: 2, b: 3 }, replaySafe: false, parked: true }),
+    entry(await j.mintId(), "agentrun.ask", { callId: "c1", tool: "mcp:fake/add", args: { a: 2, b: 3 }, requestedAt: new Date(T0).toISOString() }),
+    entry(await j.mintId(), "agentrun.answer", { callId: "c1", decision: "deny", note: "not now" }),
+    entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "refused", output: "Denied: not now" }),
+  ], context);
+  const results = shown(await runTimeline(store, "run-1", context)).filter((r) => r.kind === "tool_result");
+  assert.deepEqual(results.map((r) => r.preview), ["Denied: not now"]);
 });
 
 test("a pi run is untouched: it still folds its usage row, which a CLI run has none of", async (t) => {
@@ -251,6 +309,70 @@ test("a claude-agent run's paid MCP charge renders a Tool cost row under its cal
   const cost = rows.findIndex((x) => x.kind === "phase" && /^Tool cost:/.test(x.summary ?? ""));
   assert.ok(result >= 0 && cost === result + 1, `the Tool cost row follows its call's result: ${JSON.stringify(shown(rows))}`);
   assert.equal(rows[cost].summary, "Tool cost: fake charged $0.0500 for mcp:fake/paid");
-  // A CLI run drops the usage row, so the charge shows only on its Tool cost line.
-  assert.equal(rows.filter((x) => x.kind === "usage").length, 0);
+  // A CLI run's usage row is its booking's (#2275): here no model request was booked, so it is the paid call's charge.
+  const usage = rows.filter((x) => x.kind === "usage");
+  assert.equal(usage.length, 1);
+  assert.deepEqual([usage[0].usage, usage[0].summary], [{ usd: 0.05, requests: 0 }, "Cost so far: $0.0500 over 0 model requests and 1 paid tool call"]);
+});
+
+test("an ended CLI run that left a request unanswered serves its Timeline cost unknown, with the known part: never a known total", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "codex", runId: "run-1" });
+  const j = store.journal(claim);
+  const [conv, key] = [await j.mintId(), await j.mintId()];
+  const [req1, turn1, req2] = [await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
+    { type: "conversation", value: { id: conv } },
+    entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
+    // One request answered at $0.01, one admitted whose answer was never booked (its end came first).
+    { type: "entry", value: { id: req1, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "gpt-test", heldUsd: 0.02 } } },
+    { type: "entry", value: { id: turn1, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
+    { type: "entry", value: { id: req2, conversationId: conv, kind: "runner.request", data: { turn: 2, model: "gpt-test", heldUsd: 0.02 } } },
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Done." }),
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", endedAt: T0 + 9 });
+  const usage = (await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, store, "run-1", context)).filter((row) => row.kind === "usage");
+  assert.deepEqual(usage.map((row) => row.usage), [{ usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 }], `the unanswered request is a cost unknown on an ended run: ${JSON.stringify(usage)}`);
+});
+
+test("a running CLI run whose booked request has no figure lists its spend unknown (null), never $0", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "claude-agent", runId: "run-1" });
+  const j = store.journal(claim);
+  const [conv, key, req, turn] = [await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
+    { type: "conversation", value: { id: conv } },
+    entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
+    { type: "entry", value: { id: req, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "claude-sonnet-4-5" } } },
+    { type: "entry", value: { id: turn, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: null } } },
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Working." }),
+  ], context);
+  assert.equal(await spentOverStore(store, "run-1", context), null, "its booked spend is unknown");
+});
+
+test("a workflow whose only bookings are decisions has a graph model-node cost of 0: its decisions are counted from their receipts alone", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-w", name: "Flow" }, { id: "rev-w", kind: "workflow", body: { workflow: { v: 2, name: "decide", root: { node: "chain", steps: [] } } } });
+  await store.runs.create({ id: "run-w", agentId: "agent-w", revisionId: "rev-w" }, { body: { input: {}, title: "t", place: { mode: "runner" } } });
+  const claim = await store.claim("run-w", "runner-a", { leaseMs: 60_000 });
+  const j = store.journal(claim);
+  const [flow, flowKey, dec, decKey, req, turn] = [await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    { type: "conversation", value: { id: flow } },
+    entry(flowKey, "agentrun.session.key", { key: "workflow", conversation: flow }),
+    { type: "conversation", value: { id: dec } },
+    entry(decKey, "agentrun.session.key", { key: "decisions", conversation: dec }),
+    { type: "entry", value: { id: req, conversationId: dec, kind: "runner.request", data: { turn: 1, model: "jev", heldUsd: 0.01 } } },
+    { type: "entry", value: { id: turn, conversationId: dec, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Decided.", costUsd: 0.01, endedAt: T0 + 9 });
+  const view = { kind: "workflow", status: "completed", agent_id: "agent-w", revision: "rev-w", created_at: new Date(T0).toISOString(), ended_at: new Date(T0 + 9).toISOString() };
+  const graph = await runGraphView(store, "run-w", { env: {}, runWorkspace: async () => null, runView: async () => view, withheld: async () => false, cutValues: async () => ({ values: [] }), context });
+  // No receipt here, so the graph's total is its model-node part alone: 0, never the decisions' $0.01 again.
+  assert.equal(graph.totals.cost_usd, 0, `the graph's model-node cost leaves the decisions out: ${JSON.stringify(graph.totals)}`);
 });

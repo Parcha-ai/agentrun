@@ -228,21 +228,6 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
   }
 }
 
-/** What an earlier build left at the top of `<data>/harnesses`, when it installed Claude Code there itself: its
- *  package.json, its lock and its node_modules, and nothing else. */
-const FLAT_INSTALL = new Set(["package.json", "package-lock.json", "node_modules"]);
-
-/** Removes Claude Code as an earlier build installed it, at the top of `harnesses` (read-only, as it left it), so the
- *  per-harness installs can go in beside nothing: only when the directory holds that layout and nothing else (any other
- *  entry, a per-harness install among them, and it is left as it is). Nothing of the old tree is read or kept. Resolves
- *  true when it removed one. */
-export async function removeFlatInstall(harnesses: string): Promise<boolean> {
-  const entries: string[] = await readdir(harnesses).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? [] : Promise.reject(error)));
-  if (!entries.length || !entries.every((name) => FLAT_INSTALL.has(name)) || !(entries.includes("package.json") || entries.includes("node_modules"))) return false;
-  await chmod(harnesses, (await lstat(harnesses)).mode | 0o700);
-  for (const name of entries) await writable(join(harnesses, name), true).then(() => rm(join(harnesses, name), { recursive: true, force: true }));
-  return true;
-}
 
 /** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone. */
 async function writable(dir: string, on: boolean): Promise<void> {
@@ -308,8 +293,7 @@ function runNpm(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signa
 /** The file an install of a harness into `dir` (`<data>/harnesses/<harness>`) keeps in the data directory while it runs,
  *  for every process on this data (a runner beside the server, one of its own, or one in another container on the same
  *  volume): the installing host and process, and since when. A failed install leaves why in it until the next install;
- *  one that lands removes it. In the data directory, not `<data>/harnesses`: an earlier build left that read-only with
- *  its flat install in it, which the install removes first (removeFlatInstall) and which a file of ours would keep. */
+ *  one that lands removes it. In the data directory, beside `<data>/harnesses`: that directory holds the installs alone. */
 export const installMarkOf = (dir: string): string => join(dirname(dirname(dir)), `.harness-install-${basename(dir)}.json`);
 type InstallMark = { readonly host: string; readonly pid: number; readonly startedAt: number } | { readonly failed: string; readonly at: number };
 

@@ -60,10 +60,11 @@ function templateFiles() {
 // Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
 // those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
 // still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
-// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
-// copy, so a reader of the tarball can check what was copied; no other package may carry it.
+// Files beyond the common allowlist, by package. The browser package ships the provenance files of what it vendors (the Stagehand facade, and
+// Browser Use Pi's snapshot and actions behind the raw-CDP driver) beside the compiled copies, so a reader of the tarball can check what was
+// copied; no other package may carry them.
 const allowedExtraFiles = {
-  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
+  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json', 'package/src/vendor/browser-use-pi/UPSTREAM.json'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
@@ -110,6 +111,11 @@ const allowedEndpoints = {
     ['dist/serve/server.d.ts', 'http://127.0.0.1:<port>/'],
     // The README's example of the address the command prints.
     ['README.md', 'http://127.0.0.1:41297/'],
+  ],
+  computer: [
+    // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
+    ['dist/chrome.js',
+      'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
   ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
@@ -336,7 +342,7 @@ import * as pi from '@parcha/agentrun-pi';
 import * as archil from '@parcha/pi-durable-disk';
 import * as archilInternals from '@parcha/pi-durable-disk/internals';
 import * as browser from '@parcha/pi-browser';
-import * as browserAgent from '@parcha/pi-browser/coding-agent';
+import * as browserDurable from '@parcha/pi-browser/durable';
 import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 import * as piDurable from '@parcha/agentrun-pi/durable';
@@ -384,7 +390,7 @@ const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async opti
 assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
 assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archil.localRun,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false);
-assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
+assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
@@ -551,7 +557,7 @@ void [durable, incomplete];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'archil-consumer.ts'], consumer);
   await writeFile(join(consumer, 'browser-consumer.ts'), `import { BROWSER_TOOLS, type BrowserPolicy } from '@parcha/pi-browser';
-import { createBrowserExtension } from '@parcha/pi-browser/coding-agent';
+import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 const browser: [typeof BROWSER_TOOLS, typeof createBrowserExtension, typeof FakeBackend, BrowserPolicy | undefined] = [BROWSER_TOOLS, createBrowserExtension, FakeBackend, undefined];
 void browser;

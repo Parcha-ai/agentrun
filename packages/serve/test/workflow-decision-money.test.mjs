@@ -26,6 +26,8 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { holdOf } = await import("../dist/decision-cap.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+const { viewOverStore } = await import("../dist/store-view.js");
 
 /** The faux System One service (serves OpenRouter's Decisions catalog and answers decisions), pointed at under --faux. */
 const FAUX_SYSTEM_ONE = fileURLToPath(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url));
@@ -178,6 +180,19 @@ test("a capped workflow's decision books main's hold: the provider reports no co
   const hold = await holdOf({ id: "openrouter", priceOf: async () => priceOf() }, { label: "ask", kind: "judge", model: sent.model, state: sent.state, questions: sent.questions }, "expected");
   assert.ok("usd" in hold && hold.usd > 0, `main holds it at a figure: ${JSON.stringify(hold)}`);
   assert.ok(Math.abs((row.costUsd ?? 0) - hold.usd) < 1e-12, `the run books main's hold ${hold.usd}: ${row.costUsd}`);
+});
+
+test("a workflow's decision counts once in its cost: its served timeline's usage row and its view each say the run's one booked cost", async (t) => {
+  const decider = fauxOpenrouter({ price: priceOf(), costUsd: 0.01 });
+  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
+  assert.ok(row.costUsd > 0, `the decision is booked: ${row.costUsd}`);
+  const usage = (await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, server, "run-1", BACKGROUND_CONTEXT)).filter((one) => one.kind === "usage");
+  assert.equal(usage.length, 1, `one usage row: ${JSON.stringify(usage)}`);
+  assert.deepEqual([Math.round(usage[0].usage.usd * 1e9) / 1e9, usage[0].usage.requests], [Math.round(row.costUsd * 1e9) / 1e9, 1], `the decision once, on the served timeline: ${JSON.stringify(usage[0])}`);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.equal(Math.round(view.cost.usd * 1e9) / 1e9, Math.round(row.costUsd * 1e9) / 1e9, `and once in the view's cost: ${JSON.stringify(view.cost)}`);
 });
 
 test("an uncapped workflow prices no decision: one whose catalog price could not be read is let go, never refused", async (t) => {

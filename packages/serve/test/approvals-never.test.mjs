@@ -7,11 +7,11 @@
 // leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { deniedText, permissionFrom, RunGate } from "../dist/tool-gate.js";
+import { deniedText, permissionFrom } from "../dist/tool-gate.js";
+import { runnerGate } from "./gate-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -56,12 +56,10 @@ test("permissionFrom: never turns an ask into an allow from unattended, as its l
   assert.equal(permissionFrom("bash_background", { bash: { permission: "deny" } }, {}, "never").permission, "deny");
 });
 
-test("RunGate under never: an ask is allowed, a deny refuses, and a name nothing maps still asks (fail closed)", async (t) => {
-  const dir = await scratch(t);
-  writeFileSync(join(dir, "tool-settings.json"), JSON.stringify({ web_fetch: { permission: "ask" }, read: { permission: "deny" } }));
-  const where = { root: join(dir, "runs", "r"), work: join(dir, "work"), data: dir, runId: "r", harness: "pi" };
-  const never = new RunGate(where, {}, true, true, "never");
-  const asked = new RunGate(where, {}, true, true, "ask");
+test("RunGate under never: an ask is allowed, a deny refuses, and a name nothing maps still asks (fail closed)", () => {
+  const settings = { web_fetch: { permission: "ask" }, read: { permission: "deny" } };
+  const never = runnerGate({ settings, approvals: "never" });
+  const asked = runnerGate({ settings, approvals: "ask" });
   assert.equal(asked.policy("web_fetch"), "ask");
   assert.equal(never.policy("web_fetch"), "allow", "an ask under ask is an allow under never");
   assert.equal(never.policy("read"), "deny", "a server deny is never lifted");
@@ -216,11 +214,8 @@ test("never lifts no ask that stands in for a setting that does not read: a fall
   assert.deepEqual(permissionFrom("bash", { bash: { permission: "ask", fallback: true } }, {}, "never"), { permission: "ask", from: "server" });
   assert.deepEqual(permissionFrom("bash", { bash: { permission: "maybe" } }, {}, "never"), { permission: "ask", from: "server" });
   assert.deepEqual(permissionFrom("web_fetch", {}, { web_fetch: { permission: "maybe" } }, "never"), { permission: "ask", from: "agent" });
-  // Through the gate, from the server's settings file: an invalid permission for bash reads as an ask it never lifts.
-  const dir = await scratch(t);
-  writeFileSync(join(dir, "tool-settings.json"), JSON.stringify({ bash: { permission: "maybe" }, web_fetch: { permission: "deny" } }));
-  const where = { root: join(dir, "runs", "r"), work: join(dir, "work"), data: dir, runId: "r", harness: "pi" };
-  const never = new RunGate(where, { web_fetch: { permission: "ask" } }, true, true, "never");
+  // Through the gate, from the server's stored settings: an invalid permission for bash reads as an ask it never lifts.
+  const never = runnerGate({ settings: { bash: { permission: "maybe" }, web_fetch: { permission: "deny" } }, overrides: { web_fetch: { permission: "ask" } }, approvals: "never" });
   assert.equal(never.policy("bash"), "ask", "an invalid bash permission is never run unattended");
   assert.equal(never.policy("bash_background"), "ask", "nor a shell watcher held to it");
   assert.notEqual(never.policy("web_fetch"), "allow", "the server's deny under the agent's ask is never allowed");

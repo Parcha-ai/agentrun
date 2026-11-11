@@ -13,7 +13,6 @@ import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, SecretMeta, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
 const REASON: Record<ToolKeysReenter["reason"], string> = {
-  seal_key_missing: "This server was started without its seal key, so the keys saved here can't be opened.",
   seal_key_changed: "This server's seal key changed since these keys were saved, so they can't be opened.",
   file_unreadable: "The file this server keeps the saved keys in is damaged, so they can't be opened.",
 };
@@ -39,14 +38,12 @@ export const KEY_ADVICE = "We recommend an OpenRouter key with a dollar cap and 
 
 /** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
  *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
- *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `atRest` is
- *  capabilities' `features.tool_keys.at_rest`; `onChange` follows each save and removal (the server's tools and models
- *  may change with its keys). */
+ *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `onChange`
+ *  follows each save and removal (the server's tools and models may change with its keys). */
 /** `writable`: this is the owner's password session (session.secrets_writable), the one that may paste a key. */
-export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
+export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: Client; onChange?: () => void; writable: boolean; whyNot?: SecretsWhyNot }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
-  const [noSealing, setNoSealing] = useState(false);
   const [open, setOpen] = useState<{ id: string; mode: "edit" | "remove" } | null>(null);
   const [problem, setProblem] = useState<{ id: string; title: string; error: ApiError } | null>(null);
   const asked = useRef(0);
@@ -57,13 +54,10 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
       .catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
-  const cantStore = atRest === "unavailable" || noSealing;
   // A write closes only the form that sent it: one opened on another row meanwhile keeps what was typed in it.
   const closeIf = (started: typeof open) => setOpen((o) => (o === started ? null : o));
   const done = (started: typeof open) => { closeIf(started); load(); onChange?.(); };
   const refused = (id: string, title: string, e: unknown, started: typeof open) => {
-    // Nothing can be saved on this server: every form closes, and what was typed goes with it.
-    if (e instanceof ClientError && e.code === "no_sealing_key") { setNoSealing(true); setOpen(null); return; }
     setProblem({ id, title, error: apiError(e) });
     // The server may know better than the list shown (a key its launcher now holds): read it again.
     if (e instanceof ClientError && e.code === "key_set_by_server") { closeIf(started); load(); }
@@ -73,10 +67,11 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
     ? <ReadError error={loadError} onRetry={load} />
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
   const reenter = view.reenter;
-  // The model providers' keys first, then the tools': headed only when there are both (an older server has no model keys).
+  // The model providers' keys first, then the tools': a group with no key listed is left out, and a lone group needs no
+  // heading.
   const groups = KEY_GROUPS.map((g) => ({ ...g, keys: view.keys.filter((k) => (k.kind === "model") === (g.kind === "model")) })).filter((g) => g.keys.length);
   const row = (k: ToolKey) => (
-    <KeyRow key={k.id} tool={k} cantStore={cantStore} writable={writable} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
+    <KeyRow key={k.id} tool={k} writable={writable} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
       open={open?.id === k.id ? open.mode : null} problem={problem?.id === k.id ? problem : null}
       onOpen={(mode) => { setOpen(mode ? { id: k.id, mode } : null); setProblem(null); }}
       onSave={async (values) => {
@@ -111,11 +106,6 @@ export function KeysPage({ v2, atRest, onChange, writable, whyNot = "sign_in" }:
             <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
           </Banner>
         )}
-        {cantStore && (
-          <p className="border bg-card p-4 font-mono text-body" role="status">
-            This server can't store keys: it was started without a seal key. Set each key where the server starts ({view.keys.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).
-          </p>
-        )}
         {groups.map((g) => (
           <section key={g.label} aria-label={g.label}>
             {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
@@ -138,7 +128,6 @@ function ReadError({ error, onRetry, inline = false }: { error: ApiError; onRetr
 
 type RowProps = {
   tool: ToolKey;
-  cantStore: boolean;
   writable: boolean;
   again: boolean;
   open: "edit" | "remove" | null;
@@ -149,7 +138,7 @@ type RowProps = {
   onRemove: () => Promise<void>;
 };
 
-function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
+function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
   // Each field's secret ("tool:<KEY>"), and each secret's field (the form's input, and whether a saved one still opens).
   const secretOf = (f: ToolKeyField) => k.secrets.find((s) => secretLabel(s.name) === f.name);
   const fieldOf = (s: SecretMeta) => k.fields.find((f) => f.name === secretLabel(s.name));
@@ -176,14 +165,14 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
               None while a form or a confirm is open. */}
           <ul className="mt-3 space-y-1.5">
             {k.secrets.map((s) => (
-              <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} disabled={cantStore} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
+              <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
                 onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
           {!own.length && <p className="mt-3 text-small text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
         </div>
       </div>
-      {open === "edit" && <KeyForm tool={k} fields={own} cantStore={cantStore} onSave={onSave} onCancel={() => onOpen(null)} />}
+      {open === "edit" && <KeyForm tool={k} fields={own} onSave={onSave} onCancel={() => onOpen(null)} />}
       {open === "remove" && (
         <div className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
           <p className="min-w-0 flex-1 text-body">Remove the {k.label} key saved here?{k.secrets.some((s) => s.source === "env") ? " The one set in the environment stays." : ""}</p>
@@ -198,7 +187,7 @@ function KeyRow({ tool: k, cantStore, writable, again, open, problem, onOpen, on
 
 /** One password input per field the page may set. The inputs are uncontrolled: React mirrors a controlled input's
  *  value into its `value` attribute, and a key must never be in the DOM. Only the fields typed in are sent. */
-export function KeyForm({ tool: k, fields, cantStore, onSave, onCancel }: { tool: ToolKey; fields: ToolKeyField[]; cantStore: boolean; onSave: RowProps["onSave"]; onCancel: () => void }) {
+export function KeyForm({ tool: k, fields, onSave, onCancel }: { tool: ToolKey; fields: ToolKeyField[]; onSave: RowProps["onSave"]; onCancel: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const [typed, setTyped] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -238,7 +227,7 @@ export function KeyForm({ tool: k, fields, cantStore, onSave, onCancel }: { tool
       ))}
       {invalid?.message && <p className="font-mono text-small text-destructive-text" role="alert">{invalid.message}</p>}
       <div className="flex gap-2">
-        <Button type="submit" size="sm" variant="solid" disabled={!typed || busy || cantStore}>{busy ? "Saving" : "Save"}</Button>
+        <Button type="submit" size="sm" variant="solid" disabled={!typed || busy}>{busy ? "Saving" : "Save"}</Button>
         <Button type="button" size="sm" onClick={() => { clear(); onCancel(); }}>Cancel</Button>
       </div>
     </form>

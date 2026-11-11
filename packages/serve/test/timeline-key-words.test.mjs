@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
-import { redacted, withoutLoopback } from "../dist/key-refusal.js";
+import { redacted, withoutLoopback, withoutLoopbackAddresses } from "../dist/key-refusal.js";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -205,7 +205,7 @@ for (const [what, content] of [["across the summary's and the text's cut", "Fail
 // A loopback rewrite takes time in proportion to the text, so no caller can block the loop with a long one; and a
 // loopback address with no scheme (a refused connection to serve's proxy) is rewritten as the others are.
 test("the loopback rewrite is linear: 200 KB of the worst shapes in under 200 ms each", () => {
-  for (const text of [`,${" ".repeat(200_000)}x`, "url: ".repeat(40_000), `url: http://127.0.0.1${"a".repeat(200_000)} x`, `${"http://localhost:1/".repeat(10_000)}`]) {
+  for (const text of [`,${" ".repeat(200_000)}x`, "url: ".repeat(40_000), `url: http://127.0.0.1${"a".repeat(200_000)} x`, `${"http://localhost:1/".repeat(10_000)}`, `${"localhost:1/a.".repeat(15_000)}`, `localhost:1/${"a.".repeat(100_000)}`]) {
     const started = performance.now();
     withoutLoopback(text);
     const took = performance.now() - started;
@@ -218,6 +218,34 @@ test("a bare loopback address with its port (a refused connection to serve's pro
   assert.equal(withoutLoopback("connect ECONNREFUSED [::1]:39543 again"), "connect ECONNREFUSED a local address again");
   assert.equal(withoutLoopback("it runs on localhost"), "it runs on localhost");
   assert.equal(withoutLoopback("see localhost.run:443"), "see localhost.run:443");
+});
+
+// #2311: a bare loopback address that ends a sentence is rewritten whole, its path too, and the full stop kept; a port
+// followed by more than a full stop names no address of the host's, and is kept.
+test("a bare loopback address at a sentence's end is rewritten, with or without a path, its full stop kept", () => {
+  for (const host of ["localhost", "127.0.0.1", "[::1]"]) {
+    for (const [said, served] of [
+      [`The proxy is at ${host}:9000.`, "The proxy is at a local address."],
+      [`The proxy is at ${host}:9000. Then retry.`, "The proxy is at a local address. Then retry."],
+      [`The proxy is at ${host}:9000/v1/responses.`, "The proxy is at a local address."],
+      [`The proxy is at ${host}:9000/v1/responses.\nThen retry.`, "The proxy is at a local address.\nThen retry."],
+      [`The proxy is at ${host}:9000/v1.json now.`, "The proxy is at a local address now."],
+    ]) assert.equal(withoutLoopback(said), served, said);
+  }
+  assert.equal(withoutLoopback("see localhost:9000.example"), "see localhost:9000.example");
+});
+
+// The address alone (withoutLoopbackAddresses), the one pattern withoutLoopback and a learning text share: a scheme's
+// address keeps a sentence's full stop as a bare one does, and a path ends at a JSON string's escape, so a quoted
+// address in a compact workflow.json leaves it valid; no `url:` label or line is taken, only the address.
+test("an address alone is rewritten: its full stop, a url: label, its line's end and a JSON string's escape stay", () => {
+  assert.equal(withoutLoopback("Open http://localhost:8080/v1."), "Open a local address.");
+  assert.equal(withoutLoopback("Open http://127.0.0.1:8080. Then retry."), "Open a local address. Then retry.");
+  assert.equal(withoutLoopbackAddresses("failed, url: http://127.0.0.1:39543/v1/responses\n"), "failed, url: a local address\n");
+  assert.equal(withoutLoopback("unexpected status 500, url: http://127.0.0.1:39543/v1/responses"), "unexpected status 500", "a run error's tail still goes");
+  const flow = JSON.stringify({ steps: [{ note: 'Call "http://localhost:8080/x" or localhost:9000.' }, { note: "url: http://[::1]:9000" }] });
+  const served = withoutLoopbackAddresses(flow);
+  assert.deepEqual(JSON.parse(served).steps.map((step) => step.note), ['Call "a local address" or a local address.', "url: a local address"], served);
 });
 
 // Redaction reads no more of an error than serve can show (a Timeline row's 2000 characters, plus room for the longest

@@ -6,7 +6,7 @@
 // (`refuse`: the host's secrets and what it was handed, its sign-in pointer among them) is refused by the checks, and cut
 // from everything the hook keeps; a run whose list can't be read learns nothing.
 import { cutStrings } from "../key-refusal.js";
-import { reflectAgain, reflectPrompt, redactSecrets } from "../learn/index.js";
+import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
 
@@ -33,10 +33,16 @@ export type Checked =
 
 /** What the hook reads of the run and the host. */
 export interface ReflectDeps {
+  /** Whether the run's job gave nothing new to look back on: its only tool work was its learned workflows, each of them
+   *  answering, with no error, no refused call, no approval and nothing said after its first message. Such a run is not
+   *  asked its end-of-run turn (no model request, nothing spent looking back), and its learning is dropped `empty` in
+   *  said.onlyWorkflow's words. Absent, or a read that throws: every run is asked. */
+  readonly nothingNew?: (runId: string) => Promise<boolean>;
   /** The run's facts for reflectSkip: whether it learns, a person's cancel, its cap reached, its cap and spend so far. */
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; capUsd?: number; costUsd: number | null }>;
-  /** The prompt's facts: how many notes the run started from, and the tools a workflow draft may name. */
-  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[] }>;
+  /** The prompt's facts: how many notes the run started from, the tools a workflow draft may name, and the learned skills
+   *  whose job the prompt asks for as a workflow draft (reflectPrompt's draftFor; none when absent). */
+  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[] }>;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
   readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
   /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
@@ -66,6 +72,14 @@ const droppedRow = (turn: ReflectTurn | null, reason: string, detail: string, ex
 const cutRow = (row: AlsoRow, refuse: readonly string[]): AlsoRow =>
   row.table === "learning_proposals" ? { table: row.table, row: cutStrings(row.row, (text) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY)) as typeof row.row } : row;
 
+/** The first workflow draft the checks left out of `checked` because its dry run failed (learn/skills.ts DRY_RUN_FAILED):
+ *  its path and the check's words; undefined when none was. */
+function dryRunFailure(checked: Checked): { path: string; detail: string } | undefined {
+  const problems = (checked.state === "proposed" ? checked.left ?? [] : checked.state === "dropped" && checked.reason === "checker" ? checked.problems : []) as readonly { rule?: unknown; path?: unknown; detail?: unknown }[];
+  const found = problems.find((problem) => problem?.rule === "workflow" && typeof problem.path === "string" && typeof problem.detail === "string" && problem.detail.startsWith(DRY_RUN_FAILED));
+  return found ? { path: found.path as string, detail: found.detail as string } : undefined;
+}
+
 /** The end-of-run turn for runs that learn. */
 export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
   return async (input) => {
@@ -92,6 +106,12 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9) };
       return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
     };
+    // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
+    // new to learn: it is not asked (no model request), and looking back cost nothing, $0 whether or not the job's own
+    // cost is known. Its words are the server's own.
+    if (input.outcome === "completed" && deps.nothingNew && (await deps.nothingNew(input.runId).catch(() => false))) {
+      return { also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 })] };
+    }
     // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
     // nothing, never over a shorter one.
     const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "unreadable" as const) : [];
@@ -100,10 +120,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
     if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
-    const { active, tools } = await deps.promptFacts(input.runId, input.agentId);
+    const { active, tools, draftFor, described } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools }), { origin: "reflect", deadlineMs });
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}) }), { origin: "reflect", deadlineMs });
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
     if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);
@@ -129,6 +149,22 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);
         if (!checked) return close([droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))]);
+      }
+    } else {
+      // A workflow draft the checks left out because its dry run failed is asked for again once, in the same turn and
+      // within its deadline, saying which draft and why: the second answer stands only when the checks keep it and no
+      // draft in it still fails its dry run, else the first answer's, that draft left out, stands (a repair that failed
+      // never costs a note the first answer kept). Never a third time (a turn asks again once, for either reason).
+      const dry = dryRunFailure(checked);
+      const left = deadlineMs - (now() - started);
+      const again = dry && left > 0 ? await input.ask(reflectDryRun(dry.path, dry.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      if (again && "ended" in again) {
+        const second = turnOf(again.answer);
+        const kept = await checkOf(second);
+        if (kept?.state === "proposed" && !dryRunFailure(kept)) {
+          turn = second;
+          checked = kept;
+        }
       }
     }
     if (checked.state === "dropped") {

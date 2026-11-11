@@ -20,6 +20,7 @@ import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { maxRunsOf } from "../dist/host.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
@@ -297,9 +298,12 @@ export async function triggerStore(of) {
 /** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
  *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
- *  spec, a learning run on the learning loop, its model route the faux model under `faux`. Returns a close() that stops the
- *  runner and closes its store handle. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, ...switches } = {}) {
+ *  spec, a learning run on the learning loop, its model route the faux model under `faux`, its grade cut at
+ *  `gradeTimeoutMs` when given. It holds at most the server's run cap (`maxRuns`, else AGENTRUN_MAX_RUNS, else what the
+ *  host's memory holds: host.ts maxRunsOf), as the CLI's runner does; a run past it waits queued. Returns a close() that
+ *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
+ *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), booted as the CLI's runner boots it: the one
@@ -321,23 +325,29 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   const sealKey = seal.key;
   const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
   let runner;
+  let beats = 0;
   try {
     runner = startRunner({
       store,
+      loops: maxRunsOf(process.env, switches.maxRuns),
+      onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}) }),
+      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) }),
     });
   } catch (error) {
     seal.release();
     await store.close();
     throw error;
   }
-  return async () => {
-    await runner.close().catch(() => {});
-    await store.close().catch(() => {});
-    seal.release();
-  };
+  return Object.assign(
+    async () => {
+      await runner.close().catch(() => {});
+      await store.close().catch(() => {});
+      seal.release();
+    },
+    { beats: () => beats },
+  );
 }
 
 export async function serve(t, { harnesses: asked, runner: wantRunner = true, ...options } = {}) {
@@ -374,7 +384,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, store, api: client(server.baseUrl, server.token) };
+  return { ...server, data, store, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the

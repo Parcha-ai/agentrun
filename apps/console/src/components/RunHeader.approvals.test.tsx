@@ -11,7 +11,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const run = (approvals?: "ask" | "never"): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
-  run_id: "r1", agent_id: "watcher", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Watch the repo",
+  run_id: "r1", place: { mode: "runner" }, agent_id: "watcher", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Watch the repo",
   created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...(approvals ? { approvals } : {}),
 } as Run);
 const header = (r: Run) => {

@@ -8,8 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { applyBodyOf, compiled, PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
-import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
+import { applyBodyOf, compiled, filledPins, PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
 import { FINDINGS } from "./fixtures/faux-review.mjs";
 
 /** An apply's warnings that a granted tool needs a key this server lacks (runnable.ts: "The tool <t> needs <key>"). */
@@ -342,18 +341,13 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.equal(plain.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
   const agent = (await api("GET", `/agents/${plain.body.agent_id}`)).body;
   assert.deepEqual(agent.definition.tools, ["read", ...granted], "its read, for the skill's rules, and the GitHub tools; no box here, so no shell");
-  // The package sets no permission of its own; its pinned write gets its pin, or, while the agent store keeps none and
-  // this server pins nothing for it, deny: a write a template grants never runs without its pin.
-  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : { "mcp:github/pull_request_review_write": { permission: "deny" } });
-  // Its review write is bounded to COMMENT reviews even once granted; until the store cutover the apply says how.
-  if (!AGENT_LAYER_PINS) {
-    const pinned = plain.body.warnings.filter((w) => w.field.startsWith("pins."));
-    assert.deepEqual(pinned.map((w) => [w.field, w.reason]), [["pins.mcp:github/pull_request_review_write", "not_set_up_here"]]);
-    assert.match(pinned[0].message, /^mcp:github\/pull_request_review_write is not pinned to event in \(absent \| COMMENT\), method in \(create \| delete_pending \| submit_pending\) for this agent yet/);
-  }
-  // code-review runs unattended by default (approvals never): its asks are allows, except the pinned write, which is
-  // deny until its pin is kept (the agent's own, from the cutover on, or this server's).
-  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, name === "pull_request_review_write" && !AGENT_LAYER_PINS ? "deny" : "allow"])));
+  // The package sets no permission of its own; its pinned write gets its pin, bounding it to COMMENT reviews even once
+  // granted: a write a template grants never runs without its pin.
+  assert.deepEqual(agent.definition.tool_settings, { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } });
+  assert.deepEqual(plain.body.warnings.filter((w) => w.field.startsWith("pins.")), [], "the agent keeps its pin: nothing to say");
+  // code-review runs unattended by default (approvals never): its asks are allows, the pinned write too (its pin bounds
+  // each call at the gate).
+  assert.deepEqual(await permissions(plain.body.agent_id), Object.fromEntries(GITHUB_TOOLS.map((name) => [name, "allow"])));
 
   // The owner's grants, and only those, become allow; one the package does not list is refused, and nothing is made.
   const reads = GITHUB_READS.map((name) => `mcp:github/${name}`);
@@ -368,11 +362,11 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   const consented = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: reads });
   assert.equal(consented.status, 201, JSON.stringify(consented.body));
   // The review write's pin travels with it whatever its permission: a grant of the reads never strips it.
-  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, { ...Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])), "mcp:github/pull_request_review_write": AGENT_LAYER_PINS ? { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } : { permission: "deny" } });
+  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, { ...Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])), "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } });
   // Unattended by default (approvals never): an ask with nothing standing behind it is an allow, the pinned review write
-  // too once its pin is kept (the pin still bounds each call at the gate); the unpinned comment write runs unasked,
+  // too (the pin still bounds each call at the gate); the unpinned comment write runs unasked,
   // bounded by the pinned review write it adds to.
-  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: AGENT_LAYER_PINS ? "allow" : "deny", add_comment_to_pending_review: "allow" });
+  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: "allow", add_comment_to_pending_review: "allow" });
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
 });
 
@@ -516,7 +510,7 @@ test("a server-wide deny of every tool of an MCP server (mcp:<server>/*) keeps e
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: granted });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
-  assert.deepEqual(agent.definition.tool_settings, AGENT_LAYER_PINS ? { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } } : { "mcp:github/pull_request_review_write": { permission: "deny" } }, "no grant is written over the wildcard deny; the pinned write is deny until its pin is kept");
+  assert.deepEqual(agent.definition.tool_settings, { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } }, "no grant is written over the wildcard deny; the pinned write keeps its pin");
   assert.deepEqual(agent.tools.filter((x) => granted.includes(x.name)).map((x) => [x.name, x.permission]), granted.map((tool) => [tool, "deny"]));
   assert.deepEqual(applied.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => w.field), granted.map((tool) => `grants.${tool}`));
 });
@@ -612,24 +606,21 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   assert.deepEqual(p.mcp[0].pin, { slack_send_message: { channel_id: "${parameters.channel}", limit: "${parameters.count}", unfurl_links: false, thread_ts: null } });
   // compiled() fills it: one placeholder alone takes the parameter's value and type; a pin whose parameter is missing denies.
   const SEND = "mcp:slack/slack_send_message";
-  const made = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: true });
+  const made = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND] });
   assert.deepEqual(made.agent.definition.tool_settings, { [SEND]: { permission: "allow", pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null } } });
-  assert.deepEqual([made.unpinned, made.unkept], [[], []]);
-  // Its pin not kept on the agent: deny, granted or not, unless this server's settings pin the tool, when the grant stands.
-  const later = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: false });
-  assert.deepEqual(later.agent.definition.tool_settings, { [SEND]: { permission: "deny" } });
-  const covered = compiled(p, { channel: "C0123", count: 3 }, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: false, serverPinned: new Set([SEND]) });
-  assert.deepEqual(covered.agent.definition.tool_settings, { [SEND]: { permission: "allow" } });
-  assert.deepEqual(later.unkept, [{ tool: SEND, pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null } }]);
+  assert.deepEqual(made.unpinned, []);
+  // The same pins filled on their own (filledPins, what the template eval sets on its server before an apply).
+  assert.deepEqual(filledPins(p.mcp, { channel: "C0123", count: 3 }), [{ tool: SEND, pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null }, empty: [] }]);
+  assert.deepEqual(filledPins(p.mcp, { count: 3 }).map(({ tool, empty }) => [tool, empty]), [[SEND, ["channel"]]]);
   for (const given of [{ count: 3 }, { channel: "", count: 3 }]) {
-    const empty = compiled(p, given, { mcp: p.mcp, defaultTools: [], grants: [SEND], pins: true });
+    const empty = compiled(p, given, { mcp: p.mcp, defaultTools: [], grants: [SEND] });
     assert.deepEqual(empty.agent.definition.tool_settings, { [SEND]: { permission: "deny" } }, JSON.stringify(given));
     assert.deepEqual(empty.unpinned, [{ tool: SEND, parameters: ["channel"] }]);
   }
   // A one-of list is filled item by item, in its order; an item whose parameter is missing denies as a scalar's does.
   const { p: listed } = await pinProblems(t, '    pin: { slack_send_message: { channel_id: [C0GENERAL1, "${parameters.channel}"], limit: [null, "${parameters.count}"] } }');
-  assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0123", "C0GENERAL1"], limit: [null, 3] } } }, "in its one form");
-  assert.deepEqual(compiled(listed, { count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [], pins: true }).unpinned, [{ tool: SEND, parameters: ["channel"] }]);
+  assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [] }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0123", "C0GENERAL1"], limit: [null, 3] } } }, "in its one form");
+  assert.deepEqual(compiled(listed, { count: 3 }, { mcp: listed.mcp, defaultTools: [], grants: [] }).unpinned, [{ tool: SEND, parameters: ["channel"] }]);
   const refused = async (entry, pattern) => {
     const { problems } = await pinProblems(t, entry);
     assert.ok(problems.some((problem) => pattern.test(problem)), `${pattern}: ${JSON.stringify(problems)}`);
@@ -667,37 +658,16 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
 
   const settingsOf = async (applied) => (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.tool_settings;
   const pinWarnings = (applied) => applied.body.warnings.filter((w) => w.field.startsWith("pins."));
-  // A channel given: the pin, filled, whatever the permission. market-monitor runs unattended (approvals never), so with
-  // its pin kept the send's ask is an allow, the pin still bounding each call; until then it is deny.
-  // Until the store cutover (AGENT_LAYER_PINS) the agent keeps no pin of its own: the answer says so, with the server's
-  // setting that holds the send meanwhile, and the send asks unless granted.
+  // A channel given: the pin, filled, whatever the permission. market-monitor runs unattended (approvals never), so the
+  // send's ask is an allow, the pin still bounding each call.
   const given = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" } });
   assert.equal(given.status, 201, JSON.stringify(given.body));
-  assert.equal((await api("GET", `/agents/${given.body.agent_id}`)).body.tools.find((x) => x.name === SEND).permission, AGENT_LAYER_PINS ? "allow" : "deny");
+  assert.equal((await api("GET", `/agents/${given.body.agent_id}`)).body.tools.find((x) => x.name === SEND).permission, "allow");
   const granted = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" }, grants: [SEND] });
   assert.equal(granted.status, 201, JSON.stringify(granted.body));
-  if (AGENT_LAYER_PINS) {
-    assert.deepEqual(await settingsOf(given), { [SEND]: { pin: { channel_id: "C0MKTINTEL" } } });
-    assert.deepEqual(pinWarnings(given), []);
-    assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow", pin: { channel_id: "C0MKTINTEL" } } });
-  } else {
-    // Until then a send whose pin the agent can't keep is deny, granted or not, so no approvals setting runs it unbounded.
-    assert.deepEqual(await settingsOf(given), { [SEND]: { permission: "deny" } });
-    assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "deny" } });
-    for (const applied of [given, granted]) {
-      assert.deepEqual(pinWarnings(applied).map((w) => [w.field, w.reason]), [[`pins.${SEND}`, "not_set_up_here"]]);
-      assert.match(pinWarnings(applied)[0].message, /^mcp:slack\/slack_send_message is not pinned to channel_id = C0MKTINTEL for this agent yet: .* set to deny/);
-      assert.match(pinWarnings(applied)[0].fix, /\{"mcp:slack\/slack_send_message":\{"pin":\{"channel_id":"C0MKTINTEL"\}\}\}/);
-    }
-    // With the send pinned on this server, the owner's grant stands: the server's pin holds its calls.
-    assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0MKTINTEL" } } })).status, 200);
-    const covered = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" }, grants: [SEND] });
-    assert.equal(covered.status, 201, JSON.stringify(covered.body));
-    assert.deepEqual(await settingsOf(covered), { [SEND]: { permission: "allow" } });
-    assert.match(pinWarnings(covered)[0].message, /this server's own pin of mcp:slack\/slack_send_message holds its calls meanwhile/);
-    assert.equal(pinWarnings(covered)[0].fix, undefined, "nothing to add: the server's pin already holds it");
-    assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
-  }
+  assert.deepEqual(await settingsOf(given), { [SEND]: { pin: { channel_id: "C0MKTINTEL" } } });
+  assert.deepEqual(pinWarnings(given), []);
+  assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow", pin: { channel_id: "C0MKTINTEL" } } });
 
   // No channel: the send has no destination, so it can't run at all, granted or not, and the answer says so.
   const none = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)" }, grants: [SEND] });
