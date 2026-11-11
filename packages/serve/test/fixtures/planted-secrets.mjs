@@ -240,7 +240,8 @@ registerPlant({
   write: async ({ owner, token }) => {
     const saved = await owner("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted" });
     if (saved.status !== 201) throw new Error(`the outbound webhook was not set: ${saved.status} ${saved.text}`);
-    // A later save is no secret write: the token changes the URL, and its answer is read like any other.
+    // The token changes the URL: a new secret is made and never shown to it, and the planted one is kept retired, still
+    // cut; its answer is read like any other.
     const moved = await token("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted-2" });
     if (moved.status !== 200) throw new Error(`the token could not change the webhook's URL: ${moved.status} ${moved.text}`);
     return [saved.json.signing_secret];

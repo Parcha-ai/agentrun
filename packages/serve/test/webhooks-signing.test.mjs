@@ -467,7 +467,8 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     assert.equal(await first.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued");
     await hook.when(2);
     await settled(dir);
-    assert.deepEqual(outboxOf(dir).notices.run_1.waits, ["row_3:waiting", "approval:call_8"]);
+    // Told in the same millisecond, the store's rows read in no order of their own: compared as a set.
+    assert.deepEqual([...outboxOf(dir).notices.run_1.waits].sort(), ["approval:call_8", "row_3:waiting"]);
     await first.close();
     // The next server reads the ledger from the store: neither wait goes again.
     const next = await on.open();
