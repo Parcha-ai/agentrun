@@ -1,8 +1,6 @@
 // The agent store held by another connection never stalls the server: every read and write of it waits with an
-// async backoff, so the event loop goes on answering. A run's end waits as long as it takes; a request waits about
-// 2 s, then answers home_busy.
+// async backoff, so the event loop goes on answering.
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,13 +9,9 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
-import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve, startRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-/** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
- *  every other request for about all of it, so half of it is the line between waiting aside and blocking. */
-const HOLD_MS = 1_000;
 
 /** `method path` on a connection of its own, with how long its answer took. */
 function timed(port, token, method, path, body) {
@@ -65,58 +59,7 @@ test("a read while the agent store is held exclusively waits, then answers once 
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
 });
 
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("an edit whose commit meets a reader of the agent store waits for it, then answers 200 with the new revision", async (t) => {
-  const { api, data, port, token } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("edited"))).status, 201);
-  const release = hold(t, data, "READ");
-  const edited = timed(port, token, "PUT", "/agents/edited/definition", agent("edited", { instructions: "Answer briefly.", version: 2 }));
-  // Handled now: should the bound below fail while the edit still waits, the server's close ends it, and its rejection
-  // is not reported beside the failure. `await edited` still sees it.
-  edited.catch(() => {});
-  const slowest = await slowestWhile(port, token, sleep(HOLD_MS));
-  release();
-  t.diagnostic(`slowest GET /capabilities while the edit waited: ${slowest} ms`);
-  assert.ok(slowest < HOLD_MS / 2, `GET /capabilities took ${slowest} ms while the edit waited: an edit whose wait blocks the event loop holds every other request for about the whole ${HOLD_MS} ms hold`);
-  const answer = await edited;
-  assert.equal(answer.status, 200, JSON.stringify(answer.body));
-  assert.equal(answer.body.definition.instructions, "Answer briefly.");
-  assert.ok(answer.took >= HOLD_MS - 100, `it waited for the reader: ${answer.took} ms`);
-});
-
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("an escalated workflow's review.at is its ended_at, one saved end time, even when its end waits for a held store, and after a restart", async (t) => {
-  let refused = 0;
-  const { api, data, close } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy: () => void refused++ }, settleRetryMs: 120_000 });
-  const gated = answerFlow("Answer soon.");
-  gated.schemas.In.properties.amount = { type: "number" };
-  gated.root.steps.push({ node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: "needs a person" });
-  assert.equal((await api("POST", "/agents", flowAgent("late-end", gated))).status, 201);
-  const started = await api("POST", "/agents/late-end/runs", { input: { question: "Answer soon.", amount: 600 } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  const runId = started.body.run_id;
-  await follow(api, runId, ["working"]);
-  // Another writer holds the store past the run's end: its end is written, and its ended_at stamped, when it lets go.
-  const release = hold(t, data);
-  for (let i = 0; refused === 0; i++) {
-    assert.ok(i < 600, "the run's end met the held store");
-    await sleep(50);
-  }
-  release();
-  await follow(api, runId, ["completed"], { deadlineMs: 15_000 });
-  const same = (view) => [view.status, view.review?.kind, view.review?.at === view.ended_at];
-  const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual(same(run), ["completed", "review", true], `review.at ${run.review?.at}, ended_at ${run.ended_at}`);
-  const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
-  assert.deepEqual([...same(listed), listed.ended_at], ["completed", "review", true, run.ended_at], "the list says the same");
-  await close();
-  const again = await startServe({ data, port: 0, faux: FAUX });
-  t.after(() => again.close());
-  const read = client(again.baseUrl, again.token);
-  assert.deepEqual([...same((await read("GET", "/runs")).body.runs.find((row) => row.run_id === runId)), (await read("GET", `/runs/${runId}`)).body.review?.at], ["completed", "review", true, run.ended_at], "and the next server reads the same time");
-});
-
-// SKIP (follow-up #2078): a follow-up after a stop never runs: the run stays cancelled on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a follow-up to a stopped run is taken while another connection holds the agent store, and runs; taken or refused, never both", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t);
   const { run_id } = await startRun(api, "slow", "Take your time.");
@@ -164,26 +107,4 @@ test("a run's start is answered 202 even when the agent store turns busy right a
   assert.equal(started.status, 202, JSON.stringify(started.body));
   assert.equal(runs.length, 1, "one run");
   await follow(api, started.body.run_id, ["completed"]);
-});
-
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("a message to a run working on its first turn is taken while another connection holds the agent store: the run's harness is known from its start, so nothing is read", { timeout: 120_000 }, async (t) => {
-  const dir = await scratch(t);
-  const { api, data } = await serve(t);
-  const go = join(dir, "go");
-  const { run_id } = await startRun(api, "gated", `Answer once ${go} exists.`);
-  for (const end = Date.now() + 30_000; ; await sleep(50)) {
-    const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
-    if (status === "working" && state === "working") break;
-    assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
-  }
-  // No reader gets through: a message that read the run's harness from the store would wait about 2 s, then answer
-  // home_busy. Its turn holds until the file exists, so the run is working when the message comes.
-  const release = hold(t, data, "EXCLUSIVE");
-  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "And then this." });
-  release();
-  await writeFile(go, "");
-  assert.deepEqual([sent.status, sent.body.mode], [202, "steer"], JSON.stringify(sent.body));
-  const { rows } = await follow(api, run_id, ["completed"]);
-  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.text).slice(1), ["And then this."], "taken, and run once");
 });

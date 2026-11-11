@@ -165,6 +165,24 @@ const BIG_INPUT = sized("big-input", HUGE);
 /** The same arrays in a step's output schema, with an example given: synthesized at the step, not as the input. */
 const BIG_OUTPUT = sized("big-output", schemas.Question, { type: "object", properties: { answer: { type: "number" }, grid: HUGE.properties.grid }, required: ["answer"] });
 
+test("a draft whose call node runs an MCP tool dry-runs on its output synthesized from out, as any call's: no request leaves the host (LS-07)", async (t) => {
+  const flow = { v: 2, name: "file-ticket", schemas: { ...schemas, Ticket: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } }, input: { schemaId: "Question" }, output: { schemaId: "Ticket", path: "ticket" }, root: { node: "chain", steps: [{ node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{question}" }, out: "Ticket", as: "ticket", deadline_s: 60 }] } };
+  // Every way out of the host this process has, watched: none is taken.
+  const sent = [];
+  const fetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => (sent.push(String(args[0])), new Response("{}"));
+  t.after(() => (globalThis.fetch = fetch));
+  for (const http of [(await import("node:http")).default, (await import("node:https")).default]) {
+    const request = http.request;
+    http.request = (...args) => (sent.push(String(args[0]?.href ?? args[0]?.host ?? args[0])), request(...args));
+    t.after(() => (http.request = request));
+  }
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(flow), ["mcp:linear/create_issue"]), []);
+  const dry = await skills.draftDryRun(dsl, JSON.stringify(flow), JSON.stringify({ question: "The checkout page is down" }));
+  assert.equal(dry.status, "passed", JSON.stringify(dry));
+  assert.deepEqual(sent, [], "nothing was sent");
+});
+
 test("a draft whose schemas would synthesize a huge value is refused statically, never dry-run, within a time bound", async (t) => {
   for (const [flow, example] of [[BIG_INPUT, undefined], [BIG_OUTPUT, JSON.stringify({ question: "q" })]]) {
     const started = Date.now();
