@@ -18,6 +18,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { computerRoute, computerViewOf } = await import("../dist/computer-routes.js");
@@ -30,7 +31,9 @@ const { ApiError } = await import("../dist/errors.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: the run's runner is never meant to lose its claim here (a claim lost to a stall is
+// retaken, and what a test reads is then the takeover's). The lease is not the subject of any case below.
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const OWNER = { ownerSession: true, token: false, accounts: true };
 after(closeOpenSessions);
@@ -265,8 +268,25 @@ test("two hand-backs of one take-over: the first wins, the second is a 409 in wo
   assert.equal((await world.rows()).filter((row) => row === "You handed the desktop back").length, 1, "one hand-back on the Timeline");
 });
 
-// Deleted (flaky in the merge queue, follow-up #2173): "a take-over survives a server restart: it is read from the store,
-// never from the server's memory, and the new server hands it back".
+test("a take-over survives a server restart: it is read from the store, never from the server's memory, and the new server hands it back", async (t) => {
+  const world = await setup(t);
+  const run = await world.start();
+  await world.until(world.live, "the desktop is live");
+  await world.route("takeOverRunComputer");
+  run.letGo();
+  await world.until(async () => (await world.hold()) === "person", "the person holds the desktop");
+
+  await world.restart();
+  assert.equal(await world.hold(), "person", "the new server reads the take-over");
+  assert.equal(await world.live(), true);
+  // Taking it again is the same answer: one take is in force, and nothing new is written.
+  assert.deepEqual(await world.route("takeOverRunComputer"), { hold: "person" });
+  await world.route("handBackRunComputer");
+  await world.until(async () => (await world.hold()) === "agent" && run.hold.state() === "agent", "the new server's hand-back reached the runner");
+  await world.ended();
+  const said = await world.rows();
+  assert.equal(said.filter((row) => row === "You took over the desktop").length, 1, `one take on the Timeline:\n${said.join("\n")}`);
+});
 
 test("the agent's ask on its desktop: the run waits on it with pending kind computer and the Timeline says so; the hand-back's answer is the first, the agent gets it, and a different second answer is 409 in words", async (t) => {
   const world = await setup(t);

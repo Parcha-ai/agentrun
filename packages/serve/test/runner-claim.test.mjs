@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { fauxLoops, observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const LEASE_MS = 400;
 const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs: 20, commandPollMs: 20 };
@@ -83,8 +83,40 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
   }
 });
 
-// Deleted at the merge (flaky on Node 24.11, follow-up #2158): "a runner that closes stops its loop where it can resume
-// and releases the run, still running; the other claims it at once". Rewrite it on events, not the clock.
+// A runner that closes hands its run back: the loop is stopped for a shutdown where it can resume, the store is flushed, the
+// run released (its epoch moves on), and the other runner claims it at once, one epoch further. A claim and its epoch are the
+// fence, so this one is kept, and made deterministic: the lease is one no stall outlasts (STEADY_LEASE), so the other runner
+// can only have the run through the close's release, never through the old claim lapsing, and nothing is read off a clock.
+// Each step is waited for by its event (the claim landing in the store's record).
+test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
+  const timing = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
+  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  const { server, runners: [one, two] } = await stores({ runners: 2 });
+  const record = recorder();
+  const runners = [
+    startRunner({ store: observed(one, record), createLoop: faux.createLoop, name: "runner-a", ...timing }),
+    startRunner({ store: observed(two, record), createLoop: faux.createLoop, name: "runner-b", ...timing }),
+  ];
+  // Close is idempotent: the holder's is already done when this runs.
+  t.after(() => Promise.all(runners.map((runner) => runner.close())));
+  await queue(server, "run-1");
+
+  const first = await until(() => record.claims[0], "a claim");
+  const holder = runners.find((runner) => runner.name === first.runner);
+  const other = runners.find((runner) => runner !== holder);
+  const leaseEnd = (await server.runs.get("run-1")).claimedUntil;
+  await holder.close();
+
+  assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
+  assert.match(record.ops.join(" | "), /flush \| release run-1/, "flushed, then released");
+  const second = await until(() => record.claims[1], "the other runner's claim");
+  // The close's release moved the epoch to 2: the other runner's claim is 3.
+  assert.deepEqual([second.runner, second.epoch], [other.name, 3]);
+  assert.ok(second.at < leaseEnd, "claimed before the old lease would have run out: it was handed back, not lapsed");
+  // The loop is made once the claim has returned to the runner: waited for, not read at once.
+  assert.equal((await until(() => faux.loops[1], "the new loop")).claim.epoch, 3, "a new loop resumes it");
+  assert.equal((await server.runs.get("run-1")).state, "running", "still running");
+});
 
 // The end, then a lease's worth of polls on a clock the test moves: the run ends and is released on real timers (a lease no
 // stall outlasts, each step waited for by its event), then the runners' timers are mocked and the clock moves past one
