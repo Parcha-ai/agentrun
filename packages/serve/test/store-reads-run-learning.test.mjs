@@ -1,10 +1,11 @@
 // GET /runs/{id}/learning read from the one store (store-reads/learning.ts runLearningOverStore) is today's response
-// for the same run: learning-routes.ts runLearning over the run's files, with the golden fixtures' own learning (the
-// server's grade, captured at 77c24d30db) as the run's, and the seed its pin held. The store's run is the same run ended
-// with the same proposal, its learning run graded by the runner with the same verdict, its start's seed and given notes
-// on its launch. What differs by nature is put aside: when it happened, and the merge commit's id. Then the parts the
-// store gives on its own: the seed is the launch's, never the kept proposal's; a host's secret in a note's name reads
-// [redacted]; and what it held for its owner's OK reads as the store's run view reads it, never from the folder.
+// for the same run: the run-files read the server answered before the store (todayOf below), with the golden fixtures'
+// own learning (the server's grade, captured at 77c24d30db) as the run's, and the seed its pin held. The store's run is
+// the same run ended with the same proposal, its learning run graded by the runner with the same verdict, its start's
+// seed and given notes on its launch. What differs by nature is put aside: when it happened, and the merge commit's id.
+// Then the parts the store gives on its own: the seed is the launch's, never the kept proposal's; a host's secret in a
+// note's name reads [redacted]; and what it held for its owner's OK reads as the store's run view reads it, never from
+// the folder.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,8 +14,8 @@ import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 
 const reads = await import("../dist/store-reads/learning.js");
-const { runLearning } = await import("../dist/learning-routes.js");
-const { LEARNING_PIN, secretsShown } = await import("../dist/learning.js");
+const { runLearningBody, statusesOf } = await import("../dist/learning-routes.js");
+const { currentLearning, holdsForOk, LEARNING_PIN, readPin, secretsShown } = await import("../dist/learning.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 const fn = (module, name) => (typeof module[name] === "function" ? module[name] : () => assert.fail(`${name} is not there`));
 const runLearningOverStore = (...args) => fn(reads, "runLearningOverStore")(...args);
@@ -46,7 +47,16 @@ async function storedAs(t, golden, launchLearning) {
   return { store, dir };
 }
 
-/** Today's response for golden case `golden`: runLearning over a run whose learning is the case's own and whose pin
+/** The run-files read the server answered GET /runs/{id}/learning with before the store, kept here as this test's oracle:
+ *  what the run held for its owner's OK as its folder reads now, the seed its pin holds, through the one body shape. */
+async function runLearning(run, shown, secrets, data) {
+  const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
+  if (!learning) return null;
+  const pin = await readPin(run.dir).catch(() => undefined);
+  return runLearningBody({ id: run.id, learning, seed: pin?.seed ?? null, settled: run.settled }, shown, secrets);
+}
+
+/** Today's response for golden case `golden`: the oracle over a run whose learning is the case's own and whose pin
  *  holds `seed`, its agent's folder the store's (the same data directory). */
 async function todayOf(golden, seed, dir, shown, secrets) {
   const runDir = mkdtempSync(join(tmpdir(), "run-learning-"));

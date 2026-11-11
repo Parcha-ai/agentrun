@@ -194,11 +194,7 @@ export function mcpCredentials(): Record<string, { url: string; headers?: Record
 export const mcpSecretValues = (credentials: Record<string, { headers?: Record<string, string> }>): string[] =>
   Object.values(credentials).flatMap((server) => Object.values(server.headers ?? {})).flatMap((value) => [value, value.replace(/^Bearer\s+/i, "")]);
 
-/** The pipe's MCP entry for `credentials`, to follow the secrets `handover` encodes. */
-export const mcpHandover = (credentials: Record<string, unknown>): Buffer => encode([[MCP_AUTH, JSON.stringify(credentials)]]);
 
-/** A run's saved sign-in as its pipe carries it, after its secrets (handover). */
-export const handoverSignIn = (value: { provider: string; ref: string; save: boolean }): Buffer => encode([[SIGN_IN_PAIR, JSON.stringify(value)]]);
 
 /** The saved sign-in this run's process was handed over its pipe, if any: read by the browser tool alone. */
 export function handedSignIn(): { provider: string; ref: string; save: boolean } | undefined {
