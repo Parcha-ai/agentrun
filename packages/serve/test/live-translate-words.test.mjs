@@ -3,7 +3,7 @@
 // record (a stop waiting when the loop could not open).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "../dist/timeline/index.js";
 import { KINDS } from "../dist/runner/journal-kinds.js";
 import { emptyState, STOPPED_BY_YOU, translate } from "../dist/live/translate.js";
 

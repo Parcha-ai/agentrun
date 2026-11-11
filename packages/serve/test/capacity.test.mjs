@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { sealKeyOf } from "../dist/tool-keys.js";
-import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -298,29 +298,4 @@ test.skip("a run cancelled as the server stops has its end in the store once the
   // Stopped at once: the run's process is still going, and its end is written by the stop's own settle.
   await one.close();
   assert.equal(storeRun(data, run.run_id).state, "stopped");
-});
-
-// SKIP (follow-up #2078): it reads the run's own process pid, and runs no longer have their own process
-test.skip("a message to a run whose process was killed is answered at once: a dead process's fresh heartbeat is not trusted", { timeout: 60_000 }, async (t) => {
-  const { api, data } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
-  const { body: run } = await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } });
-  await follow(api, run.run_id, ["input_required"]);
-  const pid = runRecordOf(data, run.run_id).holder.pid;
-  process.kill(pid, "SIGKILL");
-  for (let i = 0; ; i++) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      break;
-    }
-    assert.ok(i < 100);
-    await sleep(50);
-  }
-  const from = Date.now();
-  const sent = await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" });
-  assert.equal(sent.status, 202, JSON.stringify(sent.body));
-  assert.ok(Date.now() - from < 20_000, `answered in ${Date.now() - from} ms`);
-  await follow(api, run.run_id, ["completed"]);
-  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer, '{"region":"eu"}');
 });
