@@ -65,12 +65,12 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once that capabilities report (`limits.max_concurrent_runs`), beside the memory each run's harness reserves ([capacity](#capacity-and-health)). It does not stop a start: a run waits `queued` until a runner has a free loop. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
-| `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
+| `--drain-timeout D` | `30s` (the image: `6s`) | Checked as a duration (`8s`, `500ms`, `1m`) and kept, but a runner does not wait on it yet: when the server stops, the runner beside it stops every run where it can resume, and the next claim carries on from the run's journal (a model request the stop cut is sent again). |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
@@ -210,16 +210,12 @@ let a service with a disk change that.
 ## The disk, and earlier data directories
 
 The data directory has two parts. Its own files, the control plane, hold the agent store (`DIR/store.sqlite`, where
-each run's row keeps its claim: an epoch and its holder), the token and the server's settings; only the server opens
-them. Everything the agents make is on the disk, `DIR/disk/`: one folder per agent, `DIR/disk/agents/<agent>/` (its id
+each run's row keeps its claim: an epoch and its holder), the token and the server's settings; only the server and its
+runners open them. Everything the agents make is on the disk, `DIR/disk/`: one folder per agent, `DIR/disk/agents/<agent>/` (its id
 in lower case, a dash and 16 hex digits of its SHA-256), with its learning folder (`learning/`) and its runs
-(`runs/<id>/`, each with `store/run.sqlite`, its log, and `work/`, where its tools work). Nothing is copied in or out of
-a run's folder: where it works, it works in that folder.
-
-A run's own process writes its `run.sqlite` in WAL, under an exclusive lock, with no automatic checkpoint, and ends
-with its WAL in place. The server reads it with a fresh read-only open per read, never shows a read older than one
-before, and never opens it for writing while the run's process holds it. Once that process is gone the server takes
-the run back (its epoch bumped, the server its holder) and checkpoints its WAL into the database file.
+(`runs/<id>/`, each with `work/`, where its tools work). Nothing is copied in or out of a run's folder: where it
+works, it works in that folder. A run's record is not in its folder: its row, its claim and its journal (what the run
+did, in order) are rows of the store.
 
 A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a store of store version 1), is refused
 at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
@@ -244,9 +240,11 @@ through `POST /v2/agents`. Their earlier runs stay readable where you moved them
 
 ## Capacity and health
 
-Each run is a process of its own, and how much memory it takes depends on its harness. The server admits runs by
-memory: each run that holds a live process (working, or waiting for an answer) reserves its harness's size out of the
-container's limit when it has one (cgroup), else the machine's, less the server's own 128 MiB.
+A run is held by a runner, and how much memory it takes depends on its harness. Capabilities size what a host holds by
+memory: each run reserves its harness's size out of the container's limit when it has one (cgroup), else the machine's,
+less the server's own 128 MiB. The server does not refuse a start for memory: a start inserts a `queued` run, and a
+runner claims it when it has a free loop (300 at once by default; `agentrun-serve runner --loops N` sets it for a
+runner you start yourself).
 
 | Harness | Reserved per run | Measured per run |
 | --- | --- | --- |
@@ -258,21 +256,16 @@ container's limit when it has one (cgroup), else the machine's, less the server'
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
-it, needs a 1 GB instance for one and 2 GB for two. A start that does not fit in what is left is
-`429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
-queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
-on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses` entry, and
-its runs are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
+it, needs a 1 GB instance for one and 2 GB for two. A harness whose one run needs more than all the memory for runs
+(claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses`
+entry. pi always has one place, however small the host.
 
-`--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
-apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
-(`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
-the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
-memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
-with why if it was working, and a message to it is `409 agent_not_runnable`.
+`--max-runs N` or `AGENTRUN_MAX_RUNS` sets the count capabilities report (by default, as many as pi runs fit): pi's in
+`limits.max_concurrent_runs`, and each harness's own, the lower of that and what its memory holds, in its `harnesses`
+entry (`max_concurrent_runs`, beside `run_memory_mib`).
 
-A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
-counts only its own runs, and a run could be relaunched twice).
+A data directory serves one AgentRun Server at a time: a second server on the same data root is refused at start
+(`server.lock`).
 
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
 when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
@@ -281,12 +274,12 @@ and `503` with `status: "failing"` and which check failed (`store: "does_not_ope
 It names no path, size or version. One route serves as both liveness and readiness: any answer says the server is up,
 and a 200 says it can work, and the platforms here take one path.
 
-A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
-its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
-run as the store last had it. A run whose process was killed is opened again on its next message at once: the run's row
-names its process (its pid, that process's start and this boot), and a process that is gone holds nothing. One server
-serves a data root, and the agent disk under it (`<data>/disk`): a second server on the same root is refused at start
-(`server.lock`), so the row's claim never has two servers claiming it at once.
+A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
+time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
+claim lapses another runner claims the run and resumes it from its journal. `agentrun-serve runner --check --data DIR --name N`
+(or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) says whether the runner named `N` has a fresh heartbeat: it exits 0
+when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
+`agentrun-serve runner --data DIR --name N`.
 
 ## Sandbox
 
@@ -1549,7 +1542,7 @@ or `https` address, with no user or password in it. Loopback and private-network
 on your own machine or network works. Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
 need its person (`input_required`: a question, a call held for approval, a pause at its cap, an ask for its person in
 its browser, desktop or phone, or a stopped turn) and `run.ended` when it ends
-(completed, failed or cancelled, once carried back). A [schedule](#schedules) whose firing fails sends a third,
+(completed, failed or cancelled, once the run's end is written). A [schedule](#schedules) whose firing fails sends a third,
 `trigger.failed`; a server with no triggers never sends one.
 
 A run's end and its `run.ended` are one durable step. The server chooses the end's time once and gives it to the agent
@@ -2185,10 +2178,7 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
   spend happened.
 - A new run of an archived agent is `409 agent_not_runnable`, saying it is archived (`details.archived_at`); a run
   already going when its agent is archived keeps going.
-- The store keeps each change as one row of `archive_changes` in `store.sqlite`, written once
-  ([the store](../pi-durable-agent/README.md#agents-in-a-folder-the-agent-store)). A data directory an earlier version
-  wrote opens as it is, with nothing archived. Going back to an earlier version keeps every row, but that version does
-  not read them: archived agents and runs show as not archived there, and an archived agent's runs start again.
+- The store keeps an archive as `archived_at` on the agent's or the run's row, null when it is not archived.
 
 ## The console
 
@@ -2212,7 +2202,7 @@ server's own origin, under a CSP that allows that origin only, but for the provi
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
-the rest of [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page's data), for a
+the rest of the store page's data), for a
 script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
 token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
@@ -2291,18 +2281,22 @@ left out: 2 sessions still being written: they come in next time
 
 ## A run's life
 
-1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds
-   `DIR/disk/agents/<agent>/runs/<id>/`), then its process: `pi-durable-disk run --dir DIR/disk/agents/<agent>/runs/<id> --app <this package's app> --serve 0` on
-   loopback, behind a token of its own (`DIR/.door-token`), with its stderr in `runs/<id>/process.log`. The run's input
-   is in `runs/<id>/serve.json`.
-2. The app reads the run's revision from the store.
+1. `POST /agents/{id}/runs` starts the run in the store (`startRun`): one transaction writes a `queued` run, pinned to the
+   agent's revision, with its launch record (the request, checked and resolved once, its model included). No process
+   starts for it.
+2. A runner (by default the one beside the server) claims the `queued` run for 30 s and renews the claim every 10 s. At
+   the claim it opens the run's folder (`DIR/disk/agents/<agent>/runs/<id>/work`), reads the launch record and picks
+   the run's loop: a workflow revision runs on the workflow loop, a learning run on the learning loop, and every
+   other harness (pi, claude-agent, codex, opencode) on the adapter loop. Each loop writes the run's journal in the
+   store, behind the claim's fence: a write under a claim the run has moved past is refused. A message, stop, cancel,
+   raise or approval is a command row in the store, which the run's runner reads and applies.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
-     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is bound only where the run
-     has a shell ([computers](#computers)): in a computer that mounts the run's folder, or on Archil's serverless exec
-     in Mode 2; in Mode 1 a run with no such computer has the file tools alone. The run is `queued` until its first message shows; while the process runs, the
-     timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
-     newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
+     row, and the run is `input_required` and `waiting`, with no runner holding it, until a message answers it. `bash`
+     is bound only where the run has a shell ([computers](#computers)): in a computer that mounts the run's folder, or
+     on Archil's serverless exec in Mode 2; in Mode 1 a run with no such computer has the file tools alone. The run is
+     `queued` until its first message shows. The timeline is read from the run's journal. When the turn ends on the
+     agent's answer, the loop writes the run's end and the runner releases the claim. A model error ends it `failed`
      (`run_failed`). A run whose `max_cost_usd` cannot buy its next request is paused, `input_required` and `waiting`
      with `pending.kind` `budget`; one its cap refuses for a reason no cap fixes ends `failed` (`spend_cap_reached`,
      [below](#spend-cap)). A
@@ -2317,28 +2311,23 @@ left out: 2 sessions still being written: they come in next time
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
      not replayed. A cancelled run cannot: a message to it is `409 not_continuable`, and its `next_action` is to start a
      new run of the agent.
-   - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
-     `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
-     `report`) on the run's model, with the file tools each node names, and its typed questions on Jev or Parallel
-     ([decision workflows](#decision-workflows)). A workflow that needs code or a tool call this host does not run is
-     not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
-     ends, the app writes the run's final status with the outcome and releases it. Nothing is carried back from inside
-     the process, which holds the run's store until it exits.
-3. When the process has exited, the run's rows are read from its released store (an agentic run's conversation, a
-   workflow run's model nodes), and the server carries the run back, every run of both kinds: `carryBack` records its
-   state, cost and a summary in the store (an agentic run's answer; a workflow run's `workflowCarry`, its completed
-   nodes, then where it failed or escalated). Its last
-   page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that escalated ends `completed`, its work
-   done and waiting for a person's review: `error` is null and `review` is `{kind, node, reason, at}`, in the run and in the
-   lists. In this release `kind` and `node` are always null: the store keeps only the escalation's summary (`reason`)
-   and the run's end (`at`). Every other run's
-   `review` is null. `GET /v2/stats` counts it in `needs_review`, never in `failed`.
-4. When the server starts, it reads every run the store says is running. A run process an earlier server started and
-   that still serves the run is supervised again, by the holder its row names (its pid, its start, its door); a run
-   that already ended is carried
-   back; a run whose process is gone before it ended is opened again on its directory and resumes from its store (an
-   agentic run waiting for an answer waits without one, until a message). A carry back that finds the store held by
-   another writer is tried again with backoff, and at the next start.
+   - A workflow revision runs on the workflow loop, which drives the DSL's durable workflow task on the run's journal
+     (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`, `report`) on the run's model, with the file
+     tools each node names, and its typed questions on Jev or Parallel ([decision workflows](#decision-workflows)). A
+     workflow that needs code or a tool call this host does not run is not saved here (`422`). The run is `queued`
+     until a runner claims it, then `working`. When the workflow ends, the loop writes the run's end from its outcome:
+     a complete run ends `ended`, an escalated one `ended` with the outcome `escalated`, a refused or failed one
+     `failed`, a cancelled one `stopped`.
+3. The run's end is one commit: the run's state, its cost and a summary (an agentic run's answer; a workflow run's
+   completed nodes, then where it failed or escalated) are written with the journal's end entry, so there is nothing to
+   carry back afterwards. Its last page says `final`. v2's `cancelled` is the store's `stopped`; a workflow that
+   escalated ends `completed`, its work done and waiting for a person's review: `error` is null and `review` is
+   `{kind, node, reason, at}`, in the run and in the lists. In this release `kind` and `node` are always null: the
+   store keeps only the escalation's summary (`reason`) and the run's end (`at`). Every other run's `review` is null.
+   `GET /v2/stats` counts it in `needs_review`, never in `failed`.
+4. A server that starts again adopts nothing: runs are claimed, not supervised. A run whose runner stopped or lost its
+   claim writes nothing more; once the claim lapses another runner claims the run and resumes it from its journal,
+   and a model request the stop cut is sent again. A run waiting for an answer has no claim and waits until a message.
 
 An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), saved once the
 work is done and before the answer is sent, so a retry after a restart gets the first answer; a server that goes down
@@ -2785,11 +2774,8 @@ follows it. The refusal's words (`said`) keep its own figures. Its timeline show
 ending `:note`, so it is no message) marked `paused` (never an `error` row; it stays once the cap is raised, as the
 run's history), then a waiting row: "Waiting for you to raise the
 cap", and no more: the words are `pending.said`'s, which a client shows once. The
-webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
-releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
-process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends
-`failed`, as any run whose process is killed does, unless its cap was raised meanwhile: it held nothing, so the raise's
-follow-up goes (below). A message to a
+webhook's `run.needs_input` says `pending.kind: "budget"`. The run is parked while it waits: no runner holds it,
+so a paused run holds no place, and a server started again reads it paused from its store. A message to a
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
 
@@ -2805,20 +2791,11 @@ still ends the run `failed`.
 `PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
 cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap;
 `409 not_continuable` for an ended run). A workflow run's raise is [below](#a-workflow-run-under-its-cap). The same raise sent again (a retry), within that tail, changes nothing and
-answers as the first did. The run's serve.json keeps the raise before any answer, with each raise in `cap_raised`, so its
-next process opens under it, as does a server started again; a raise it could not keep is not taken (an error answers it),
-and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
-message_id, status, state}` at once, and the pause gets one follow-up turn, "The cap was raised to $2; continue the
-task.", under that `message_id`, which the server sends once the process being let go is gone, and which runs under the
-new cap. From the moment the raise is taken, the run reads `queued` (state `working`), in the answer's `status` and in
-every read after it, until the follow-up's turn runs: nothing waits on a person, so it is never `input_required` with no
-`pending` meanwhile. A second raise before it goes raises the cap it names and answers the same `message_id`. It is sent once: a
-server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
-cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
-the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the
-person's message (its submit names the server as its origin, `cap_raised`). A working run's
-live process keeps the cap it was opened with until its next one, and the answer's `note` says so. The raise is keyed to
-the refusal's own start mark, so a row shown after the refusal never reads the run paused again.
+answers as the first did. The raise is a command row in the store, which the run's runner reads. A run paused at its cap goes on: the answer is
+`{run_id, max_cost_usd, resumed: true, status, state}` at once, and a runner claims the run again and resumes it from its
+journal under the new cap. A raise for a run a runner holds now takes effect from the run's next step: a step already
+under way keeps the cap it was admitted at, and the answer's `note` says so. A run a person stopped takes no raise
+(`409 not_continuable`): send it a message to go on, then raise its cap.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search, an explicit `native`
@@ -2943,18 +2920,19 @@ carries no cost at all, as from a provider that does not price the model. The te
   no cookie of this server's and nothing of yours; Google sees the browser's address and which providers the page
   lists. Offline, or with those hosts blocked, the page shows a key icon instead. The CSP's `img-src` allows those
   five hosts; everything else is this origin only.
-- Each run's door listens on loopback and takes only that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, 0600, made
-  at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
-- A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
-  key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
+- A run has no door of its own. The server and a run's runner meet in the store: a message, stop or approval is a
+  command row the runner reads, so no port a run listens on takes a token.
+- A run's tools run under the runner's environment (the `AGENT_MODEL` variables among it) without the server's token or
+  any key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
   (one of its `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PAT`,
   `CREDENTIAL`, `CREDENTIALS` or `DSN`, or its last is `PWD` after another: `SERVICE_KEY`, `GITHUB_TOKEN_RO`, `DB_PASS`,
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
-  pi-durable-disk's (`@parcha/pi-durable-disk/secret-name`), which an import's cut and a harness's log take too. The keys it
-  needs come over its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
+  `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
+  run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
+  It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
-  from the revision at each launch, a relaunch or a resume after a restart included.
+  from the revision at each claim, a resume after a restart included.
 - A variable named like a key that is not on the launcher's list (`capabilities.secrets.names`) is left out of every
   run's environment, but the launcher does not take it out of the server's: it stays in the server's own environment
   (`/proc/<pid>/environ`), which any process of the same user can read. Set only the keys the server needs where it
@@ -2967,15 +2945,15 @@ carries no cost at all, as from a provider that does not price the model. The te
   keys or bearer token (held, and handed to a run on Bedrock), an `AWS_PROFILE`, `GOOGLE_CLOUD_API_KEY` or the default
   application credentials file work. A credential file a provider reads by path (`AWS_PROFILE`'s `~/.aws` files, the
   default application credentials) is the host's: a run's process reads it for its model, and its file tools cannot.
-- `TYPESAFE_API_KEY` is a decision key, handed to a workflow run's decision providers on a pipe of their own and never
-  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: its process finds no key for that
-  model, and the run fails.
+- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers alone and never
+  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
+  the run fails.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
-  included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token, the door
-  token, `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is
-  pi-durable-disk's confinement inside the run's process, not an operating-system boundary: the run and the server
+  included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token,
+  `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is the
+  Workspace's confinement inside the runner's process, not an operating-system boundary: the runner and the server
   share a user (one uid in the container), so the confinement holds only because the run has no shell on this machine.
 - No path offers a shell on this machine. On the runner `bash` is not bound: a definition that names it is not saved
   here (`422`), one saved before that check is not runnable (`409`), and a model that calls it anyway, as an agent or as
@@ -3015,4 +2993,4 @@ npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durab
 npm test -w @parcha/agentrun-serve
 ```
 
-The tests start real run processes on the faux model, both kinds: no key, no network.
+The tests start a real runner on the faux model, both kinds of run: no key, no network.
