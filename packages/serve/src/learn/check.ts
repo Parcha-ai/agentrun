@@ -261,7 +261,10 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     const holder = rules.get(rule);
     // One that supersedes the note it repeats updates it (its name or description, say): no duplicate.
     if (holder !== undefined && !note.supersedes.includes(holder)) return add("duplicate", `it says what ${holder} says`, path);
-    rules.set(rule, path);
+    // A note reserves its rule only once it passes its other checks, its own merge onto the base among them (what it
+    // supersedes, mergeProblems): one the merge check refuses never makes a valid copy of its rule a duplicate, and the
+    // pass that leaves it out (proposeRun) keeps that copy.
+    if (!mergeProblems(input.base, [note], values).length) rules.set(rule, path);
     notes.push(note);
   };
   for (const change of changes) one(change);
