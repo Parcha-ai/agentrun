@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/field";
 import type { WorkflowCheck } from "@/lib/client";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
-import type { GraphMarks } from "@/lib/wfGraph";
+import { drawnNodeCount, type GraphMarks, nodesWord } from "@/lib/wfGraph";
 import { type Issue, type Json, lineCol, lintWorkflow, nodeAtOffset, parseWithSpans, spanOf } from "@/lib/workflowDoc";
 
 const LINE_PX = 20;
@@ -173,7 +173,7 @@ export function WorkflowEditor({ text, onText, base, baseLabel, serverIssues, re
       <div className="flex min-h-0 flex-col">
         <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">
           <span className="caps text-label font-semibold">Graph</span>
-          <span className="font-mono text-label text-muted-foreground">{graph.nodes.length} nodes</span>
+          <span className="font-mono text-label text-muted-foreground">{nodesWord(drawnNodeCount(graph))}</span>
           {diff && (changes
             ? <span className="font-mono text-label">{[diff.added.length && `${diff.added.length} new`, diff.changed.length + diff.rewritten.length && `${diff.changed.length + diff.rewritten.length} edited`, diff.removed.length && `${diff.removed.length} removed`, diff.moved.length && `${diff.moved.length} moved`, !diff.moved.length && rewired && `${rewired} ${rewired === 1 ? "connection" : "connections"} changed`].filter(Boolean).join(" · ")} <span className="text-muted-foreground">against {baseLabel ?? "the current revision"}</span></span>
             : <span className="font-mono text-label text-muted-foreground">Same as {baseLabel ?? "the current revision"}</span>)}
