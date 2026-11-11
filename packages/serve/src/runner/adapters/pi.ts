@@ -42,6 +42,9 @@ export interface PreIntentCall {
   /** The tool calls the call's conversation made before it, at most `upTo`, read from its committed entries (tool-budget.ts
    *  countCalls), for the gate's tool-call budget: pi's model-issued calls only, never a nested call or a CLI's. */
   readonly callsBefore?: (upTo: number) => Promise<number>;
+  /** A call a running tool made (pi's nested call), part of a call already let through: the cap's wrap-up never refuses
+   *  one (tool-budget.ts), so a tool in flight is never cut short. */
+  readonly nested?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */
@@ -228,8 +231,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         beforeTool: async (call, api, hookContext: Context) => {
           if (!io.gate) return undefined;
           // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
-          // parent's part.
-          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext) } : {};
+          // parent's part, and is marked so (the cap's wrap-up lets it through).
+          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext) } : { nested: true as const };
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...counted }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);
