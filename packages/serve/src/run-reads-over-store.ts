@@ -15,7 +15,8 @@ import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { costIsBooked } from "./runner/metrics.js";
+import { runEntries, runTimeline } from "./store-reads/journal.js";
 import { StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
 import type { Workspace } from "./workspace/index.js";
@@ -114,8 +115,12 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const status = String(view.status);
   const ended = view.ended_at !== null;
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
+  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows: a workflow's
+  // usage row is its booking's (store-reads/journal.ts bookedUsage), its model nodes', its `llm` calls' and its paid
+  // tools', never its decisions', which the graph sums from their receipts. Its `llm` calls' answers are then all in it
+  // (llmRead), never counted again from the node log.
   const rows = ended ? await runTimeline(store, runId, deps.context) : [];
+  const booked = ended && costIsBooked(await runEntries(store, runId, deps.context), false);
   // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
   // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
@@ -129,7 +134,7 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     root: "",
     input: launch?.input ?? {},
     modelCost: ended ? costOf(rows) : 0,
-    llmRead: 0,
+    llmRead: booked ? Number.MAX_SAFE_INTEGER : 0,
     store,
     context: deps.context,
   }), cut.values, graphParts);
