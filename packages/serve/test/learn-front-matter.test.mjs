@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { checkProposal } from "../dist/learn/check.js";
-import { frontKeys, frontMatter, isHeld, learnedFront, learnedStatus, released, retiredLearned, setsStatus, skillProblems, UNCLEAR_FRONT } from "../dist/learn/skills.js";
+import { draftFiles, frontKeys, frontMatter, isHeld, learnedFront, learnedStatus, released, retiredLearned, setsStatus, skillProblems, UNCLEAR_FRONT } from "../dist/learn/skills.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { readSeed } from "../dist/learn/seed-check.js";
 import { agentFolderOf } from "../dist/files.js";
@@ -282,4 +282,24 @@ test("a revision skill with a multi-line quoted description reaches OpenCode wit
   const env = { OPENAI_API_KEY: "fake-test-key", [adapters.OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: ["-e", ""] }) };
   const adapter = await adapters.opencodeOf(env, needs);
   assert.ok(adapter, "the adapter starts: its own skill check passes the served SKILL.md");
+});
+
+test("a draft's README.md, written from its block, reads back the very description the block gave: one a plain line would change is quoted again; a plain one stays plain", () => {
+  const json = '{"v": 2}\n';
+  for (const [given, read] of [
+    ['"\\"a\\" plus"', '"a" plus'],
+    ["'it''s: done'", "it's: done"],
+    // Its white space folds to one space, as a draft's description is one line.
+    ['"tabs\\there"', "tabs here"],
+    ['"# not a comment"', "# not a comment"],
+    ['"trailing colon:"', "trailing colon:"],
+  ]) {
+    const { readme } = draftFiles("price-report", `---\ndescription: ${given}\n---\n${json}`);
+    const front = frontMatter(readme);
+    assert.ok(front, `the README reads one way: ${JSON.stringify(readme)}`);
+    assert.equal(front.get("description"), read, `read back as the block gave it: ${JSON.stringify(readme)}`);
+    assert.deepEqual(skillProblems(readme, "price-report"), [], readme);
+  }
+  const { readme } = draftFiles("price-report", `---\ndescription: Sums the three shop prices\n---\n${json}`);
+  assert.equal(readme, "---\nname: price-report\ndescription: Sums the three shop prices\n---\n", "a plain one is written as it was");
 });
