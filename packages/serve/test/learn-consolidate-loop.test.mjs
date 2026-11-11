@@ -552,3 +552,32 @@ test("an answer that rewrites both sides of a pair, whose grade drops one side, 
   assert.equal(dropped?.data.reason, "grader", JSON.stringify(entries.map((e) => [e.kind, e.data])));
   assert.match(dropped.data.detail, /find-policies/, dropped.data.detail);
 });
+
+// PRRT_kwDOUmdVMs62S14f: a merge whose pair was dropped whole (pairedOf), committed before its end was recorded (the
+// runner stopped between them), resumes as it was: the dropped skill is never read as learned. The resume settles each
+// item by the paired verdict, never the grade's own.
+test("a merge that dropped a rewritten pair whole, committed before its end was recorded, resumes saying the skill was not learned", async (t) => {
+  const invoice = Object.entries(FILES).filter(([file]) => file.startsWith("invoice-")).map(([path, text]) => ({ path, text }));
+  const w = await driftedWorld(t, invoice);
+  const skill2 = SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.\n3. Say the window in days.");
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Say the store's refund policy and its window in days, from the page." } };
+  const pair = [`\`\`\`\`skill find-policies\n${skill2}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy and window\n---\n${JSON.stringify(draft2)}\n\`\`\`\``];
+  // The cluster the prompt asks about gets its one replacement (replaceAsked), beside the pair.
+  let replacement;
+  const answer = (prompt) => ((replacement = replaceAsked(prompt)), [replacement, ...pair].join("\n\n"));
+  const id = "run-0-consolidate";
+  // The first attempt's commit (the replacement alone: the pair dropped whole) lands while it is graded, as a runner that
+  // committed and went down before it recorded its end leaves it for its resume.
+  const beforeGrade = async () => {
+    const [, file, text] = /```note (\S+)\n([\s\S]*?)```/.exec(replacement);
+    const made = await mergeOn(w, id, [{ path: file, text }]);
+    assert.equal(made.ok, true, JSON.stringify(made));
+  };
+  const { end, entries } = await consolidate(w, answer, { id, pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }], drop: ["workflows/find-policies/workflow.json"], beforeGrade });
+  assert.deepEqual(end, { state: "ended" });
+  const done = entries.find((e) => e.kind === KINDS.learningMerged);
+  assert.ok(done, JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.left])));
+  const skillItem = done.data.verdict.items.find(({ file }) => file === "skills/find-policies/SKILL.md");
+  assert.equal(skillItem?.keep, false, `the skill dropped with its partner stays dropped: ${JSON.stringify(skillItem)}`);
+  assert.doesNotMatch(done.data.detail, /Learned the skill/, done.data.detail);
+});
