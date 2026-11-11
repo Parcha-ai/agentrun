@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { request } from "node:http";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
@@ -131,6 +132,33 @@ test("the new agent keeps the source agent's policy, never more: its tools are t
   assert.deepEqual(definition.tool_settings, settings, "the source's own tool settings");
   assert.equal(definition.approvals, "never", "the source's approvals");
   assert.equal(definition.max_cost_usd, 2, "the source's default cap");
+});
+
+test("a promotion reads its source agent once: edited while the request's body is still on its way, the new agent's tools and its policy both come from the source as edited, never its tools from one revision and its cap from another", { timeout: 150_000 }, async (t) => {
+  // The source lacks web_fetch at first, its default cap 2.
+  const { api, port, cookie, origin } = await owned(t, flowFiles("read-site", fetchFlow()), { tools: [], max_cost_usd: 2 });
+  // The promote request's headers and the first byte of its body: the route has the request and waits for the rest.
+  const body = "{}";
+  const answer = new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method: "POST", path: "/v2/agents/source/learning/workflows/read-site/promote", headers: { host: `127.0.0.1:${port}`, ...json, "content-length": String(body.length), cookie, origin } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.once("error", reject);
+    req.write(body.slice(0, 1));
+    setTimeout(async () => {
+      // Meanwhile the owner gives the source web_fetch, allowed, and a default cap of 5.
+      const { definition: { id: _, version: __, ...definition } } = agent("source", { learning: true, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "allow" } }, max_cost_usd: 5 });
+      const edited = await api("PUT", "/agents/source/definition", { definition });
+      if (edited.status !== 200) return reject(new Error(`the edit: ${edited.status} ${JSON.stringify(edited.body)}`));
+      req.end(body.slice(1));
+    }, 500);
+  });
+  const made = await answer;
+  assert.equal(made.status, 201, made.text);
+  const read = (await api("GET", "/agents/read-site")).body.definition;
+  assert.deepEqual([read.tools, read.max_cost_usd], [["web_fetch"], 5], "the tools and the cap of one revision of the source, the one the promotion checked");
 });
 
 test("a learned workflow the source agent's policy would not run is not made an agent: a call node on a tool set to ask under ask, one denied, or one the agent lacks is 400 with its problem, and nothing is made", { timeout: 150_000 }, async (t) => {
