@@ -268,8 +268,10 @@ test("an event stream that does not open is opened again and the turn completes;
   await s1.session.send("hi");
   assert.deepEqual(await s1.session.turnEnd(), { status: "completed" });
   await s1.session.close();
-  assert.equal(said.filter((m) => m.includes("event stream is opened again")).length, 1);
-  assert.equal(once.traced().filter((l) => l.stalled).length, 1);
+  // The stand-in stalls the first stream alone (by count, FAKE_OPENCODE_STALL_EVENTS=1). A later stream that opens slower
+  // than the 500 ms window under load is opened again too, so the reopen is counted at least once, never exactly.
+  assert.ok(said.filter((m) => m.includes("event stream is opened again")).length >= 1, JSON.stringify(said));
+  assert.equal(once.traced().filter((l) => l.stalled).length, 1, "the one stalled stream is the stand-in's first");
 
   const never = adapter([{ text: "never" }], { standInEnv: { FAKE_OPENCODE_STALL_EVENTS: "3" }, options: { eventConnectMs: 500 } });
   const s2 = await session(never.adapter, memorySessionStore(), spec([]));
@@ -864,4 +866,25 @@ test("an opencode second crash in the same open turn: recovery 1 marked and neve
   const texts = userTexts(p);
   assert.match(texts[0] ?? "", /Write five files\./, "setup: recovery 2 carried the prompt");
   assert.equal(texts.at(-1), "and now?", `the next message is its own: ${JSON.stringify(texts)}`);
+});
+
+test("OpenCode's skills note gives a served skill's description as YAML reads it: a quote in it is a quote, never an escape", async () => {
+  const { skillsNote } = await import("../dist/harness-opencode/adapter.js");
+  const { servedSkill } = await import("../dist/learn/skills.js");
+  const served = servedSkill('---\nname: refunds\ndescription: Find "refund" policies, then the \\\\ path\n---\nSteps.\n');
+  const note = skillsNote([{ name: "refunds", files: { "SKILL.md": served } }]);
+  assert.match(note, /^- refunds: Find "refund" policies, then the \\\\ path$/m, note);
+});
+
+test("OpenCode's skills note gives a revision skill's description from its own line when the strict reader can't read the whole front matter (a key in a syntax it refuses), as the adapter's check accepted it", async () => {
+  const { skillsNote } = await import("../dist/harness-opencode/adapter.js");
+  const { learnedFront } = await import("../dist/learn/skills.js");
+  const { skillProblems } = await import("@parcha/agentrun-kernel");
+  const md = '---\nname: refunds\ndescription: Find a shop\'s refund policy page\n"license": MIT\n---\nSteps.\n';
+  assert.deepEqual(skillProblems([{ name: "refunds", files: { "SKILL.md": md } }]), [], "the adapter's check accepts it");
+  assert.equal(learnedFront(md), undefined, "setup: the strict reader can't read it whole");
+  assert.match(skillsNote([{ name: "refunds", files: { "SKILL.md": md } }]), /^- refunds: Find a shop's refund policy page$/m);
+  // A quoted description line reads without its quotes.
+  const quoted = md.replace("description: Find a shop's refund policy page", 'description: "Find a refund page"');
+  assert.match(skillsNote([{ name: "refunds", files: { "SKILL.md": quoted } }]), /^- refunds: Find a refund page$/m);
 });

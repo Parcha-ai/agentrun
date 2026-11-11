@@ -25,7 +25,6 @@ const TODAY = [
   "packages/pi/src/durable/readers.ts",
   "packages/pi/src/durable/recording.ts",
   "packages/serve/src/cap.ts",
-  "packages/serve/src/import-summary.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
 ];
@@ -51,7 +50,6 @@ const TODAY_FILE = [
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server.ts",
   "packages/serve/src/stats.ts",
-  "packages/serve/src/webhooks.ts",
 ];
 
 /** Every .ts/.mts/.js/.mjs file under `dir`, relative to the repository, skipping node_modules and dist. */

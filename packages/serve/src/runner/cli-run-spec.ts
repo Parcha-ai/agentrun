@@ -70,6 +70,10 @@ export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./
  *  makeArchilDisk are on AdapterSpecDeps, shared by both). One per runner. */
 export type CliSpecDeps = AdapterSpecDeps;
 
+/** What a CLI harness refuses of an agent's computer, in words: a browser, which only pi's browser tool drives. */
+export const cliRefusesKind = (kind: string): string | undefined =>
+  kind === "browser" ? "This agent's computer is a browser, which only the pi harness drives here: pick pi for this agent, or another kind of computer in Settings → Computers." : undefined;
+
 /** The revision's body, as the fields the spec reads of it. */
 type RevisionBody = {
   readonly instructions?: string;
@@ -172,6 +176,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const runner = name === undefined ? undefined : resolveHarness(name);
   if (!name || !entry?.facts || !entry.adapter || !runner) throw new Error(`run ${claim.runId}: ${JSON.stringify(name)} is not a CLI harness this runner runs`);
   const facts = entry.facts;
+  // The level the harness thinks at: the run's effort, else above its highest (codex stops at xhigh) its highest. The
+  // run's metrics name this level, the one it ran at, never a level the harness has not.
+  const thinking = launch.effort ? thinkingFor(facts, launch.effort) : undefined;
 
   // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
   // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in
@@ -207,7 +214,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
+    // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
+    // whose computer is a browser is refused in words at its claim, before anything is made.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
   holds.hold({ computer });
 
@@ -313,9 +322,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       };
 
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
-  // store at each decide, and the turn's origin read through the run's Workspace (Mode 2: on the run's disk) — adapterRunGate
-  // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
+  // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -360,7 +369,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
       webTools = await webHostTools(host, granted, ctx);
     }
-    if (learns) learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx });
+    if (learns) {
+      // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
+      // own MCP as the loop wraps it.
+      gate.learn(workflows);
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, ...(mcp ? { mcp } : {}) });
+    }
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
@@ -370,7 +384,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // redactor, as pi's do.
     tools: [...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
-    ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
+    ...(thinking ? { thinking } : {}),
   };
 
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
@@ -422,7 +436,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // decisions (a learned workflow's) at what they were booked at too.
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
-      const metrics = cliRunMetrics(entries as never, booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
       const model = booked.usd;
       const decisions = bookedSpend(all, "decisions").usd;
       const costUsd = model === null || decisions === null ? null : model + decisions;
