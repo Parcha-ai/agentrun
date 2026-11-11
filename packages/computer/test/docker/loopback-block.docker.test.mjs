@@ -4,8 +4,8 @@
 // child commands of Daytona and E2B, Modal's entrypoint and upload), and a program of the computer's user, run through
 // exec.run as isolation.vendor-agent runs it, must find every port of the stand-in refused, on the loopback and on the
 // container's own address, and see its own loopback alone; root outside the daemon still reaches the stand-in. A root
-// without CAP_SYS_ADMIN, and a container where another process holds the computer's uid, refuse to start init, in
-// words. Alpine (BusyBox's nc is the stand-in). AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and
+// without CAP_SYS_ADMIN that may make a user namespace (as on gVisor) gets the same cut, made inside one. A root without
+// either, and a container where another process holds the computer's uid, refuse to start init, in words. Alpine (BusyBox's nc is the stand-in). AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and
 // `npm run build:daemon`, and alpine:3.20 pulled. Each container is named computer-loop-<hex> and removed by that name.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -155,11 +155,30 @@ describe("the loopback block: a program of the computer's user reaches no port o
 		client.close();
 	});
 
-	it("a root without CAP_SYS_ADMIN cannot give init a network of its own: init refuses to start, in words", () => {
+	// As on gVisor (Modal's GPU runtime): root holds no CAP_SYS_ADMIN, but may make a user namespace (Docker's default
+	// capabilities, and no seccomp profile, whose default refuses it). The same --own-network: init makes the namespace
+	// inside a user namespace, and the stand-in agent, on the loopback and the container's address, is as far out of reach.
+	it("as on gVisor: init --own-network, where root may not make a network namespace, makes it inside a user namespace and cuts the computer's programs off from the stand-in agent just the same", async () => {
+		const name = named();
+		const { bytes, sha } = daemonBytes();
+		const commands = modal.modalCommands({ deadline: new Date(Date.now() + 300_000).toISOString(), user: TOOL, waitSeconds: 120 });
+		docker("run", "--detach", "--name", name, "--user", "0:0", "--security-opt", "seccomp=unconfined", IMAGE, ...commands.entrypoint);
+		standIn(name);
+		const address = addressOf(name);
+		reachable(name, address);
+		assert.equal(execFileSync("docker", ["exec", "-i", name, ...modal.modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" }), `sha256 ${sha}\n`);
+		const client = await connected(name, modal.modalCommands().stdio);
+		const hello = await client.call("hello", { client: "loopback-block test" });
+		assert.equal(hello.ok && hello.value.fence, "userns-netns", JSON.stringify(hello));
+		await checkCutOff(client, address);
+		client.close();
+	});
+
+	it("a root without CAP_SYS_ADMIN, under Docker's default seccomp profile (no user namespace either), cannot give init a network of its own: init refuses to start, in words naming both ways", () => {
 		const { name, commands } = childSandbox({ caps: [] });
 		const ran = spawnSync("docker", ["exec", name, "sh", "-c", commands.init], { encoding: "utf8", timeout: 30_000 });
 		assert.equal(ran.status, 1, ran.stdout + ran.stderr);
-		assert.match(ran.stderr, /init refuses to start: cannot make a network namespace of its own for init and its programs: operation not permitted; init needs root with CAP_SYS_ADMIN here/);
+		assert.match(ran.stderr, /init refuses to start: cannot make a network namespace of its own for init and its programs: root here holds no CAP_SYS_ADMIN: operation not permitted, nor can it start itself again in a user and a network namespace of its own/);
 	});
 
 	it("init refuses to start while another process holds the computer's uid, and names it", () => {

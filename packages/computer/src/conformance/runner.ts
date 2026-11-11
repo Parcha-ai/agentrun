@@ -179,7 +179,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const createError = (result: Result<unknown>) =>
 		result.ok ? "" : `create ${result.error.code === "refused" ? "was refused" : `failed (${result.error.code})`}: ${result.error.message}`;
 	const sawHello = (hello: HelloResult) => {
-		report.daemon ??= { version: hello.version, os: hello.os, arch: hello.arch };
+		report.daemon ??= { version: hello.version, os: hello.os, arch: hello.arch, ...(hello.fence === undefined ? {} : { fence: hello.fence }) };
 	};
 
 	/** The run's shared computer, made the first time a case needs it or the daemon's hello. */

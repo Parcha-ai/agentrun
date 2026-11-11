@@ -209,10 +209,11 @@ export const MODAL_GPU_TYPES = ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", 
 export const MODAL_GPU_MAX = 8;
 /**
  * The GPUs Modal offers, as capabilities().gpu and CAPABILITIES declare them: on gVisor, Modal's one GPU runtime;
- * preemptible, as Modal may end a GPU container to free capacity; and no mount yet, the Archil client's FUSE mount not
- * being proven on gVisor.
+ * preemptible, as Modal may end a GPU container to free capacity; no mount yet, the Archil client's FUSE mount not
+ * being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
+ * namespace itself (a live probe, 11-11: unshare -n refused, unshare -Urn allowed).
  */
-export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({ types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX, isolation: "gvisor", preemptible: true, mounts: [] });
+export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({ types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" });
 /** A copy of MODAL_GPU, so no caller can change the provider's own. */
 const modalGpuCapability = (): GpuCapability => ({ ...MODAL_GPU, types: [...MODAL_GPU.types], mounts: [] });
 /** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
@@ -449,13 +450,12 @@ const HOLD_SCRIPT = [
 
 /**
  * Init's arguments, after the daemon's path: the one place they are built, for the image route's command and the
- * entrypoint alike. Init and every tool run in a network namespace of their own, loopback alone, an Archil computer's
- * too: its archil client and serve run through exec as root, outside it. On the VM runtime root makes the namespace
- * (--own-network). On gVisor, a GPU computer's runtime, root may not (no CAP_SYS_ADMIN: unshare(CLONE_NEWNET) is EPERM,
- * live on a T4), but may make a user namespace, so init makes the same namespace inside one (--own-network-userns).
+ * entrypoint alike. Init and every tool run in a network namespace of their own, loopback alone (--own-network), an
+ * Archil computer's too: its archil client and serve run through exec as root, outside it. Init makes it itself, or, on
+ * gVisor (a GPU computer's runtime), where root may not, inside a user namespace; hello says which (fence).
  */
-function initArgs({ deadline, user, runtime }: { deadline: string; user: string; runtime: ModalRuntime }): string[] {
-	return ["init", "--deadline", deadline, "--user", user, runtime === "gvisor" ? "--own-network-userns" : "--own-network"];
+function initArgs({ deadline, user }: { deadline: string; user: string }): string[] {
+	return ["init", "--deadline", deadline, "--user", user, "--own-network"];
 }
 
 /**
@@ -471,10 +471,9 @@ export function modalCommands({
 	daemon = DAEMON_IN_COMPUTER,
 	home = WORK,
 	gate,
-	runtime = "vm",
-}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string; gate?: string; runtime?: ModalRuntime } = {}) {
+}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string; gate?: string } = {}) {
 	return {
-		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs({ deadline, user, runtime })],
+		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs({ deadline, user })],
 		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
 		hold: ["sh", "-c", HOLD_SCRIPT, "sh", daemon],
 		stdio: [daemon, "stdio"],
@@ -844,10 +843,11 @@ export class ModalProvider implements ComputerProvider {
 		};
 	}
 
-	/** What hello must report: this package's version, the kind and groups declared, and Modal's one architecture. */
+	/** What hello must report: this package's version, the kind and groups declared, Modal's one architecture, and the
+	 *  fence init --own-network holds its programs behind (either way: hello says which, and create notes it). */
 	#expected() {
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch: "amd64" };
+		return { version: VERSION, kind, groups, arch: "amd64", fence: true as const };
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
@@ -956,8 +956,8 @@ export class ModalProvider implements ComputerProvider {
 		const waitMs = uploadMs + callMs + (gate === undefined ? 0 : this.#archilMs());
 		const command =
 			daemon === undefined && gate === undefined
-				? [DAEMON_IN_COMPUTER, ...initArgs({ deadline, user, runtime: recorded.runtime })]
-				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, runtime: recorded.runtime, ...(gate === undefined ? {} : { gate }) }).entrypoint;
+				? [DAEMON_IN_COMPUTER, ...initArgs({ deadline, user })]
+				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, ...(gate === undefined ? {} : { gate }) }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
 			runtime: recorded.runtime,
@@ -1167,7 +1167,10 @@ export class ModalProvider implements ComputerProvider {
 			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network, runtime: recorded.runtime }),
 			...(archil === undefined ? [] : mountDrift(archil.expected, inside.value.mount)),
 		];
-		return found.length === 0 ? ok(probeNotes(inside.value.probe, recorded.network)) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		if (found.length > 0) return fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
+		const fence = inside.value.hello.fence === "userns-netns" ? [`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${recorded.runtime} may not make one itself`] : [];
+		return ok([...probeNotes(inside.value.probe, recorded.network), ...fence]);
 	}
 
 	/** One connection's hello and the probe through it, and an Archil computer's mount read back, the connection closed after. */

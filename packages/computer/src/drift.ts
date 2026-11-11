@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { EGRESS_MOUNT, EGRESS_SOCKET, type EgressCode, egressNameOf, egressOf, policyWords, RELAY_FLAG, sameAllow } from "./docker/egress.js";
 import { type DockerVolume, engineOf, subpathOf } from "./docker/volume.js";
 import { type MountReadBack, WORKSPACE } from "./mount.js";
-import type { ComputerKind, Group, HelloResult } from "./protocol.js";
+import { type ComputerKind, type Group, type HelloResult, NETWORK_FENCES } from "./protocol.js";
 import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
@@ -143,6 +143,8 @@ export interface HelloExpected {
 	groups: Group[];
 	/** Go's name (amd64, arm64); not checked when absent. */
 	arch?: string;
+	/** The daemon was started with --own-network: hello must say which fence holds its programs (NETWORK_FENCES). */
+	fence?: true;
 }
 
 export interface DriftExpected extends HelloExpected {
@@ -361,6 +363,9 @@ export function helloDrift(hello: HelloResult | null | undefined, expected: Hell
 		found.push(`hello: the daemon reports arch ${text(hello?.arch)}, expected the host's ${expected.arch}`);
 	}
 	if (hello?.kind !== expected.kind) found.push(`hello: the daemon reports kind ${text(hello?.kind)}, expected ${expected.kind}`);
+	if (expected.fence && !(NETWORK_FENCES as readonly unknown[]).includes(hello?.fence)) {
+		found.push(`hello: the daemon reports fence ${text(hello?.fence)}: init was started with --own-network, so its programs must be held behind one, ${NETWORK_FENCES.join(" or ")}`);
+	}
 	const offered: unknown = hello?.groups;
 	if (!Array.isArray(offered)) {
 		found.push(`hello: the daemon reports groups ${show(offered)}, not a list; expected ${expected.groups.join(", ")}`);

@@ -593,6 +593,7 @@ const COMPUTER_PROVIDER_GPU = closedWith({
   region: { type: "string", description: "The one region its GPU computers run in." },
   perGpu: closed({ cpus: { type: "integer" }, memoryMb: { type: "integer" }, diskMb: { type: "integer" } }, "What a GPU computer is given per GPU, by default."),
   mounts: { type: "array", items: { type: "string" }, description: "The mount kinds its GPU computers take, where fewer than its own: one that is not listed is refused as not proven." },
+  fence: { enum: ["netns", "userns-netns"], description: "How the computer's daemon holds a GPU computer's programs off its network, where it is not the plain network namespace: `userns-netns`, one made inside a user namespace (Modal's gVisor, where root may not make one itself). Either way the programs reach their own loopback alone." },
   why: { type: "string", description: "Why a run on this server cannot have its GPUs: its GPU computers take no mount of this server's folder mode." },
 });
 /** A provider in Settings → Computers (computers.ts ProviderView). */

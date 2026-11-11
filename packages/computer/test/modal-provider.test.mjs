@@ -100,7 +100,7 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		mount: ["archil"],
 		vendorAgentPorts: [],
 		// A GPU computer is gVisor's (Modal's one GPU runtime), preemptible, and takes no mount yet.
-		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [] },
+		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" },
 	});
 	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
@@ -222,7 +222,9 @@ test("create of a GPU computer: Modal's GPU option on its gVisor runtime, record
 	assert.equal(params.gpu, "A100-80GB:2", "the SDK's gpu: the type, then :count");
 	const recorded = JSON.parse(params.tags[SPEC_TAG]);
 	assert.deepEqual([recorded.runtime, recorded.gpu], ["gvisor", gpu], "the spec tag records the runtime and the GPUs");
-	assert.equal(params.command.at(-1), "--own-network-userns", "on gVisor init makes its own network inside a user namespace");
+	assert.equal(params.command.at(-1), "--own-network", "one flag on every runtime: init picks how it makes the fence");
+	// gVisor's init made the fence inside a user namespace: hello read it back, and create says so in a note.
+	assert.ok(created.value.notes?.some((note) => note.startsWith("fence: userns-netns")), JSON.stringify(created.value.notes));
 	const attached = await provider.attach({ id: created.value.id });
 	assert.equal(attached.ok, true, JSON.stringify(attached));
 	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reads back the GPUs create recorded");
@@ -235,7 +237,6 @@ test("create of a GPU computer: Modal's GPU option on its gVisor runtime, record
 	assert.equal((await plain.provider.create(SPEC)).ok, true);
 	assert.equal(createdParams(plain.fake).runtime, "vm");
 	assert.equal("gpu" in createdParams(plain.fake), false);
-	assert.equal(createdParams(plain.fake).command.at(-1), "--own-network", "on the VM runtime root makes the namespace itself");
 	// A GPU computer whose probe reads a VM's kernel is not on Modal's GPU runtime: refused and terminated.
 	const drifted = setup({}, { box: { kernel: "7.2.6" } });
 	const refused = await drifted.provider.create({ ...SPEC, gpu });
@@ -415,6 +416,9 @@ test("create: drift in the daemon's hello terminates the sandbox and refuses, fi
 	await driftedCreate({ box: { hello: { ...HELLO, groups: ["exec", "files"] } } }, /groups lack processes/);
 	await driftedCreate({ box: { hello: { ...HELLO, groups: [...HELLO.groups, "screen"] } } }, /offers groups screen/);
 	await driftedCreate({ box: { hello: { ...HELLO, kind: "desktop" } } }, /kind desktop, expected linux/);
+	// init --own-network says which fence holds its programs; a daemon that says none, or another, is not this one.
+	await driftedCreate({ box: { hello: { ...HELLO, fence: undefined } } }, /fence nothing: init was started with --own-network/);
+	await driftedCreate({ box: { hello: { ...HELLO, fence: "none" } } }, /fence none: /);
 });
 
 test("create: a sandbox whose kernel is gVisor's is refused as another runtime", async () => {
@@ -539,8 +543,6 @@ test("modalCommands: the entrypoint and the upload are POSIX sh scripts, each ma
 	assert.deepEqual(commands.entrypoint.slice(0, 2), ["sh", "-c"]);
 	assert.ok(commands.entrypoint[2].startsWith(`${ENTRYPOINT_MARK}\n`));
 	assert.deepEqual(commands.entrypoint.slice(3), ["sh", DAEMON, "360", "/work", "init", "--deadline", deadline, "--user", "1000:1000", "--own-network"]);
-	// On gVisor init makes the same namespace inside a user namespace: root there may not make a network namespace.
-	assert.deepEqual(modalCommands({ deadline, user: "1000:1000", runtime: "gvisor" }).entrypoint.slice(7), ["init", "--deadline", deadline, "--user", "1000:1000", "--own-network-userns"]);
 	assert.deepEqual(commands.upload.slice(0, 2), ["sh", "-c"]);
 	assert.ok(commands.upload[2].startsWith(`${UPLOAD_MARK}\n`));
 	assert.deepEqual(commands.upload.slice(3), ["sh", DAEMON, BINARY_SHA]);

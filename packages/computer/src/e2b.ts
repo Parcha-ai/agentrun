@@ -1279,7 +1279,7 @@ export class E2BProvider implements ComputerProvider {
 		const opened = await this.#open(sandbox.value, ref.name);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: ARCH });
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: ARCH, fence: true });
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
 		if (drifted.length === 0) return recordedArchil(found.value.metadata) === undefined ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client) });
 		await opened.value.close();

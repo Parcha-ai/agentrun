@@ -259,7 +259,7 @@ function answer(box, { method, params }, patch) {
 		const text = netDevText(interfaces);
 		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 	}
-	if (method === "hello") return result({ version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), ...patch.hello });
+	if (method === "hello") return result({ version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), fence: "netns", ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {
 		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...patch.status };

@@ -184,7 +184,7 @@ export function fakeE2B({
 			killed: false,
 			lingering: undefined,
 			box: {
-				hello: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: [...LINUX_GROUPS] },
+				hello: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: [...LINUX_GROUPS], fence: "netns" },
 				uid: 2510,
 				gid: 2510,
 				status: {},

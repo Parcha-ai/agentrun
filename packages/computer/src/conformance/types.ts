@@ -1,6 +1,6 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
-import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
+import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode, GpuSpec } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
 import type { ComputerSettingKind } from "../kinds.js";
@@ -194,8 +194,9 @@ export interface ConformanceReport {
 	kind: ComputerKind;
 	daemonMode: DaemonMode;
 	image: string;
-	/** What the run's computer said in hello; null when no computer could be made. */
-	daemon: { version: string; os: string; arch: string } | null;
+	/** What the run's computer said in hello, with the fence its programs are held behind when it says one; null when no
+	 *  computer could be made. */
+	daemon: { version: string; os: string; arch: string; fence?: NetworkFence } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
 	/** When only or kind was given: the Core cases it left out, which did not run. */

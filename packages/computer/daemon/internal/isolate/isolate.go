@@ -22,6 +22,10 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/netstate"
 )
 
+// ErrNoNetworkNamespace is OwnNetwork's refusal when root may not make a network namespace itself (EPERM, no
+// CAP_SYS_ADMIN): its words say so, and init makes the namespace inside a user namespace instead.
+var ErrNoNetworkNamespace = errors.New("cannot make a network namespace of its own for init and its programs: root here holds no CAP_SYS_ADMIN")
+
 const (
 	threadNetwork = "/proc/thread-self/ns/net"
 	siocgifflags  = 0x8913
@@ -35,7 +39,9 @@ const (
 // a bridge outside still reaches init's socket. It needs root with CAP_SYS_ADMIN (to make the namespace and move every
 // thread into it) and CAP_NET_ADMIN (to bring the loopback up), and it reads back that every thread left the namespace
 // it started in and that the new one holds the loopback alone, up. Any failure is an error in words, and init refuses to
-// start: a computer whose programs could reach the vendor's agent is never handed out.
+// start: a computer whose programs could reach the vendor's agent is never handed out. A root refused the namespace
+// itself (EPERM: no CAP_SYS_ADMIN, as on gVisor) gets an error that is ErrNoNetworkNamespace, for init to make it inside
+// a user namespace instead (daemon.InitInUserNamespace); nothing has changed then.
 func OwnNetwork() error {
 	first, err := os.Readlink(threadNetwork)
 	if err != nil {
@@ -44,7 +50,9 @@ func OwnNetwork() error {
 	// Made on one thread, which is in it from then on; every other thread joins it by its file.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
+	if err := syscall.Unshare(syscall.CLONE_NEWNET); errors.Is(err, syscall.EPERM) {
+		return fmt.Errorf("%w: %w", ErrNoNetworkNamespace, err)
+	} else if err != nil {
 		return fmt.Errorf("cannot make a network namespace of its own for init and its programs: %w; init needs root with CAP_SYS_ADMIN here, and a computer without one is refused, since its programs could reach the vendor's agent on the computer's loopback", err)
 	}
 	fd, err := syscall.Open(threadNetwork, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)

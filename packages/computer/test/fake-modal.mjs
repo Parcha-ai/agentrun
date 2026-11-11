@@ -75,7 +75,8 @@ export function mountsOf(box) {
 	}
 	return `${lines.join("\n")}\n`;
 }
-export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+/** What init --own-network's hello says on the VM runtime, where root makes the network namespace itself. */
+export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"], fence: "netns" };
 /** What computerd probe reports in a VM sandbox: Modal's docs show `uname -srn` there as "Linux modal 7.2.6". */
 export const VM_KERNEL = "7.2.6";
 /** What gVisor reports (guide/troubleshooting: "4.19.0-gvisor"). */
@@ -379,7 +380,8 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			// copies one in.
 			daemon: !isScript(params?.command, ENTRYPOINT_MARK) || copies,
 			...(gateAt >= 0 ? { gate: params.command[gateAt + 1], gateOpen: false } : {}),
-			hello: { ...HELLO },
+			// On gVisor root may not make a network namespace, so init makes it inside a user namespace, and hello says so.
+			hello: { ...HELLO, ...(params?.runtime === "gvisor" ? { fence: "userns-netns" } : {}) },
 			// Modal offers GPUs on gVisor only: a sandbox made with runtime gvisor reports gVisor's kernel.
 			kernel: params?.runtime === "gvisor" ? GVISOR_KERNEL : VM_KERNEL,
 			// The GPUs asked for, as the SDK takes them ("T4", "H100:2"): what nvidia-smi lists inside.

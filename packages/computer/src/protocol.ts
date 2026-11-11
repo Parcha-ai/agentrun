@@ -74,7 +74,19 @@ export interface HelloResult {
 	groups: Group[];
 	/** The DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer. */
 	display?: string;
+	/** How init holds its programs off the computer's network, when it gave them one of their own (init --own-network). */
+	fence?: NetworkFence;
 }
+
+/**
+ * How init holds its programs off the computer's network: "netns", a network namespace init made itself as root;
+ * "userns-netns", one it made inside a user namespace of its own, where root may not make one (gVisor, whose root holds
+ * no CAP_SYS_ADMIN). Either way the programs reach their own loopback alone.
+ */
+export type NetworkFence = "netns" | "userns-netns";
+
+/** Every NetworkFence, as hello may report it. */
+export const NETWORK_FENCES: readonly NetworkFence[] = ["netns", "userns-netns"];
 
 export type PingParams = Record<string, never>;
 export type PingResult = Record<string, never>;

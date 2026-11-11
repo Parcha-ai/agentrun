@@ -1,6 +1,6 @@
 // The provisioner: one per vendor. It makes, finds and ends computers; the daemon inside does the work.
 import type { MountKind, MountReadBack, MountSpec } from "./mount.js";
-import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult } from "./protocol.js";
+import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult, NetworkFence } from "./protocol.js";
 import type { Result } from "./result.js";
 import type { ScreenWatch, ScreenWatchHandlers, WatchOptions } from "./screen-watch.js";
 
@@ -56,6 +56,12 @@ export interface GpuCapability {
 	perGpu?: { cpus: number; memoryMb: number; diskMb: number };
 	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: none yet proven on its GPU computers. */
 	mounts?: MountKind[];
+	/**
+	 * How init holds a GPU computer's programs off its network, where it is not the plain network namespace: on Modal's
+	 * gVisor, "userns-netns", one made inside a user namespace, as root there may not make one (measured). The fence holds
+	 * either way; each computer's hello reads back the one it got.
+	 */
+	fence?: NetworkFence;
 }
 
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */

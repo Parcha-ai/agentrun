@@ -13,7 +13,6 @@ GPU computers on Modal and Daytona. `ComputerSpec.gpu: { type, count }` asks for
   - The spec tag records the GPUs, and `attach` reads them back.
   - `gpu.mounts` is empty, so a GPU with an Archil mount is refused as not proven.
   - Sometimes Modal refuses an exec because the sandbox is shutting down (its init exited). The create now fails as `gone` and waits up to `timeouts.endedMs` (30 s) for the sandbox to finish. It then reports init's exit code and words.
-  - On gVisor, root may not make a network namespace (EPERM, with no CAP_SYS_ADMIN), but may make one inside a user namespace. So a GPU computer's init gets the same fence that way: `computerd init --own-network-userns` starts itself again in a user namespace that maps every id to itself, plus a network namespace with loopback alone. The first init stays PID 1 with no capability. The VM runtime keeps `--own-network`.
 - Daytona: `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`, up to 8, sent as `gpu` and `gpuType`. The types come from the API's `GpuType` enum only, which leaves out the `L40S`, `B200` and `B300` its docs list. A Daytona GPU is preemptible (`preemptible: true`).
   - A GPU computer is created in region `earth` with `autoDeleteInterval: 0`. Stopping it deletes it (`stopDeletes`): there is no pause or snapshot, so nothing on it persists.
   - Each GPU comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk by default (`perGpu`).

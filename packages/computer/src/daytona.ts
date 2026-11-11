@@ -1147,7 +1147,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const opened = await this.#open(found.value, toolbox.value);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch });
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch, fence: true });
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
 		if (drifted.length === 0) return recordedMount(found.value.labels) ? ok({ ...opened.value, client: syncingClient(opened.value.client) }) : opened;
 		await opened.value.close();
