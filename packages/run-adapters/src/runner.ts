@@ -232,7 +232,9 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     const cut = data.cut === true && booked === undefined;
     const capped = booked !== undefined && bookedLost(data.rule) ? (worst(turn) ?? booked) : booked;
     spentUsd = spent(spentUsd, capped !== undefined ? (capped ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
-    const own = booked !== undefined ? booked : cut || data.usd === null ? null : data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null);
+    // An answer with no price of its own (usd null) was booked at its hold for the cap: as a cost it is unknown, never
+    // the hold (0 with no cap), as main read an unpriced answer.
+    const own = answeredUnpriced(data) ? null : booked !== undefined ? booked : cut || data.usd === null ? null : data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null);
     if (own === null) unpriced++;
     else soFarUsd += own;
   }
@@ -243,6 +245,10 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   }
   return { turns, held, bounds, hosts, answered, spentUsd, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
 }
+
+/** Whether a request answered with no price of its own (bookRequest's rule `answered`, or `answered:<label>`, its usd
+ *  null): booked at its hold for the cap, its cost unknown. */
+export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boolean => data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:"));
 
 /** Whether a request was booked lost (bookRequest's rule `lost`, or `lost:<label>`): billed or not, no cost came in. */
 const bookedLost = (rule: unknown): boolean => typeof rule === "string" && (rule === "lost" || rule.startsWith("lost:"));

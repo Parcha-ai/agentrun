@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel
+kind: fix
+---
+A run with a spend cap no longer passes it quietly. When an answer costs more than the cap had room for (an answer longer than expected, a native web search), the answer is booked and the run ends failed with error code `spend_cap_reached` and "The run cost $X, $Y over its cap of $Z.", as before the runner; it used to end completed, or pause for a raise at its next request. A cache miss within the bound its request was admitted at still pauses the run at its next request. A paid tool call (a web search or fetch, a paid MCP call) cut off by a runner crash or a takeover is booked as a charge of an unknown amount at the next claim: the run's cost reads unknown, counted at the call's hold for the cap, where it read as free. A model answer with no price (a gateway model the catalog does not list, with no price set) makes the run's cost unknown, never $0.
