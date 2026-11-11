@@ -114,6 +114,8 @@ test("a refused paid call's pending pause is kept on the run's root, and a claim
   assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.end, data: {} }]), undefined, "the run ended after it");
   assert.equal(pendingPauseOf([{ kind: "pi.user" }]), undefined, "none kept");
   assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.personAsked, data: { callId: "c2" } }]), undefined, "the turn ended on a question after it: the refusal is spent, the person's answer no retry of the call");
+  assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: "pi.assistant" }, { kind: KINDS.pausePending, data: null }]), undefined, "dropped for good (it would since fit): a later claim never revives it");
+  assert.deepEqual(pendingPauseOf([{ kind: KINDS.pausePending, data: null }, { kind: KINDS.pausePending, data: refusal }]), refusal, "a newer refusal after a drop is kept");
   // And the refusal is on the root as the call is refused: the run held as above, its root read meanwhile.
   let answeredNow;
   const answeredYet = new Promise((resolve) => (answeredNow = resolve));
