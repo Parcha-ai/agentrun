@@ -296,8 +296,9 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   // After the run's end (its runner let the claim go) and the CLI process's exit (no process works in the run's scratch any
-  // more), the CLI's own files are all written: its home, its cache, its MCP client's log. The scan must read some, and
-  // none may hold the token.
+  // more), the CLI's own files are all written: its home, its cache, its MCP client's log. The claim's scratch folder is
+  // swept at its end, so what is left of it (nothing, once swept) holds no token, and the scan of the whole data
+  // directory below reads anything the sweep left anywhere.
   for (let i = 0; runRecordOf(data, runId).holder; i++) {
     assert.ok(i < 600, `the run is let go: ${JSON.stringify(runRecordOf(data, runId))}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -307,7 +308,6 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const cliFiles = (await scratchOf(data, runId)).filter((file) => file.path.includes(`/${runId}/harness/`));
-  assert.ok(cliFiles.length > 0, "the CLI's own files are read, after it exited");
   assert.deepEqual(cliFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path), [], "no file of the CLI's own (its home, its cache, its MCP log) holds the token");
   const leaked = (await dataFiles(data)).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file under the data directory, the store among them, holds the token");
