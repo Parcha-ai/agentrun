@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clock, cost, costOfCap, markdown, runLabel, when } from "./format";
+import { capDollars, clock, cost, costOfCap, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
@@ -20,9 +20,17 @@ describe("costOfCap", () => {
     expect(costOfCap(est(null), 1)).toBe("Unknown · cap $1.00");
     expect(costOfCap(null, 1)).toBe("Unknown · cap $1.00");
   });
-  it("a cost worded already (a workflow run's totals) takes the cap the same way", () => {
+  it("a cost worded already (a workflow run's totals) takes the cap the same way; a partial total, the cap after it", () => {
     expect(costOfCap(null, 1, { text: "$0.0123" })).toBe("$0.0123 of $1.00");
     expect(costOfCap(null, null, { text: "$0.0123" })).toBe("$0.0123");
+    expect(costOfCap(null, 1, { text: "$0.0188 + 2 unknown" })).toBe("$0.0188 + 2 unknown · cap $1.00");
+  });
+  it("a cap finer than a cent reads as set, so a small raise shows", () => {
+    expect(costOfCap(est(0.0059), 0.012)).toBe("$0.0059 est. of $0.012");
+    expect(costOfCap(est(0.0059), 0.013)).toBe("$0.0059 est. of $0.013");
+    expect(capDollars(1)).toBe("$1.00");
+    expect(capDollars(2.5)).toBe("$2.50");
+    expect(capDollars(0.0125)).toBe("$0.0125");
   });
 });
 

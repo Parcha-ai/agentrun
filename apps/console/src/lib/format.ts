@@ -95,8 +95,17 @@ export function cost(c: Cost | null | undefined, { ended = false }: { ended?: bo
 export function costOfCap(c: Cost | null | undefined, cap: number | null | undefined, { ended = false, text }: { ended?: boolean; text?: string } = {}): string {
   const shown = text ?? cost(c, { ended });
   if (typeof cap !== "number") return shown;
-  const figure = text !== undefined || (!soFar(c) && !!c && c.usd !== null);
-  return figure ? `${shown} of ${dollars(cap)}` : `${shown} · cap ${dollars(cap)}`;
+  // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !!c && c.usd !== null;
+  return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
+}
+const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;
+
+/** A spend cap in dollars as it was set: two places at least ($1.00, $2.50), more when the cap has them ($0.013), so a
+ *  raise finer than a cent still reads as a change. */
+export function capDollars(usd: number): string {
+  for (let places = 2; places < 8; places++) if (Number(usd.toFixed(places)) === usd) return `$${usd.toFixed(places)}`;
+  return `$${usd.toFixed(8)}`;
 }
 
 /** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
