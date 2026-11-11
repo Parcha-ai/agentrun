@@ -233,6 +233,34 @@ test("an allow of a learned_workflow call covers that call only: the same workfl
   assert.equal(calls(fake, "add").length, 1, "the harness's own call of the tool waits for its own approval");
 });
 
+test("an approval covers exactly the MCP tools its card named: a tool set to ask after the card was shown is refused, and nothing is sent", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "allow" } })).status, 200);
+  // Two MCP nodes in turn: add is set to ask (no setting), slow_write is allowed.
+  const node = (label, tool, args, as) => ({ node: "call", label, via: "tool", tool, args, out: "Any", as, deadline_s: 60 });
+  const TWO = {
+    v: 2, name: "two-calls",
+    schemas: { In: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, Any: {} },
+    input: { schemaId: "In" }, output: { schemaId: "Any", path: "sum" },
+    root: { node: "chain", steps: [node("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), node("write", "mcp:fake/slow_write", { line: "x", seconds: 0 }, "wrote")] },
+  };
+  const runId = await learnedRun(server, "unshown", ["mcp:fake/add", "mcp:fake/slow_write"], [TWO], `Call ${LEARNED_WORKFLOW_TOOL} with ${JSON.stringify({ name: "two-calls", input: { a: 2, b: 3 } })}`);
+  const pending = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  const card = pending.args_preview ?? "";
+  assert.ok(card.includes("mcp:fake/add") && !card.includes("mcp:fake/slow_write"), `the card names add alone: ${card}`);
+  // slow_write is set to ask after the card was shown: the person never saw it, so their allow never covers it.
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/slow_write": { permission: "ask" } })).status, 200);
+  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  const result = learnedResult(rows);
+  const said = `${result?.text ?? ""} ${result?.tool_result_preview ?? ""}`;
+  assert.match(said, /two-calls was not run: .*mcp:fake\/slow_write/s, JSON.stringify(result));
+  assert.equal(calls(fake).length, 0, "refused before any node ran: nothing sent, add included");
+});
+
 test("a stop while an MCP node's call runs cuts it at the server: the work never finishes and nothing of it reaches the run", { timeout: 150_000 }, async (t) => {
   const server = await serve(t);
   const { api } = server;

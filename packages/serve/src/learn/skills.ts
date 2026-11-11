@@ -671,15 +671,24 @@ export const LEARNED_MCP_TOOL = /^mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0
  *  ones too, whose tool is an MCP tool's address. Read from the JSON as it is, for the grader's words; never a check. */
 export function draftMcpTools(doc: unknown): string[] {
   const found = new Set<string>();
-  const walk = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(walk);
-    if (!value || typeof value !== "object") return;
-    const node = value as Record<string, unknown>;
-    if (node.node === "call" && node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
-    for (const child of Object.values(node)) walk(child);
-  };
-  walk(doc);
+  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
   return [...found];
+}
+
+/** Every call node in `doc` (a parsed workflow.json), nested ones too, in document order: walked with a stack of its own,
+ *  never the call stack, so no draft's nesting can throw here whatever reached it first (decodedStrings bounds it at
+ *  the check). */
+function callNodes(doc: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const stack: unknown[] = [doc];
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || typeof value !== "object") continue;
+    const children = Array.isArray(value) ? value : Object.values(value as Record<string, unknown>);
+    if (!Array.isArray(value) && (value as Record<string, unknown>).node === "call") out.push(value as Record<string, unknown>);
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+  }
+  return out;
 }
 
 /** One step of a learned workflow that runs an MCP tool with no declared per-call price: its label, the tool and its
@@ -691,23 +700,48 @@ export type UnpricedCall = { readonly label: string; readonly tool: string; read
  *  metered", outside the run's cost and cap (mcp-gateway.ts), so a learned workflow that calls one unattended waits for
  *  its owner's OK whatever the grade (LS-07): a structural fact, held in code. Each step once, in order. */
 export function unpricedCalls(doc: unknown, priceOf: (tool: string) => number | undefined): UnpricedCall[] {
-  const out: UnpricedCall[] = [];
-  const walk = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(walk);
-    if (!value || typeof value !== "object") return;
-    const node = value as Record<string, unknown>;
-    if (node.node === "call" && node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool) && priceOf(node.tool) === undefined) {
-      const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
-      out.push({ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server });
-    }
-    for (const child of Object.values(node)) walk(child);
-  };
-  walk(doc);
-  return out;
+  return callNodes(doc).flatMap((node): UnpricedCall[] => {
+    if (node.via !== "tool" || typeof node.tool !== "string" || !LEARNED_MCP_TOOL.test(node.tool) || priceOf(node.tool) !== undefined) return [];
+    const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
+    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server }];
+  });
 }
 
 /** Why a learned workflow that calls `call` waits for its owner's OK, in a person's words. */
 export const unpricedLine = (call: UnpricedCall): string => `its step ${call.label} calls ${call.tool} on ${call.server}, which has no price here, so it runs outside the run's cost and cap`;
+
+/** Every string a learned workflow's workflow.json decodes to, each object's keys too, as JSON.parse reads them (its
+ *  escapes decoded: what draftProblems and a learned call's run read, and a model node is given). Text a scan of the
+ *  stored JSON misses, spelled in \u escapes, is there as it will be read. None for a text that does not parse (the
+ *  checks refuse it as no workflow). */
+export function decodedStrings(json: string): string[] | "too_deep" {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  // Walked with a stack of its own, never the call stack, and no deeper than DECODED_DEPTH: a draft nested past any
+  // workflow (thousands of arrays in a few KB) is refused on its own (check.ts), never a throw that takes its siblings.
+  const out: string[] = [];
+  const stack: [unknown, number][] = [[doc, 0]];
+  while (stack.length) {
+    const [value, depth] = stack.pop()!;
+    if (typeof value === "string") {
+      out.push(value);
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    if (depth >= DECODED_DEPTH) return "too_deep";
+    if (Array.isArray(value)) for (let i = value.length - 1; i >= 0; i--) stack.push([value[i], depth + 1]);
+    else for (const [key, child] of Object.entries(value).reverse()) stack.push([child, depth + 1], [key, depth + 1]);
+  }
+  return out;
+}
+
+/** How deep a learned workflow's JSON may nest (decodedStrings): far past any workflow the DSL writes, a node's schemas
+ *  included, and short of what a walk of it could not bound. */
+export const DECODED_DEPTH = 100;
 
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
