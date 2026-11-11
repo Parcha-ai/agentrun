@@ -69,9 +69,9 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
     [networkOf("sandbox", "docker"), networkOf("sandbox", "daytona"), networkOf("sandbox", "modal"), networkOf("sandbox", "e2b"), networkOf("desktop", "orgo"), networkOf("browser", "kernel")],
     [undefined, "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "the vendor's own network; this server's allow-list doesn't apply"],
   );
-  // Local Chrome, behind its own egress proxy ("open" and "allow", the computer package's registry entry): open, unless
-  // the operator sets the list.
-  const local = PROVIDERS.find((one) => one.id === "local");
+  // Local Chrome, behind its own egress proxy ("open" and "allow", its descriptor's): open, unless the operator sets the
+  // list.
+  const local = PROVIDERS.find((one) => one.id === "local-chrome");
   assert.equal(networkWords(local.network), "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts");
 });
 
