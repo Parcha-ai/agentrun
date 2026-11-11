@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learnedOnMain, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
@@ -16,8 +17,9 @@ const json = { "content-type": "application/json" };
 const TABLES = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n");
 const SKILL = "---\nname: weekly-summary\ndescription: Writes the weekly support summary in its fixed format\n---\nWeekly summary: <dates>\n";
 
-/** A server with accounts and the owner's session, agent `keeper` with a folder; `files` committed on main. */
-async function keeper(t, files) {
+/** A server with accounts and the owner's session, agent `keeper` (its definition's `extra` fields) with a folder;
+ *  `files` committed on main. */
+async function keeper(t, files, extra = {}, before = async () => {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
   const { api, data, port } = server;
@@ -25,7 +27,8 @@ async function keeper(t, files) {
   const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
-  await made(api, learner("keeper"));
+  await before({ port, cookie, origin }, t);
+  await made(api, learner("keeper", extra));
   await ended(api, await started(api, "keeper"));
   const repo = repoOf(data, "keeper");
   for (const [file, text] of Object.entries(files)) {
@@ -285,4 +288,27 @@ test("a note an approval or a restore supersedes says it was superseded, not app
       assert.deepEqual([of("answer-in-lists.md")?.last_change?.kind, of("answer-in-lists.md")?.last_change?.by], ["superseded", "person"], JSON.stringify(of("answer-in-lists.md")));
     });
   }
+});
+
+/** The fake MCP server saved as `fake`, no auth (its tool `add` among those it lists), closed when the test ends. */
+async function saveFakeMcp({ port, cookie, origin }, t) {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  // A server's save is the owner's (a secret write): their session's.
+  const saved = await call(port, { method: "PUT", path: "/v2/settings/mcp-servers/fake", headers: { ...json, cookie, origin }, body: { url: fake.url, auth: { type: "none" } } });
+  assert.equal(saved.status, 200, saved.text);
+}
+
+// Walk 6 on #2479: a retired draft whose call node runs an MCP tool the agent's own tool settings deny stays retired,
+// and the refusal names where the deny was set: the agent's tool settings, never the server.
+test("a retired draft calling an MCP tool the agent's tool settings deny is not restored: the refusal says it is set to deny for this agent", { timeout: 150_000 }, async (t) => {
+  const README = "---\nname: file-ticket\ndescription: Files a ticket; use when asked to file one\nstatus: retired\n---\n";
+  const DRAFT = JSON.stringify({ v: 2, name: "file-ticket", schemas: { Q: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, R: { type: "object" } }, input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" }, root: { node: "call", label: "Add them", via: "tool", tool: "mcp:fake/add", args: { a: "{a}", b: "{b}" }, out: "R", as: "r", deadline_s: 30 } });
+  const { repo, cookie, origin, restore } = await keeper(t, { "workflows/file-ticket/workflow.json": DRAFT, "workflows/file-ticket/README.md": README }, { tools: ["mcp:fake/add"], tool_settings: { "mcp:fake/add": { permission: "deny" } } }, saveFakeMcp);
+  const before = git(repo, ["rev-parse", "main"]).trim();
+  const refused = await restore("workflows/file-ticket/README.md", { ...json, cookie, origin });
+  assert.equal(refused.status, 400, refused.text);
+  const problem = JSON.parse(refused.text).error.problems.find((one) => one.rule === "workflow");
+  assert.equal(problem?.detail, "This workflow's call node calls mcp:fake/add, which is set to deny for this agent. (the call node at /root)", refused.text);
+  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
 });
