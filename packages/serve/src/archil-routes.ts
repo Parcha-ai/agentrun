@@ -45,7 +45,7 @@ export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string
 export interface ArchilRoutesOptions {
   /** The server's one store: its settings and sealed keys. */
   readonly store: Pick<Store, "settings" | "sealedKeys">;
-  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  /** The server's seal key: there is always one (seal-key.ts bootSealKey, at the start). */
   readonly sealKey: Buffer;
   /** Makes the disk for the test (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;

@@ -157,6 +157,10 @@ export class AgentRun {
       if (left <= 0) throw LATE;
       const timeout = AbortSignal.timeout(wholeMs(Math.min(x.timeoutMs ?? this.timeoutMs, left)));
       const signal = x.signal ? AbortSignal.any([x.signal, timeout]) : timeout;
+      // This try's timer is the wait's deadline when the deadline is what bounds it. A timer can fire a little before the
+      // clock reads the deadline, so the deadline is reached when that timer fired, or when the clock says so.
+      const bounded = left <= (x.timeoutMs ?? this.timeoutMs);
+      const late = () => (bounded && timeout.aborted) || Date.now() >= deadline;
       let response: Response;
       try {
         response = await this.#follow(x, signal);
@@ -165,7 +169,7 @@ export class AgentRun {
       } catch (error) {
         if (x.signal?.aborted) throw x.signal.reason;
         if (error instanceof AgentRunError) throw error;
-        if (Date.now() >= deadline) throw LATE;
+        if (late()) throw LATE;
         const cause = causeOf(error);
         // A server never reached is unreachable at once; a dropped connection is tried again, even on the first request,
         // and so is a refused one once the server has answered before (it may be restarting); a timeout is not.
@@ -182,7 +186,7 @@ export class AgentRun {
         continue;
       }
       if (response.ok) return response;
-      throw await refusal(x, response, this.#apiKey);
+      throw await refusal(x, response, this.#apiKey, late);
     }
   };
 
@@ -226,14 +230,14 @@ function secretAt(method: string, url: string): Operation | undefined {
  *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason, and a read
  *  that ends at or past the exchange's deadline (a wait's timeout) as LATE: cancelled or late work is never reported as a
  *  refusal or a bad key. */
-async function refusal(x: Exchange, response: Response, apiKey: string): Promise<AgentRunError> {
+async function refusal(x: Exchange, response: Response, apiKey: string, late: () => boolean): Promise<AgentRunError> {
   let error: ServerError | undefined;
   try {
     const parsed = JSON.parse(new TextDecoder().decode(await response.arrayBuffer())) as { error?: unknown };
     if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey, ...(x.secrets ?? [])])(parsed.error as ServerError);
   } catch {
     if (x.signal?.aborted) throw x.signal.reason;
-    if (Date.now() >= (x.deadline ?? Infinity)) throw LATE;
+    if (late()) throw LATE;
     error = undefined;
   }
   const code = typeof error?.code === "string" && /^[a-z0-9_]+$/.test(error.code) ? error.code : undefined;

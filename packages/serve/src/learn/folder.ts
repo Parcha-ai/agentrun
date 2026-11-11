@@ -111,7 +111,7 @@ function folderOf(path: string): { kind: "skill" | "workflow"; name: string } | 
 }
 const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** A commit as the snapshot reads it: its time (git's %cI), subject, body and trailers. */
+/** A commit as the snapshot reads it: its time (git's %cI, as commitTime keeps it), subject, body and trailers. */
 type CommitInfo = { at: string; subject: string; body: string; runId: string; changedBy: string; approvedVia: string };
 
 /** What a commit's change was, as the view says it, or undefined for one that is neither: a person's names its kind in
@@ -191,6 +191,14 @@ const recordsOf = (out: string) => out.split("\x1e").slice(1).map((record) => {
 type TreeEntry = { mode: string; type: string; oid: string; bytes: number; path: string };
 
 /** What the script's `read` printed: main, its tree, its log and its blobs. Undefined main for a folder with none. */
+/** A commit's time as git's %cI gives it (its own offset, "+00:00", "+02:00" or "Z", by git's version and the
+ *  committer's zone), in the one form a snapshot keeps: UTC in whole seconds, ending "Z", as nextSnapshot writes it, so
+ *  a snapshot rebuilt from git and one built incrementally agree. Text that is no time is kept as it is. */
+export function commitTime(text: string): string {
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? text : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 export function parseRead(out: Uint8Array): { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer> } {
   const buf = Buffer.from(out);
   const end = buf.indexOf(10);
@@ -211,7 +219,7 @@ export function parseRead(out: Uint8Array): { main: string | undefined; tree: Tr
   });
   const records = recordsOf(part(logLen).toString("utf8")).map(({ head: line, files }) => {
     const [sha = "", cI = "", subject = "", body = "", runId = "", changedBy = "", approvedVia = ""] = line.split("\x1f");
-    return { sha, files, commit: { at: cI, subject, body, runId, changedBy, approvedVia } };
+    return { sha, files, commit: { at: commitTime(cI), subject, body, runId, changedBy, approvedVia } };
   });
   const blobs = new Map<string, Buffer>();
   const raw = part(blobLen);
@@ -340,8 +348,8 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
   return { message: `${subject}\n\n${body}`, subject, body, runId: "", changedBy: "user", approvedVia: by.approved ? "console" : "" };
 }
 
-/** Git's %cI of a time in whole seconds, as a commit made at +0000 shows it. */
-const isoSeconds = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "+00:00");
+/** A time in whole seconds as every snapshot says a commit's time: UTC, ending "Z" (commitTime's form). */
+const isoSeconds = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /** Every path `snapshot` names a blob for: the index, each note, each learned folder's files. */
 function oidsOf(snapshot: Snapshot | undefined): Map<string, string> {

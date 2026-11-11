@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CAPS } from "@parcha/pi-durable-agent/timeline";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
-import { soFarOf } from "../dist/runs.js";
+import { soFarOf } from "../dist/run-view.js";
 
 const receipt = (over = {}) => ({
   id: "d1", at: "2026-10-29T23:00:00.000Z", node: "document_checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered",

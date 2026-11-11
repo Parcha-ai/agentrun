@@ -231,6 +231,41 @@ test("a claude-agent run's skills: one the adapter takes is the Skill tool's (ag
   assert.ok(asked.slice(asked.indexOf(first) + 1).some((m) => holds(m.body.messages, CITE)), "loading cite puts its SKILL.md before the model");
 });
 
+test("a claude-agent run's read of a skill's file (read_skill_file) is on its Timeline: the call naming the file, then its result holding the file, under one call id (#2306)", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const SOURCES = `not-a-secret-${"sources"}-primary-first`;
+  let read = false;
+  const fake = await fakeAnthropic({
+    reply: (request) => {
+      // The first turn offered the adapter's read_skill_file reads cite's other file; every other request is answered.
+      const reader = request.tools.find((name) => name.endsWith("read_skill_file"));
+      if (!read && reader) {
+        read = true;
+        return { tool: { name: reader, input: { skill: "cite", path: "reference/sources.md" } } };
+      }
+      return { text: "Claude answered." };
+    },
+  });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const skills = {
+    "cite/SKILL.md": "---\nname: cite\ndescription: How this agent cites its sources.\n---\nRead reference/sources.md first.\n",
+    "cite/reference/sources.md": `${SOURCES}: primary sources first.\n`,
+  };
+  const created = await api("POST", "/agents", { ...agent("reader", { harness: "claude-agent", model: `anthropic/${MODEL}`, skills: ["cite"] }), skills });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const run = await api("POST", "/agents/reader/runs", { input: { content: "Read cite's sources file, then answer." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.ok(read, "the model was offered read_skill_file and called it");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "read_skill_file");
+  assert.ok(call, `the read's call is on the Timeline: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.equal(call.tool_input_preview, "reference/sources.md", "the call names the file it reads");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === call.tool_use_id);
+  assert.ok(result && rows.indexOf(call) < rows.indexOf(result), "its result follows it, under the same call id");
+  assert.deepEqual([result.tool_name, result.tool_status], ["read_skill_file", "success"]);
+  assert.ok(String(result.tool_result_preview ?? result.text ?? "").includes(SOURCES), `the result is the file: ${JSON.stringify(result)}`);
+});
+
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */

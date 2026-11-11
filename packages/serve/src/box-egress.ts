@@ -16,7 +16,7 @@ import { connect } from "node:net";
 import { release } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type EgressProxy, type EgressProxyOptions, parseAllow, startEgressProxy } from "./egress-proxy.js";
+import { type EgressProxy, type EgressProxyOptions, startEgressProxy } from "./egress-proxy.js";
 import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
@@ -90,8 +90,6 @@ export const MAX_EGRESS_PARENT = 107 - Buffer.byteLength("/0123456789abcdef/.egr
 /** Whether `parent` is too long, in bytes, for a run's proxy directories (MAX_EGRESS_PARENT). */
 export const egressParentTooLong = (parent: string): boolean => Buffer.byteLength(parent) > MAX_EGRESS_PARENT;
 
-/** Removes a run's proxy directory once its box is gone. */
-export const removeEgressDir = (runId: string, parent?: string): Promise<void> => rm(egressDir(runId, undefined, parent), { recursive: true, force: true });
 
 /** This user's parent directory in /tmp: made 0700, and refused unless it is a directory of this user's, not a link. */
 async function ownParent(dir: string): Promise<void> {
@@ -273,14 +271,3 @@ export type DockerNetwork = { allow: readonly string[]; /** On a Mac, the VM run
  *  process reads this, never AGENTRUN_BOX_ALLOW: unset, it is none. */
 export const RUN_BOX_ALLOW_ENV = "AGENTRUN_RUN_BOX_ALLOW";
 
-/** The run's process's reading of RUN_BOX_ALLOW_ENV: the list, or `none` when it says so, is unset or is not a list. */
-export function runBoxAllowOf(env: NodeJS.ProcessEnv): readonly string[] | "none" {
-  const value = env[RUN_BOX_ALLOW_ENV]?.trim();
-  if (!value || value === "none") return "none";
-  try {
-    const list = parseAllow(value);
-    return list.length ? list : "none";
-  } catch {
-    return "none";
-  }
-}

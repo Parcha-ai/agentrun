@@ -77,7 +77,7 @@ async function printedCodes(body) {
   const codes = [];
   const write = process.stdout.write;
   process.stdout.write = function (chunk, ...rest) {
-    for (const m of String(chunk).matchAll(/^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22})$/gm)) codes.push(m[1]);
+    for (const m of String(chunk).matchAll(/^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/gm)) codes.push(m[1]);
     return write.call(this, chunk, ...rest);
   };
   try { await body(); } finally { process.stdout.write = write; }
@@ -206,6 +206,25 @@ test("a sign-in body sent slowly holds nothing of the limit: eleven left unfinis
   t.after(() => { for (const socket of open) socket.destroy(); });
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal((await signIn(server, PASSWORD)).status, 200, "the unfinished bodies took none of this address's tries");
+});
+
+test("the owner's sign-in with an X-Forwarded-For from an address not trusted as a proxy logs that address once a start; a wrong password logs nothing, nor a trusted peer; and render.yaml trusts none", async (t) => {
+  const tried = async (options) => {
+    const lines = [];
+    const server = await owned(t, { ...options, log: (line) => lines.push(line) });
+    const said = () => lines.filter((line) => / event=forwarded_untrusted /.test(line));
+    for (const client of [CLIENT, OTHER]) await signIn(server, "not the password", { ...page(server), "x-forwarded-for": client });
+    assert.deepEqual(said(), [], "a guess, without the password, can't put its peer in the log");
+    for (const client of [CLIENT, OTHER]) assert.equal((await signIn(server, PASSWORD, { ...page(server), "x-forwarded-for": client })).status, 200);
+    return said();
+  };
+  const none = await tried({});
+  assert.equal(none.length, 1, `once a start, with no proxy trusted: ${none.join("\n")}`);
+  assert.match(none[0], / event=forwarded_untrusted peer=(::ffff:)?127\.0\.0\.1$/); // key-gate: loopback, the test's own connection
+  assert.equal((await tried({ trustedProxies: [`${CLIENT}/32`] })).length, 1, "a proxy trusted that is not the peer: still said");
+  assert.deepEqual(await tried({ trustedProxies: ["loopback"] }), [], "from a trusted proxy: nothing to say");
+  const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
+  assert.doesNotMatch(render, /key: AGENTRUN_TRUSTED_PROXIES/, "Render publishes no proxy address: render.yaml trusts none");
 });
 
 test("the trusted proxies must parse: a start with one that does not is refused, naming the option", async (t) => {
@@ -386,7 +405,7 @@ test("the bin: listening on every interface with no public address prints the se
     if (/^Open .*\n/m.test(out)) break;
   }
   child.kill("SIGTERM");
-  assert.match(out, /^Set up this server: \S+\/setup#code=[A-Za-z0-9_-]{22}$/m);
+  assert.match(out, /^Set up this server: \S+\/setup#code=[A-Za-z0-9_-]{22} \(or paste AGENTRUN_TOKEN\)$/m);
   assert.doesNotMatch(out, /Set your password/);
 });
 
@@ -409,7 +428,7 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
   const open = await bin({}, /Set your password: .*\n/);
   assert.match(open, /^Set your password: http:\/\/127\.0\.0\.1:\d+\/setup \(/m);
   assert.match(open, /^Open http:\/\/127\.0\.0\.1:\d+\/$/m, "with accounts on, the Open line holds no token");
-  assert.match(await bin({ AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/), /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22}$/m);
+  assert.match(await bin({ AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/), /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22} \(or paste AGENTRUN_TOKEN\)$/m);
   assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?token=.*\n/), /Set your password|Set up this server/);
 });
 
@@ -544,13 +563,13 @@ test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTR
   };
   const render = await start({ RENDER_EXTERNAL_URL: "https://agentrun-example.onrender.com" });
   assert.doesNotMatch(render.out, /Set your password/, "a Render deploy is never an open setup");
-  const code = /^Set up this server: https:\/\/agentrun-example\.onrender\.com\/setup#code=([A-Za-z0-9_-]{22})$/m.exec(render.out)?.[1];
+  const code = /^Set up this server: https:\/\/agentrun-example\.onrender\.com\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/m.exec(render.out)?.[1];
   assert.ok(code && render.port, render.out);
   assert.equal((await setup(render, { password: PASSWORD })).status, 403);
   const made = await setup(render, { password: PASSWORD, code });
   assert.equal(made.status, 201, made.text);
   const both = await start({ RENDER_EXTERNAL_URL: "https://agentrun-example.onrender.com", AGENTRUN_PUBLIC_URL: "https://agents.example.com" });
-  assert.match(both.out, /^Set up this server: https:\/\/agents\.example\.com\/setup#code=[A-Za-z0-9_-]{22}$/m);
+  assert.match(both.out, /^Set up this server: https:\/\/agents\.example\.com\/setup#code=[A-Za-z0-9_-]{22} \(or paste AGENTRUN_TOKEN\)$/m);
   assert.match(both.out, /^AGENTRUN_BASE_URL=https:\/\/agents\.example\.com\/v2$/m);
 });
 

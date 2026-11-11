@@ -89,5 +89,9 @@ export function templateApplied(body: Record<string, unknown>, minted: ReadonlyM
   if (!made) return body;
   const said = (one: { trigger_id: string; secret: unknown }) =>
     shown === "first" && minted.has(one.trigger_id) ? { ...one, signing_secret: minted.get(one.trigger_id)! } : { ...one, secret_set: true as const, note: shown === "replay" ? TEMPLATE_SECRET_SHOWN : TRIGGER_SECRET_WORDS };
-  return { ...body, webhook_secrets: made.map(said) };
+  // The answer that shows every secret drops the warnings saying it is not shown (templateTriggerSecret's): they would
+  // sit right above the secret they say is missing. A token's answer or a replay keeps them.
+  const showsAll = shown === "first" && made.every((one) => minted.has(one.trigger_id));
+  const warnings = showsAll && Array.isArray(body.warnings) ? { warnings: (body.warnings as { field?: unknown }[]).filter((w) => !/^triggers\.\d+\.secret$/.test(String(w.field))) } : {};
+  return { ...body, ...warnings, webhook_secrets: made.map(said) };
 }

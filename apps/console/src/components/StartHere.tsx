@@ -32,9 +32,9 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keyCard = fal
   return (
     <section aria-label="Start here" className="space-y-4">
       <div className="border border-primary/50 bg-primary/5 p-6">
-        <p className="caps text-[11px] text-primary">Start here</p>
+        <p className="caps text-label text-primary-text">Start here</p>
         <h2 className="mt-2 text-xl font-semibold">Watch an agent work in about ten seconds</h2>
-        <p className="mt-1 text-[14px] text-muted-foreground">{harness ? "Pick one: it makes the agent, runs it, and opens the run as it happens." : "First a model to run on; then one click makes an agent, runs it, and opens the run as it happens."}</p>
+        <p className="mt-1 text-lead text-muted-foreground">{harness ? "Pick one: it makes the agent, runs it, and opens the run as it happens." : "First a model to run on; then one click makes an agent, runs it, and opens the run as it happens."}</p>
         <div className="mt-5">
           {harness ? (
             <ul className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -43,23 +43,23 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keyCard = fal
                 const Icon = ICONS[t.id] ?? FileText;
                 return (
                   <li key={t.id} className="flex flex-col border bg-background p-4">
-                    <p className="flex items-center gap-2 text-[15px] font-semibold"><Icon className="size-4 text-primary" aria-hidden />{t.name}</p>
-                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">{t.shows}</p>
-                    <p className="mt-2 flex-1 text-[14px] leading-relaxed text-muted-foreground">{t.description}</p>
+                    <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{t.name}</p>
+                    <p className="mt-1 font-mono text-label text-muted-foreground">{t.shows}</p>
+                    <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{t.description}</p>
                     {offer.ok
                       ? <Button type="button" variant={t.id === "hello" ? "solid" : "outline"} size="sm" className="mt-4 self-start" disabled={trying !== null} onClick={() => void tryIt(t)}>{trying === t.id ? "Starting…" : "Try it"}</Button>
-                      : <p className="mt-4 font-mono text-[12px] text-muted-foreground">{offer.reason}</p>}
+                      : <p className="mt-4 font-mono text-small text-muted-foreground">{offer.reason}</p>}
                   </li>
                 );
               })}
             </ul>
           ) : <ModelStep keyCard={keyCard} />}
-          {problem && <p className="mt-3 font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>}
+          {problem && <p className="mt-3 font-mono text-body text-destructive-text" role="alert">{problem}</p>}
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3 border px-5 py-4">
-        <p className="text-[14px]">Or <a href="#/agents/new" className="text-primary underline-offset-4 hover:underline">Create your own</a>: name it, say what it does, pick its tools.</p>
-        {imported > 0 && <p className="text-[14px] text-muted-foreground">{imported} imported sessions to read · <a href="#/runs" className="text-primary underline-offset-4 hover:underline">Browse them</a></p>}
+        <p className="text-lead">Or <a href="#/agents/new" className="text-primary-text underline-offset-4 hover:underline">Create your own</a>: name it, say what it does, pick its tools.</p>
+        {imported > 0 && <p className="text-lead text-muted-foreground">{imported} imported sessions to read · <a href="#/runs" className="text-primary-text underline-offset-4 hover:underline">Browse them</a></p>}
       </div>
     </section>
   );

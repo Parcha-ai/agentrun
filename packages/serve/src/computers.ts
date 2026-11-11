@@ -10,6 +10,7 @@ import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, t
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { ApiError, invalid } from "./errors.js";
+import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
@@ -56,7 +57,7 @@ export type FolderMode = "local" | "disk";
 export interface ComputerRoutesOptions {
   /** The server's one store: its sealed keys. */
   readonly store: Pick<Store, "sealedKeys">;
-  /** The server's seal key: there is always one (seal-key.ts ensureSealKey, at the start). */
+  /** The server's seal key: there is always one (seal-key.ts bootSealKey, at the start). */
   readonly sealKey: Buffer;
   readonly kinds: KindRegistry;
   /** Each provider module's create(), by provider id (the computer package's): what a test and a claim make. */
@@ -175,7 +176,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   }
 
   /** The account test of a provider with its saved keys (computer-keys.ts testConnection): one account-level read, never a
-   *  create. Its words are the answer's why. Undefined for a provider this server does not have. */
+   *  create. Its words are the answer's why. Undefined for a provider this server does not have. What the provider said
+   *  passes serve's one redactor (key-refusal.ts redacted) over the keys this test used: a vendor's error can quote a key
+   *  in a form testConnection's plain cut misses (base64 in an Authorization header, JSON-escaped, percent-encoded). */
   async function test(providerId: string, signal?: AbortSignal): Promise<TestView | undefined> {
     const provider = providerOf(providerId);
     if (!provider) return undefined;
@@ -183,7 +186,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const missing = missingKeys(provider, new Set(Object.keys(keys)));
     if (missing.length) return { ok: false, why: keysWhy(provider, missing) };
     const answer = await testConnection(providerId, { keys, ...(signal ? { signal } : {}) }, factories, settings, keyTable);
-    return answer.ok ? { ok: true, detail: answer.value.detail } : { ok: false, why: answer.error.message };
+    const cut = (text: string): string => redacted(text, Object.values(keys));
+    return answer.ok ? { ok: true, detail: cut(answer.value.detail) } : { ok: false, why: cut(answer.error.message) };
   }
 
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;

@@ -1,42 +1,35 @@
-// The tool gate reads the server's tool settings at each call (tool-gate.ts RunGate.policy), and fails closed on a
-// settings file it cannot fully read: a bad entry is dropped and the good ones keep their meaning (a deny stays a deny),
-// a file that does not read keeps the last good settings, and with none ever read every tool asks.
+// The tool gate reads the server's tool settings at each call (tool-gate.ts RunGate.policy), and fails closed on
+// settings it cannot fully read: a bad entry is dropped and the good ones keep their meaning (a deny stays a deny),
+// settings that stop reading keep the last good ones, and with none ever read every tool asks. The settings are the one
+// store's, as the runner reads them (tool-plane.ts loadToolSettings).
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
-import { RunGate } from "../dist/tool-gate.js";
-import { ToolSettings } from "../dist/tool-plane.js";
-import { scratch } from "./support.mjs";
+import { liveSettings, runnerGate, storedSettings } from "./gate-support.mjs";
 
-async function gateOn(t, text) {
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  const write = (body) => writeFile(join(data, "tool-settings.json"), body);
-  if (text !== undefined) await write(text);
-  return { gate: new RunGate({ root, work, data, runId: "r1" }), write, data };
-}
+/** A stored value that does not read as settings at all: what a write cut off would leave. */
+const CUT = '{"bash":{"permission":"de';
 
-test("an entry the gate cannot read is dropped and the others keep their meaning: a deny beside an unknown key stays a deny", async (t) => {
-  const { gate, data } = await gateOn(t, JSON.stringify({ bash: { permission: "deny" }, zzz: 1 }));
-  assert.equal(gate.policy("bash"), "deny");
-  assert.deepEqual(new ToolSettings(data, () => undefined).get(), { bash: { permission: "deny" } }, "the server reads it so too");
+test("an entry the gate cannot read is dropped and the others keep their meaning: a deny beside an unknown key stays a deny", () => {
+  const stored = { bash: { permission: "deny" }, zzz: 1 };
+  assert.equal(runnerGate({ settings: stored }).policy("bash"), "deny");
+  assert.deepEqual(storedSettings(stored).settings, { bash: { permission: "deny" } }, "the server reads it so too");
 });
 
-test("a known tool's permission the gate does not offer reads ask, never allow", async (t) => {
-  const { gate } = await gateOn(t, JSON.stringify({ read: { permission: "maybe" } }));
-  assert.equal(gate.policy("read"), "ask");
+test("a known tool's permission the gate does not offer reads ask, never allow", () => {
+  assert.equal(runnerGate({ settings: { read: { permission: "maybe" } } }).policy("read"), "ask");
 });
 
-test("a settings file that stops reading (cut off mid-write) keeps the last good settings", async (t) => {
-  const { gate, write } = await gateOn(t, JSON.stringify({ bash: { permission: "deny" }, read: { permission: "allow" } }));
+test("settings that stop reading keep the last good settings", () => {
+  const live = liveSettings({ bash: { permission: "deny" }, read: { permission: "allow" } });
+  const gate = runnerGate({ settings: live.read });
   assert.equal(gate.policy("bash"), "deny");
-  await write('{"bash":{"permission":"de');
+  live.set(CUT);
   assert.equal(gate.policy("bash"), "deny", "the last good deny");
   assert.equal(gate.policy("read"), "allow", "the last good allow");
 });
 
-test("a settings file that never read asks for every tool", async (t) => {
-  const { gate } = await gateOn(t, '{"bash":{"permission":"de');
+test("settings that never read ask for every tool", () => {
+  const gate = runnerGate({ settings: CUT });
   // The shell tools too, the watchers among them: an ask nothing read is never lifted to allow.
   for (const tool of ["read", "web_fetch", "bash", "bash_background", "bash_input", "bash_output", "bash_list", "bash_signal"]) assert.equal(gate.policy(tool), "ask", tool);
 });

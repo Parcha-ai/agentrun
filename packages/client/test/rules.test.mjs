@@ -382,3 +382,22 @@ test("a runs.wait whose deadline passes while a refusal's body is still coming e
   assert.ok(late instanceof AgentRunTimeout, `${late?.name}: ${late?.message}`);
   assert.deepEqual([late.runId, late.run], ["r1", { run_id: "r1", status: "working" }]);
 });
+
+test("a wait's deadline is its timer's: a timer that fires before the clock reads the deadline still ends in AgentRunTimeout", async (t) => {
+  const server = await listener(t, (req, res) => {
+    if (req.url === "/v2/runs/r1") return json(200, { run_id: "r1", status: "working" });
+    const body = Buffer.from(JSON.stringify({ error: { code: "not_found", message: "no" } }));
+    res.writeHead(404, { ...JSON_HEADERS, "content-length": String(body.length) });
+    res.write(body.subarray(0, 8));
+  });
+  // The client's clock runs at half the timers' speed, so every timer fires before Date.now() reaches the deadline it
+  // was set for: the race CI met by chance (a 300 ms timer read at 299.8 ms), here on every run.
+  const now = Date.now;
+  const start = now();
+  Date.now = () => start + (now() - start) / 2;
+  t.after(() => { Date.now = now; });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  const late = await thrown(client.runs.wait("r1", { timeoutMs: 300 }));
+  Date.now = now;
+  assert.ok(late instanceof AgentRunTimeout, `${late?.name}: ${late?.message}`);
+});

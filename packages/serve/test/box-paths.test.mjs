@@ -170,8 +170,9 @@ test("a Mac server is never in a container of its Docker's: even given a contain
   assert.deepEqual(asked, [], "no inspect of its own container");
 });
 
+const IN_COMPOSE = "run AgentRun in a container with `docker compose up` from compose.yaml (its named data volume is how boxes reach a run's files)";
+
 test("the server in a container that this Docker does not have, its data not on a named volume, or on an engine that can't mount a volume's subpath: docker is unavailable at start, saying why, and no box is made", { timeout: 120_000 }, async (t) => {
-  const IN_COMPOSE = "run AgentRun in a container with `docker compose up` from compose.yaml (its named data volume is how boxes reach a run's files)";
   for (const [given, reason] of [
     [{ own: false }, IN_COMPOSE],
     [{ bind: true }, IN_COMPOSE],
@@ -187,6 +188,127 @@ test("the server in a container that this Docker does not have, its data not on 
     assert.equal(offer.available, false, JSON.stringify(offer));
     assert.equal(offer.state, "unavailable");
     assert.equal(offer.reason, reason);
+    assert.deepEqual(fake.runs(), []);
+  }
+});
+
+// A server in a container with no named data volume can't run a Docker computer (its run's folder and the computer's
+// daemon would be mounted by paths the host's Docker doesn't have): the words above refuse a run that names one at its
+// start, never at its create, and an agent with no computer falls back as on a machine with no Docker, to the runner,
+// with the file tools and no shell.
+test("the server in a container with no named data volume: a run naming a Docker computer is refused at its start in those words, and a new agent gets the runner", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, { mounts: [{ Type: "bind", Source: "/opt/agentrun-data", Destination: data, RW: true }] });
+  withEnv(t, { AGENTRUN_SERVE_FAUX_MOUNTINFO: fake.mountinfo });
+  const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.state, offer.reason], [false, "unavailable", IN_COMPOSE], JSON.stringify(offer));
+
+  const made = await api("POST", "/agents", { definition: { id: "boxed-computer", name: "boxed", instructions: "Probe.", computer: { kind: "sandbox", provider: "docker" } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = await api("POST", "/agents/boxed-computer/runs", { input: { content: "Probe." } });
+  assert.equal(started.status, 409, JSON.stringify(started.body));
+  assert.equal(started.body.error.code, "agent_not_runnable");
+  const field = started.body.error.fields.find((one) => one.field === "definition.computer");
+  assert.equal(field?.message, `This agent's computer is a Docker sandbox, and this server cannot run it: ${IN_COMPOSE}.`, JSON.stringify(started.body));
+
+  // An agent that names no place or computer: the runner, as where there is no Docker, with no default tools (no shell).
+  const plain = await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Answer." } });
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  const read = await api("GET", "/agents/plain");
+  assert.equal(read.body.place?.mode ?? "runner", "runner", JSON.stringify(read.body));
+  assert.deepEqual(read.body.tools ?? [], [], "no shell, no other default tool");
+  assert.deepEqual(fake.runs(), [], "no box or computer is made");
+});
+
+// compose.yaml's own layout (its data a named volume, Docker Engine 26+) under an allow-list: a Docker computer keeps
+// the list only knowing the Docker host's own addresses, the union of the read through the socket (one container on the
+// host's network, docker-host-addresses.ts) and AGENTRUN_DOCKER_HOST_ADDRESSES, read once at the start. With none,
+// Docker isn't offered, in words that name both ways out; under none no read is made.
+const COMPOSE_MOUNTS = (data) => ({ mounts: [{ Type: "volume", Name: "agentrun_agentrun-data", Source: "/var/lib/docker/volumes/agentrun_agentrun-data/_data", Destination: data, RW: true }], volumes: { "agentrun_agentrun-data": data } });
+const hostReads = (fake) => jsonLines(join(fake.state, "host-reads.jsonl"));
+
+test("compose's layout under an allow-list: the Docker host's addresses read once through the socket, unioned with AGENTRUN_DOCKER_HOST_ADDRESSES and shown in capabilities (a Desktop's gateway among them); a failed read with no setting is refused in words, with it offered", { timeout: 240_000 }, async (t) => {
+  const NO_ADDRESSES = "the server runs in a container and doesn't know the Docker host's own addresses (the read through Docker's socket failed (exit 125: docker: Error response from daemon: the fake's read failed.)), so a Docker computer can't keep this server's allow-list: set AGENTRUN_DOCKER_HOST_ADDRESSES to the host's IP addresses, or AGENTRUN_BOX_ALLOW=none for no network";
+  // Each case's addresses as capabilities show them, where an operator looks (undefined when Docker isn't offered).
+  for (const [given, available, shown] of [
+    [{ read: { interfaces: ["127.0.0.1", "172.17.0.1", "203.0.113.7"], gateway: [] } }, true, ["172.17.0.1", "203.0.113.7"]],
+    [{ fail: true }, false, undefined],
+    [{ fail: true, named: "198.51.100.9" }, true, ["198.51.100.9"]],
+    [{ read: { interfaces: ["192.168.65.3"], gateway: ["192.168.65.254"] }, named: "203.0.113.9" }, true, ["192.168.65.3", "192.168.65.254", "203.0.113.9"]],
+  ]) {
+    const data = await dataDir(t);
+    const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+    if (given.read) await writeFile(join(fake.state, "host-addresses.json"), `${JSON.stringify(given.read)}\n`);
+    if (given.fail) await writeFile(join(fake.state, "host-addresses-fail"), "");
+    withEnv(t, given.named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: given.named } : {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+    const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo });
+    const offer = await docker(api);
+    assert.equal(offer.available, available, JSON.stringify({ given, offer }));
+    if (!available) assert.equal(offer.reason, NO_ADDRESSES);
+    assert.deepEqual(offer.host_addresses, shown, JSON.stringify({ given, offer }));
+    const reads = hostReads(fake);
+    assert.equal(reads.length, 1, "one read at the start");
+    assert.deepEqual([reads[0][reads[0].indexOf("--network") + 1], reads[0][reads[0].indexOf("--user") + 1]], ["host", "65534:65534"]);
+  }
+});
+
+test("compose's layout under AGENTRUN_BOX_ALLOW=none: no address is needed, none is read, and Docker is offered with no network", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  withEnv(t, { AGENTRUN_BOX_ALLOW: "none" });
+  const { api } = await serve(t, { data, faux: PROBE, fauxEgress: FAKE_EGRESS, fauxMountinfo: fake.mountinfo });
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.network], [true, "none"], JSON.stringify(offer));
+  assert.deepEqual(hostReads(fake), []);
+});
+
+test("a server whose AGENTRUN_DOCKER_HOST_ADDRESSES holds an entry that is no IP address doesn't start, naming the entry", async (t) => {
+  withEnv(t, { AGENTRUN_DOCKER_HOST_ADDRESSES: "172.17.0.1,host.docker.internal" });
+  await assert.rejects(serve(t, { data: await dataDir(t), faux: PROBE }), { message: `AGENTRUN_DOCKER_HOST_ADDRESSES is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): "host.docker.internal" is not an IP address` });
+});
+
+test("a daemon is another machine's only over ssh://, or tcp:// to a host that isn't loopback; unix://, npipe:// and tcp:// to loopback are this machine's", async () => {
+  const { remoteEndpoint } = await import("../dist/box-paths.js");
+  for (const endpoint of ["ssh://builder@docker.example.com", "ssh://docker.example.com:2222", "tcp://docker.example.com:2376", "tcp://203.0.113.7:2376", "tcp://[2001:db8::7]:2376"]) assert.equal(remoteEndpoint(endpoint), true, endpoint);
+  for (const endpoint of ["unix:///var/run/docker.sock", "npipe:////./pipe/docker_engine", "tcp://localhost:2375", "tcp://127.0.0.1:2375", "tcp://127.1.2.3:2375", "tcp://[::1]:2375", "fd://", ""]) assert.equal(remoteEndpoint(endpoint), false, endpoint);
+});
+
+test("the daemon docker reaches: DOCKER_HOST when set, else the current context's endpoint as the CLI resolves it; this machine's is none, and a context that can't be read is taken as this machine's", async () => {
+  const { remoteDockerOf } = await import("../dist/box-paths.js");
+  const asked = [];
+  const context = (answer) => async (args) => (asked.push(args), answer);
+  const never = async () => assert.fail("DOCKER_HOST decides: no context is read");
+  for (const host of ["tcp://docker.example.com:2376", "ssh://builder@docker.example.com"]) assert.equal(await remoteDockerOf({ DOCKER_HOST: host }, never), host);
+  for (const host of ["unix:///var/run/docker.sock", "npipe:////./pipe/docker_engine", "tcp://localhost:2375"]) assert.equal(await remoteDockerOf({ DOCKER_HOST: host }, never), undefined, host);
+  for (const host of [undefined, "", "  "]) {
+    const env = host === undefined ? {} : { DOCKER_HOST: host };
+    assert.equal(await remoteDockerOf(env, context({ code: 0, stdout: '"tcp://docker.example.com:2376"\n', stderr: "" })), "tcp://docker.example.com:2376", String(host));
+    assert.equal(await remoteDockerOf(env, context({ code: 0, stdout: '"unix:///var/run/docker.sock"\n', stderr: "" })), undefined);
+  }
+  assert.deepEqual(asked.at(-1), ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]);
+  assert.equal(await remoteDockerOf({}, context({ code: 1, stdout: "", stderr: "context not found" })), undefined);
+  assert.equal(await remoteDockerOf({}, context({ code: 0, stdout: "<html>", stderr: "" })), undefined);
+});
+
+// A daemon of another machine has none of this machine's paths: whether DOCKER_HOST names it, DOCKER_CONTEXT picks a
+// context whose endpoint it is, or the CLI's saved current context is one (each read through the fake docker), Docker
+// computers aren't offered, in words naming the endpoint.
+test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_CONTEXT or the saved current context: Docker computers aren't offered, saying why", { timeout: 240_000 }, async (t) => {
+  const words = (endpoint) => `this server's Docker daemon (${endpoint}) is another machine's: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
+  for (const [given, endpoint] of [
+    [{ env: { DOCKER_HOST: "tcp://docker.example.com:2376" } }, "tcp://docker.example.com:2376"],
+    [{ env: { DOCKER_CONTEXT: "builder" }, contexts: { builder: "tcp://builder.example.com:2376" } }, "tcp://builder.example.com:2376"],
+    [{ saved: "ssh://ops@docker.example.com" }, "ssh://ops@docker.example.com"],
+  ]) {
+    const fake = await containerDocker(t, { mounts: [] });
+    if (given.contexts) await writeFile(join(fake.state, "contexts.json"), JSON.stringify(given.contexts));
+    if (given.saved) await writeFile(join(fake.state, "docker-context"), given.saved);
+    withEnv(t, given.env ?? {}, ["DOCKER_HOST", "DOCKER_CONTEXT"]);
+    const { api } = await serve(t, { data: await dataDir(t), faux: PROBE, fauxEgress: FAKE_EGRESS });
+    const offer = await docker(api);
+    assert.deepEqual([offer.available, offer.reason], [false, words(endpoint)], JSON.stringify({ given, offer }));
     assert.deepEqual(fake.runs(), []);
   }
 });

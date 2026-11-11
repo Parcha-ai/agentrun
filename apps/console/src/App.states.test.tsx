@@ -14,9 +14,9 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 vi.setConfig({ testTimeout: 20_000 });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const CAPS = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
+const CAPS = { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const STATS = { agents: 1, runs: { total: 1, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 1 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS };
-const RUN0 = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: null as string | null, result: null as unknown, error: null, cost: null, archived_at: null };
+const RUN0 = { run_id: "r1", place: { mode: "runner" }, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: null as string | null, result: null as unknown, error: null, cost: null, archived_at: null };
 // The run as each test starts it; a test that moves it on (it ends while the server is away) is put back after.
 const RUN = { ...RUN0 };
 afterEach(() => { Object.assign(RUN, RUN0); });
@@ -79,9 +79,9 @@ describe("a server that can't be reached", () => {
       if (path === "/v2/runs/r1") return json(200, RUN);
       if (path === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: Array.from({ length: files }, (_, i) => ({ path: `f${i}.txt`, size_bytes: 1, modified_at: RUN.created_at, content_type: "text/plain" })), complete: true, truncated: false });
       if (path === "/v2/runs/r1/timeline") {
-        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", status: "working", state: "working", rows: [ROW], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 1 });
-        if (RUN.status === "working") return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 1 })), 40));
-        return json(200, { run_id: "r1", status: "completed", state: "idle", rows: [LATER], drop: [], reset: false, unchanged: false, final: true, has_more: false, next_after: 2 });
+        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [ROW], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 1 });
+        if (RUN.status === "working") return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 1 })), 40));
+        return json(200, { run_id: "r1", place: { mode: "runner" }, status: "completed", state: "idle", rows: [LATER], drop: [], reset: false, unchanged: false, final: true, has_more: false, next_after: 2 });
       }
       return undefined;
     });
@@ -114,8 +114,8 @@ describe("a server that can't be reached", () => {
       if (path === "/v2/runs/r1") return json(200, RUN);
       if (path === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: Array.from({ length: files }, (_, i) => ({ path: `f${i}.txt`, size_bytes: 1, modified_at: RUN.created_at, content_type: "text/plain" })), complete: true, truncated: false });
       if (path === "/v2/runs/r1/timeline") {
-        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", status: "working", state: "working", rows: [ROW], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 1 });
-        return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 1 })), 40));
+        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [ROW], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 1 });
+        return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 1 })), 40));
       }
       return undefined;
     });
@@ -141,8 +141,8 @@ describe("a run page that failed", () => {
       if (path === "/v2/runs/r1/files") return broken ? fail : json(200, { run_id: "r1", files: [], complete: true, truncated: false });
       if (path === "/v2/runs/r1/timeline") {
         if (broken) return fail;
-        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", status: "working", state: "working", rows: [ROW, LATER], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 2 });
-        return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 2 })), 40));
+        if (!u.searchParams.has("after")) return json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [ROW, LATER], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 2 });
+        return new Promise((r) => setTimeout(() => r(json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [], drop: [], reset: false, unchanged: true, final: false, has_more: false, next_after: 2 })), 40));
       }
       return undefined;
     });
@@ -204,7 +204,7 @@ describe("errors in plain words, each with a next step", () => {
     expect(host.querySelector('[role="alert"]')!.textContent).toContain("The runs could not be read.");
     expect(host.textContent).not.toContain("internal: The store");
     await act(async () => { button(host, /^Try again$/)!.click(); });
-    await wait(() => !!host.textContent?.includes("No runs yet."), "Try again reads the runs again");
+    await wait(() => !!host.textContent?.includes("No runs yet"), "Try again reads the runs again");
     expect(calls).toBe(2);
   });
 
@@ -230,7 +230,7 @@ describe("errors in plain words, each with a next step", () => {
 
   it("a stop the server can't take while it is away says so, in words", async () => {
     const s = serve((path) => (path === "/v2/runs/r1" ? json(200, RUN) : path === "/v2/runs/r1/files" ? json(200, { run_id: "r1", files: [], complete: true, truncated: false })
-      : path === "/v2/runs/r1/timeline" ? json(200, { run_id: "r1", status: "working", state: "working", rows: [ROW], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 1, poll_after_ms: 60000 }) : undefined));
+      : path === "/v2/runs/r1/timeline" ? json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [ROW], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 1, poll_after_ms: 60000 }) : undefined));
     const host = mount("#/runs/r1");
     await wait(() => !!button(host, /^Stop$/), "the run offers Stop");
     s.up = false;

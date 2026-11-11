@@ -1,6 +1,6 @@
 # Compatibility and maintenance
 
-AgentRun is a Node.js ESM library. The supported floors are Node 22.19 and TypeScript 5.4 for TypeScript consumers; CI tests the Node floor and a TypeScript 5.4.5 consumer. Python, browser execution and a hosted runtime are not part of this beta.
+AgentRun is a Node.js ESM library. The supported floors are Node 24.11 and TypeScript 5.4 for TypeScript consumers; CI tests the Node floor and a TypeScript 5.4.5 consumer. Python, browser execution and a hosted runtime are not part of this beta.
 
 The public interfaces are the package-root exports documented in each package README, the CLI commands, and the generated Workflow v2 schema. Internal source modules are not compatibility promises. Zod support is limited to JSON-representable contracts; intermediate state paths remain runtime-validated.
 

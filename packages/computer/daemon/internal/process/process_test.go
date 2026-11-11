@@ -540,9 +540,11 @@ func TestAWaitIsCancelled(t *testing.T) {
 
 func TestTheTableIsBounded(t *testing.T) {
 	tbl := table(t, process.Options{MaxEntries: 2})
+	// The first ends before the second starts, so it is unambiguously the oldest ended process. Started back to back,
+	// the two could end in either order, and the eviction below then took the second (CI flake, #2185's run).
 	first := start(t, tbl, process.StartParams{Argv: []string{"true"}})
-	second := start(t, tbl, process.StartParams{Argv: []string{"true"}})
 	wait(t, tbl, first.ID)
+	second := start(t, tbl, process.StartParams{Argv: []string{"true"}})
 	wait(t, tbl, second.ID)
 	third := start(t, tbl, process.StartParams{Argv: []string{"sleep", "300"}})
 	if _, err := tbl.Read(context.Background(), process.ReadParams{ID: first.ID, Stream: "stdout", Offset: off(0)}); err == nil || kindOf(t, err) != rpc.KindNotFound {

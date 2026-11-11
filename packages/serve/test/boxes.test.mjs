@@ -230,20 +230,19 @@ test("no key's value is in an offer, a reason or the start's log line, which say
   assert.ok(!said.includes("RAW-"), "no answer's body and no command's output");
 });
 
-test("a box key set in the server's environment reaches no run's process: not in its environment, not on its pipe, while the server still reads it", async () => {
+test("a box key set in the server's environment is never a run's secret: not among what a run is handed, while the server still reads it", async () => {
   const values = keys();
   const control = `${CANARY}-OPENAI_API_KEY`;
-  const script = `const { childEnv, RUN_SECRETS } = await import(${JSON.stringify(new URL("../dist/runs.js", import.meta.url).href)});
+  const script = `const { RUN_SECRETS } = await import(${JSON.stringify(new URL("../dist/run-secrets.js", import.meta.url).href)});
 const { handover, secret, SECRET_NAMES } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
 const names = ${JSON.stringify(BOX_KEYS)};
-process.stdout.write(JSON.stringify({ env: childEnv(process.env, "the-server-token"), handed: handover(RUN_SECRETS).toString("utf8"), runSecrets: RUN_SECRETS, secretNames: SECRET_NAMES, held: names.filter((name) => secret(name) !== undefined) }));`;
+process.stdout.write(JSON.stringify({ handed: handover(RUN_SECRETS).toString("utf8"), runSecrets: RUN_SECRETS, secretNames: SECRET_NAMES, held: names.filter((name) => secret(name) !== undefined) }));`;
   const out = await new Promise((resolve, reject) => execFile(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, ...values, OPENAI_API_KEY: control } }, (error, stdout, stderr) => (error ? reject(new Error(stderr)) : resolve(stdout))));
   const seen = JSON.parse(out);
   for (const [name, value] of Object.entries(values)) {
-    assert.ok(!(name in seen.env) && !Object.values(seen.env).some((v) => v.includes(value)), `${name} is not in a run's environment`);
-    assert.ok(!seen.runSecrets.includes(name) && !seen.handed.includes(name) && !seen.handed.includes(value), `${name} is not handed to a run's process`);
+    assert.ok(!seen.runSecrets.includes(name) && !seen.handed.includes(name) && !seen.handed.includes(value), `${name} is not handed to a run`);
     assert.ok(seen.secretNames.includes(name), `${name} is on the launcher's list of secrets, which the server holds`);
   }
   assert.deepEqual(seen.held, BOX_KEYS, "the server reads every box key");
-  assert.ok(seen.handed.includes(`OPENAI_API_KEY=${control}`), "a run's own secret is still handed over its pipe");
+  assert.ok(seen.handed.includes(`OPENAI_API_KEY=${control}`), "a run's own secret is still handed");
 });

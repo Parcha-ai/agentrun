@@ -141,8 +141,9 @@ async function filesHolding(dir, needle) {
 const keysNode = (tools) => ({ node: "extract", label: "keys", instructions: "Report the decision keys.", out: "Names", as: "names", ...(tools ? { tools } : {}) });
 const NAMES = { Names: { type: "object", required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } } };
 
-test("decisionProvidersFor and decisionKeysFor: Jev's key by its route, OpenRouter's for an OpenRouter node, none for Parallel picked without its key, and a node's need and a web tool's together", async () => {
-  const { decisionProvidersFor } = await import("../dist/runs.js");
+test("a revision's decision providers (needsOf) and decisionKeysFor: Jev's key by its route, OpenRouter's for an OpenRouter node, none for Parallel picked without its key, and a node's need and a web tool's together", async () => {
+  const { needsOf } = await import("../dist/run-secrets.js");
+  const decisionProvidersFor = async (revision) => (await needsOf(revision)).decisionProviders;
   const { decisionKeysFor } = await import("../dist/decisions.js");
   const { handsParallel, planeFor } = await import("../dist/tool-plane.js");
   const { toolingOf } = await import("../dist/tools.js");

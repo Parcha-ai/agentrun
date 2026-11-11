@@ -1,22 +1,18 @@
-// The run journal's barriers on serve's own effect paths (pi-durable-disk barriers.ts): a model request's start mark
-// (modelRequestStarted) and a paid tool call's hold (paidToolHold: paid calls, monid, the MCP gateway) are synced to disk
-// after their own commit and before the request or the call is sent, so a box loss can never cause it to go twice or be
-// under-counted. On a store at NORMAL the sync is one commit at FULL; here the store is a stand-in that records when it
-// synced, beside the commit and the send. A sync that fails sends nothing.
+// The run journal's barrier on serve's own paid calls (pi-durable-disk barriers.ts): a paid tool call's hold
+// (paidToolHold: paid calls and monid) is synced to disk after its own commit and before the call is sent,
+// so a box loss can never cause it to go twice or be under-counted. On a store at NORMAL the sync is one commit at FULL;
+// here the store is a stand-in that records when it synced, beside the commit and the send. A sync that fails sends
+// nothing.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_STARTED, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { MARK_NOT_WRITTEN } from "../dist/cap.js";
-import { mcpGateway } from "../dist/mcp-gateway.js";
+import { TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, monidRegistration } from "../dist/monid.js";
 import { bookedIn, paidRequest, settleIn } from "../dist/paid-calls.js";
-import { markRequests } from "../dist/request-start.js";
-import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { calls as monidCalls, KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -52,43 +48,8 @@ const models = (log) => ({
   completeSimple: async () => (log.push("sent"), answer()),
 });
 
-async function marked(log, fails) {
-  const { models: wrapped, open } = await markRequests(models(log));
-  open({ harness: { commit: committing(log) }, store: store(log, { fails }) });
-  return wrapped;
-}
 
 const MODEL = { api: "faux", provider: "faux", id: "m" };
-
-test("modelRequestStarted: a pi model request is sent only after its start mark is committed and synced", async () => {
-  const log = [];
-  const result = await (await marked(log, false)).streamSimple(MODEL, { messages: [] }, {}).result();
-  assert.equal(result.stopReason, "stop");
-  assert.deepEqual(log.slice(0, 3), [`commit ${REQUEST_STARTED}`, "sync", "sent"]);
-});
-
-test("modelRequestStarted: a compaction request is sent only after its start mark is committed and synced", async () => {
-  const log = [];
-  const result = await (await marked(log, false)).completeSimple(MODEL, { messages: [] }, {});
-  assert.equal(result.stopReason, "stop");
-  assert.deepEqual(log.slice(0, 3), [`commit ${REQUEST_STARTED}`, "sync", "sent"]);
-});
-
-test("modelRequestStarted: a sync that fails sends no model request, and the request fails as a mark that was not written", async () => {
-  const log = [];
-  const result = await (await marked(log, true)).streamSimple(MODEL, { messages: [] }, {}).result();
-  assert.equal(result.stopReason, "error");
-  assert.ok(result.errorMessage.startsWith(MARK_NOT_WRITTEN), result.errorMessage);
-  assert.ok(!log.includes("sent"), `nothing sent: ${log.join(", ")}`);
-});
-
-test("modelRequestStarted: a sync that fails sends no compaction request", async () => {
-  const log = [];
-  const result = await (await marked(log, true)).completeSimple(MODEL, { messages: [] }, {});
-  assert.equal(result.stopReason, "error");
-  assert.ok(result.errorMessage.startsWith(MARK_NOT_WRITTEN), result.errorMessage);
-  assert.ok(!log.includes("sent"), `nothing sent: ${log.join(", ")}`);
-});
 
 const FEE = { name: "parallel.search", tool: "web_search", by: "parallel", usd: 0.005, basis: "the price Parallel lists" };
 
@@ -144,39 +105,3 @@ test("paidToolHold (monid): a sync that fails sends nothing to monid", async (t)
   assert.match(JSON.stringify(result), /was not sent/);
 });
 
-/** The MCP gateway's paid tool, its hold and settle recorded in `log`, and how many calls the server had when it synced. */
-async function mcpPaid(t, log, fails) {
-  const fake = await startFakeMcp({ token: TOKEN });
-  t.after(() => fake.close());
-  const work = await mkdtemp(join(tmpdir(), "barrier-mcp-"));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const calls = () => fake.log.filter((entry) => entry.method === "tools/call").length;
-  const target = store(log, { fails });
-  const synced = [];
-  settleIn(undefined, { ...target, database: { ...target.database, transaction: async (callback) => (synced.push(calls()), target.database.transaction(callback)) } });
-  t.after(() => settleIn(undefined, undefined));
-  const gateway = mcpGateway({
-    pin: { fake: { url: fake.url, tools: [{ name: "paid", inputSchema: { type: "object" } }], prices: { paid: 0.05 } } },
-    credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } },
-    work: () => work,
-    commit: () => committing(log),
-  });
-  const result = await gateway.call("fake", "paid", { query: "ada" }, { signal: new AbortController().signal, callId: "c1" });
-  return { result, sent: calls(), synced };
-}
-
-test("paidToolHold (MCP gateway): a priced MCP call is sent only after its hold is committed and synced", async (t) => {
-  const log = [];
-  const { result, sent, synced } = await mcpPaid(t, log, false);
-  assert.equal(result.content?.[0]?.text, "paid for ada");
-  assert.deepEqual(log.slice(0, 2), [`commit ${TOOL_STARTED}`, "sync"]);
-  assert.deepEqual([synced, sent], [[0], 1], "synced before the server was called, then called once");
-});
-
-test("paidToolHold (MCP gateway): a sync that fails sends nothing to the server", async (t) => {
-  const log = [];
-  const { result, sent } = await mcpPaid(t, log, true);
-  assert.equal(sent, 0, "the server was never called");
-  assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /was not sent/);
-});

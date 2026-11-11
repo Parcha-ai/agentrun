@@ -24,12 +24,12 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/pi-browser` | packages/pi-browser is the source; other repos copy FROM it. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
 | `packages/pi-transport` | Vitest on source; its biome `lint` and Docker suite (`test:live:docker`) run in the `transport-docker` CI job |
 | `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
-| `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
+| `packages/serve` | Held. v2 API at `/v2`, on loopback port 7340 by default, over one store; a runner (`src/runner/`, beside the server by default) claims and runs each run; `--faux` needs no key and its tests use it |
 | `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
 | `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code taken from vercel-labs/durable-harness is AgentRun's own since the port froze (2026-11-07): edit it in place. `vendor/durable-harness/UPSTREAM.json` records where each copy came from, each copy keeps its three-line header, and NOTICE keeps the attribution (`scripts/vendor-durable-harness.mjs` checks both). The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
 | `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ models `Receipts.tla` and `Door.tla` (see Models of recovery) |
 | `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
-| `apps/console` | The server's console (React, Vite, Tailwind), outside the workspaces with its own lockfile; `packages/serve` serves its build. Before any change someone sees, read [docs/console-design-system.md](docs/console-design-system.md): colours, sizes, layers and durations are tokens in `src/tokens.css`, and controls and messages are the primitives in `src/components/ui`. `npm test` in `apps/console` holds both |
+| `apps/console` | The server's console (React, Vite, Tailwind), outside the workspaces with its own lockfile; `packages/serve` serves its build. Before any change someone sees, read [docs/console-design-system.md](docs/console-design-system.md): colours, sizes, layers and durations are tokens in `src/tokens.css`, and controls and messages are the primitives in `src/components/ui`. `npm test` in `apps/console` holds both. `npm run storybook` serves the catalogue to agents over MCP at `http://127.0.0.1:6006/mcp` |
 | `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
 
 Fourteen packages share one version. `"private": true` holds `serve`, `decisions`,
@@ -38,7 +38,7 @@ rest, never published; removing the flag lifts a hold. Release order: `scripts/r
 
 ## Setup and checks
 
-Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11 (CI pins 11.21.0).
+Use Node 24.11 or newer (the packages' `engines`; `.nvmrc` pins 24.21.0) and npm 11 (CI pins 11.21.0).
 `scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`. A script in `scripts/`
 decides it is the command with `isMain(import.meta)` (`scripts/is-main.mjs`), which refuses the command on such a Node
 instead of exiting 0 having done nothing.
@@ -51,6 +51,7 @@ npm ci --ignore-scripts
 npm run build
 npm test
 npm run check   # build, generated-file checks, typecheck, all tests, examples
+npm run build:daemon -w @parcha/agentrun-computer   # the Go computer daemon (Go on PATH): verify:packages needs it
 npm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
 ```
 

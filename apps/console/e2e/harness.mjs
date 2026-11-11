@@ -94,8 +94,9 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
   try {
     const [, baseUrl] = await line(/^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+\/v2)\b/);
     const server = { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
-    // At a public URL, setup takes the code in the link the server prints; kept in memory, never shown.
-    if (env.AGENTRUN_PUBLIC_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
+    // At a public URL (AGENTRUN_PUBLIC_URL, or on Render its RENDER_EXTERNAL_URL), setup takes the code in the link the
+    // server prints; kept in memory, never shown.
+    if (env.AGENTRUN_PUBLIC_URL || env.RENDER_EXTERNAL_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
     return server;
   } catch (error) {
     await stop();
@@ -172,19 +173,30 @@ export async function launchBrowser() {
   return chromium.launch({ executablePath, headless: true });
 }
 
-/** A browser context for one flow: only the server's own origin (and data:/blob:) is reached. Any other request is
- *  aborted and recorded in `blocked`, except hosts a flow stubs itself (`allow`: a host name it routes, e.g. github.com). */
+/** The one address the console asks outside its origin: a provider's icon on Settings → Keys, from Google's favicon
+ *  service (ProviderIcon.tsx). Answered here with a 1 by 1 PNG, so no flow reaches the network and the page shows an
+ *  icon; recorded in `icons` so a flow can say what was asked. Any other path on that host is blocked like the rest. */
+const ICON = { origin: "https://www.google.com", path: "/s2/favicons" };
+const PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==", "base64");
+
+/** A browser context for one flow: only the server's own origin (and data:/blob:) is reached, and a provider's icon is
+ *  answered here (ICON). Any other request is aborted and recorded in `blocked`, except hosts a flow stubs itself
+ *  (`allow`: a host name it routes, e.g. github.com). */
 export async function newContext(browser, origin, { allow = [] } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const blocked = [];
+  const blocked = [], icons = [];
   const own = new URL(origin).host;
   await context.route("**/*", (route) => {
     const url = new URL(route.request().url());
+    if (url.origin === ICON.origin && url.pathname === ICON.path && route.request().method() === "GET") {
+      icons.push({ site: url.searchParams.get("domain"), referer: route.request().headers().referer ?? null });
+      return route.fulfill({ status: 200, contentType: "image/png", body: PIXEL });
+    }
     if (url.protocol === "data:" || url.protocol === "blob:" || url.host === own || allow.includes(url.hostname)) return route.fallback();
     blocked.push(`${route.request().method()} ${url.origin}${url.pathname}`);
     return route.abort();
   });
-  return { context, blocked };
+  return { context, blocked, icons };
 }
 
 /** A page that records what went wrong in it: uncaught errors and console errors. */

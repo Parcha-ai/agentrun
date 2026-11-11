@@ -19,6 +19,15 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Serv
 import { type McpHandler, mcpRoute } from "./mcp-route.js";
 import { CONTENT_FILTERED, type McpClient, type NoteRequest, type SessionMcp } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
+import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
+
+/** Whether a request's admission refused it for the run's spend cap, read from the error's fields alone: the cap's own
+ *  error (CapRefused, its `code`), or the runner's stop for the cap's verdict (HarnessRunError, its `refusal`: the
+ *  verdict's Refusal.code). Never from its words. */
+const capRefusal = (error: unknown): boolean => {
+  const fields = error as { code?: unknown; refusal?: unknown } | undefined;
+  return fields?.code === SPEND_CAP_REACHED || fields?.refusal === SPEND_CAP_REACHED;
+};
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -788,7 +797,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const say = (message: string, detail?: Record<string, unknown>) => {
     try { options.log?.(message, detail); } catch { /* the host's log failed; the request goes on */ }
   };
-  const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage) => {
+  /** `code`: the refusal's own code, when it has one (the run's spend cap: `spend_cap_reached`), in the body beside the
+   *  message, so a reader tells the proxy's refusal by its fields, never by its words. */
+  const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage, code?: string) => {
     // Every refusal is reported, so a client that calls something the table does not hold is seen, not silently refused.
     // The client's user-agent names who called: the session's own harness, or another local process that found the port.
     const agent = req?.headers["user-agent"];
@@ -797,7 +808,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       ...(typeof agent === "string" && agent ? { userAgent: agent.slice(0, 120) } : {}),
     });
     res.writeHead(status, { "content-type": "application/json", connection: "close" });
-    res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
+    res.end(JSON.stringify({ error: { message, type: "agentrun_proxy", ...(code ? { code } : {}) } }));
   };
 
   // The session's MCP door, mounted once here for whichever harness's client calls it (the call id from its fact).
@@ -984,7 +995,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
-      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
+      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req, capRefusal(error) ? SPEND_CAP_REACHED : undefined);
     }
     /** An admitted request that is not sent after all: refused to its client, and released, booked at nothing, so the
      *  runner's count agrees. */

@@ -38,29 +38,6 @@ test("with no priced request yet (its typical cost the next request's expected c
   assert.equal(call("wrapUpWords", 0.5, false), "About $0.50 left of this run's budget: finish now with your answer.", "with a priced request, the words as before");
 });
 
-test("the typical cost after a restart is the one the live process counted: a request's own reported cost above 0, never a lost or stopped request's booked or held figure", async () => {
-  const { ownCosts } = await import("../dist/harness-app.js");
-  // As the runner writes them (runner.ts): an answered request, one lost after its response began (booked at its hold,
-  // its own cost unknown), one stopped part way (counted at what streamed, its own cost unknown), a side call, a cut.
-  const records = [
-    { kind: "runner.request", data: { turn: 1, model: "main", heldUsd: 0.5 } },
-    { kind: "runner.turn", data: { turn: 1, usd: 0.02, bookedUsd: 0.02, rule: "answered" } },
-    { kind: "runner.request", data: { turn: 2, model: "main", heldUsd: 0.5 } },
-    { kind: "runner.turn", data: { turn: 2, usd: null, bookedUsd: 0.5, rule: "lost" } },
-    { kind: "runner.request", data: { turn: 3, model: "main", heldUsd: 0.5 } },
-    { kind: "runner.turn", data: { turn: 3, usd: null, heldUsd: 0.07, stopped: true } },
-    { kind: "runner.request", data: { turn: 4, model: "small", side: true } },
-    { kind: "runner.turn", data: { turn: 4, usd: 0.001 } },
-    { kind: "runner.request", data: { turn: 5, model: "main", heldUsd: 0.5 } },
-    { kind: "runner.turn", data: { turn: 5, usd: null, cut: true } },
-    { kind: "runner.request", data: { turn: 6, model: "main", heldUsd: 0.5 } },
-    { kind: "runner.turn", data: { turn: 6, usd: 0.03, bookedUsd: 0.03, rule: "answered" } },
-  ];
-  // Live (harness-app.ts, request_end): each of the session's own requests whose usage.usd, its reported cost, is above 0.
-  assert.deepEqual(ownCosts(records), [0.02, 0.03], "the costs the live process pushed, in order");
-  assert.equal(call("typicalCost", ownCosts(records), 1), 0.03, "and the same typical cost");
-});
-
 test("pi: the typical cost a live process counts is the one a process opened again reads: the run's own model's turn answers only, never a compaction summary's or a native search's request on the same model", async (t) => {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const { DatabaseSync } = await import("node:sqlite");

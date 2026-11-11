@@ -222,7 +222,7 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
     }
     if (entry.kind === KINDS.message) {
       const said = dataOf<MessageData>(entry);
-      const message = { role: ROLE[said.role] ?? "user", content: said.role === "model" ? [{ type: "text", text: said.text }] : said.text };
+      const message = { role: ROLE[said.role] ?? "user", content: said.role === "model" ? [{ type: "text", text: said.text }] : said.text, ...(typeof said.at === "number" ? { timestamp: said.at } : {}) };
       const synthetic = { ...entry, model: [message] } as unknown as EntryRecord;
       state.entries.push(synthetic);
       events.push({ type: "message_start", message, ...tag(entry) }, { type: "message_end", entry: synthetic, ...tag(entry) });

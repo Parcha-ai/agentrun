@@ -10,7 +10,6 @@
 // loopback.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
@@ -21,7 +20,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool 
 import { MODEL_KEYS } from "../dist/model.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { git, resnap } from "./learn-support.mjs";
+import { entriesOf, git, resnap, CLI_TOOLS_TODO } from "./learn-support.mjs";
 import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -53,16 +52,6 @@ async function folderWith(data, id, files) {
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, id);
 }
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
-/** The run's store entries of `kinds`, each `{ kind, ...data }`. */
-function entries(data, runId, kinds) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data, ...(entry.model ? { model: entry.model } : {}) }));
-  } finally {
-    db.close();
-  }
-}
 /** Agent `id` on `harness`, learning, with the `answer` workflow learned; one run of `ask`, ended. */
 async function ran(api, data, id, harness, { fields = {}, ask = ASK, ends = ["completed", "failed"], model } = {}) {
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, ...(model ? { model } : {}) }))).status, 201);
@@ -86,22 +75,21 @@ async function guarded(t) {
   return { env: { NET_GUARD_LOG: log, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, lines: () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []) };
 }
 /** The session's records of the node's requests: runner.request entries labelled learned_workflow. */
-const labelled = (data, runId) => entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
+const labelled = async (data, runId) => (await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
 /** The second meter's marks: side requests labelled learned_workflow on the root (capModels, markRequests). */
-const sideMarks = (data, runId) => entries(data, runId, ["agentrun.request_started", "agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
+const sideMarks = async (data, runId) => (await entriesOf({ data }, runId, ["agentrun.request_started", "agentrun.request_cost"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL);
 
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-test.skip("R1 (guard) on pi a learned node's request is one of the run's own: marked and costed through the run's models, in its cost", { timeout: 120_000 }, async (t) => {
+test("R1 (guard) on pi a learned node's request is one of the run's own: marked and costed through the run's models, in its cost", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const { runId, rows, view } = await ran(api, data, "pi-route", "pi");
   assert.equal(view.status, "completed", JSON.stringify(view));
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
-  assert.deepEqual(sideMarks(data, runId).map((entry) => entry.kind), ["agentrun.request_started", "agentrun.request_cost"], "marked on the run's models");
+  // On the runner pi's learned node is booked as every harness's is: one runner.request labelled learned_workflow.
+  assert.deepEqual([await sideMarks(data, runId), (await labelled(data, runId)).length], [[], 1], "booked once, on the run's one booking");
   assert.equal(typeof view.cost?.usd, "number", JSON.stringify(view.cost));
 });
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("R2 a claude-agent run's learned node request reaches the session's proxy with the side key, is booked in the session's runner records and counts in the one cap, with no learned_workflow REQUEST_COST: behind the operator's gateway (ANTHROPIC_BASE_URL) it reaches that gateway with the run's key, and nothing reaches api.anthropic.com", { timeout: 120_000 }, async (t) => {
+test("R2 a claude-agent run's learned node request reaches the session's proxy with the side key, is booked in the session's runner records and counts in the one cap, with no learned_workflow REQUEST_COST: behind the operator's gateway (ANTHROPIC_BASE_URL) it reaches that gateway with the run's key, and nothing reaches api.anthropic.com", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const guard = await guarded(t);
@@ -114,19 +102,19 @@ test.skip("R2 a claude-agent run's learned node request reaches the session's pr
   const said = `gateway: ${JSON.stringify(sent.map((r) => [r.path, r.query, r.body?.model]))}; refused past loopback: ${JSON.stringify(refusedHosts())}; ${learnedResult(rows)?.tool_result_preview}`;
   // Through the session's proxy under its side key: the session's booking admitted it (its runner.request, labelled),
   // under the run's one cap (the guard's hold on it).
-  const booked = labelled(data, runId);
-  assert.equal(booked.length, 1, `the node's request is the session's, labelled learned_workflow: ${JSON.stringify(entries(data, runId, ["runner.request"]))}; ${said}`);
+  const booked = (await labelled(data, runId));
+  assert.equal(booked.length, 1, `the node's request is the session's, labelled learned_workflow: ${JSON.stringify((await entriesOf({ data }, runId, ["runner.request"])))}; ${said}`);
   assert.ok(booked[0].heldUsd > 0, `held by the session's guard under the run's cap: ${JSON.stringify(booked[0])}`);
-  assert.deepEqual(sideMarks(data, runId), [], "no second meter: no learned_workflow request_started or request_cost of its own");
+  assert.deepEqual((await sideMarks(data, runId)), [], "no second meter: no learned_workflow request_started or request_cost of its own");
   // On the root as a request of the session: its start mark and its BOOKED marker name it, so its bound opens and closes.
-  const marks = entries(data, runId, ["agentrun.request_started", "adapter.request"]).filter((entry) => entry.request === booked[0].turn);
+  const marks = (await entriesOf({ data }, runId, ["agentrun.request_started", "adapter.request"])).filter((entry) => entry.request === booked[0].turn);
   assert.deepEqual(marks.map((entry) => [entry.kind, entry.key]), [["agentrun.request_started", `run:${runId}`], ["adapter.request", `run:${runId}`]], JSON.stringify(marks));
   // Its number is the session's one counter's: never a harness request's, so no two requests share <key>:<n>, and every
   // start mark of the session is closed by one BOOKED marker of its own.
-  const own = entries(data, runId, ["runner.request"]).filter((entry) => entry.host === undefined).map((entry) => entry.turn);
+  const own = (await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === undefined).map((entry) => entry.turn);
   assert.equal(own.includes(booked[0].turn), false, `the node's ${booked[0].turn} is none of the harness's ${own}`);
-  const of = (kind) => entries(data, runId, [kind]).filter((entry) => entry.key === `run:${runId}` && typeof entry.request === "number").map((entry) => entry.request).sort((x, y) => x - y);
-  assert.deepEqual(of("adapter.request"), of("agentrun.request_started"), "each start mark closed once, by its own marker");
+  const of = async (kind) => (await entriesOf({ data }, runId, [kind])).filter((entry) => entry.key === `run:${runId}` && typeof entry.request === "number").map((entry) => entry.request).sort((x, y) => x - y);
+  assert.deepEqual(await of("adapter.request"), await of("agentrun.request_started"), "each start mark closed once, by its own marker");
   assert.deepEqual(sent.map((r) => [r.path, r.headers["x-api-key"], r.body?.model]), [["/v1/messages", key, "claude-sonnet-4-5"]], `the node's one request, at the gateway, with the run's key: ${said}`);
   assert.deepEqual(sent[0].body.tools.map((tool) => tool.name), ["submit"], "offered the node's submit, and nothing else");
   assert.deepEqual(refusedHosts(), [], "nothing past loopback, api.anthropic.com least of all");
@@ -134,13 +122,10 @@ test.skip("R2 a claude-agent run's learned node request reaches the session's pr
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
   assert.match(JSON.stringify(learnedResult(rows)), /\{\\?"answer\\?":42\}/);
   assert.equal(view.status, "completed", JSON.stringify(view));
-  const pin = pinOf(data, runId);
-  assert.deepEqual([pin.workflows, "workflows_off" in pin], [["answer"], false], JSON.stringify(pin));
 });
 
 for (const harness of ["codex", "opencode"]) {
-  // SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-  test.skip(`R3 a ${harness} run behind the gateway (AGENT_MODEL_BASE_URL) sends its learned node's request through the run's proxy, with the gateway's key, booked and priced on the session's one meter`, { timeout: 120_000 }, async (t) => {
+  test(`R3 a ${harness} run behind the gateway (AGENT_MODEL_BASE_URL) sends its learned node's request through the run's proxy, with the gateway's key, booked and priced on the session's one meter`, { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
     const gw = await startFauxGateway({ call: submitsAnswer });
     t.after(() => gw.close());
     const guard = await guarded(t);
@@ -151,11 +136,11 @@ for (const harness of ["codex", "opencode"]) {
     const sent = gw.requests.filter((r) => r.method === "POST");
     assert.deepEqual(sent.map((r) => [r.path, r.headers.authorization, r.body?.model]), [["/v1/responses", `Bearer ${key}`, "gpt-test"]], "the node's one request, at the gateway, with its key");
     assert.deepEqual(guard.lines().filter((line) => line.kind === "refused").map((line) => line.host), [], "nothing past loopback");
-    const booked = labelled(data, runId);
-    assert.equal(booked.length, 1, `the node's request is the session's, labelled learned_workflow: ${JSON.stringify(entries(data, runId, ["runner.request"]))}`);
-    assert.deepEqual(sideMarks(data, runId), [], "no second meter: no side marks of its own");
+    const booked = (await labelled(data, runId));
+    assert.equal(booked.length, 1, `the node's request is the session's, labelled learned_workflow: ${JSON.stringify((await entriesOf({ data }, runId, ["runner.request"])))}`);
+    assert.deepEqual((await sideMarks(data, runId)), [], "no second meter: no side marks of its own");
     // The gateway's usage (10 in, 2 out) at $1 and $2 a million: the session's booking prices it as the harness's own.
-    const turn = entries(data, runId, ["runner.turn"]).find((entry) => entry.turn === booked[0].turn);
+    const turn = (await entriesOf({ data }, runId, ["runner.turn"])).find((entry) => entry.turn === booked[0].turn);
     assert.ok(Math.abs((turn?.usd ?? -1) - 0.000014) < 1e-9, `priced as the run's requests are: ${JSON.stringify(turn)}`);
     assert.ok(Math.abs(view.cost.usd - (0.002 + 0.000014)) < 1e-9, `in the run's one cost: ${JSON.stringify(view.cost)}`);
     assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
@@ -165,22 +150,20 @@ for (const harness of ["codex", "opencode"]) {
 // The gateway priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
 // harness books each of its own requests at $0.001.
 const OUTPUT_PRICED = "0,100,0,0";
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-test.skip("R4 (guard) a capped codex run's learned node is admitted by the session's own guard: refused when the harness's spend leaves less than its least, and the run pauses at the cap on the one total", { timeout: 120_000 }, async (t) => {
+test("R4 (guard) a capped codex run's learned node is admitted by the session's own guard: refused when the harness's spend leaves less than its least, and the run pauses at the cap on the one total", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows, view } = await ran(api, data, "capped-port", "codex", { fields: { max_cost_usd: 0.103 }, ends: ["completed", "failed", "input_required"] });
   assert.deepEqual(gw.requests.filter((r) => r.method === "POST"), [], "the node's request never left");
-  assert.deepEqual(entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL), [], "refused before its record: the session wrote none");
+  assert.deepEqual((await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL), [], "refused before its record: the session wrote none");
   assert.deepEqual([view.status, view.state, view.pending?.kind, view.pending?.cap_usd, view.pending?.spent_usd, view.pending?.needs_usd], ["input_required", "waiting", "budget", 0.103, 0.001, 0.1024], JSON.stringify(view));
   assert.equal(learnedResult(rows)?.tool_status, "failed", JSON.stringify(learnedResult(rows)));
-  assert.deepEqual(sideMarks(data, runId), [], "no second meter");
+  assert.deepEqual((await sideMarks(data, runId)), [], "no second meter");
 });
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("R4 a capped codex run's harness counts its learned node on the one total: its next request is held to what is left after it", { timeout: 120_000 }, async (t) => {
+test("R4 a capped codex run's harness counts its learned node on the one total: its next request is held to what is left after it", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
@@ -191,11 +174,11 @@ test.skip("R4 a capped codex run's harness counts its learned node on the one to
   // request ($0.001) and that least fit under $2.
   const cap = 2;
   const { runId, rows } = await ran(api, data, "counted-port", "codex", { fields: { max_cost_usd: cap } });
-  const requests = entries(data, runId, ["runner.request"]);
+  const requests = (await entriesOf({ data }, runId, ["runner.request"]));
   const node = requests.filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
   assert.equal(node.length, 1, `the node's request is the session's: ${JSON.stringify(requests)}; ${learnedResult(rows)?.tool_result_preview}`);
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
-  const nodeUsd = entries(data, runId, ["runner.turn"]).find((entry) => entry.turn === node[0].turn)?.usd;
+  const nodeUsd = (await entriesOf({ data }, runId, ["runner.turn"])).find((entry) => entry.turn === node[0].turn)?.usd;
   assert.ok(Math.abs(nodeUsd - 0.0002) < 1e-9, `the gateway's 2 output tokens at $100 a million: ${nodeUsd}`);
   const own = requests.filter((entry) => entry.host === undefined);
   assert.equal(own.length, 2, JSON.stringify(own));
@@ -203,8 +186,7 @@ test.skip("R4 a capped codex run's harness counts its learned node on the one to
   assert.ok(own[1].heldUsd <= left + 1e-9 && own[1].heldUsd > left - 0.0001 - 1e-9, `the harness's next request held at ${own[1].heldUsd}; what is left after the node's $${nodeUsd} is ${left}`);
 });
 
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-test.skip("R5 a claude-agent run on OPENROUTER_API_KEY alone sends its learned node's request through the run's proxy to OpenRouter's Messages endpoint, with OpenRouter's key as a bearer token", { timeout: 120_000 }, async (t) => {
+test("R5 a claude-agent run on OPENROUTER_API_KEY alone sends its learned node's request through the run's proxy to OpenRouter's Messages endpoint, with OpenRouter's key as a bearer token", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const dir = await scratch(t);
@@ -229,12 +211,11 @@ globalThis.fetch = (input, init) => {
   const sent = gw.requests.filter((r) => r.method === "POST");
   assert.deepEqual(sent.map((r) => [r.path, r.headers.authorization]), [["/api/v1/messages", `Bearer ${key}`]], `the node's one request, at OpenRouter's Messages endpoint: ${JSON.stringify(sent.map((r) => [r.path, r.body?.model]))}`);
   assert.equal(existsSync(away), false, `nothing went anywhere else: ${existsSync(away) ? readFileSync(away, "utf8") : ""}`);
-  assert.equal(labelled(data, runId).length, 1, "the node's request is the session's, labelled learned_workflow");
+  assert.equal((await labelled(data, runId)).length, 1, "the node's request is the session's, labelled learned_workflow");
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
 });
 
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-test.skip("R7 (guard) a call the harness's answer asks for beside learned_workflow stays on that answer: the node's request writes nothing into the turn", { timeout: 120_000 }, async (t) => {
+test("R7 (guard) a call the harness's answer asks for beside learned_workflow stays on that answer: the node's request writes nothing into the turn", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "1,2,0.5" }, MODEL_VARS);
@@ -243,7 +224,7 @@ test.skip("R7 (guard) a call the harness's answer asks for beside learned_workfl
   assert.equal(view.status, "completed", JSON.stringify(view));
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
   // Each pi.assistant entry follows the marker that names its request: the entries holding the two calls name one request.
-  const root = entries(data, runId, ["adapter.request", "agentrun.request_continued", "pi.assistant"]);
+  const root = (await entriesOf({ data }, runId, ["adapter.request", "agentrun.request_continued", "pi.assistant"]));
   // harness-app writes an answer's entry, then its marker (adapter.request); a continuation's marker
   // (agentrun.request_continued) comes before its entry.
   const requestOf = (name) => {
@@ -254,11 +235,10 @@ test.skip("R7 (guard) a call the harness's answer asks for beside learned_workfl
   assert.equal(requestOf("write"), requestOf(LEARNED_WORKFLOW_TOOL), "both calls on the harness's one answer");
 });
 
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-test.skip("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
+test("R8 (guard) learned_workflow's description and input schema are as #1727 left them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
   const flows = [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }];
   assert.equal(learnedWorkflowDescription(flows), SAID);
-  const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
   assert.deepEqual([tool.description, tool.parameters], [SAID, SCHEMA], "pi's tool");
   const opened = join(await scratch(t), "opened.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
@@ -287,23 +267,6 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
 });
 
-test("R10 (guard) a node request's bound is its own: it opens as <key>:<n> on its start mark beside the harness request whose tool call it runs in, and each closes only its own, by its own BOOKED marker or late cost", async () => {
-  const { RequestBounds } = await import("../dist/bounds.js");
-  const bounds = new RequestBounds();
-  let id = 0;
-  const entry = (kind, data) => ({ id: ++id, kind, data });
-  // The harness's request 1 asks for learned_workflow; its answer is booked before its cost came in (unpriced).
-  bounds.note([entry("agentrun.request_started", { key: "run:r", request: 1, boundUsd: 0.1 })], 5);
-  bounds.note([entry("adapter.request", { key: "run:r", request: 1, unpriced: true })], 5);
-  // The node's request inside that call: the session's next number, 2, beside the harness's still awaiting its cost.
-  bounds.note([entry("agentrun.request_started", { key: "run:r", request: 2, boundUsd: 0.2, host: "learned_workflow" })], 5);
-  assert.ok(Math.abs(bounds.inFlight() - 0.3) < 1e-12, `both in flight: ${bounds.inFlight()}`);
-  bounds.note([entry("adapter.request", { key: "run:r", request: 2, host: "learned_workflow" })], 5);
-  assert.ok(Math.abs(bounds.inFlight() - 0.1) < 1e-12, `the node's BOOKED closes the node's alone: ${bounds.inFlight()}`);
-  bounds.note([entry("agentrun.request_cost_late", { key: "run:r", request: 1, usd: 0.01 })], 5);
-  assert.equal(bounds.inFlight(), 0, "the harness's late cost closes the harness's");
-});
-
 // SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
 test.skip("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
@@ -311,17 +274,16 @@ test.skip("R10 (guard) the harness's next request after a node request on the sa
   // Sonnet's prices, as grown() bills its requests: the gateway's model is the session's, the node's and the harness's.
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "2,10,0.2,2.5" }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
-  const ownHeld = (runId) => entries(data, runId, ["runner.request"]).filter((entry) => entry.host === undefined).map((entry) => entry.heldUsd);
+  const ownHeld = async (runId) => (await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === undefined).map((entry) => entry.heldUsd);
   const plain = await ran(api, data, "grown-plain", "codex", { fields: { max_cost_usd: 5 }, ask: "Grow three requests." });
   const beside = await ran(api, data, "grown-beside", "codex", { fields: { max_cost_usd: 5 }, ask: "Grow three requests, the second running the learned workflow answer on What is six times seven." });
   assert.equal(learnedResult(beside.rows)?.tool_status, "success", JSON.stringify(learnedResult(beside.rows)));
-  const [a, b] = [ownHeld(plain.runId), ownHeld(beside.runId)];
+  const [a, b] = [await ownHeld(plain.runId), await ownHeld(beside.runId)];
   assert.equal(a.length >= 3 && b.length >= 3, true, JSON.stringify({ a, b }));
   assert.ok(Math.abs(a[2] - b[2]) < 1e-9, `the third request held as it is with no node before it: ${b[2]} against ${a[2]}`);
 });
 
-// SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
-test.skip("R12 a learned node's request is a side call of the session (#1831): its runner.request says side, so the wrap-up's typical cost never counts it, and it never takes nor carries the wrap-up's note, which the harness's own next request takes", { timeout: 120_000 }, async (t) => {
+test("R12 a learned node's request is a side call of the session (#1831): its runner.request says side, so the wrap-up's typical cost never counts it, and it never takes nor carries the wrap-up's note, which the harness's own next request takes", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "0,100,0,0" }, MODEL_VARS);
@@ -332,11 +294,11 @@ test.skip("R12 a learned node's request is a side call of the session (#1831): i
   // the note if a side call could.
   const { runId, rows, view } = await ran(api, data, "wrap-node", "codex", { fields: { max_cost_usd: 1.5 }, ask: "Wrap up around the learned workflow answer on What is six times seven." });
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
-  const node = labelled(data, runId);
+  const node = (await labelled(data, runId));
   assert.deepEqual(node.map((entry) => entry.side), [true], `a side call on its record: ${JSON.stringify(node)}`);
   const sent = gw.requests.filter((r) => r.method === "POST");
   assert.equal(sent.length, 1, "the node's one request");
   assert.doesNotMatch(JSON.stringify(sent[0].body), /run's budget/, "the node's request carries no wrap-up note");
-  const notes = entries(data, runId, ["faux.note"]);
+  const notes = (await entriesOf({ data }, runId, ["faux.note"]));
   assert.equal(notes.length, 1, `the harness's own next request took the note: ${JSON.stringify(notes)}; ${view.status}`);
 });

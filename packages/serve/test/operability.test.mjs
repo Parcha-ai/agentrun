@@ -146,7 +146,9 @@ test("compose: every command the docs give works in a fresh shell (DOCKER_GID go
   assert.match(await readFile(new URL("packages/serve/README.md", ROOT), "utf8"), /`AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port/);
   // compose.yaml needs DOCKER_GID to be read at all (group_add's ${DOCKER_GID:?}): a value given to one command alone
   // leaves every later one, `docker compose logs` included, unable to read it.
-  for (const [name, text] of [["compose.yaml", compose], ["README.md", await readFile(new URL("README.md", ROOT), "utf8")], ["packages/serve/README.md", await readFile(new URL("packages/serve/README.md", ROOT), "utf8")]]) {
+  // The root README points at deploy/compose.yaml (no Docker socket, so no DOCKER_GID); only these two give the root
+  // compose file's commands.
+  for (const [name, text] of [["compose.yaml", compose], ["packages/serve/README.md", await readFile(new URL("packages/serve/README.md", ROOT), "utf8")]]) {
     const commands = text.split("\n").map((line) => line.replace(/^[#\s]*/, "")).filter((line) => /^(echo .*DOCKER_GID|DOCKER_GID=|docker compose )/.test(line));
     assert.ok(commands.length >= 2, `${name} gives its compose commands: ${JSON.stringify(commands)}`);
     assert.ok(!commands.some((line) => /^DOCKER_GID=.* docker compose/.test(line)), `${name}: no DOCKER_GID given to one command alone`);

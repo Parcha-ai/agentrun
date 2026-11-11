@@ -6,12 +6,18 @@ and uses the standard library only (`http.client`, `json`, `ssl`), on Python 3.1
 
 ## Install
 
-The package is held in this repository: it is not on PyPI. Install it from GitHub, or from a checkout:
+```sh
+pip install parcha-agentrun
+```
+
+Or from GitHub, or from a checkout:
 
 ```sh
 pip install "git+https://github.com/Parcha-ai/agentrun#subdirectory=python"
 pip install ./python
 ```
+
+Its versions start at 0.3.0. The 0.2.x releases under the same name are the old hosted API's SDK, not this client.
 
 It installs as `parcha-agentrun` and imports as `agentrun`. It has no dependencies, and it ships `py.typed`, so pyright
 and mypy read its types.

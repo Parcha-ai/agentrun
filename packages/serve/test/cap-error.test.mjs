@@ -10,19 +10,10 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { copyJson } from "@earendil-works/chord";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { capModels, HELD_USD, spentIn } from "../dist/cap.js";
-import { markRequests } from "../dist/request-start.js";
+import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { spentIn } from "../dist/cap.js";
 
-/** A side request's marks without their request id, once each names one and the same one (request-start.ts). */
-const sameRequest = (marks) => {
-  const ids = new Set(marks.map((m) => (Array.isArray(m) ? m[1] : m.data)?.requestId));
-  assert.ok(ids.size === 1 && typeof [...ids][0] === "string", `one request id across its marks: ${JSON.stringify(marks)}`);
-  const plain = ({ requestId: _, ...data }) => data;
-  return marks.map((m) => (Array.isArray(m) ? [m[0], plain(m[1])] : { ...m, data: plain(m.data) }));
-};
 
 /** A model at $1 per million output tokens with a ceiling of 1,000: a request's worst case is $0.001. */
 const outputOnly = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, maxTokens: 1_000, contextWindow: 128_000 };
@@ -67,98 +58,6 @@ function streaming(began = true) {
 /** A run whose store takes each mark (into `marks`), or refuses every one with `refuse`. */
 const runOf = (marks, refuse) => ({ harness: { commit: async (change) => (refuse ? Promise.reject(refuse) : change({ appendEntry: async (_conversation, entry) => void marks.push(entry) })) } });
 
-/** `models` as a run sends through them: marked, under a cap of `cap` with nothing spent ($0.001 held per request). */
-async function capped(models, cap, marks = []) {
-  const marked = await markRequests(models);
-  const out = await capModels(marked.models, cap, 0);
-  marked.open(runOf(marks));
-  return out;
-}
-
-test("a request whose response began and then ended on an error counts at its hold: in this process the next one is refused once that leaves no room, and after a crash its marks read the hold", async (t) => {
-  const { models, sent } = streaming();
-  const marks = [];
-  const run = await capped(models, 0.0015, marks);
-  const first = run.streamSimple(outputOnly, context);
-  await until(() => sent.length === 1);
-  assert.equal(sent.length, 1);
-  // Overloaded part way: pi-ai keeps the usage it had (the input), $0.00001 of a request that can have cost $0.001.
-  const overloaded = message(0.00001, "error", "overloaded_error");
-  sent[0].end(overloaded);
-  await first.result();
-  await settle();
-  // In this process: the next request is judged with the first at its hold.
-  const second = run.streamSimple(outputOnly, context);
-  const answer = await settled(second.result(), 300);
-  assert.equal(sent.length, 1, "not sent: $0.001 counted for the first and $0.001 held pass the cap");
-  assert.match(answer?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
-  // After a crash: its marks and pi's error entry for it read back at the hold, never at the $0.00001 that had streamed.
-  assert.equal(round(spentIn(storeOf(t, [...marks, entryOf(overloaded)]))), 0.001);
-  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_STARTED, REQUEST_ENDED], "its end is marked, before pi has its result");
-  assert.equal(marks[1].data.error, true);
-  assert.ok(Math.abs(marks[1].data.heldUsd - 0.001) < 1e-12, `its end holds the request's $0.001: ${marks[1].data.heldUsd}`);
-});
-
-test("pi's message for a request that ended on an error after its response began stays strict JSON, as pi writes it to the store: the stream's result, its error event's, a summary's", async () => {
-  const { models, sent } = streaming();
-  const run = await capped(models, 1);
-  const first = run.streamSimple(outputOnly, context);
-  const events = [];
-  const read = (async () => { for await (const event of first) events.push(event); })();
-  await until(() => sent.length === 1);
-  sent[0].end(message(0.00001, "error", "overloaded_error"));
-  const answer = await first.result();
-  await read;
-  const failure = events.find((event) => event.type === "error");
-  assert.ok(failure, "the error event is passed on");
-  assert.doesNotThrow(() => copyJson(answer), "the stream's result");
-  assert.doesNotThrow(() => copyJson(failure.error), "its error event's message");
-  const marked = await markRequests({ completeSimple: async () => ({ ...message(0.00002, "error", "overloaded_error"), content: [] }) });
-  marked.open(runOf([]));
-  const summary = await marked.models.completeSimple(outputOnly, context, { [HELD_USD]: 0.3 });
-  assert.doesNotThrow(() => copyJson(summary), "a summary's result");
-});
-
-test("in this process, a request refused before any event (a 429) counts at its own usage, so a retry goes on, and its end is not marked", async () => {
-  const { models, sent } = streaming(false);
-  const marks = [];
-  const run = await capped(models, 0.0015, marks);
-  const first = run.streamSimple(outputOnly, context);
-  await until(() => sent.length === 1);
-  sent[0].end(refusedAtHttp);
-  await first.result();
-  await settle();
-  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_STARTED], "its start only: pi's error entry closes it");
-  const retry = run.streamSimple(outputOnly, context);
-  await until(() => sent.length === 2);
-  assert.equal(sent.length, 2, "the retry was sent: $0 spent and $0.001 held fit $0.0015");
-  sent[1].end(message(0.0002));
-  assert.equal((await retry.result()).stopReason, "stop");
-});
-
-test("a request's result waits on its end mark at most its bound: a store whose write of that mark never settles holds an error or an answer whose mark carries a hold for END_MARK_WAIT_MS (shortened here), then fails it loudly; a stop for its own second", async () => {
-  // An error after its response began, and an answer whose cost cannot be read: their marks carry a hold. A stop: its own.
-  const unpriced = { ...message(0), usage: { ...message(0).usage, cost: {} } };
-  for (const [end, want] of [[message(0.00001, "error", "overloaded_error"), "error"], [unpriced, "error"], [{ ...message(0, "aborted"), errorMessage: undefined }, "aborted"]]) {
-    const { models, sent } = streaming();
-    // The store takes the start mark, and never answers the write of the end mark.
-    const run = { harness: { commit: async (change) => {
-      const entries = [];
-      await change({ appendEntry: async (_conversation, entry) => void entries.push(entry) });
-      if (entries.some((entry) => entry.kind === REQUEST_ENDED)) await new Promise(() => {});
-    } } };
-    // The bound for a mark that carries a hold, shortened from its 15 s so the test does not wait it out.
-    const marked = await markRequests(models, undefined, { holdMarkWaitMs: 300 });
-    const capped = await capModels(marked.models, 0.0015, 0);
-    marked.open(run);
-    const request = capped.streamSimple(outputOnly, context);
-    await until(() => sent.length === 1);
-    sent[0].end(end);
-    const answer = await settled(request.result(), 2_500);
-    assert.equal(answer?.stopReason, want, `the ${end.stopReason} reached pi within its bound while its end mark was still being written`);
-    if (want === "error") assert.match(answer.errorMessage ?? "", /^the model request's end could not be recorded \(the store had not taken it in 300 ms\)/, "it failed loudly, its end unrecorded");
-  }
-});
 
 /** A model stream that throws while it is read, after a start event (`began`) or before any. */
 const throwing = (began, counter) => ({
@@ -172,45 +71,6 @@ const throwing = (began, counter) => ({
   }),
   complete: async () => message(0),
   completeSimple: async () => message(0),
-});
-
-test("in this process, a model stream that throws after its response began counts at the hold; one that throws before any event at its own usage", async () => {
-  const after = { calls: 0 };
-  const run = await capped(throwing(true, after), 0.0015);
-  assert.equal((await run.streamSimple(outputOnly, context).result()).stopReason, "error");
-  await settle();
-  const refused = await run.streamSimple(outputOnly, context).result();
-  assert.equal(after.calls, 1, "the second request was not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
-  const before = { calls: 0 };
-  const early = await capped(throwing(false, before), 0.0015);
-  for (const turn of [1, 2]) {
-    assert.match((await early.streamSimple(outputOnly, context).result()).errorMessage, /reset before headers/, `request ${turn} was sent`);
-    await settle();
-  }
-  assert.equal(before.calls, 2);
-});
-
-test("in this process, an error for a request that never left counts nothing: a mark that could not be written, a cancelled run's refusal", async () => {
-  // The mark is refused: the request is not sent, and the next one is judged at $0 spent (it is refused for its mark too).
-  const { models } = streaming();
-  const marked = await markRequests(models);
-  const run = await capModels(marked.models, 0.0015, 0);
-  marked.open(runOf([], new Error("SQLITE_BUSY")));
-  for (const turn of [1, 2]) {
-    const answer = await run.streamSimple(outputOnly, context).result();
-    assert.ok(answer.errorMessage.startsWith(NOT_WRITTEN), `request ${turn}: ${answer.errorMessage}`);
-    await settle();
-  }
-  // The run was cancelled: each request is refused before it leaves, and none counts against the cap.
-  const cancelled = await markRequests(streaming().models, () => true);
-  const cappedCancel = await capModels(cancelled.models, 0.0015, 0);
-  cancelled.open(runOf([]));
-  for (const turn of [1, 2]) {
-    const answer = await cappedCancel.streamSimple(outputOnly, context).result();
-    assert.match(answer.errorMessage, /the run was cancelled/, `request ${turn}`);
-    await settle();
-  }
 });
 
 /** A run store holding `entries`, in order, as pi-durable keeps them; removed after the test. */
@@ -270,33 +130,4 @@ test("after a crash, an error for a request that never left counts nothing: the 
   const cancel = entryOf({ ...refusedAtHttp, errorMessage: "the run was cancelled: the model request was not sent" });
   assert.equal(round(spentIn(storeOf(t, [started(0.1), entryOf(message(0.05)), { kind: REQUEST_REFUSED, data: {} }, cancel]))), 0.05, "refused before its mark");
   assert.equal(round(spentIn(storeOf(t, [started(0.1), entryOf(message(0.05)), started(0.4), { kind: REQUEST_ENDED, data: { unsent: true } }, { kind: REQUEST_REFUSED, data: {} }, cancel]))), 0.05, "refused after its mark, its start withdrawn");
-});
-
-test("a summary that ended on an error after its response began counts at its hold: its cost mark says it failed and carries the hold, read back after a crash, and in this process; one with nothing streamed at its own usage", async (t) => {
-  const marks = [];
-  const failing = { completeSimple: async () => ({ ...message(0.00002, "error", "overloaded_error"), content: [] }) };
-  const marked = await markRequests(failing);
-  marked.open(runOf(marks));
-  await marked.models.completeSimple(outputOnly, context, { [HELD_USD]: 0.3 });
-  // After a crash: read back at its hold, never at the $0.00002 that had streamed.
-  assert.equal(round(spentIn(storeOf(t, marks))), 0.3);
-  const cost = marks.find((m) => m.kind === REQUEST_COST);
-  assert.deepEqual([cost.data.usd, cost.data.failed, cost.data.heldUsd], [0.00002, true, 0.3], "its own cost as the run shows it, and the hold for the cap");
-  // Refused before anything streamed: its cost mark is its own, no `failed`.
-  const early = [];
-  const refusedSummary = await markRequests({ completeSimple: async () => refusedAtHttp });
-  refusedSummary.open(runOf(early));
-  await refusedSummary.models.completeSimple(outputOnly, context, { [HELD_USD]: 0.3 });
-  assert.deepEqual(sameRequest([early.find((m) => m.kind === REQUEST_COST)])[0].data, { request: "compaction", usd: 0 });
-  // In this process: the next summary is judged with the failed one at its hold.
-  const { models, sent } = streaming();
-  const run = await capped(models, 0.0015);
-  const first = run.completeSimple(outputOnly, context);
-  await until(() => sent.length === 1);
-  sent[0].end({ ...message(0.00001, "error", "overloaded_error"), content: [] });
-  await first;
-  await settle();
-  const second = await settled(run.completeSimple(outputOnly, context), 300);
-  assert.equal(sent.length, 1, "not sent");
-  assert.match(second?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });

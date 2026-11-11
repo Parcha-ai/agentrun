@@ -245,6 +245,18 @@ export interface Learning {
   proposal(runId: string): Promise<LearningProposal | undefined>;
   /** The agent's kept proposals, newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+  /** What learning spent outside any run, in one read: each run (not imported) whose learning ended in [from, to) (ms),
+   *  its agent, when its learning ended and what its grade cost (null: unknown; 0: nothing graded). A learning dropped
+   *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
+   *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
+  spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+}
+
+/** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
+export interface LearningSpend {
+  readonly agentId: string;
+  readonly at: number;
+  readonly costUsd: number | null;
 }
 
 /** A command a journal commit takes, with the id of the record that is its effect, an id the effect's batch newly
@@ -446,8 +458,11 @@ export interface Agents {
    *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
    *  Unarchived, none turns on again: the answer is empty. */
   archive(id: string, archived: boolean, why?: unknown): Promise<{ id: string; name: string }[]>;
-  /** Adds a revision and makes it the agent's current one, in one commit. */
-  addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
+  /** Adds a revision and makes it the agent's current one, in one commit. With `ifCurrent` (a revision id, or null for
+   *  none), only while that is still the agent's current revision, compared in the same transaction under the agent row's
+   *  lock: RevisionMoved, and nothing written, when another writer (this server's, or another server's on the same store)
+   *  moved it first. */
+  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -545,7 +560,7 @@ export interface Runs {
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. */
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
@@ -695,6 +710,9 @@ export interface Settings {
   get(key: string): Promise<unknown | undefined>;
   /** Saves `value` (JSON) under `key`, inserted or replaced in place. */
   put(key: string, value: unknown): Promise<void>;
+  /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
+   *  wins; the value saved under it after (this one, or the one there before). */
+  putIfAbsent(key: string, value: unknown): Promise<unknown>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
   /** Every setting, by key. */
@@ -828,16 +846,15 @@ export interface SignInRow {
 }
 
 /** A forgotten sign-in's pointer, kept sealed byte for byte as its live row held it (so it still opens under the same
- *  binding), only so a server started later can cut it from what a run it was handed shows. */
+ *  binding), only so a server started later can cut it from what a run it was handed shows and from what its agent
+ *  learned. Every one is kept, never only the newest: a note may quote the agent's first pointer, and a shorter list
+ *  would show it. */
 export interface SignInTombstoneRow {
   readonly agentId: string;
   readonly provider: string;
   readonly pointerSealed: Uint8Array;
   readonly forgottenAt: number;
 }
-
-/** How many forgotten pointers an agent keeps per store, the oldest dropped first. */
-export const SIGN_IN_TOMBSTONES_KEPT = 32;
 
 export interface SignIns {
   /** Saves the one live sign-in for the agent and provider, its pointer already sealed by the caller: inserted, or replaced
@@ -862,7 +879,7 @@ export interface SignIns {
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
    *  run holds `hash` in its sign_in_handed (or, with `heldUnreadable`, when any running run was handed a sign-in at all),
    *  the forget is refused (SignInHandedTo, naming the run) and nothing is written; otherwise the live row's sealed pointer
-   *  moves to a tombstone (the newest SIGN_IN_TOMBSTONES_KEPT kept) and the live row goes. SignInMissing when the agent has
+   *  moves to a tombstone (every one kept) and the live row goes. SignInMissing when the agent has
    *  no live sign-in for the provider. */
   forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
   /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
@@ -1131,6 +1148,15 @@ export class StoreConstraint extends Error {
     this.name = "StoreConstraint";
     if (details.rule) this.rule = details.rule;
     if (details.unique) this.unique = details.unique;
+  }
+}
+
+/** An agent's current revision is not the one a conditional write expected (addRevision's `ifCurrent`): another write
+ *  moved it first. `current` is the agent's current revision now. Nothing was written. */
+export class RevisionMoved extends Error {
+  constructor(readonly agentId: string, readonly current: string | null) {
+    super(`the current revision of agent ${agentId} moved (now ${current ?? "none"})`);
+    this.name = "RevisionMoved";
   }
 }
 

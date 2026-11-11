@@ -1,6 +1,6 @@
 # Use real decisions and agents
 
-Continue from the [research demo](../README.md#research-demo). This is the same research workflow, with a runner that can switch from scripted responses to your configured models.
+Continue from the [research demo](examples.md#research-demo). This is the same research workflow, with a runner that can switch from scripted responses to your configured models.
 
 Should our team move its docs from a wiki into the code repository? Search reads a bundled fictional corpus about reviews, editing and search. Jev selects evidence for each subquestion; agent steps turn that evidence into findings and a report.
 

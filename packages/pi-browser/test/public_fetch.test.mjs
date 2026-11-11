@@ -1,8 +1,11 @@
 // The public-host guard from the package's root: every hop's port, name and addresses are checked before it is dialled,
 // and the caller's signal bounds every hop, its name lookup included. The network is a table here: no socket.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import http from "node:http";
 import test from "node:test";
-import { BrowserFailureError, isPrivateAddress, publicFetch, readPage } from "../dist/index.js";
+import { fetch as undiciFetch } from "undici";
+import { BrowserFailureError, createWebTools, isPrivateAddress, pinnedLookup, publicFetch, readPage } from "../dist/index.js";
 
 const PUBLIC = "93.184.216.34";
 const PAGE = '<html><head><title>Public</title></head><body><p>Hello.</p><a href="/next">Next</a></body></html>';
@@ -151,4 +154,123 @@ test("readPage gives the title, the text and each absolute http(s) link once", a
   const page = await readPage(PAGE, "http://public.example/");
   assert.deepEqual([page.title, page.links], ["Public", ["http://public.example/next"]]);
   assert.match(page.text, /Hello\./);
+});
+
+// The guard against the owner's own network, on a real loopback socket and through the web tools' backup: these cases
+// were the coding agent's (its HTTP backup was publicFetch and readPage), and the guard they hold is publicFetch's.
+const listen = (handler) => new Promise((resolve) => { const server = http.createServer(handler); server.listen(0, "127.0.0.1", () => resolve(server)); });
+/** Counts only this test's own requests: they carry a per-run marker path, which a stray client never asks for (this
+ *  host's prober sends `GET /` to every new loopback port). */
+async function markedServer(t, body, type) {
+  const marker = `/${randomUUID()}`;
+  const counted = { hits: 0 };
+  const server = await listen((req, res) => { if (req.url === marker) counted.hits += 1; res.writeHead(200, { "content-type": type }).end(body); });
+  t.after(() => server.close());
+  const port = server.address().port;
+  // A foreign request first, as a stray makes it: it is not counted.
+  await (await undiciFetch(`http://127.0.0.1:${port}/`, { headers: { "user-agent": "Go-http-client/1.1" } })).text();
+  assert.equal(counted.hits, 0, "a foreign request is not counted");
+  return { port, marker, counted,
+    /** The control: a request for the marker path is counted, so a zero means nothing of this test's reached it. */
+    control: async () => { await (await undiciFetch(`http://127.0.0.1:${port}${marker}`)).text(); assert.equal(counted.hits, 1, "the counter counts this test's own request"); } };
+}
+
+test("the owner's own network is refused and never contacted: loopback by address and by name, a private range, the metadata address, a .local name", async (t) => {
+  const { port, marker, counted, control } = await markedServer(t, "<h1>secret</h1>", "text/html");
+  const urls = [`http://127.0.0.1:${port}${marker}`, `http://localhost:${port}${marker}`, `http://[::1]:${port}${marker}`, "http://10.0.0.5/", "http://169.254.169.254/latest/meta-data/", "http://printer.local/"];
+  for (const url of urls) await assert.rejects(publicFetch(url), (error) => error instanceof BrowserFailureError && /not a public host|refused/.test(error.message), url);
+  assert.equal(counted.hits, 0, "the loopback server was never contacted");
+  await control();
+});
+
+test("a public host's redirect to a private address is refused at that hop, and a plain page reads as markdown", async () => {
+  const lookup = async (host) => (host === "evil.example" ? ["93.184.216.34"] : host === "public.example" ? ["93.184.216.34"] : ["10.1.2.3"]);
+  const answers = {
+    "http://evil.example/": () => new Response(null, { status: 302, headers: { location: "http://internal.example/admin" } }),
+    "http://public.example/": () => new Response("<html><body><article><h1>Hello</h1><p>World</p></article></body></html>", { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }),
+    "http://public.example/blob": () => new Response("xx", { status: 200, headers: { "content-type": "application/octet-stream" } }),
+    "http://public.example/missing": () => new Response("no", { status: 404, headers: { "content-type": "text/plain" } }),
+  };
+  const asked = [];
+  const dispatchers = [];
+  const fetchImpl = async (url, init) => { asked.push(String(url)); dispatchers.push(init.dispatcher); return answers[String(url)]?.() ?? new Response("?", { status: 500 }); };
+  await assert.rejects(publicFetch("http://evil.example/", { lookup, fetchImpl }), /internal\.example is not a public host/);
+  assert.deepEqual(asked, ["http://evil.example/"], "the private hop was never requested");
+  const page = await publicFetch("http://public.example/", { lookup, fetchImpl });
+  assert.match((await readPage(page.body, page.url)).text, /# Hello[\s\S]*World/);
+  assert.ok(dispatchers.at(-1), "each request goes through a dispatcher that dials the address that was checked");
+  await assert.rejects(publicFetch("http://public.example/blob", { lookup, fetchImpl }), /not text/);
+  assert.deepEqual(await publicFetch("http://public.example/missing", { lookup, fetchImpl }), { url: "http://public.example/missing", status: 404, contentType: "text/plain", body: null });
+});
+
+test("a hostname that resolves to the owner's loopback is never dialled, and a pinned lookup answers the checked address whatever it is asked", async (t) => {
+  const { port, marker, counted, control } = await markedServer(t, "secret", "text/plain");
+  const resolved = [];
+  await assert.rejects(publicFetch(`http://rebind.example:${port}${marker}`, { lookup: async (host) => { resolved.push(host); return ["127.0.0.1"]; } }), /rebind\.example is not a public host/);
+  assert.equal(counted.hits, 0, "the loopback server was never dialled");
+  await control();
+  assert.deepEqual(resolved, ["rebind.example"], "resolved once, at the check");
+  const answer = (options) => new Promise((resolve) => pinnedLookup("93.184.216.34")("anything.example", options, (...args) => resolve(args)));
+  assert.deepEqual(await answer({}), [null, "93.184.216.34", 4]);
+  assert.deepEqual(await answer({ all: true }), [null, [{ address: "93.184.216.34", family: 4 }]]);
+});
+
+test("a page larger than the limit is cut off while it is read, not after", async () => {
+  let pulled = 0;
+  const body = new ReadableStream({ pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(1024 * 1024)); }, cancel() {} });
+  await assert.rejects(publicFetch("http://big.example/", { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } }) }), /over 5 MiB/);
+  assert.ok(pulled <= 8, `only a few MiB were read before the refusal (${pulled})`);
+});
+
+test("a reply the fetch does not read (not text, an error status, a redirect) never leaves the call waiting on its connection", async (t) => {
+  // The guard refuses loopback, so the request is sent to the fixture server through the very dispatcher the fetch built.
+  const replies = { "/doc.pdf": [200, { "content-type": "application/pdf" }], "/gone": [404, { "content-type": "text/plain" }], "/moved": [302, { location: "/doc.pdf" }] };
+  // Only requests under this test's per-run marker are answered and recorded: a stray client reaching the port gets a 404.
+  const marker = `/${randomUUID()}`;
+  const served = [];
+  const server = await listen((req, res) => {
+    const own = req.url.startsWith(`${marker}/`) ? replies[req.url.slice(marker.length)] : undefined;
+    if (!own) { res.writeHead(404).end(); return; }
+    served.push(req.url.slice(marker.length));
+    const [status, headers] = own;
+    res.writeHead(status, headers);
+    res.write("x".repeat(64 * 1024));
+    // The body is never finished: a client that does not cancel it waits on this connection for as long as it is open.
+    t.after(() => res.destroy());
+  });
+  t.after(() => server.close());
+  // A foreign request first, as a stray makes it: answered 404 and not recorded.
+  await (await undiciFetch(`http://127.0.0.1:${server.address().port}/`, { headers: { "user-agent": "Go-http-client/1.1" } })).text();
+  assert.deepEqual(served, [], "a foreign request is not recorded");
+  const options = { lookup: async () => ["93.184.216.34"], fetchImpl: (url, init) => undiciFetch(`http://127.0.0.1:${server.address().port}${marker}${new URL(url).pathname}`, init) };
+  // Each call's answer or refusal (the fixture's own reply, not a connection failure), or that it was still waiting at the bound.
+  const outcome = (promise) => Promise.race([promise.then((answer) => `answered ${answer.status}`, (error) => error.message), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 3000).unref())]);
+  assert.deepEqual(
+    { pdf: await outcome(publicFetch("http://docs.example/doc.pdf", options)), gone: await outcome(publicFetch("http://docs.example/gone", options)), moved: await outcome(publicFetch("http://docs.example/moved", options)) },
+    { pdf: "refused: application/pdf is not text", gone: "answered 404", moved: "refused: application/pdf is not text" },
+  );
+  assert.deepEqual(served, ["/doc.pdf", "/gone", "/moved", "/doc.pdf"], "the redirect was followed to the PDF");
+});
+
+test("private, loopback, link-local and v4-mapped addresses are private; ordinary ones are not", () => {
+  for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "not an address"]) assert.equal(isPrivateAddress(ip), true, ip);
+  for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
+});
+
+test("web_fetch tells the model a backup's publicFetch refusal as a refusal: a private host, a non-text page and an oversized page are refused, not a failure worth retrying", async () => {
+  const sources = {
+    "http://rebind.example/": { lookup: ["127.0.0.1"] },
+    "http://public.example/blob": { lookup: ["93.184.216.34"], reply: () => new Response("%PDF", { status: 200, headers: { "content-type": "application/pdf" } }) },
+    "http://public.example/huge": { lookup: ["93.184.216.34"], reply: () => new Response(new Uint8Array(6 * 1024 * 1024), { status: 200, headers: { "content-type": "text/plain" } }) },
+  };
+  const options = { lookup: async (host) => Object.entries(sources).find(([url]) => new URL(url).hostname === host)[1].lookup, fetchImpl: async (url) => sources[url.href].reply() };
+  const backup = { name: "http", fetch: async (url, signal) => (await publicFetch(url, { ...options, ...(signal ? { signal } : {}) })).body };
+  const web = createWebTools({ name: "none", evidence: { file: async () => null }, scope: () => ({ label: "t", proxies: false }), backups: [backup] });
+  for (const url of Object.keys(sources)) {
+    const out = await web.fetch(1, { url });
+    const failure = JSON.parse(out.text);
+    assert.equal(out.isError, true, url);
+    assert.deepEqual([failure.code, failure.retryable], ["refused", false], `${url}: ${out.text}`);
+    assert.doesNotMatch(failure.message, /Try once more/, `${url}: a refusal is not worth retrying`);
+  }
 });

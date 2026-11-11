@@ -153,6 +153,20 @@ test("a template that makes a webhook trigger says so in its apply answer: the c
   assert.ok(!JSON.stringify(applied.body).includes("whsec_"));
 });
 
+test("the owner's first apply answer shows each webhook trigger's secret and no warning that it isn't shown; a token's keeps the warning", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
+  const { page, api } = await owned(t);
+  const body = { parameters: { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators" } };
+  const shown = await page("POST", "/templates/inbound-lead/apply", body);
+  assert.equal(shown.status, 201, JSON.stringify(shown.body));
+  assert.ok(shown.body.webhook_secrets.length > 0 && shown.body.webhook_secrets.every((x) => typeof x.signing_secret === "string"), JSON.stringify(shown.body.webhook_secrets));
+  assert.deepEqual(shown.body.warnings.filter((w) => /^triggers\.\d+\.secret$/.test(w.field)), [], "no warning that the secret shown right below is not shown");
+  const told = await api("POST", "/templates/inbound-lead/apply", body);
+  assert.equal(told.status, 201, JSON.stringify(told.body));
+  assert.ok(told.body.webhook_secrets.every((x) => x.secret_set === true && x.signing_secret === undefined));
+  assert.ok(told.body.warnings.some((w) => /^triggers\.\d+\.secret$/.test(w.field)), "a token's answer still says where the secret is");
+});
+
 test("removing the outbound webhook takes its secret with it: the API token is refused in the secret-write words and the webhook stays; the owner's session removes it", async (t) => {
   const { page, token, api } = await owned(t);
   assert.equal((await page("PUT", "/settings/webhook", { url: "https://hooks.example.com/agentrun" })).status, 201);

@@ -19,7 +19,7 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { BARRIER, JOURNAL_SYNCHRONOUS, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
-import { paidCall } from "./cap.js";
+import { paidCall, SPEND_CAP_REACHED } from "./cap.js";
 
 /** Parallel's published prices (https://docs.parallel.ai/getting-started/pricing, read 2026-11-03): a `fast` search
  *  $1 per 1,000 requests for up to 10 results, each further result $1 per 1,000; an extract $1 per 1,000 URLs. */
@@ -79,7 +79,8 @@ export type LedgerRefusal = Refusal;
 const roomOf = (error: unknown): LedgerRefusal | undefined => {
   const given = error as { code?: unknown; message?: unknown; forGood?: unknown; figures?: LedgerRefusal["figures"] } | undefined;
   if (given?.code !== "spend_cap_reached" || given.forGood !== false || !given.figures) return undefined;
-  return { refuse: String(given.message), forGood: false, figures: given.figures };
+  // Its code rides with it: the model request the pause refuses next is the cap's refusal (Refusal.code), never a failure.
+  return { refuse: String(given.message), code: SPEND_CAP_REACHED, forGood: false, figures: given.figures };
 };
 /** A paid step refused for room pauses the run, through the call's ledger (Ledger.pause), before its refusal is told. */
 const pauseOn = async (error: unknown): Promise<void> => {

@@ -343,7 +343,7 @@ import * as pi from '@parcha/agentrun-pi';
 import * as archil from '@parcha/pi-durable-disk';
 import * as archilInternals from '@parcha/pi-durable-disk/internals';
 import * as browser from '@parcha/pi-browser';
-import * as browserAgent from '@parcha/pi-browser/coding-agent';
+import * as browserDurable from '@parcha/pi-browser/durable';
 import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 import * as transport from '@parcha/pi-transport';
@@ -354,6 +354,7 @@ import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
 import * as decisions from '@parcha/agentrun-decisions';
+import * as client from '@parcha/agentrun-client';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import * as adapters from '@parcha/agentrun-kernel';
@@ -394,7 +395,7 @@ const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async opti
 assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
 assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archil.localRun,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false);
-assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
+assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLaunch.launch,'function'); assert.equal(typeof transportLaunch.launchState,'function'); assert.equal(typeof transportLaunch.launchStop,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
 for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[${JSON.stringify(Object.fromEntries(boxProviders.map(name => [name, boxFactory(name)])))}[name]],'function',name);
 assert.equal(typeof transportHands.boxEnv,'function');
@@ -414,7 +415,8 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
 { assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); assert.ok(Array.isArray(module.MOUNT)&&module.MOUNT.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' MOUNT'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,transport:true,agent:true,serve:true,decisions:true,adapters:true,computer:true,network:'prohibited'}));
+{ const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,transport:true,agent:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -564,7 +566,7 @@ void [durable, incomplete];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'archil-consumer.ts'], consumer);
   await writeFile(join(consumer, 'browser-consumer.ts'), `import { BROWSER_TOOLS, type BrowserPolicy } from '@parcha/pi-browser';
-import { createBrowserExtension } from '@parcha/pi-browser/coding-agent';
+import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 const browser: [typeof BROWSER_TOOLS, typeof createBrowserExtension, typeof FakeBackend, BrowserPolicy | undefined] = [BROWSER_TOOLS, createBrowserExtension, FakeBackend, undefined];
 void browser;

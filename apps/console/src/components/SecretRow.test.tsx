@@ -106,4 +106,13 @@ describe("SecretRow", () => {
     expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).toEqual(["Replace", "Remove", "Paste"]);
     expect(onSubmit).not.toHaveBeenCalled();
   });
+  it("stateSaid: the page's own mark says Set, so the row's word is kept for a screen reader and not shown", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement("ul", null, createElement(SecretRow, { field: field({ source: "env" }), writable: true, stateSaid: true, now: () => NOW }))));
+    const state = host.querySelector("[data-state]")!;
+    expect(state.getAttribute("data-state")).toBe("set");
+    expect(state.className).toBe("sr-only");
+    expect(host.textContent).toContain("Set in the environment");
+  });
 });

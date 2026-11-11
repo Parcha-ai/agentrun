@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { hostTools, workspaceRelative } from "../dist/host-tools.js";
+import { workspaceRelative } from "../dist/host-tools.js";
+import { hostToolsOf } from "./host-tools-of.mjs";
 import { localWorkspace, shellEnv } from "../dist/workspace/index.js";
 import { answerText, piExecutor } from "../dist/workspace/executors.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
@@ -37,7 +38,7 @@ test("an executor's answer, rendered, is a host tool's text for the same call on
   const [left, right] = [scratch(), scratch()];
   const envOf = (root) => piEnv(localWorkspace(root), { cwd: "/workspace", env: shellEnv(), defaultTimeoutS: 120 });
   const [leftEnv, rightEnv] = [envOf(left), envOf(right)];
-  const host = Object.fromEntries(hostTools({ env: async () => leftEnv }, ["read", "write", "edit", "bash"], ctx, new Map(), Object.values(tools())).map((tool) => [tool.name, tool]));
+  const host = Object.fromEntries(hostToolsOf({ env: async () => leftEnv }, ["read", "write", "edit", "bash"], ctx, new Map(), Object.values(tools())).map((tool) => [tool.name, tool]));
   const ours = tools();
   for (const [name, args] of CASES) {
     const expected = await host[name].call(args, { callId: `c-${name}`, signal: new AbortController().signal });

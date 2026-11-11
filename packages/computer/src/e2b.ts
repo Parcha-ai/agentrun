@@ -1452,10 +1452,11 @@ export class E2BProvider implements ComputerProvider {
 		return ok(infos);
 	}
 
-	/** For the sweep: every sandbox E2B lists with agentrun.computer=1, whatever its name, as E2B reports it. */
-	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; state: string }>>> {
+	/** For the sweep: every sandbox E2B lists with agentrun.computer=1, whatever its name, as E2B reports it, with its
+	 *  metadata as its labels (the sweep kills only a conformance run's). */
+	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; state: string; labels: Record<string, string> }>>> {
 		const listed = await this.#listPages({ [COMPUTER_LABEL]: "1" }, signal);
-		return listed.ok ? ok(listed.value.map((sb) => ({ id: sb.sandboxId, state: sb.state }))) : listed;
+		return listed.ok ? ok(listed.value.map((sb) => ({ id: sb.sandboxId, state: sb.state, labels: { ...(sb.metadata ?? {}) } }))) : listed;
 	}
 
 	/** For the sweep: whether E2B still has a sandbox, read once by getInfo; not_found is gone. */

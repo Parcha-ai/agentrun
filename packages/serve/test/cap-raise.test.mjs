@@ -106,7 +106,7 @@ test.skip("a working run's cap raised is kept and named on the run, and its live
   }
   const raised = await raise(api, run_id, { max_cost_usd: 11 });
   assert.deepEqual([raised.status, raised.body.resumed, raised.body.message_id], [200, false, undefined], JSON.stringify(raised.body));
-  assert.match(raised.body.note, /^The run's process keeps the \$10 cap it was opened with; the \$11 cap holds from its next process\.$/);
+  assert.equal(raised.body.note, "The $11 cap holds from the run's next step; a step already under way keeps the $10 cap it was admitted at.");
   assert.equal((await view(api, run_id)).cost.cap_usd, 11);
   assert.equal((await api("POST", `/runs/${run_id}/cancel`)).status, 202);
 });
@@ -194,7 +194,7 @@ test.skip("a paused run's pending suggests a raise, spent + 10 × the refused re
 });
 
 test("the suggested raise is a whole dollar, always above the cap, and a float just past a dollar stays that dollar", async () => {
-  const { suggestedCap } = await import("../dist/runs.js");
+  const { suggestedCap } = await import("../dist/run-view.js");
   assert.equal(typeof suggestedCap, "function", "runs.js offers suggestedCap");
   assert.equal(suggestedCap(0.05, 0, 0.1024), 2);
   assert.equal(suggestedCap(0.5, 0.4, 0.2), 3, "$0.40 + $2.00, up to $3");
@@ -405,7 +405,7 @@ test.skip("a raise whose save is slow while the paused process exits sends its f
 });
 
 test("the suggested raise is above the cap by more than a float's tail, so a PATCH with it is always a raise", async () => {
-  const { suggestedCap } = await import("../dist/runs.js");
+  const { suggestedCap } = await import("../dist/run-view.js");
   // $0.05 needed, nothing spent: 10 × $0.05 is $0.50, up to $1, a hair (5e-10) above a 0.9999999995 cap: no raise.
   assert.equal(suggestedCap(0.9999999995, 0, 0.05), 2);
   // The next dollar above a cap a hair under $2 is $3: $2 is within the tail of it, and no raise.

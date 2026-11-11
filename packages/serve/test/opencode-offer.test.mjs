@@ -39,7 +39,7 @@ async function withBin(t, bin, run) {
 }
 
 test("opencode is offered on the pinned build: available with a model key, unavailable for the key it names without one", { skip }, async () => {
-  assert.deepEqual(await opencodeOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "opencode", available: true, steer: false, default_model: "openai/gpt-6.1-sol", run_memory_mib: 704 }, "on the OpenAI key's default model (model.ts MODEL_KEYS), as codex");
+  assert.deepEqual(await opencodeOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "opencode", available: true, steer: false, keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"], default_model: "openai/gpt-6.1-sol", run_memory_mib: 704 }, "on the OpenAI key's default model (model.ts MODEL_KEYS), as codex");
   const keyless = await opencodeOf({});
   assert.equal(keyless.available, false);
   assert.match(keyless.reason, /^opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY \(OpenAI's models through OpenRouter\), or a gateway in AGENT_MODEL_BASE_URL\.$/);
@@ -68,7 +68,7 @@ test("an OpenCode that is not the pinned build is unavailable as that, with serv
 test("with only OPENROUTER_API_KEY, opencode is offered on OpenAI's model through OpenRouter, and its run's requests go to OpenRouter's Responses API with the key as a bearer token and the model's whole id", { skip, timeout: 60_000 }, async (t) => {
   // codex's route (provider.ts' providerFor and modelOn): opencode has no OpenRouter path of its own.
   const KEY = `not-a-secret-${"openrouter"}`;
-  assert.deepEqual(await opencodeOf({ OPENROUTER_API_KEY: KEY }), { id: "opencode", available: true, steer: false, default_model: "openai/gpt-6-sol", run_memory_mib: 704 }, "OpenRouter's default for opencode, as codex's");
+  assert.deepEqual(await opencodeOf({ OPENROUTER_API_KEY: KEY }), { id: "opencode", available: true, steer: false, keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"], default_model: "openai/gpt-6-sol", run_memory_mib: 704 }, "OpenRouter's default for opencode, as codex's");
   // The run, on the stand-in for `opencode serve`, through the adapter's real proxy to a fake upstream standing in for
   // openrouter.ai: nothing leaves this machine.
   const before = { s: env.AGENTRUN_OPENCODE_STANDIN };

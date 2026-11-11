@@ -5,18 +5,34 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { openapiDocument } from "../dist/openapi.js";
+import { SECRET_NAMES } from "../dist/secrets.js";
+import { sealColumn, sealedAt } from "../dist/store/index.js";
+import { DatabaseSync } from "node:sqlite";
 import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 const sealKey = () => randomBytes(32).toString("base64");
+/** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
+const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
+/** Saved server `name`'s credential in the stopped store at `data`, sealed again under another key: a row this server's key
+ *  does not open (one copied from another server's store). */
+function resealElsewhere(data, name) {
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  try {
+    const sealed = sealColumn(randomBytes(32), sealedAt.mcpServer(name), JSON.stringify({ type: "headers", headers: { authorization: "Bearer x" } }));
+    assert.equal(Number(db.prepare("UPDATE mcp_servers SET sealed = ? WHERE name = ?").run(sealed, name).changes), 1);
+  } finally {
+    db.close();
+  }
+}
 /** A throwaway value: none is a real token. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
 const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) => Buffer.from(value).toString(code))];
@@ -229,7 +245,7 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 404);
 });
 
-test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; and a server handed no seal key keeps a credential under the one it made, reading one sealed under the other as unreadable, and a PUT must send it again", async (t) => {
+test("what is refused before any connection: a bad name, OAuth (not yet), plain http off loopback; a server handed no seal key, or another, over a store whose credentials a key sealed does not start, making no key; a credential sealed under another key reads as unreadable, and a PUT must send it again", async (t) => {
   const data = join(await scratch(t), "agents");
   const token = made();
   const server = await fake(t, { token });
@@ -256,11 +272,18 @@ test("what is refused before any connection: a bad name, OAuth (not yet), plain 
   assert.equal(typeless.status, 422, "a new server's bearer comes with its token");
   await first.close();
 
-  // Handed no seal key, the server makes its own (seal-key.ts): a credential sealed under the first does not open under
-  // it, and a new one is sealed under it.
+  // Handed no seal key, with none in its data directory, or another key, over a store whose credential the first sealed
+  // (seal-key.ts): it does not start, in words, and makes no key over it.
   delete process.env.AGENTRUN_SEAL_KEY;
+  await assert.rejects(startServe({ data, port: 0 }), (error) => String(error.message).includes(SEALED_ELSEWHERE));
+  assert.equal(existsSync(join(data, "seal", "seal.key")), false, "no key made over the saved credential");
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  await assert.rejects(startServe({ data, port: 0 }), (error) => String(error.message).includes(SEALED_ELSEWHERE));
+  // A credential another key sealed, in a store under this one (copied from another server's store): unreadable.
+  process.env.AGENTRUN_SEAL_KEY = key;
+  resealElsewhere(data, "guarded");
   const { api } = await serve(t, { data, runner: false });
-  assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the key the server made");
+  assert.equal((await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } })).status, 200, "kept under the store's key");
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200);
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
   assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["again", "sealed"], ["guarded", "unreadable"], ["open", null]]);
@@ -307,17 +330,27 @@ test("names an empty object would inherit are no saved servers: 404 on every rou
   assert.equal(headers.status, 200, `a header named constructor is no duplicate: ${JSON.stringify(headers.body)}`);
 });
 
-test("the launcher's warning for a seal key it cannot use names MCP server credentials, and how to fix the file", (t) => {
+test("the launcher keeps no seal key of its own: with none handed it reads, makes and hands none from the config home (the server keeps its key in its data directory)", (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-seal-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // An earlier build's key under the config home, one another user can read: the launcher neither reads nor changes it.
   const keys = join(dir, "config", "agentrun");
   mkdirSync(keys, { recursive: true, mode: 0o700 });
   writeFileSync(join(keys, "seal.key"), `${randomBytes(32).toString("base64")}\n`);
-  chmodSync(join(keys, "seal.key"), 0o644); // another user can read it: refused, never changed
-  const { AGENTRUN_SEAL_KEY: _, ...env } = process.env;
-  const ran = spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", ""], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir } });
+  chmodSync(join(keys, "seal.key"), 0o644);
+  // None of the launcher's secrets in its environment: whatever it hands over, it made or read itself.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_NAMES.includes(name)));
+  const probe = "process.stdout.write(String(process.env.AGENTRUN_SECRETS_LEN ?? 0))";
+  const ran = spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", probe], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir } });
   assert.equal(ran.status, 0, ran.stderr);
-  assert.match(ran.stderr, /so the server keeps no tool key and no MCP server credential: make the file 0600 and its directory 0700 \(chmod 700 \S+; chmod 600 \S+seal\.key\)/);
+  assert.doesNotMatch(ran.stderr, /seal key/i);
+  assert.equal(ran.stdout, "0", "no key handed over");
+  assert.equal(statSync(join(keys, "seal.key")).mode & 0o777, 0o644, "never changed");
+  // A config home with no key: none is made there.
+  const fresh = join(dir, "fresh");
+  mkdirSync(fresh);
+  assert.equal(spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", ""], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: fresh, TMPDIR: dir } }).status, 0);
+  assert.deepEqual(readdirSync(fresh), [], "nothing is made under the config home");
 });
 
 test("the names AgentRun's own tools are called by, hands and monid, are no MCP server's: a PUT under one is 422 on its name, with why, and nothing is saved", async (t) => {

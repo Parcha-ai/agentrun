@@ -17,7 +17,7 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { givenOf, LEARNING_BUDGET, learnedOf, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
@@ -188,7 +188,7 @@ async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
 /** Raises the cap of an agentic or workflow run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the
  *  same as its newest raise (a retry, which changes nothing). A raise command row the run's runner reads: it resumes a run
  *  paused at its cap and sends its continuation, or (for a run working now) holds the raised cap from the run's next
- *  process, as the old path did. The answer reports whether the run resumed; the runner owns the resume itself. */
+ *  step. The answer reports whether the run resumed; the runner owns the resume itself. */
 export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number): Promise<{ resumed: boolean; messageId?: string; note?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   if (moment.cancelled || moment.terminal) throw finished(moment);
@@ -201,11 +201,20 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
     return moment.paused ? { resumed: true } : { resumed: false };
   }
   if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
-  await sendCommand(store, moment.id, { kind: "raise", body: { capUsd: cap } });
-  // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation); a run working
-  // now keeps the cap its process was opened with until its next one.
+  try {
+    await sendCommand(store, moment.id, { kind: "raise", body: { capUsd: cap } });
+  } catch (error) {
+    // A run a person stopped reads waiting on its next message (its moment is not terminal), but its row takes no command
+    // until a message reopens it: refused in words, nothing written. (Main took the raise and held it for the run's next
+    // process; that waits for a stopped run's reopen here.)
+    if (error instanceof RunFinal && (await store.runs.get(moment.id))?.state === "stopped") throw new ApiError("not_continuable", "This run was stopped: send it a message to go on, then raise its cap.");
+    throw error;
+  }
+  // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation).
   if (moment.paused) return { resumed: true };
-  return { resumed: false, ...(moment.live ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
+  // A run its runner holds takes the raise as its next command: its next step is admitted under the raised cap (the
+  // runner's loop holds the run to its newest raise), and a step already under way keeps the cap it was admitted at.
+  return { resumed: false, ...(moment.live ? { note: `The ${money(cap)} cap holds from the run's next step; a step already under way keeps the ${money(from)} cap it was admitted at.` } : {}) };
 }
 
 /** The refusal for a tool call already answered, in the old runs.ts words, by how it was answered; a withdrawal by a run
@@ -313,6 +322,9 @@ export interface StartDeps {
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
   /** The learning budget in bytes (learning.ts LEARNING_BUDGET), for which notes fit a run's # Learned section. */
   readonly learningBudget?: number;
+  /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
+   *  the agent's own grades it. */
+  readonly gradeModel?: string;
   /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
   shown?(): Shown;
 }
@@ -333,19 +345,26 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
 
 /** The run's learning start as the old start decided it (learning-run.ts onStart): undefined when the run does not learn (the
  *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
- *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
+ *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; gradeModel?: string } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
+  const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "" };
-  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
-  // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
-  // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
-  // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-  return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", ...grade };
+  // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
+  const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
+  // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
+  // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
+  // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
+  const { section, given } = learnedParts(seeded.seed, options);
+  // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
+  // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
+  // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+  const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
+  return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...grade };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
@@ -464,10 +483,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's model, resolved once, at start (the runner reads launch.model only).
   const model = await deps.modelOf(entry, revision);
   // The run's learning start, decided here as the old start did (learning-run.ts onStart): a run learns when the server's
-  // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (givenOf,
+  // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (learnedParts,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody);
+  const learning = await learningStartFor(deps, entry, revision, rbody, input);
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),

@@ -4,7 +4,7 @@ Give this file to your coding agent. Use the actual AgentRun interpreter and Jev
 
 ## Read first
 
-- [README and quickstart](../README.md#quickstart)
+- [Workflow language and quickstart](../packages/dsl/README.md)
 - [Support workflow](../examples/support-answer.mjs)
 - [Live support integration](support-quickstart.md)
 - [Host integration contract](host-integration.md)
@@ -14,7 +14,7 @@ If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git
 
 ## Establish a working baseline
 
-Use Node 22.19+ or 24.2+ (the checkout includes `.nvmrc`). In the checkout, run:
+Use Node 24.11 or newer (the checkout includes `.nvmrc`). In the checkout, run:
 
 ```sh
 npm ci --ignore-scripts

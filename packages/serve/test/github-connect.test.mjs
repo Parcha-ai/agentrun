@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { createHash, createVerify, generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { callback, CONNECTED, connect, connectable, deliver, failedWith, fakeGitHub, firstInput, held, install, PUBLIC, SEAL, startConnect, storeOf } from "./github-support.mjs";
@@ -319,19 +320,20 @@ test("the installed redirect records an installation only with the install state
 });
 
 test("a key whose last line is short shows nothing of itself where the server's secrets are cut: the whole key and every line are listed, the short one too", async (t) => {
-  const { openServerSecrets } = await import("../dist/server-secrets.js");
-  const { SealedSettings } = await import("../dist/sealed-settings.js");
+  const { openServerSecretsOverStore } = await import("../dist/server-secrets-store.js");
   const { redactedAnswer } = await import("../dist/key-refusal.js");
   const { github } = await import("../dist/trigger-github.js");
   const { scratch } = await import("./support.mjs");
+  const { storeOn } = await import("./store-helpers.mjs");
   const { randomBytes } = await import("node:crypto");
   const data = await scratch(t);
+  const { store } = await storeOn(t);
   const key = randomBytes(32);
   const kind = ["RSA", "PRIVATE", "KEY-----"].join(" ");
   const lines = [randomBytes(48).toString("base64"), randomBytes(48).toString("base64"), "Zq7=="];
   const pem = `-----BEGIN ${kind}\n${lines.join("\n")}\n-----END ${kind}\n`;
-  new SealedSettings(data, "github", github.settings, key, () => {}).set("server", "private_key", pem);
-  const { secrets } = openServerSecrets(data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, [github]);
+  const { secrets, settings } = await openServerSecretsOverStore(store, data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, [github]);
+  await settings.get("github").set("server", "private_key", pem);
   const held = secrets.values();
   for (const line of lines) assert.ok(held.includes(line), `listed: ${line}`);
   const shown = redactedAnswer(`the run printed: ${pem} and ended`, held);
@@ -569,9 +571,10 @@ test("the installed redirect never records a suspended installation", { timeout:
   assert.ok(!server.lines.some((line) => line.includes("condition=github_installed")), "nothing recorded");
 });
 
-test("a server started with no AGENTRUN_SEAL_KEY still has one (ensureSealKey makes it under its config home): GitHub's sealed settings take the App, and Connect never answers github_no_seal_key", { timeout: 60_000 }, async (t) => {
-  // A config home of the test's own: the key ensureSealKey makes is written there, never in the real one.
-  withEnv(t, { XDG_CONFIG_HOME: await scratch(t) }, ["AGENTRUN_SEAL_KEY"]);
+test("a server started with no AGENTRUN_SEAL_KEY still has one (bootSealKey makes it in its data directory): GitHub's sealed settings take the App, and Connect never answers github_no_seal_key", { timeout: 60_000 }, async (t) => {
+  // No key handed, and a config home of the test's own: the key is made in the server's data directory, nowhere else.
+  const config = await scratch(t);
+  withEnv(t, { XDG_CONFIG_HOME: config }, ["AGENTRUN_SEAL_KEY"]);
   const github = await fakeGitHub(t);
   const server = await serve(t, { publicUrl: PUBLIC, githubApi: github.url });
   const started = await startConnect(server);
@@ -581,4 +584,6 @@ test("a server started with no AGENTRUN_SEAL_KEY still has one (ensureSealKey ma
   assert.ok(back.location.includes("/installations/new"), `on to install the App: ${back.location}`);
   const rows = await (await storeOf(t, server)).triggerSettings.get("github");
   assert.ok(rows.some((r) => r.field === "private_key"), "the App's key kept, sealed");
+  assert.ok(existsSync(join(server.data, "seal", "seal.key")), "its key is in its data directory");
+  assert.equal(existsSync(join(config, "agentrun")), false, "and nothing under the config home");
 });

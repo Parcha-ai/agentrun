@@ -8,11 +8,15 @@
 // agentrun.computer=1: sandboxes.list({ appId, tags }) returns those with at least those tags, and running ones only
 // (modal-client@64880502:js/src/sandbox.ts:1116-1159, includeFinished: false), so a finished sandbox is in neither list
 // and needs no sweep. --after refuses a file whose app or server is not the one the environment names now, or that
-// names none, before it lists anything: another app's computers would all read as new. Otherwise it lists them again, terminates every one whose id is not in <file>, then reads each of those
-// back with sandboxes.fromId and poll (sandbox.ts:960-962, 2766-2772; poll is null while it runs) until it reports an
-// exit code, or Modal no longer knows it, up to 60 s each, and prints one JSON line, {"swept":n,"gone":m,"stillThere":
-// [ids]}: swept is every tagged sandbox it found that was not there before, and gone + stillThere.length = swept. A
-// sandbox in <file> is never touched: no call names it. Exit 0 when every swept sandbox has finished, 1 when one still
+// names none, before it lists anything: another app's computers would all read as new. Otherwise it lists them again,
+// reads the tags of every one whose id is not in <file> (getTags: a list filters by exact tag values, and a run's label
+// differs per run), terminates each that carries a conformance run's label (agentrun.conformance, RUN_LABEL), then
+// reads each of those back with sandboxes.fromId and poll (sandbox.ts:960-962, 2766-2772; poll is null while it runs)
+// until it reports an exit code, or Modal no longer knows it, up to 60 s each, and prints one JSON line,
+// {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}: swept is every conformance sandbox it found that was not there
+// before, gone + stillThere.length = swept, and leftAlone counts the new tagged sandboxes it did not terminate: no
+// conformance label (another user of the app made them during the run), or tags it could not read (said on stderr).
+// A sandbox in <file> is never touched: no call names it. Exit 0 when every swept sandbox has finished, 1 when one still
 // runs, 2 on a usage error, a before file it cannot read or of another app or server, a missing token or app, or a
 // listing Modal refused (nothing is terminated then).
 //
@@ -25,6 +29,7 @@ import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
 import { MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalSandbox, type ModalSdk, modalClient, untilFinished } from "../modal.js";
 import { MODAL_ENV, settingsFromEnv } from "./modal.js";
+import { RUN_LABEL } from "./runner.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
 export interface Writer {
@@ -52,8 +57,9 @@ const TAG = { [COMPUTER_LABEL]: "1" };
 const USAGE = `usage: node packages/computer/dist/conformance/modal-sweep.js --before <file> | --after <file>
   --before <file>  record the app, the server and the id of every running sandbox carrying ${COMPUTER_LABEL}=1 in the app into <file>
   --after <file>   refuse a <file> of another app or server; else terminate every running sandbox carrying ${COMPUTER_LABEL}=1
-                   in the app whose id is not in <file>,
-                   read each back until it has finished (up to 60 s each), and print {"swept":n,"gone":m,"stillThere":[ids]}
+                   and ${RUN_LABEL} in the app whose id is not in <file>, read each back until it has finished (up to 60 s
+                   each), and print {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}; a new one with no
+                   ${RUN_LABEL} (or tags it cannot read) is left alone
   settings: ${MODAL_ENV.tokenId} and ${MODAL_ENV.tokenSecret} (required), ${MODAL_ENV.app} (required) and
             ${MODAL_ENV.serverUrl}, as the conformance module reads them; never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET
 exit: 0 every swept sandbox has finished, 1 one still runs, 2 usage error, unreadable before file or one of another app
@@ -191,7 +197,20 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		return 0;
 	}
 	const known = before;
-	const fresh = listed.value.filter((sandbox) => !known.has(sandbox.sandboxId));
+	const added = listed.value.filter((sandbox) => !known.has(sandbox.sandboxId));
+	// Only a conformance run's computers: one another user of the app made during the run is not this sweep's. Tags it
+	// cannot read leave the sandbox alone, said in words; one Modal no longer knows has finished already.
+	const fresh: ModalSandbox[] = [];
+	let leftAlone = 0;
+	for (const sandbox of added) {
+		const tags = await bounded(`getTags of ${sandbox.sandboxId}`, () => sandbox.getTags(), callMs);
+		if (!tags.ok) {
+			if (notFound(tags.error)) continue;
+			await write(stderr, `${sandbox.sandboxId} was left alone: its tags could not be read: ${words(tags.error)}\n`);
+			leftAlone += 1;
+		} else if (Object.hasOwn(tags.value, RUN_LABEL)) fresh.push(sandbox);
+		else leftAlone += 1;
+	}
 	for (const sandbox of fresh) {
 		const ended = await bounded(`terminate of ${sandbox.sandboxId}`, () => sandbox.terminate(), callMs);
 		if (!ended.ok && !notFound(ended.error)) await write(stderr, `${sandbox.sandboxId} was not terminated: ${words(ended.error)}\n`);
@@ -206,7 +225,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		}),
 	);
 	const stillThere = fresh.filter((_, i) => !gone[i]).map((sandbox) => sandbox.sandboxId);
-	await write(stdout, `${JSON.stringify({ swept: fresh.length, gone: fresh.length - stillThere.length, stillThere })}\n`);
+	await write(stdout, `${JSON.stringify({ swept: fresh.length, gone: fresh.length - stillThere.length, stillThere, leftAlone })}\n`);
 	return stillThere.length === 0 ? 0 : 1;
 }
 

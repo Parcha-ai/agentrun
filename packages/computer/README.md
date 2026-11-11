@@ -33,6 +33,10 @@ full VM, a machine. The protocol has two layers:
   inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
   and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
+The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.1
+(`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
+`src/protocol.ts` by `node scripts/generate-computer-spec.mjs`, and a test fails when they drift.
+
 ## What it does today
 
 The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*`, the `process.*` methods and
@@ -43,7 +47,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.1","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -864,6 +868,61 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
   that path, read-write, `rprivate`, and no other mount.
 
+### A provider in a container: the `volume` option
+
+A provider that runs in a container of the Docker it drives, given that Docker's socket (the server under
+`docker compose`), has paths the Docker daemon does not: its files are on a named volume the daemon mounted into its
+container. A bind of its daemon copy or of a run folder names a path that exists only inside that container, so every
+`docker run` would fail. The `volume` option says where its files are:
+
+```ts
+// The server's container has the named volume agentrun_agentrun-data mounted at /data.
+const docker = new DockerProvider({
+	daemonPath: "dist/computerd-linux-amd64",
+	daemonCache: "/data/computer-cache", // at or below volume.root
+	volume: { name: "agentrun_agentrun-data", root: "/data" },
+});
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } });
+```
+
+- `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
+  has it mounted, an absolute path. Without the option, nothing changes: every path is bound as it is.
+- With it, the daemon and the run's folder are mounted as the volume's subpaths, never binds of this process's paths
+  and never the volume's root, and every subpath is a directory (Docker mounts a directory subpath on every engine that
+  has `volume-subpath`; nothing leans on a file). The daemon is staged in `daemonCache` as `daemon-<sha256>/`, holding
+  `computerd` (0755) and an empty `egress/`, written in a temporary directory and renamed into place, reused when the
+  same; that directory is mounted read-only at `/opt/agentrun`, so the daemon is `/opt/agentrun/computerd` as on every
+  computer and an allowlist's egress volume has its mount point. `--mount type=volume,src=<name>,dst=/opt/agentrun,
+  volume-subpath=<daemon dir below root>,volume-nocopy,readonly`, and `--mount type=volume,src=<name>,dst=/workspace,
+  volume-subpath=<folder below root>,volume-nocopy`. `volume-nocopy`: Docker never copies the image's files at the
+  destination into the volume.
+- `daemonCache` must be at or below `root`; the provider throws in words when it is made with one that is not. A run
+  folder must be below `root`; `check` and `create` refuse one that is not, or the root itself, in words, before any
+  `docker run`.
+- `volume-subpath` takes Docker Engine 26 or later (API 1.45). The provider reads the engine with `docker info`
+  (`host().engine`); `create` refuses an older one, or one that reports no version, in words before anything is made,
+  and `check` does too once the host is read.
+- `attach` and `list` read the run's folder back from the volume's subpath (`HostConfig.Mounts`) as the path below
+  `root` that `create` was given, `{ kind: "bind", path }`. The drift check holds the daemon's and the folder's mounts to
+  the volume, its subpaths, read-only and read-write, and no bind.
+- The run folder is still checked for the computer's user as above: the provider reads it at its own path.
+- **An allowlist's proxy too.** The egress proxy's code (`dist/docker/egress-main.js`, `egress-proxy.js`,
+  `egress-table.js` and the package's `package.json`) is bound from this package's build, a path the Docker daemon does
+  not have either. With the option, `create` stages those four files below the volume's root first, as it stages the
+  daemon: in `daemonCache`, in `egress-<sha256 of the files>/` (`docker/` holding the three modules, `package.json`
+  beside it; 0755 directories, 0644 files), written in a temporary directory and renamed into place, and reused when
+  one with the same bytes and modes is there. A published tree, the daemon's or the proxy's, is never removed or written
+  over, since a running computer may have it mounted: providers sharing `daemonCache` that stage at once use the tree
+  the first one renamed into place, and a tree at that name that no longer holds the same (a hand edit) is left as it
+  is, the new one published beside it as `<name>-<random>`. The read-back (`attach`, `list`, `network`, the drift
+  check) takes a computer mounted on `<name>` or any `<name>-<anything>` in that directory whose contents verify, byte
+  for byte and mode for mode: two providers that repaired the same tree at once each mounted their own copy, and both
+  are as `create` makes one. A source that is not a regular file (a named pipe) is
+  refused in words, never waited on. The proxy then mounts that one
+  directory, the layout it runs from, whole at `/code` as the volume's subpath, read-only, and the read-back holds it to
+  it. The egress volume is a named volume of its own, as before. In a container the provider still needs
+  `egress.hostAddresses` for an allowlist (see the egress proxy).
+
 ### The image: `ensureImage`
 
 The provider owns the image its computers start from and makes it ready in its own process. There is no state file and
@@ -1311,8 +1370,12 @@ node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before
 sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags })`, which lists running sandboxes
 only, so a finished one needs no sweep). `--after` refuses, exit 2, before it lists anything, a file whose app or
 server is not the one the environment names now, or that names none: every computer of another app would read as
-new. Otherwise it terminates every such sandbox not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
-longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
+new. Otherwise it reads the tags (`getTags()`) of every such sandbox not in that file and terminates each that carries
+a conformance run's label (`agentrun.conformance`, which every computer of a run carries): one another user of the app
+made during the run, with no such label, is left alone, and so is one whose tags it cannot read (said on stderr). It
+reads each terminated sandbox back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, where
+`leftAlone` counts the new sandboxes it did not terminate. It exits 0 when
 every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file or one of
 another app or server, a missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
 named by any call.
@@ -1551,13 +1614,16 @@ node packages/computer/dist/conformance/daytona-sweep.js --after /tmp/daytona-be
 ```
 
 `--before <file>` writes the id of every sandbox carrying `agentrun.computer=1`, whatever its name or state, into the
-file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file,
-then reads each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
-`{"swept":n,"notFound":m,"stillThere":[ids]}`, where `swept` counts the sandboxes not there before and `notFound` plus
-`stillThere`'s length is `swept`. A sandbox in the file is never named by any call. A new sandbox without a computer's
-name is not this provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads
-404, 1 when one is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused
-(nothing is deleted then). Anything else that creates a labelled sandbox between the two runs is swept too.
+file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file
+and that carries a conformance run's label (`agentrun.conformance`, which every computer of a run carries), then reads
+each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
+`{"swept":n,"notFound":m,"stillThere":[ids],"leftAlone":k}`, where `swept` counts the conformance sandboxes not there
+before, `notFound` plus `stillThere`'s length is `swept`, and `leftAlone` counts the new labelled sandboxes with no
+conformance label: another user of the account (a server's computers) made them during the run, and no call names
+them. A sandbox in the file is never named by any call. A new conformance sandbox without a computer's name is not this
+provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads 404, 1 when one
+is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused (nothing is
+deleted then).
 
 ### Not yet known
 
@@ -1849,8 +1915,11 @@ computer capped at 30 minutes, Hobby's plan for conformance
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
 `dist/conformance/e2b-sweep.js --before <file>` records every sandbox E2B lists with `agentrun.computer=1`; `--after
-<file>` kills every one not in the file, reads each back until `getInfo` no longer finds it and the listing no longer
-shows it, up to 60 s each, and prints `{"swept":n,"gone":m,"stillThere":[ids]}`. Exit 0 when every swept sandbox is
+<file>` kills every one not in the file whose metadata carries a conformance run's label (`agentrun.conformance`),
+leaving alone one another user of the account made during the run, reads each killed one back until `getInfo` no longer
+finds it and the listing no longer shows it, up to 60 s each, and prints
+`{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`leftAlone`: the new labelled sandboxes with no conformance
+label, which no call names). Exit 0 when every swept sandbox is
 gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
 killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the conformance module does, and needs no
 live switch.

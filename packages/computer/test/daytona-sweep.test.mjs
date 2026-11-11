@@ -12,6 +12,8 @@ const dir = mkdtempSync(join(tmpdir(), "computer-daytona-sweep-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 const ENV = { COMPUTER_DAYTONA_API_KEY: KEY, COMPUTER_DAYTONA_API_URL: API };
 const OURS = { "agentrun.computer": "1" };
+/** A conformance run's computer: the provider's label and the run's (RUN_LABEL). */
+const RUN = { ...OURS, "agentrun.conformance": "run-1" };
 const sweep = async () => (await import("../dist/conformance/daytona-sweep.js")).main;
 
 const sink = () => {
@@ -65,19 +67,23 @@ test("--before records the id of every sandbox carrying agentrun.computer=1, eve
 	allToTheFake(fake);
 });
 
-test("--after deletes every labelled sandbox not in the before file, reads each back until Daytona answers 404, and never touches one that was there before", async () => {
+test("--after deletes every new conformance sandbox, reads each back until Daytona answers 404, and never touches one that was there before or another user's made mid-run", async () => {
 	const fake = fakeDaytona({ lingerReads: 3 });
-	const old = fake.seed({ name: "computer-0000000000a1", labels: OURS });
+	const old = fake.seed({ name: "computer-0000000000a1", labels: RUN });
 	const oldStopped = fake.seed({ name: "computer-0000000000a2", labels: OURS, state: "stopped" });
 	const file = join(dir, "before-2.json");
 	assert.equal((await run(["--before", file], fake)).code, 0);
-	const fresh = [fake.seed({ name: "computer-0000000000b1", labels: { ...OURS, "agentrun.conformance": "run" } }), fake.seed({ name: "computer-0000000000b2", labels: OURS, state: "stopped" })];
+	const fresh = [fake.seed({ name: "computer-0000000000b1", labels: RUN }), fake.seed({ name: "computer-0000000000b2", labels: { ...RUN, "agentrun.conformance": "run-2" }, state: "stopped" })];
 	const unlabelled = fake.seed({ name: "computer-0000000000b3", labels: { team: "a" } });
+	// A computer another user of the account (a server) made during the run: the provider's label, no conformance label.
+	const midRun = fake.seed({ name: "computer-0000000000b4", labels: { ...OURS, "agentrun.run": "r-staging", "agentrun.epoch": "1" } });
 	fake.requests.length = 0;
 	const ran = await run(["--after", file], fake);
 	assert.equal(ran.code, 0, ran.stderr);
 	assert.equal(ran.stdout.trim().split("\n").length, 1, "one JSON line");
-	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, notFound: 2, stillThere: [] });
+	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, notFound: 2, stillThere: [], leftAlone: 1 });
+	assert.ok(fake.sandboxes.has(midRun.id), "the sandbox made mid-run with no conformance label survives");
+	assert.equal(fake.requests.filter((r) => r.path.includes(midRun.id)).length, 0, "not a single call names it");
 	assert.deepEqual(deletes(fake).sort(), fresh.map((sb) => sb.id).sort(), "the new ones alone are deleted");
 	for (const sb of fresh) {
 		assert.equal(fake.sandboxes.has(sb.id), false);
@@ -97,8 +103,8 @@ test("--after reports a sandbox still there after its bounded wait, and exits 1"
 	const fake = fakeDaytona({ deleteIgnored: true });
 	const file = join(dir, "before-3.json");
 	assert.equal((await run(["--before", file], fake)).code, 0);
-	const kept = fake.seed({ name: "computer-0000000000c1", labels: OURS });
-	const foreign = fake.seed({ name: "not-a-computer-name", labels: OURS });
+	const kept = fake.seed({ name: "computer-0000000000c1", labels: RUN });
+	const foreign = fake.seed({ name: "not-a-computer-name", labels: RUN });
 	const started = Date.now();
 	const ran = await run(["--after", file], fake, { waitMs: 300, pollMs: 20 });
 	assert.ok(Date.now() - started < 10_000, "the wait is bounded");

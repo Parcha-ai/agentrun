@@ -17,17 +17,17 @@ const { result } = await runTriageDemo('billing');
 console.log(result.output); // { queue: 'billing', priority: 'normal' }
 ```
 
-The demo runs real control flow with scripted judgments. `ambiguous` escalates. No model SDK or API key is required by the core. Optional `@parcha/agentrun-jev` and `@parcha/agentrun-pi` adapters add live judgments and agent steps.
+The demo runs real control flow with scripted judgments. `ambiguous` escalates. No model SDK or API key is required by the core. The optional `@parcha/agentrun-jev` adapter adds live judgments; your host supplies agent steps through `runNode`.
 
 ## From a draft to a run
 
 A workflow is a JSON document of typed nodes: each node that asks a model names the JSON Schema its answer must match, and the workflow names the schemas of its input and output. An agent writes the document. This package checks it, tries it without a model, and runs it.
 
-1. **Draft.** In Pi, `/agentrun <task>` has the agent draft the workflow with the packaged author skill (see [the Pi extension](../pi/README.md)). In your own host, `authorWorkflow` gives your agent the same author contract and keeps the candidate and its feedback without running it.
+1. **Draft.** In your own host, `authorWorkflow` gives your agent the packaged author contract and keeps the candidate and its feedback without running it.
 2. **Check.** `validateWorkflow(workflow)` checks the structure, the schemas, the state paths between nodes and the predicates, with no model call. A refused workflow lists its `issues`: each names the node or schema at fault with a JSON Pointer `path`, and the rule it breaks with a `code`, so the agent repairs that node and checks again. `inspectWorkflow` shows the tree and the tools and adapters it needs, without running any code.
 3. **Dry-run, for free.** `dryRunWorkflow(workflow)` runs the whole workflow on synthetic values made from its schemas, with no model, Jev or tool call. Its `status` is `passed` when every check ran, `failed` with the `problems`, or `not_run` when a check could not run, with the reasons in `skipped`. A `not_run` dry run proves nothing.
 4. **Run.** `runWorkflow(workflow, input, deps)` runs it with your agent, judgment and effect functions, and returns an output that matches the output schema, or an escalation. `deps` is the object of adapters your application supplies (`runNode`, `runJudge`, `runEffect`); [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md) says what each one owes the engine.
-5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept, and `escalated` where the run's terminal result says it stopped. Pi's `/agentrun` view draws the same graph, with each node's state as the run goes.
+5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept, and `escalated` where the run's terminal result says it stopped. The AgentRun console draws the same graph for a workflow run, with each node's state as the run goes.
 
 The same checks from a shell, in the project where you installed the package, on one of the author skill's examples that ships with it (an agent extracts the change in each release note, then summarizes the migration):
 

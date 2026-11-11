@@ -14,8 +14,12 @@
 //
 // A key goes into the server-side provider call alone (the provider's create() options): the spec a computer is made
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { isIP } from "node:net";
+import { posix } from "node:path";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
+import type { DockerPaths } from "../box-paths.js";
+import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
@@ -35,6 +39,37 @@ export const COMPUTER_LIFETIME_MS = 24 * 60 * 60_000;
 /** A computer this server cannot make here, with the code the run fails with and its words. */
 const refused = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
 
+/** The Docker host's own addresses, for a Docker provider whose interfaces aren't that host's (the server in a
+ *  container): a comma list of IP addresses. The Docker provider's egress proxy refuses them as the host's, so a
+ *  computer's allow-list never reaches the host itself; without them it refuses any allow-list there. */
+export const DOCKER_HOST_ADDRESSES_ENV = "AGENTRUN_DOCKER_HOST_ADDRESSES";
+
+/** `env`'s AGENTRUN_DOCKER_HOST_ADDRESSES: its addresses, each once; undefined when unset or empty, never one made up.
+ *  An entry that is not an IP address throws, naming it: the server's start checks the setting, so no run meets one. */
+export function dockerHostAddressesOf(env: KeyEnv): string[] | undefined {
+  const value = envValue(env, DOCKER_HOST_ADDRESSES_ENV);
+  if (value === undefined) return undefined;
+  const addresses = [...new Set(value.split(",").map((one) => one.trim()).filter((one) => one !== ""))];
+  const bad = addresses.find((one) => isIP(one) === 0);
+  if (bad !== undefined) throw new Error(`${DOCKER_HOST_ADDRESSES_ENV} is a comma list of the Docker host's own IP addresses (such as 172.17.0.1): ${JSON.stringify(bad)} is not an IP address`);
+  return addresses.length > 0 ? addresses : undefined;
+}
+
+/** Where the Docker provider's daemon copy goes on a server in a container: under the named volume's mount, so the
+ *  host's Docker reaches it as that volume's subpath, as it reaches the run's folder. */
+export const DAEMON_CACHE_IN_VOLUME = ".agentrun/computerd";
+
+/** The Docker provider's options for a server in a container of its Docker's, its data on a named volume: the volume
+ *  and where it is mounted here (`root`), under which the run's folder and the daemon copy are mounted as the volume's
+ *  subpaths, and that daemon copy's place under it. Undefined on a host, or where no such volume was found (its reason
+ *  then refuses a Docker computer before a run, box-paths.ts dockerComputerRefusal). */
+export type DockerComputerOptions = { readonly volume: DockerVolume; readonly daemonCache: string };
+export function dockerVolumeOf(paths: DockerPaths): DockerComputerOptions | undefined {
+  if (!("paths" in paths)) return undefined;
+  const root = paths.paths.at;
+  return { volume: { name: paths.paths.volume, root }, daemonCache: posix.join(root, DAEMON_CACHE_IN_VOLUME) };
+}
+
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
 
@@ -50,6 +85,13 @@ export interface ComputerDepsOptions {
   readonly kinds?: KindRegistry;
   /** How a provider is built from its id and options: the package's providerFor unless given (a test's stand-in). */
   readonly load?: ProviderLoad;
+  /** Where this process's Docker has the data directory (box-paths.ts dockerPathsForRuns), read once when a Docker
+   *  provider is first built: in a container with a named data volume, the provider mounts by that volume
+   *  (dockerVolumeOf). Absent: as on a host. */
+  readonly dockerPaths?: () => Promise<DockerPaths>;
+  /** The Docker host's own addresses, read through its socket (docker-host-addresses.ts hostAddressesOnce), for a server
+   *  in a container of its Docker's: unioned with AGENTRUN_DOCKER_HOST_ADDRESSES. Absent: the operator's alone. */
+  readonly hostAddresses?: () => Promise<HostRead>;
   /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default. */
   readonly answers?: ComputerForClaimDeps["answers"];
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
@@ -132,8 +174,27 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   // recipe's bare tag, which no registry has.
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
+  // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES), checked once here.
+  const namedAddresses = dockerHostAddressesOf(env);
+  // Where this process's Docker has the data, read once, when a Docker provider is first built.
+  let paths: Promise<DockerPaths> | undefined;
+  /** The Docker provider's options beside its image: for a server in a container of its Docker's, the named volume that
+   *  holds its data and the daemon copy's place under it (dockerVolumeOf), and the Docker host's own addresses for its
+   *  egress proxy, the union of the read through the socket (`hostAddresses`) and the operator's; on a host, the
+   *  operator's alone (the provider reads its own interfaces). With none, none are given, and the provider refuses an
+   *  allow-list where it isn't on the Docker host, in its words. The read is made only for a claim whose run's computer
+   *  has an allow-list (`boxAllow`, the claim's own launch's box_allow, a list): a run launched under a list keeps it
+   *  across a restart, whatever this process's AGENTRUN_BOX_ALLOW says now; one with none, or no claim, reads nothing.
+   *  The read itself is once per process (`hostAddresses`). */
+  const dockerOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
+    const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
+    const volume = dockerVolumeOf(where);
+    const read = volume && Array.isArray(boxAllow) && options.hostAddresses ? await options.hostAddresses() : undefined;
+    const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
+    return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+  };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: (id, given) => load(id, id === "docker" ? { ...given, image: dockerImage } : given) });
+  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : given) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

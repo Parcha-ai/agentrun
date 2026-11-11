@@ -10,8 +10,6 @@ uses `fetch`, on Node.js 22.19 or newer.
 npm install @parcha/agentrun-client
 ```
 
-The package is held in this repository until its first release.
-
 ## Construct
 
 ```ts

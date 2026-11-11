@@ -7,11 +7,21 @@ import { redactedAnswer } from "../key-refusal.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { hostSecrets, SECRET_NAMES } from "../secrets.js";
 
-/** Text with every secret value the redactor holds cut out. */
-export type Redact = (text: string) => string;
+/** Text with every secret value the redactor holds cut out. `heldValues()`, when the redactor knows them: every value it
+ *  cuts, for the live ticker alone (live-ticker.ts), which must cut what is not whole text (a value still streaming, whose
+ *  tail is held back; a number; an object's names). A redactor without it cuts text only. The values are raw secrets: only
+ *  ever a function's answer, never a field, and the function itself is not enumerable (withHeldValues), so a redactor or
+ *  anything holding one that is logged, put on a run or serialized shows none of them. */
+export type Redact = ((text: string) => string) & { readonly heldValues?: () => readonly string[] };
+
+/** `cut` answering `heldValues()`, the function defined not enumerable: JSON.stringify and util.inspect of the redactor,
+ *  or of an object holding it, show no value it holds. */
+function withHeldValues(cut: (text: string) => string, heldValues: () => readonly string[]): Redact {
+  return Object.defineProperty(cut, "heldValues", { value: heldValues, enumerable: false });
+}
 
 /** What leaves text as it is: a runner given no secrets to cut. */
-export const keepText: Redact = (text) => text;
+export const keepText: Redact = withHeldValues((text) => text, () => []);
 
 /** Every secret value `env` holds for the runner: the server's held secrets, the MCP credentials and every key-, token-,
  *  secret- or password-named value (secrets.ts hostSecrets), and the value `env` itself gives each launcher name (a
@@ -26,7 +36,7 @@ export function runnerSecrets(env: NodeJS.ProcessEnv, extra: readonly string[] =
 export function secretRedactor(values: readonly string[]): Redact {
   const kept = [...new Set(values.filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET))];
   if (kept.length === 0) return keepText;
-  return (text) => (text ? redactedAnswer(text, kept) : text);
+  return withHeldValues((text) => (text ? redactedAnswer(text, kept) : text), () => kept);
 }
 
 /** The redactor over every secret this process's environment holds (runnerSecrets): a runner's default when it is
@@ -54,6 +64,9 @@ export function heldRedactor(base: Redact): HeldRedact {
   cut.hold = (values) => {
     for (const value of values) if (value.replace(/\s+/g, "").length >= MIN_SECRET) held.add(value);
   };
+  // Its values are the base's and every one held since; a base that does not know its own leaves them unknown.
+  const known = base.heldValues;
+  if (known) withHeldValues(cut, () => [...new Set([...known(), ...held])]);
   return cut;
 }
 

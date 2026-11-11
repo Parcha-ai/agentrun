@@ -4,6 +4,7 @@
 
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
+import type { Redact } from "./redact.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
@@ -119,8 +120,8 @@ export interface LoopDeps {
    *  journal. Absent: not reported. */
   live?: (read: () => HeldState | undefined) => void;
   /** The runner's one redactor (redact.ts): an error's text the loop writes to its run's end goes through it, so no
-   *  secret the runner holds is stored. Absent: none cut. */
-  redact?: (text: string) => string;
+   *  secret the runner holds is stored, and its values cut the run's live view (live-ticker.ts). Absent: none cut. */
+  redact?: Redact;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

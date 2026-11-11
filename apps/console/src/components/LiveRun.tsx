@@ -78,7 +78,11 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       // row per action, its own row stopping running).
       onRows: (r) => { setRows(r); const seen = r.filter((x) => x.kind === APPROVAL_ROW).map((x) => `${x.id}\u0000${x.summary}`).join("\u0001"); if (seen !== approvals.current) { approvals.current = seen; void refresh(); } const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
-      onPage: (p) => { if (p.cost) setPageCost(p.cost); const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
+      // A run that waits on the person can move from one wait to the next with the same status and state (a hand-back
+      // answers the agent's browser ask and it asks its question at once, between two timeline reads, which sample the run
+      // about once a second): while it waits, a page that brings anything new reads the run again, so its `pending` (the
+      // card the person answers) is never an earlier wait's.
+      onPage: (p) => { if (p.cost) setPageCost(p.cost); const s = `${p.status}/${p.state}`; if (s !== status.current || (p.status === "input_required" && !p.unchanged)) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps

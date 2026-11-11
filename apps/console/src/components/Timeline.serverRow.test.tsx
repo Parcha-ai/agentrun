@@ -31,7 +31,7 @@ beforeEach(() => {
 const steps = () => [...host.querySelectorAll("li")];
 const step = (has: string) => steps().find((li) => (li.textContent ?? "").includes(has))!;
 // A step's title: the line under its label.
-const titleOf = (li: Element) => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-[15px]"))!;
+const titleOf = (li: Element) => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-prose"))!;
 
 describe("Timeline, a message the server wrote", () => {
   it("reads as AgentRun's, with its first line as the title, never as yours", () => {

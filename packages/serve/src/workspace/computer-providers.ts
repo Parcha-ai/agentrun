@@ -4,10 +4,12 @@
 // No key reaches a provider any other way, and nothing here reads the environment.
 import { type ComputerProvider, providerFor, providerIds } from "@parcha/agentrun-computer";
 import type { ProviderFactories } from "../computer-keys.js";
-import type { ProviderMakers } from "./computer-for-claim.js";
+import type { ProviderExtras, ProviderMakers } from "./computer-for-claim.js";
 
-/** How a provider is built from its id and options: the computer package's providerFor, or a test's stand-in. */
-export type ProviderLoad = (id: string, options: Record<string, unknown>) => Promise<ComputerProvider>;
+/** How a provider is built from its id and options: the computer package's providerFor, or a test's stand-in. `claim`:
+ *  what the claim that makes it lets its run's computer reach (the launch's box_allow), absent outside a claim; never a
+ *  provider option. */
+export type ProviderLoad = (id: string, options: Record<string, unknown>, claim?: { readonly boxAllow?: readonly string[] | "none" }) => Promise<ComputerProvider>;
 
 /** Settings → Computers' factories (createComputerRoutes' `factories`, its account test) from the same makers, so serve
  *  builds a provider in one place: each made with its options and `ledgerOf` its id's ledger. */
@@ -20,7 +22,8 @@ export function computerProviderMakers({ load = providerFor as unknown as Provid
   return Object.fromEntries(
     providerIds.map((id) => [
       id,
-      (options: Record<string, string>, extras: { readonly ledger: unknown }) => load(id, { ...options, ...(id === "phone-harness" ? { ledger: extras.ledger } : {}) }),
+      (options: Record<string, string>, extras: ProviderExtras) =>
+        load(id, { ...options, ...(id === "phone-harness" ? { ledger: extras.ledger } : {}) }, extras.boxAllow === undefined ? {} : { boxAllow: extras.boxAllow }),
     ]),
   ) as ProviderMakers;
 }

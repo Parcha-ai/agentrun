@@ -26,13 +26,13 @@ export default {
   server: { env: { AGENTRUN_PUBLIC_URL: "https://agentrun-e2e.example.test" } },
   async run({ server, context, page, errors, origin }) {
     // The server's first link, and its code.
-    const [, firstLink, firstCode] = await server.line(/Set up this server: (\S+\/setup#code=([A-Za-z0-9_-]+))$/);
+    const [, firstLink, firstCode] = await server.line(/Set up this server: (\S+\/setup#code=([A-Za-z0-9_-]+)) \(or paste AGENTRUN_TOKEN\)$/);
     // Five wrong tries void it: the server prints a new link. A person then opens the newest one.
     for (let i = 0; i < 5; i++) {
       const r = await fetch(`${server.baseUrl}/setup`, { method: "POST", headers: { "content-type": "application/json", origin: server.origin }, body: JSON.stringify({ password: PASSWORD, code: `wrong-${i}` }) });
       check(r.status === 403, `a wrong code answered ${r.status}`);
     }
-    const [, newLink, newCode] = await server.line(new RegExp(`Set up this server: (\\S+/setup#code=(?!${firstCode})([A-Za-z0-9_-]+))$`));
+    const [, newLink, newCode] = await server.line(new RegExp(`Set up this server: (\\S+/setup#code=(?!${firstCode})([A-Za-z0-9_-]+)) \\(or paste AGENTRUN_TOKEN\\)$`));
     check(newCode !== firstCode, "the server printed no new code after five wrong tries");
     check(firstLink !== newLink, "the new link is the old one");
 

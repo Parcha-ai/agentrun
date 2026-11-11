@@ -24,6 +24,7 @@ export {
 	watchScreen,
 } from "./screen-watch.js";
 export { type DockerDesktopOptions, type DockerEgressOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
+export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
 	DOCKER_BASE,

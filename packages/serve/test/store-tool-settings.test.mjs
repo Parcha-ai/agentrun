@@ -1,14 +1,11 @@
-// The server's tool settings read and written as a store row (store.settings), the store-backed replacement for the
-// tool-settings.json file (tool-plane.ts loadToolSettings / saveToolSettings). The cut wires these; they fail closed as the
-// file path did: no row is every default, a permission that is not offered reads as a marked stand-in (ask), never allow.
+// The server's tool settings read and written as a store row (store.settings: tool-plane.ts loadToolSettings /
+// saveToolSettings). They fail closed: no row is every default, a permission that is not offered reads as a marked
+// stand-in (ask), never allow.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 
-const { loadToolSettings, saveToolSettings, TOOL_SETTINGS_KEY, ToolSettings } = await import("../dist/tool-plane.js");
+const { loadToolSettings, saveToolSettings, TOOL_SETTINGS_KEY } = await import("../dist/tool-plane.js");
 const { pinRefusal } = await import("../dist/tool-gate.js");
 
 /** An MCP tool a server pins: a pin is a gate fence (pinRefusal), so a save must never lose it. */
@@ -78,19 +75,3 @@ test("a stored pin that does not read keeps refusing, survives a whole-map save 
   assert.deepEqual(await store.settings.get(TOOL_SETTINGS_KEY), {}, "the key left out clears it");
 });
 
-test("the store's save and the file's save agree: the same map over the same state answers and writes the same", async (t) => {
-  const before = { [SEND]: { permission: "allow", pin: 42 }, bash: { permission: "whenever" }, web_search: { provider: "parallel" } };
-  const map = { [SEND]: { permission: "allow" }, bash: { permission: "ask" }, web_search: { provider: "parallel" }, read: { permission: "deny" } };
-  const { store } = await storeOn(t);
-  await store.settings.put(TOOL_SETTINGS_KEY, before);
-  const dir = await mkdtemp(join(tmpdir(), "tool-settings-parity-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  await writeFile(join(dir, ToolSettings.FILE), JSON.stringify(before));
-  const file = new ToolSettings(dir, () => {});
-  // The store's load reads the same state the file's constructor did.
-  assert.deepEqual((await loadToolSettings(store)).settings, file.get(), "the same state before the save");
-  const fromStore = await saveToolSettings(store, map);
-  const fromFile = file.put(map);
-  assert.deepEqual(fromStore, fromFile, "the same served map");
-  assert.deepEqual(await store.settings.get(TOOL_SETTINGS_KEY), JSON.parse(await readFile(join(dir, ToolSettings.FILE), "utf8")), "the same written object");
-});

@@ -148,12 +148,36 @@ describe("the schedules list", () => {
   });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
-    expect(t.text()).toContain("No triggers yet.");
+    expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
+    // The three things that can start a run, each with its own way in.
+    const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
+    expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    // Each is on the page once: the header's three show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 
 describe("a new schedule", () => {
+  it("every field's label names its one control, so a click on the label goes to it", async () => {
+    const t = await open(server().v2, { trigger: null });
+    const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name || l.control!.getAttribute("aria-label")]));
+    // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
+    expect(named).toMatchObject({ Name: "name", "Cron line": "cron", "Time zone": "timezone", Agent: "Agent", "Each run is asked": "content" });
+  });
+  it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.choose("every");
+    const ids = [...t.host.querySelectorAll("[id]")].map((e) => e.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+    // "Every" is also the kind's own choice above; the field's label is the one whose control is the amount.
+    const every = [...t.host.querySelectorAll("label")].find((l) => l.textContent === "Every" && (l.control as HTMLInputElement | null)?.name === "every")!;
+    expect(every).toBeTruthy();
+    const unit = t.host.querySelector('button[aria-label="Unit"]')!;
+    expect(unit.id).toBe("schedule-every-unit");
+    expect(unit.id).not.toBe(every.control!.id);
+  });
   it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: null });
@@ -233,6 +257,26 @@ describe("a new schedule", () => {
     expect(t.issue("target.max_cost_usd")).toBe("A cost cap is needed: every run a schedule starts is capped.");
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });
+  it("says a one time already passed in words on the time field, and clears it once a time ahead is picked (#2248)", async () => {
+    const message = "Pick a time in the future: 2026-11-09T09:30:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-09T09:30");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe(message);
+    expect(t.text()).not.toContain("at is in the past");
+    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays.
+    await t.set("at", "2026-11-09T23:59");
+    expect(t.issue("source.at")).toBe(message);
+    await t.set("at", "2026-11-12T09:30");
+    expect(t.issue("source.at")).toBeNull();
+    expect(t.went).toEqual([]);
+  });
+
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
     const message = "the agent flow has no current revision";
     const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });

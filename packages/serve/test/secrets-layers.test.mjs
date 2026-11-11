@@ -4,37 +4,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { childEnv } from "../dist/runs.js";
 import * as secretCut from "../dist/secret-cut.js";
 import * as secrets from "../dist/secrets.js";
 
 const { SECRET_NAMES, withoutSecrets, withSecrets } = secrets;
-
-test("childEnv hands a run's process none of the server's secrets and not the token by value, whatever environment it is given; the rest passes", () => {
-  const secrets = Object.fromEntries(SECRET_NAMES.map((name) => [name, `canary-${name}`]));
-  const token = `ar_test_${"t".repeat(40)}`;
-  const out = childEnv({ ...secrets, TOKEN_COPY: token, PATH: "/usr/bin", AGENT_MODEL: "m-1" }, token);
-  assert.deepEqual(Object.keys(out).filter((name) => SECRET_NAMES.includes(name)), [], "a listed secret reached the run's environment");
-  assert.equal(out.TOKEN_COPY, undefined, "the token by value, under another name");
-  assert.deepEqual([out.PATH, out.AGENT_MODEL], ["/usr/bin", "m-1"]);
-});
 
 /** Names of keys no list names, each with a segment that makes it one, in any case, wherever it is in the name. */
 const UNLISTED = ["FOO_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "NODE_AUTH_TOKEN", "CLIENT_SECRET", "MY_SECRET_THING", "DB_PASSWORD", "Db_PassWord_Hash", "db_passwd",
   "SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "STRIPE_KEY", "SSH_PRIVATE_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "X_Credential", "DB_PASS", "GH_PAT", "MY_TOKEN_FILE", "FOO_TOKEN_BAR", "GITHUB_TOKEN_RO", "OPENAI_API_KEY_2", "SENTRY_DSN", "DB_PWD", "mysql_pwd"];
 /** Names that are no key's, however close: the shell's working directories, and words that hold a segment's letters. */
 const NOT_KEYS = { PWD: "/w", OLDPWD: "/o", TOKENIZERS_PARALLELISM: "false", KEYBOARD: "us", SECRETARY: "ok", PATTERN: "x", COMPASS: "n", PASSENGER_APP: "a", AGENTRUN_SECRETS_FD: "3", AGENTRUN_SECRETS_LEN: "12" };
-
-test("childEnv also leaves out every name shaped like a key that no list names (a KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN segment, or a last PWD after another), and passes what a run's process reads: the AGENT_MODEL variables, a provider's settings, PWD and OLDPWD", () => {
-  const token = `ar_test_${"t".repeat(40)}`;
-  const unlisted = UNLISTED;
-  for (const name of unlisted) assert.ok(!SECRET_NAMES.includes(name), `${name} is on no list`);
-  // The run's own descriptors (its secrets' pipe, its decision keys') are set on the environment after this cut (runs.ts).
-  const passes = { PATH: "/usr/bin", HOME: "/home/x", AGENT_MODEL: "google/gemini-2.5-flash", AGENT_MODEL_FAST: "m-fast", AGENT_MODEL_BASE_URL: "http://127.0.0.1:1", AGENT_MODEL_PRICE: "1,2", AGENT_THINKING: "low", AWS_REGION: "us-east-1", AWS_PROFILE: "p", GOOGLE_CLOUD_PROJECT: "p", AZURE_OPENAI_BASE_URL: "http://127.0.0.1:2", ANTHROPIC_BASE_URL: "http://127.0.0.1:3", AGENTRUN_SERVE_EFFORT: "low", ...NOT_KEYS };
-  const out = childEnv({ ...Object.fromEntries(unlisted.map((name) => [name, `canary-${name}`])), ...passes }, token);
-  assert.deepEqual(unlisted.filter((name) => name in out), [], "a key-shaped name reached the run's environment");
-  assert.deepEqual(out, passes, "what a run's process reads passes, whole");
-});
 
 test("one rule names a key, for a run's environment, the import's cut and pi-durable-disk's instance environment alike: what one leaves out by its name the import cuts by its value, and pi-durable-disk refuses", async () => {
   const value = (name) => `canary-value-of-${name}`;
