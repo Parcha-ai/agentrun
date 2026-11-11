@@ -73,17 +73,18 @@ no answer. With no answer at all, say so in `summary` and post no finding.
   Never add a finding.
 - **Rank**: P0, then P1, then P2; within a priority, raised by more reviewers first.
 - **Cap**: keep the first 8. Each one past 8 goes to `dropped` with reason `limit`.
-- `coverage` and `skipped`: one entry per path, the first reviewer's that names it. `dropped`: every reviewer's, one per
-  path and line. `resolve`: every fingerprint a reviewer listed. `risk_score` from the merged findings: 1 none, 2 only
-  P2, 3 one P1, 4 two or more P1, 5 any P0; an open `active` finding counts. `risk_reasons`: the top three findings,
-  one line each. `summary`: 2-4 sentences, yours.
+- `coverage` and `skipped`: one entry per path, the first reviewer's that names it. `dropped`: yours (`limit`,
+  `unverified`) first, then each reviewer's, one per path and line, at most 30 in all. `resolve`: every fingerprint a
+  reviewer listed. `risk_score` from the merged findings: 1 none, 2 only P2, 3 one P1, 4 two or more P1, 5 any P0; an
+  open `active` finding counts. `risk_reasons`: the top three findings, one line each. `summary`: 2-4 sentences, yours.
 
 ## 5. Post
 
 Every PR gets a posted review (zero findings too): keep the calls for it. With GitHub tools:
 `pull_request_review_write` `method: create`, `commitID: <head_sha>`; `add_comment_to_pending_review` per merged finding
-(`side: RIGHT`, `subjectType: LINE`, `line`, `startLine` from `start_line`), body `**<priority>** **<title>**`, blank
-line, failure, blank line, `<!-- fp: <fingerprint> -->`; then `submit_pending`, `event: COMMENT`, with this body:
+not marked `pre_existing` (`side: RIGHT`, `subjectType: LINE`, `line`, `startLine` from `start_line`), body
+`**<priority>** **<title>**`, blank line, failure, blank line, `<!-- fp: <fingerprint> -->`; then `submit_pending`,
+`event: COMMENT`, with this body (a `pre_existing` finding is in its list, never inline):
 
 ```text
 **Risk <n>/5** (Greptile's confidence <6-n>/5)
