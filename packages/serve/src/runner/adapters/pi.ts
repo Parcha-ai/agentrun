@@ -20,6 +20,7 @@ import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
+import { CALL_REFUSED } from "@parcha/pi-durable-agent/timeline";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -288,13 +289,15 @@ export function refusalWords() {
     refuse(callId: string, text: string): void {
       words.set(callId, text);
     },
-    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true } | undefined {
+    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true; details: { [CALL_REFUSED]: true } } | undefined {
       const text = words.get(callId);
       // Let go on every result: the call has its one result now, whatever it is.
       words.delete(callId);
       const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
       if (text === undefined || !blocked) return undefined;
-      return { output: [{ type: "text", text }], isError: true };
+      // Marked refused in its details (which the model never reads): its Timeline rows say it was refused, never that it
+      // ran and failed.
+      return { output: [{ type: "text", text }], isError: true, details: { [CALL_REFUSED]: true } };
     },
     get held(): number {
       return words.size;

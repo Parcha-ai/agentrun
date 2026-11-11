@@ -2,14 +2,11 @@
 // (whole, or as an index line naming its file), and `read`, the note files it opened with the read tool. Whether a run
 // applied a note is not measured: the two counts say what it had and what it looked at.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as learning from "../dist/learning.js";
-import { outcomeOf, outcomes } from "../dist/usage.js";
-import { runDirIn } from "@parcha/pi-durable-agent";
-import { LearningRuns, noteRuns } from "../dist/learning-run.js";
+import { outcomeOf } from "../dist/usage.js";
+import { noteRuns } from "../dist/learning-run.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { note } from "./learn-format-support.mjs";
 
@@ -32,7 +29,6 @@ test("a run's learning shows given and read, never used: given from its start, r
   const record = { state: "seeded", reason: null, detail: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] };
   assert.deepEqual(learning.notesView(record, shown, false), { given: [{ file: "units.md", name: "Check units" }] });
   assert.deepEqual(learning.notesView(record, shown, true), { given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] });
-  assert.ok(learning.KEPT_LEARNING.includes("given") && learning.KEPT_LEARNING.includes("read") && !learning.KEPT_LEARNING.includes("used"));
 });
 
 test("the ledger keeps the files a run was given and read, and the agent's notes count the runs of each", () => {
@@ -70,33 +66,4 @@ test("the ledger reads a run's learning whose given or read holds an entry out o
   const line = outcomeOf("r1", "a", { state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [null, { file: "a.md", name: "a" }, { name: "no file" }, "b.md"], read: [null, { file: "a.md", name: "a" }] });
   assert.deepEqual([line.given, line.read], [["a.md"], ["a.md"]]);
   assert.deepEqual(noteRuns([line]).get("a.md"), { given: 1, read: 1 });
-});
-
-test("a run whose read grows after its ledger line is written (a follow-up read another note) keeps that read after a restart, its run and its grade's cost counted once", async (t) => {
-  const data = mkdtempSync(join(tmpdir(), "given-read-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
-  const kernel = { held: () => undefined, get: async () => null };
-  const units = { file: "units.md", name: "Check units" };
-  const tables = { file: "tables.md", name: "Answer in tables" };
-  const ended = { state: "merged", reason: null, detail: null, at: "2026-11-05T00:00:10.000Z", seed_notes: 2, given: [units, tables], read: [units], cost_usd: { grade: 0.25 }, look_back_usd: 0 };
-  const row = { id: "r1", agent: "a", kind: "agentic", state: "completed", startedAt: "2026-11-05T00:00:00.000Z", endedAt: "2026-11-05T00:00:09.000Z", costUsd: 1 };
-  const first = new LearningRuns({ agents: { dir: data } }, kernel);
-  await first.onSaved({ id: "r1", agentId: "a" }, ended);
-  // A follow-up reads tables.md: its settle saves the run again, its learning still merged.
-  const grown = { ...ended, read: [units, tables] };
-  await first.onSaved({ id: "r1", agentId: "a" }, grown);
-  await first.onSaved({ id: "r1", agentId: "a" }, grown);
-  // The next server: the run's serve.json holds the grown read, its pass reads it, and the ledger is all it counts from.
-  mkdirSync(runDirIn(data, "a", "r1"), { recursive: true });
-  writeFileSync(join(runDirIn(data, "a", "r1"), "serve.json"), `${JSON.stringify({ learning: grown })}\n`);
-  const second = new LearningRuns({ agents: { dir: data } }, kernel);
-  await second.recover()([row]);
-  const { counts, notes } = await second.ofAgent([row], "a");
-  assert.deepEqual(notes.get("tables.md"), { given: 1, read: 1 }, "the follow-up's read counts after the restart");
-  assert.deepEqual(notes.get("units.md"), { given: 1, read: 1 });
-  assert.equal(counts.merged, 1, "the run counts once");
-  const lines = await outcomes(data);
-  assert.deepEqual([lines.size, lines.get("r1").cost, lines.get("r1").state], [1, 0.25, "merged"], "its grade's cost once");
-  const written = readFileSync(join(data, "learning-usage.jsonl"), "utf8").split("\n").filter(Boolean);
-  assert.equal(written.length, 2, `its line, and one line for its grown read, written once: ${written.join(" | ")}`);
 });

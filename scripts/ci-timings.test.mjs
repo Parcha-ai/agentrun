@@ -43,12 +43,28 @@ test('a log gives each suite its top-level tests, vitest files and wall, and eac
   assert.deepEqual(typechecks, [['@x/a', 7]]);
 });
 
+test("a log in node --test's spec reporter gives each suite its top-level tests and wall; a nested test, a warning and the failures' recap are not counted", () => {
+  const log = [
+    at(0, '##[group]npm exec -w @x/a -c "node --test --test-timeout=600000 test/one.test.mjs"'),
+    at(1, '(node:12513) ExperimentalWarning: SQLite is an experimental feature and might change at any time'),
+    at(1, '✔ opens a run (1500.5ms)'),
+    at(2, '▶ a parent'), at(2, '  ✔ a nested test is not top-level (99999ms)'), at(2, '✔ a parent (300ms)'),
+    at(3, '✖ fails (250ms)'), at(3, '﹣ skipped (0.5ms) # SKIP no key here'), at(3, '✔ a name (with parentheses) (2000ms)'),
+    at(4, '✖ failing tests:'), at(4, '✖ fails (250ms)'),
+    at(4, 'ℹ tests 5'), at(4, 'ℹ duration_ms 4000.25'), at(4, '##[endgroup]'),
+  ].join('\n');
+  assert.deepEqual(readLog(log, []).suites, [
+    { suite: '@x/a', tests: [['opens a run', 1.5005], ['a parent', 0.3], ['fails', 0.25], ['skipped', 0.0005], ['a name (with parentheses)', 2]], files: [], wall: 4.00025 },
+  ]);
+});
+
 test("the timings are each file's median over the logs, each suite's file total over its wall, and a whole suite's wall", () => {
   const root = join(scratch, 'repo');
   write(join(root, 'package.json'), { name: 'repo', private: true, workspaces: ['packages/*'], scripts: { 'test:viewer': 'node scripts/view.mjs' } });
   write(join(root, 'packages/a/package.json'), { name: '@x/a', scripts: { test: "node --test 'test/*.test.mjs'" } });
   write(join(root, 'packages/a/test/one.test.mjs'), "test('opens a run', () => {}); test(`a box of ${kind} starts`, () => {});");
-  write(join(root, 'packages/a/test/two.test.mjs'), "test(\"closes it\", () => {});");
+  // A RegExp's .test(`${a} ${b}`) is no test declared: read as one, its pattern would match every name, so none is credited.
+  write(join(root, 'packages/a/test/two.test.mjs'), "test(\"closes it\", () => { /x/.test(`${a} ${b}`); });");
   write(join(root, 'scripts/ci-shards.json'), { rootSuites: ['test:viewer'], whole: { 'test:viewer': 'node scripts/view.mjs' }, pools: { any: { shards: 1 } } });
   const run = (one, two, wall) => [
     at(0, '##[group]npm exec -w @x/a -c "node --test test/one.test.mjs test/two.test.mjs"'),

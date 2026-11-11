@@ -21,6 +21,8 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { thinkingFor } from "../adapters.js";
+import { installDirOf, installingWords, installSettled } from "../harness-install.js";
+import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { environmentLine } from "../environment.js";
@@ -31,7 +33,7 @@ import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
-import { learningStartOf, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
@@ -54,7 +56,8 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { runMetrics } from "./metrics.js";
+import { bookedSpend, runMetrics } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
@@ -226,19 +229,20 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // own skills through systemOf with the harness's own check (a harness that loads skills itself keeps in the prompt only
   // those it would refuse, and is handed the rest), then the effort guidance.
   const start = learningStartOf(launch);
-  const laid = start ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
+  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
   // the harness is handed (its native skills, or the prompt's), its learned workflows the ones learned_workflow runs.
-  const seedLaid = start
+  const seedLaid = start && !seedFailed(start)
     ? await layLearningSeed({
       work: ws.workspace,
       seed: start.seed,
       folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
       own: Object.keys(revisionRow.skills ?? {}),
-      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data))),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
     })
     : undefined;
@@ -256,6 +260,16 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, claimed);
   const env = cliRunEnv(deps.env, deps.data, claimed);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  // A harness that installs on first use, whose install is running now (the server started it at an agent's save, or a
+  // run's start): the claim waits for it, bounded by the install's own limit, saying so on the run's timeline, and runs on
+  // it. A stop of the run ends the wait at once (the install goes on). An install that failed fails the run in its own
+  // words; with none running, the adapter says what is missing, as before.
+  if (entry.installs && entry.pins) {
+    const installs = entry.installs;
+    const waitOn = run.stopped ?? run.signal;
+    const settled = await (deps.installSettled ?? installSettled)(installs, installDirOf(deps.data, name), await entry.pins(), { ...(waitOn ? { signal: waitOn } : {}), onWait: () => run.phase?.(installingWords(installs.label)) });
+    if (typeof settled === "object") throw new HarnessUnavailable(settled.failed, "install");
+  }
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
@@ -346,7 +360,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do.
-    tools: [...tools.hostTools(withKindTools(granted, tools), undefined, results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
+    tools: [...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };
@@ -390,10 +404,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
     workRoot: root,
-    // The end's metrics and cost from the run's journal; a CLI run's carry its model.
+    // The end's metrics from the run's record; a CLI run's carry its model. Its cost is its booking's: the harness's own
+    // record carries no per-request cost, so its model requests are counted at what the run's model proxy booked them at
+    // (metrics.ts bookedSpend over every session of its journal), as a pi run's are at its answers' costs.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const costUsd = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model").usd;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;

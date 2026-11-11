@@ -3,11 +3,11 @@
 // allow in the agent's own tool settings, whatever the agent's approvals. With no server deny, the agent's own setting
 // still comes first, as before. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { deniedText, permissionFrom, RunGate } from "../dist/tool-gate.js";
+import { deniedText, permissionFrom } from "../dist/tool-gate.js";
+import { runnerGate } from "./gate-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -40,27 +40,14 @@ test("permissionFrom with no server deny is as before: the agent's own deny name
   assert.deepEqual(permissionFrom("mcp:fake/other", { "mcp:fake/*": DENY, "mcp:fake/add": { permission: "allow" } }, { "mcp:fake/other": { permission: "allow" } }), { permission: "deny", from: "server" });
 });
 
-/** One call of `name` through a pi run's gate, with the server's `settings` file and the agent's own `overrides`. */
-async function called(t, { settings = {}, overrides = {}, name, approvals = "ask" }) {
-  const dirs = [];
-  for (let i = 0; i < 3; i++) dirs.push(await mkdtemp(join(tmpdir(), "server-deny-")));
-  t.after(() => Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }))));
-  const [root, work, data] = dirs;
-  await writeFile(join(data, "tool-settings.json"), JSON.stringify(settings));
-  const gate = new RunGate({ root, work, data, runId: "r1", harness: "pi" }, overrides, true, true, approvals);
-  let ran = 0;
-  const registration = { name, description: name, parameters: {}, execute: async () => (ran++, { output: [{ type: "text", text: "ran" }] }) };
-  const wrapped = gate.extension([registration]).wraps.find((wrap) => wrap.tool === name)?.wrap(registration) ?? registration;
-  const api = { callId: `c-${name}`, commit: async (change) => change({ appendEntry: async () => undefined }) };
-  const result = await wrapped.execute({}, api, {});
-  return { text: (result.output ?? []).map((block) => block.text ?? "").join(""), ran };
-}
+/** The gate's answer for one call of `name` on a pi run, with the server's `settings` and the agent's own `overrides`. */
+const called = ({ settings = {}, overrides = {}, name, approvals = "ask" }) => runnerGate({ settings, overrides, approvals }).decide(name, {});
 
-test("through a run's gate: the agent's own ask or allow on a tool the server denies is refused 'on this server' and never run, with approvals ask or never", async (t) => {
+test("through a run's gate: the agent's own ask or allow on a tool the server denies is refused 'on this server' and never run, with approvals ask or never", async () => {
   for (const permission of ["ask", "allow"])
     for (const approvals of ["ask", "never"]) {
-      const got = await called(t, { settings: { web_fetch: DENY }, overrides: { web_fetch: { permission } }, name: "web_fetch", approvals });
-      assert.deepEqual([got.text, got.ran], [deniedText("web_fetch", undefined, "server"), 0], `agent ${permission}, approvals ${approvals}`);
+      const got = await called({ settings: { web_fetch: DENY }, overrides: { web_fetch: { permission } }, name: "web_fetch", approvals });
+      assert.deepEqual(got, { deny: deniedText("web_fetch", undefined, "server") }, `agent ${permission}, approvals ${approvals}`);
     }
 });
 

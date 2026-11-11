@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-durable-disk",
-  "version": "0.1.0-beta.32",
+  "version": "0.1.0-beta.33",
   "description": "A durable run journal and CLI for one host, with places served by agentrun-serve.",
   "keywords": [
     "pi",
