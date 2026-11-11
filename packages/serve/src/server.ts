@@ -113,6 +113,7 @@ import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -229,6 +230,10 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
+  /** With `faux` only: a fake GitHub App, connected at the start, its API in this process on loopback (github-faux.ts),
+   *  so the console's GitHub flows run with nothing sent to GitHub. Its webhook secret is kept beside the data
+   *  (FAUX_GITHUB_FILE) for a test's signed delivery. Refused on a data directory another GitHub App is connected in. */
+  fauxGitHub?: boolean;
   /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
    *  fake), in place of Kernel's API. */
   fauxKernel?: string;
@@ -1434,7 +1439,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Connect GitHub: the server's one GitHub App, in the store's trigger_settings (adapter github, scope server), where the
   // runner reads it per claim (runner/github-app.ts).
   const github = new GitHubConnection(triggerSettings.get("github"));
-  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
+  // --faux-github (with --faux only): the fake App is connected afresh at each start, its API in this process.
+  const was = options.faux && options.fauxGitHub ? github.view() : undefined;
+  if (was && was.slug !== FAUX_GITHUB.slug) throw new Error(`--faux-github connects a fake GitHub App, and this data directory has the GitHub App ${was.slug} connected: use a scratch data directory.`);
+  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub() : undefined;
+  if (fauxGitHub) {
+    stops.push(() => fauxGitHub.close());
+    if (was) await github.remove();
+    await github.save(fauxGitHub.app);
+    await github.setInstallations([{ id: FAUX_GITHUB.installation, account: FAUX_GITHUB.account }]);
+    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories })}\n`, { mode: 0o600 });
+  }
+  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: fauxGitHub?.url ?? options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
@@ -2725,12 +2741,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "raiseRunCap": {
-        const run = await needRun(id);
+        // The run is read once its body is in, right before the raise row is written: the pause the answer names
+        // (raiseFollowUpId) is the one the run stands at when its runner takes that row, never one an earlier raise ended
+        // while this body was on its way.
+        if (!ID.test(id) || !(await store.runs.get(id))) throw new ApiError("not_found", `no run ${id}`);
         const body = await bodyOf(req);
         const extra = unknownFields(body, ["max_cost_usd"]);
         if (extra.length) throw invalid(extra);
         const cap = body.max_cost_usd;
         if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) throw invalid([{ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is a number above 0" }]);
+        const run = await needRun(id);
         const now = run.maxCostUsd;
         if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
         const { resumed, messageId, note } = await raiseCap(store, run, cap);
@@ -3506,6 +3526,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     await mcpStopped;
     await githubStopped;
+    // --faux-github's fake GitHub API, once nothing asks it anything.
+    await fauxGitHub?.close();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
