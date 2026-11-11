@@ -232,9 +232,9 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
-  const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
+  const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
     current = await storeSettings(store);
-    const decision = await gate.decide(call.tool, call.args);
+    const decision = await gate.decide(call.tool, call.args, options);
     // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings, decided for the whole call
     // before any node runs, never mid-run: one set to deny refuses the call in the gate's words, nothing sent; one set to
     // ask asks for the call, up front, on the run's one card (a running workflow can't park mid-call: it is never run

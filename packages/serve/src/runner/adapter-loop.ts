@@ -21,7 +21,7 @@ import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
-import { deniedText as setToDenyText, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "../refusal-words.js";
+import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -57,8 +57,9 @@ export type RaiseCheck =
 /** The gate's answer for a call: run it, ask a person, or refuse it (with the words the model reads, or generic ones). */
 export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
- *  key, as main's pending approval names it), else the call is asked about by its own name. */
-export type SpecGate = ((call: ToolCall) => GateAnswer | Promise<GateAnswer>) & {
+ *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
+ *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
+export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean }) => GateAnswer | Promise<GateAnswer>) & {
   readonly askedAs?: (tool: string) => string;
   /** What an asked call's card shows beside its input (a learned workflow's MCP calls it would make), if anything. */
   readonly askedFor?: (tool: string, args: unknown) => Promise<Record<string, unknown> | undefined>;
@@ -1197,6 +1198,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // from that end, never run again.
             const ended = record?.endOf(toolContext.callId);
             if (ended) return endedAnswer(tool.name, ended);
+            // A call run again after an earlier attempt (the harness's rerun of a replay-safe call after a crash: its
+            // attempt above 0) never passed the gate before its intent this time: the gate is asked again here, so a deny
+            // set since the first attempt refuses the rerun, in words saying the earlier attempt may have taken effect.
+            if ((toolContext.attempt ?? 0) > 0 && spec.gate) {
+              // By the name the gate before the intent asks it by: an MCP tool by its catalog name.
+              const name = mcp?.catalogOf(tool.name) ?? tool.name;
+              const asked = spec.gate.askedAs?.(name) ?? name;
+              const now = await spec.gate({ callId: toolContext.callId, tool: name as never, args: (args ?? {}) as Record<string, unknown> }, { replayed: true });
+              if (now === "deny") return { text: setToDenyText(asked, undefined, "server", "unknown"), isError: true };
+              if (typeof now === "object") return { text: now.deny, isError: true };
+              // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
+              // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
+              // the claim lets it go; a deny says the earlier attempt may have taken effect.
+              if (now === "ask") {
+                const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
+                const answer = await answerOf(call, mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null, asked);
+                if (answer === "park") return await heldUntilAborted(toolContext.signal);
+                if (!answer.approved) return { text: refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown"), isError: true };
+              }
+              // pi let this call start before it was asked here: a stop while the gate or a person was asked wins over the
+              // permission that came after it, and the call is never started.
+              if (stopAbort.signal.aborted || toolContext.signal?.aborted) return { text: STOPPED_WHILE_WAITING, isError: true };
+            }
             if (record) await record.start(toolContext.callId, tool.name, args ?? {}, tool.replay === "safe");
             try {
               const answer = await sideEffect({
@@ -1631,13 +1655,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
-      const decision = (await spec.gate?.(kernelCall)) ?? "allow";
+      // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
+      const replayed = call.replayed === true;
+      const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
       if (typeof decision === "object") return { deny: decision.deny };
       // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
       // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
       const asked = spec.gate?.askedAs?.(tool) ?? tool;
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
-      if (decision === "deny") return { deny: setToDenyText(asked) };
+      if (decision === "deny") return { deny: setToDenyText(asked, undefined, "server", replayed ? "unknown" : "no") };
       if (decision === "allow") return "allow";
       // The card shows the call's input, and beside it what the gate says the call would do that the person approves too
       // (a learned workflow's MCP calls set to ask: askedFor).
@@ -1654,7 +1680,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const seen = askedArgs.get(call.callId);
         approvedCalls.set(call.callId, seen && typeof seen === "object" && !Array.isArray(seen) ? (seen as Record<string, unknown>) : {});
       }
-      return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
+      if (answer.approved) return "allow";
+      return { deny: replayed ? refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown") : deniedText(asked, answer.note) };
     };
   }
 
@@ -1711,6 +1738,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
     }
+  }
+
+  /** A call parked from inside its run (a rerun asked again): held unrun until its signal aborts (the pass ends on the
+   *  park), then thrown, so nothing of it is answered in this pass. */
+  function heldUntilAborted(signal: AbortSignal): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      if (signal.aborted) return reject(new Error("parked"));
+      signal.addEventListener("abort", () => reject(new Error("parked")), { once: true });
+    });
   }
 
   /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. `later` when this
