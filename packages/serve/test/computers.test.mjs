@@ -58,8 +58,15 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers" });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", network: "the vendor's own network; this server's allow-list doesn't apply" });
   assert.equal(kindOf(view, "sandbox").offered, true);
+  // What this server's allow-list means for each provider, from its declared network (the computer package's NETWORK):
+  // none for Docker, which takes the list; words for a computer with no network, and for one on the vendor's own.
+  const networkOf = (kind, id) => providerOf(view, kind, id).network;
+  assert.deepEqual(
+    [networkOf("sandbox", "docker"), networkOf("sandbox", "daytona"), networkOf("sandbox", "modal"), networkOf("sandbox", "e2b"), networkOf("desktop", "orgo"), networkOf("browser", "kernel")],
+    [undefined, "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "the vendor's own network; this server's allow-list doesn't apply"],
+  );
 });
 
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
@@ -97,7 +104,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: 7 }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type");
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true }, "the shared secret shape: set, where from, when changed; never a value");
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, network: "the vendor's own network; this server's allow-list doesn't apply" }, "the shared secret shape: set, where from, when changed; never a value");
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");
@@ -130,6 +137,31 @@ test("a provider's test opens its saved keys, makes it with them through compute
   await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b", BROWSERBASE_PROJECT_ID: "good-p" });
   assert.equal((await routes.test("browserbase")).ok, false, "a provider with no module here is not tested");
   assert.equal(await routes.test("nope"), undefined);
+});
+
+test("a provider's test answer that quotes the saved key in another form (base64 in an auth header, hex) comes back with no form of it, failed or ok", async (t) => {
+  const sealKey = randomBytes(32);
+  const { store } = await storeOn(t);
+  const KEY = "fake-test-key";
+  const forms = [Buffer.from(KEY).toString("base64"), Buffer.from(KEY).toString("hex")];
+  // A vendor that echoes the key it was made with in the forms testConnection's plain cut does not know.
+  let answer = "refused";
+  const echoing = (options) => ({
+    async testConnection() {
+      const said = `Authorization: Basic ${Buffer.from(options.apiKey).toString("base64")} (key id ${Buffer.from(options.apiKey).toString("hex")})`;
+      return answer === "ok" ? { ok: true, value: { detail: `2 computers for ${said}` } } : { ok: false, error: { code: "unauthorized", message: `401 ${said}` } };
+    },
+  });
+  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: { e2b: echoing }, tools, mode: "local" });
+  await routes.saveKeys("e2b", { E2B_API_KEY: KEY });
+  const refused = await routes.test("e2b");
+  assert.equal(refused.ok, false);
+  assert.match(refused.why, /^E2B refused the saved key: check E2B_API_KEY in Settings → Computers\./, "the plain words stay");
+  for (const form of [KEY, ...forms]) assert.ok(!refused.why.includes(form), `no ${form} in the why: ${refused.why}`);
+  answer = "ok";
+  const ok = await routes.test("e2b");
+  assert.equal(ok.ok, true);
+  for (const form of [KEY, ...forms]) assert.ok(!ok.detail.includes(form), `no ${form} in the detail: ${ok.detail}`);
 });
 
 test("the claim's options: computer_unavailable with the refusal's words, else the provider's create() options from its saved keys", async (t) => {

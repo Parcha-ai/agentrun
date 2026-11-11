@@ -77,6 +77,15 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
     return keys;
   };
 
+/** Whether a provider's computers run only on the vendor's own network: the network forms it declares (its module's
+ *  NETWORK, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
+export const vendorNetworkOnly = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && network.every((one) => one === "open");
+
+/** Why a vendor-hosted computer is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the fix:
+ *  the operator said no network at all, and the computer can't run without the vendor's. */
+export const noNetworkRefusal = (label: string, kind: string): string =>
+  `This agent's computer is a ${label} ${kind}, which runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list (a vendor-hosted computer then runs on the vendor's own network, which the list doesn't reach).`;
+
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
  *  that name the fix. Nothing starts. A run's start asks it before the run is made (runnable.ts).
@@ -85,8 +94,12 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
  *  daemon check, docker-daemon.ts). Any computer on such a provider, a sandbox or a desktop in either mode, is refused
  *  here, at the start, where the claim would only fail to launch it: no daemon at all in the one wording Settings →
  *  Computers and the claim say (noDockerWords), another reason in its own words. Asked here, not in resolveComputer: the
- *  claim launches it, and asks only once its launch fails (ClaimSide.daemon). Absent: not asked. */
-export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => DockerDaemon | Promise<DockerDaemon>): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
+ *  claim launches it, and asks only once its launch fails (ClaimSide.daemon). Absent: not asked.
+ *
+ *  `boxAllow`: this server's allow setting (box-settings.ts boxAllowOf). Under "none", a computer that runs only on the
+ *  vendor's own network is refused (noNetworkRefusal), as the claim refuses it; under a list it runs open. Absent: not
+ *  asked. */
+export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => DockerDaemon | Promise<DockerDaemon>, boxAllow?: readonly string[] | "none"): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
   const resolved = await resolveComputer(setting, mode, registry, {
     keysOf: providerKeys(registry, keyOf),
     // A setting is given, so the Mode 1 default (the only asker) is never read; and nothing is launched.
@@ -95,12 +108,14 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   });
   if ("refused" in resolved) return { refused: resolved.refused };
   const entry = registry.PROVIDERS.find((one) => one.id === resolved.provider);
-  if (!entry || !entry.mounts.includes("bind") || !answers) return { ok: true };
-  const said = await answers(entry.id);
-  if (said.up) return { ok: true };
-  // It names the box whose probe said no (a refusal's details.box), as the box check did.
-  if (said.absent) return { refused: noDockerWords(resolved.kind, registry.PROVIDERS, mode), box: entry.id };
-  return { refused: `This agent's computer is a ${entry.label} ${resolved.kind}, and this server cannot run it: ${said.reason.replace(/[.!?]+$/, "")}.`, box: entry.id };
+  if (entry && entry.mounts.includes("bind") && answers) {
+    const said = await answers(entry.id);
+    // It names the box whose probe said no (a refusal's details.box), as the box check did.
+    if (!said.up && said.absent) return { refused: noDockerWords(resolved.kind, registry.PROVIDERS, mode), box: entry.id };
+    if (!said.up) return { refused: `This agent's computer is a ${entry.label} ${resolved.kind}, and this server cannot run it: ${said.reason.replace(/[.!?]+$/, "")}.`, box: entry.id };
+  }
+  if (boxAllow === "none" && entry && vendorNetworkOnly(entry.network)) return { refused: noNetworkRefusal(entry.label, resolved.kind) };
+  return { ok: true };
 }
 
 /** The run's computer started: what runTools takes (none for kind none), and its release, after the run's end. */

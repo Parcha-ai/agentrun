@@ -4,7 +4,7 @@
 // and takes it out of the environment (agentrun-serve's list), and it is read here by name (secrets.ts secret), never
 // from an environment. Nothing else reads those two variables. AGENTRUN_STORE_POOL_SIZE sets how many connections each
 // process's Postgres pool holds at most (storePoolSize, DEFAULT_STORE_POOL_SIZE by default), read here alone too.
-import type { Store, StoreRole } from "./store.js";
+import type { Store, StoreOwned, StoreRole } from "./store.js";
 import { openSqliteStore, STORE_FILE } from "./sqlite/store.js";
 import { DEFAULT_SCHEMA, openPostgresStore } from "./postgres/store.js";
 import { secret } from "../secrets.js";
@@ -65,15 +65,18 @@ export interface OpenStoreOptions {
   readonly url?: string;
   /** The environment AGENTRUN_STORE_SCHEMA and AGENTRUN_STORE_POOL_SIZE are read from (process.env). Neither is a secret. */
   readonly env?: NodeJS.ProcessEnv;
-  /** Told what a person should know at the open (a runner's clock far from Postgres's). */
+  /** Told what a person should know at the open (a runner's clock far from Postgres's; a server waiting for another to
+   *  let the Postgres schema go). */
   readonly warn?: (message: string) => void;
+  /** A server's, on Postgres: told when its owner lock is lost for good (PostgresStoreOptions.onOwnerLost). */
+  readonly onOwnerLost?: (error: StoreOwned) => void;
 }
 
 /** Opens the store `options` names (storeTarget): the server's and the runner's one way in. On Postgres its pool holds at
  *  most storePoolSize(env) connections; a pool size that is no size is refused on either store. */
-export async function openStore({ dataDir, role = "server", now, url, env = process.env, warn }: OpenStoreOptions): Promise<Store> {
+export async function openStore({ dataDir, role = "server", now, url, env = process.env, warn, onOwnerLost }: OpenStoreOptions): Promise<Store> {
   const target = storeTarget(dataDir, env, url ?? storeUrl());
   const poolSize = storePoolSize(env);
   if (target.kind === "sqlite") return openSqliteStore({ dataDir, role, ...(now ? { now } : {}) });
-  return openPostgresStore({ url: target.url, schema: target.schema, role, poolSize, ...(now ? { now } : {}), ...(warn ? { warn } : {}) });
+  return openPostgresStore({ url: target.url, schema: target.schema, role, poolSize, ...(now ? { now } : {}), ...(warn ? { warn } : {}), ...(onOwnerLost ? { onOwnerLost } : {}) });
 }
