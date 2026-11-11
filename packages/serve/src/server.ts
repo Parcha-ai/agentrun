@@ -2723,12 +2723,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "raiseRunCap": {
-        const run = await needRun(id);
+        // The run is read once its body is in, right before the raise row is written: the pause the answer names
+        // (raiseFollowUpId) is the one the run stands at when its runner takes that row, never one an earlier raise ended
+        // while this body was on its way.
+        if (!ID.test(id) || !(await store.runs.get(id))) throw new ApiError("not_found", `no run ${id}`);
         const body = await bodyOf(req);
         const extra = unknownFields(body, ["max_cost_usd"]);
         if (extra.length) throw invalid(extra);
         const cap = body.max_cost_usd;
         if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) throw invalid([{ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is a number above 0" }]);
+        const run = await needRun(id);
         const now = run.maxCostUsd;
         if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
         const { resumed, messageId, note } = await raiseCap(store, run, cap);

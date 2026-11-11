@@ -163,7 +163,7 @@ type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: stri
  *  cancelled while the call waited. */
 type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
 /** The least a journal entry a reader here reads is: its kind and its data. */
-type JournalEntry = { kind?: string; data?: unknown };
+type JournalEntry = { id?: unknown; kind?: string; data?: unknown };
 const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
 
 /** The tool calls a run waits (or waited) for a person's approval on, from its journal's `agentrun.ask` entries, by the
@@ -240,13 +240,26 @@ type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: num
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
  *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
 function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
-  let mark: BudgetEntry | undefined;
-  for (const entry of entries) {
-    if (entry.kind === KINDS.budget) mark = dataOf<BudgetEntry>(entry);
-    else if (entry.kind === KINDS.raise) mark = undefined;
-  }
-  return mark;
+  return activePark(entries)?.mark;
 }
+
+/** The active cap park and its entry's id: the pause the runner keys a raise's follow-up by (adapter-loop raiseStateOf). */
+function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: string } | undefined {
+  let park: { mark: BudgetEntry; id: string } | undefined;
+  for (const entry of entries) {
+    if (entry.kind === KINDS.budget) park = { mark: dataOf<BudgetEntry>(entry), id: String(entry.id) };
+    else if (entry.kind === KINDS.raise) park = undefined;
+  }
+  return park;
+}
+
+/** The id of the cap park a run stands at now (its agentrun.budget entry's), or undefined when it is not parked: a raise's
+ *  follow-up is sent as `agentrun:raise:<this>` (raiseFollowUpId), so a raise's answer names that message. */
+export const activePauseOf = (entries: readonly JournalEntry[]): string | undefined => activePark(entries)?.id;
+
+/** The id a raised run's follow-up turn is sent under: one per pause, so raises of the same pause (a retry, two at once)
+ *  name the same message, and the runner's re-claim never sends it twice. */
+export const raiseFollowUpId = (pause: string): string => `agentrun:raise:${pause}`;
 
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
@@ -302,6 +315,8 @@ export interface RunView {
    *  view, from the cap park entry): the moment reads them when `pausedAt` finds no turn refusal, so a run parked at its cap
    *  reads paused either way. The file-backed view leaves this unset and the moment reads `pausedAt`. */
   pausedWords?: string;
+  /** The cap park the run stands at (activePauseOf), when the store-backed view knows it: the moment's `pause`. */
+  pause?: string;
   meta: RunViewMeta;
 }
 
@@ -511,6 +526,9 @@ export interface RunMoment {
   readonly pausedWords?: string;
   /** The run is paused at its cap (pausedAt): raising the cap resumes it. */
   readonly paused: boolean;
+  /** The cap park it stands at (its agentrun.budget entry's id, activePauseOf), when the store knows it: a raise's answer
+   *  names the follow-up message the runner sends for it (raiseFollowUpId). */
+  readonly pause?: string;
   /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next step, not the one under
    *  way. */
   readonly live: boolean;
@@ -553,6 +571,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     ...(run.meta.max_cost_usd !== undefined ? { maxCostUsd: run.meta.max_cost_usd } : {}),
     ...(pausedWords !== undefined ? { pausedWords } : {}),
     paused: pausedWords !== undefined,
+    ...(pausedWords !== undefined && run.pause !== undefined ? { pause: run.pause } : {}),
     live,
     // Whether it waits on a person (runs.ts waitsOnPerson): a parked approval, a pause at its cap (read through a message
     // counted but not shown), or a question its turn ended on.

@@ -21,7 +21,7 @@ import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
-import type { ApprovalDecision, RunMoment } from "./run-view.js";
+import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
@@ -181,9 +181,12 @@ export async function message(
 /** A steer command row, as message() writes it. */
 export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
 
-/** The raise command rows this run already has, newest last, with the cap each names. */
-async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
-  return (await store.commands(runId, 0)).filter((c) => c.kind === "raise").map((c) => Number((c.body as { capUsd?: unknown })?.capUsd)).filter((n) => Number.isFinite(n));
+/** The raise command rows this run already has, newest last: the cap each names, and whether its runner has taken it. */
+async function raiseRows(store: RunsStore, runId: string): Promise<{ capUsd: number; taken: boolean }[]> {
+  return (await store.commands(runId, 0))
+    .filter((c) => c.kind === "raise")
+    .map((c) => ({ capUsd: Number((c.body as { capUsd?: unknown })?.capUsd), taken: c.takenAt !== null }))
+    .filter((row) => Number.isFinite(row.capUsd));
 }
 
 /** Raises the cap of an agentic or workflow run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the
@@ -197,9 +200,15 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
   const raises = await raiseRows(store, moment.id);
   const last = raises.at(-1);
-  // The same raise again (a retry): what the first one did stands, no second row.
-  if (Math.abs(cap - from) <= CAP_TOLERANCE && last !== undefined && Math.abs(last - cap) <= CAP_TOLERANCE) {
-    return moment.paused ? { resumed: true } : { resumed: false };
+  // An agentic run paused at its cap goes on with one follow-up turn the runner sends under its pause's id
+  // (raiseFollowUpId): the answer names it, so every raise of this pause (a retry, two sent at once) names the same message.
+  // A workflow run sends none (the step that waits is judged again), so its answer names no message.
+  const resumed = (): { resumed: true; messageId?: string } => ({ resumed: true, ...(moment.kind === "agentic" && moment.pause !== undefined ? { messageId: raiseFollowUpId(moment.pause) } : {}) });
+  // The same raise again (a retry): what the first one did stands, no second row. It resumes the run only while that raise
+  // is still on its way (its row untaken): once taken, a pause the run stands at now is a new one, under the raised cap,
+  // which this retry does not raise (it answers resumed false, and the run stays paused).
+  if (Math.abs(cap - from) <= CAP_TOLERANCE && last !== undefined && Math.abs(last.capUsd - cap) <= CAP_TOLERANCE) {
+    return moment.paused && !last.taken ? resumed() : { resumed: false };
   }
   if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
   try {
@@ -212,7 +221,7 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
     throw error;
   }
   // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation).
-  if (moment.paused) return { resumed: true };
+  if (moment.paused) return resumed();
   // A run its runner holds takes the raise as its next command: its next step is admitted under the raised cap (the
   // runner's loop holds the run to its newest raise), and a step already under way keeps the cap it was admitted at.
   return { resumed: false, ...(moment.live ? { note: `The ${money(cap)} cap holds from the run's next step; a step already under way keeps the ${money(from)} cap it was admitted at.` } : {}) };
