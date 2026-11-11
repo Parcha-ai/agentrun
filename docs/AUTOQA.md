@@ -148,7 +148,7 @@ same ground with no key.
 | Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `REPLAY` class (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
 | Takes from places | The run's Workspace and its computer, both opened at the claim (`workspace/run-workspace.ts`, `workspace/computer-for-claim.ts`), from the revision's `computer` setting (`definition.place` is its API view); see Places below |
 | Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's end writes to its row |
-| Gives the learning loop | Not wired into serve yet. The seam is run-adapters' `followUpOnce` (one more turn, held to `reserveUsd`), which learn's `reflectBudget` sizes |
+| Gives the learning loop | Not wired into serve yet. |
 
 **Alone.** No model key, no tool key, no box and no console. Build as in [How to run](#how-to-run), without the console
 lines. Then:
