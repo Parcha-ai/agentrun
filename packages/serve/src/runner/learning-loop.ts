@@ -106,9 +106,10 @@ export interface LearningLoopDeps {
   /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
    *  already holds is settled alone (takenOnMain). */
   mainTexts(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
-  /** Whether run `runId`'s merge is on main already (learn/folder.ts readRunDiff: its diff file, named by the run as its
-   *  commit's Run-Id trailer names it): a resume after its commit, before its end was recorded. */
-  merged(ws: unknown, runId: string): Promise<boolean>;
+  /** Run `runId`'s merge, when it is on main already (learn/folder.ts readRunDiff: its diff file, named by the run as its
+   *  commit's Run-Id trailer names it; a resume after its commit, before its end was recorded): the texts its own commit
+   *  holds at these note paths, as that merge saved them, whatever main says of them since. Undefined when it is not. */
+  merged(ws: unknown, runId: string, paths: readonly string[]): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
   /** Consolidation (learn/consolidate.ts), all of it or none: a loop without it never runs one and never queues one. */
@@ -501,14 +502,16 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           // re-filed as one) is settled alone (takenOnMain): never written over unless it supersedes it, and never a
           // refusal of everything else the run learned. Not when this run's own merge is on main already (the runner
           // stopped after its commit, before it recorded it): the notes there are that merge's, never "already there", so
-          // the grade's verdict goes to the commit, which answers with that merge, and each item is settled by the text main
-          // holds at its file (resumedOf: its rule there, not only a changed path).
+          // the grade's verdict goes to the commit, which answers with that merge, and each item is settled by the text that
+          // merge's own commit holds at its file (resumedOf: its rule there, not only a changed path, and never main's
+          // text now, which a person may have edited since).
           const notePaths = graded.verdict.items.flatMap((item) => (!item.keep ? [] : item.note ? [item.note.file] : proposal.notes.some(({ file }) => file === item.file) ? [item.file] : []));
           let onMain: Readonly<Record<string, string>> = {};
           let already = false;
           try {
-            already = await learning.merged(ws, source.runId);
-            if (notePaths.length) onMain = await learning.mainTexts(ws, notePaths);
+            const merge = await learning.merged(ws, source.runId, notePaths);
+            already = merge !== undefined;
+            onMain = merge ? merge.texts : notePaths.length ? await learning.mainTexts(ws, notePaths) : {};
           } catch (error) {
             // Main could not be read: parked as for a write that could not reach the folder, tried again after a backoff.
             await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
