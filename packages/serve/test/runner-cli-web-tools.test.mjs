@@ -5,11 +5,11 @@
 // run's one ledger (its paid-tools session, the fee counted once in the run's cost), and the run's record holds its
 // tool_use and tool_result rows. With web_fetch set to deny in the agent's settings or on the server, or set to ask where
 // no one can approve, the run's gate refuses the call in main's words, nothing is sent or booked, and the call is on the
-// record as on pi: its tool_use row and its tool_result row failed in those words. The harness's calls ask the run's gate first, as claude-agent's and
-// codex's own tool bridges do (bridged, below). Through the real loop: startRunner over createDispatchLoop and the CLI
+// record as on pi: its tool_use row and its tool_result row failed in those words. The faux harness's calls ask the run's
+// gate first, as claude-agent's and codex's own tool bridges do; bridged, below, keeps what it is handed. Through the real loop: startRunner over createDispatchLoop and the CLI
 // spec (cliRunSpecFromLaunch), on a real store; no sleeps, no port races.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,6 +35,7 @@ const { saveToolSettings } = await import("../dist/tool-plane.js");
 const { writeApprovers } = await import("../dist/server-approvers.js");
 const { entriesOf } = await import("../dist/runner/loop.js");
 const { runMetrics } = await import("../dist/runner/metrics.js");
+const { scratchFolder } = await import("../dist/workspace/paths.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -81,31 +82,29 @@ function fakeParallel(t) {
   return sent;
 }
 
-/** `spec` with its harness's tool calls asking the run's gate first, as claude-agent's and codex's own tool bridges do
- *  (io.gate, before the call's flush and intent): a deny is the call's answer, in the gate's words, and the call is not
- *  run. The faux harness calls its session's tools directly, so this puts the bridge's ask in front of them. An ask is not
- *  part of this test. Each answer the harness is handed for a refused call is kept in `refused`. */
+/** `spec` with the answers its harness's gate hands it kept: the faux harness asks the run's gate before each call
+ *  (io.gate, before the call's flush and intent: run-adapters' askGate), as claude-agent's and codex's own tool bridges do;
+ *  a deny is the call's answer, in the gate's words, and the call is not run. An ask is not part of this test. Each answer
+ *  the harness is handed for a refused call is kept in `refused`. */
 function bridged(spec, refused) {
   const open = spec.adapter.open.bind(spec.adapter);
   return {
     ...spec,
     adapter: {
       ...spec.adapter,
-      open: (session, io) => open({
-        ...session,
-        tools: session.tools.map((tool) => ({
-          ...tool,
-          call: async (args, context) => {
-            const answer = io.gate ? await io.gate({ callId: context.callId, tool: tool.name, args: args ?? {} }) : "allow";
-            if (answer === "allow") return tool.call(args, context);
-            if ("deny" in answer) {
-              refused.push({ tool: tool.name, text: answer.deny });
-              return { text: answer.deny, isError: true };
+      open: (session, io) => open(session, {
+        ...io,
+        ...(io.gate
+          ? {
+              gate: async (call, ...rest) => {
+                const answer = await io.gate(call, ...rest);
+                if (answer !== "allow" && "deny" in answer) refused.push({ tool: call.tool, text: answer.deny });
+                if (answer !== "allow" && !("deny" in answer)) throw new Error(`${call.tool} was asked of a person, which this test does not answer`);
+                return answer;
+              },
             }
-            throw new Error(`${tool.name} was asked of a person, which this test does not answer`);
-          },
-        })),
-      }, io),
+          : {}),
+      }),
     },
   };
 }
@@ -163,14 +162,17 @@ async function webRun(t, harness, { toolSettings, serverSettings, approvers } = 
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) records.push({ key, ...record });
   // What the run's end metrics read of its record (its root conversation), as the spec's end patch reads it.
   const recorded = runMetrics(await entriesOf(journal, ROOT_CONVERSATION_ID, ctx), {}).costUsd;
-  return { row, sent, timeline, view, records, recorded, refused };
+  return { row, sent, timeline, view, records, recorded, refused, scratch: scratchFolder(dir, "agent-1", RUN) };
 }
 
 for (const harness of Object.keys(HARNESSES)) {
   test(`a ${harness} run granted web_fetch calls it: Parallel asked once, booked once on the run's one ledger, its tool_use and tool_result rows on the timeline`, { timeout: 90_000 }, async (t) => {
-    const { row, sent, timeline, view, records, recorded, refused } = await webRun(t, harness);
+    const { row, sent, timeline, view, records, recorded, refused, scratch } = await webRun(t, harness);
     assert.equal(row.state, "ended", `the run ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     assert.deepEqual(refused, [], "the run's gate allowed every call");
+    // The CLI's scratch folder (its working directory and private files) is swept when its claim ends (#2166): the release
+    // follows the end's commit, so it is waited for.
+    await until(() => !existsSync(scratch), `the run's scratch folder swept at its claim's end: ${scratch}`, 10_000);
     // The network: one extract of the page, on the claim's key.
     assert.deepEqual(sent, [{ path: "/v1/extract", key: fake("parallel"), urls: [PAGE] }], "Parallel asked once, for the page, on the claim's key");
     // The timeline: the call and its result, the page read.

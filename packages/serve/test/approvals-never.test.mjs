@@ -99,7 +99,7 @@ test("under never, web_fetch set to ask runs without parking on pi; the agent an
   assert.equal((await api("GET", "/agents/ask-pi")).body.definition.approvals, "ask", "none set reads ask");
 });
 
-test("under never, web_fetch set to ask runs without parking on claude-agent and codex, as on pi", { timeout: 150_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, async (t) => {
+test("under never, web_fetch set to ask runs without parking on claude-agent and codex, as on pi", { timeout: 150_000 }, async (t) => {
   await neverOn(t, ["claude-agent", "codex"]);
 });
 

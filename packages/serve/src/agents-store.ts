@@ -138,6 +138,8 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
+    // The tool-call budget (tool-budget.ts): 0 keeps none.
+    ...(typeof definition.max_tool_calls === "number" && definition.max_tool_calls > 0 ? { maxToolCalls: definition.max_tool_calls } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -155,6 +157,13 @@ function newRevisionOf(definition: Json, files: Record<string, string>): NewRevi
 function checkVersion(definition: Json, version: number): void {
   if (definition.version !== undefined && definition.version !== version) {
     throw invalid([{ field: "definition.version", reason: "not_an_option", message: `definition.version is ${version} here: the number of the revision this definition leaves current` }]);
+  }
+}
+
+/** The contract's `definition.version` on an edit: past `current`, the number of the agent's current revision. */
+function checkPast(definition: Json, current: number): void {
+  if (typeof definition.version === "number" && definition.version <= current) {
+    throw invalid([{ field: "definition.version", reason: "not_an_option", message: `definition.version is past ${current} here: the current revision's number` }]);
   }
 }
 
@@ -283,7 +292,10 @@ export async function commitAgent(
         checkVersion(definition, now.version);
         return now;
       }
-      checkVersion(definition, now.revisions + 1);
+      // The contract's form takes any version past the current one (the revision is numbered the next all the same); the
+      // server's own form names the next revision's number, or none.
+      if (contract) checkPast(definition, now.version);
+      else checkVersion(definition, now.revisions + 1);
       try {
         await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision });
         return (await getAgent(store, agent.id))!;
@@ -313,6 +325,8 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
+        // A tool-call budget is a limit too: an edit of an agentic revision that leaves it out keeps it.
+        ...(definition.max_tool_calls === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (currentBody as AgenticBody).maxToolCalls } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
         // The structured answer's schema is the agent's contract with its callers: an edit that leaves it out keeps it.
         ...(definition.output_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).outputSchema !== undefined ? { output_schema: (currentBody as AgenticBody).outputSchema } : {}),
@@ -363,7 +377,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
