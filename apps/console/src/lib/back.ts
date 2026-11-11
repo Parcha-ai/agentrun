@@ -21,14 +21,13 @@ export function trackHistory(): () => void {
   return () => window.removeEventListener("hashchange", on);
 }
 
-/** Takes back the move the address just made (a link followed, back or forward, an address typed), back to the entry it
- *  left. Called from a hashchange listener that runs before trackHistory's has counted the move: a new entry (no number
- *  yet) is one step back; an entry moved to is as many steps as it is from the one left. */
-export function undoMove() {
+/** The history steps that take back the move the address just made (a link followed, back or forward, an address typed),
+ *  to the entry it left; minus them make the move again. Read from a hashchange listener that runs before trackHistory's
+ *  has counted the move: a new entry (no number yet) is one step back; an entry moved to is as many steps as it is from
+ *  the one left. */
+export function stepsBack(): number {
   const n = numbered();
-  const steps = n === undefined ? -1 : at - n;
-  // go(0) reloads the page, the very thing a held move keeps from happening.
-  if (steps !== 0) history.go(steps);
+  return n === undefined ? -1 : at - n;
 }
 
 export function goBack(fallback: string) {

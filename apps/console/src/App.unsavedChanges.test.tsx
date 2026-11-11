@@ -46,17 +46,19 @@ const wait = async (ok: () => boolean, what: string, ms = 4000) => {
 };
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 100)); });
 
-/** The console opened at `hash` as a page load would (an address the console never numbered), then at `then` if given. */
-async function open(hash: string, then?: string) {
+/** The console opened at `hash` as a page load would (an address the console never numbered), then moved to each of
+ *  `then` in turn (the last one the builder). */
+async function open(hash: string, ...then: string[]) {
   location.hash = hash;
   await new Promise((r) => setTimeout(r, 20));
   history.replaceState(null, "");
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(App)));
-  if (then) {
+  for (const next of then) {
     await wait(() => !!host.querySelector('nav[aria-label="Navigation"]'), "the console");
-    await act(async () => { location.hash = then; });
+    // Each move's hashchange lands before the next move, as a person's clicks do.
+    await act(async () => { location.hash = next; await new Promise((r) => setTimeout(r, 50)); });
   }
   const instructions = () => host.querySelector<HTMLTextAreaElement>("#agent-instructions");
   await wait(() => !!instructions(), "the agent builder");
@@ -119,6 +121,35 @@ describe("App, the agent builder's unsaved changes", () => {
     await wait(() => !!p.dialog(), "asked again");
     await act(async () => { p.button("Leave", p.dialog())!.click(); });
     await wait(() => location.hash === "#/agents/calc" && !p.instructions(), "on the agent's page");
+  });
+
+  it("Leave on a held Back makes that Back: the next Back goes further back, never into the builder again", async () => {
+    serve();
+    const p = await open("#/runs", "#/agents/calc", "#/agents/calc/edit");
+    await p.type(p.instructions()!, "Answer in French.");
+    await act(async () => { history.back(); });
+    await wait(() => !!p.dialog(), "Leave without saving? is asked");
+    await wait(() => location.hash === "#/agents/calc/edit", "the address is taken back to the builder");
+    await act(async () => { p.button("Leave", p.dialog())!.click(); });
+    await wait(() => location.hash === "#/agents/calc" && !p.instructions(), "on the agent's page");
+    await act(async () => { history.back(); });
+    await wait(() => location.hash === "#/runs", "Back goes on to the runs list");
+    expect(p.instructions()).toBeNull();
+  });
+
+  it("a choice put back to the saved one is no change: approvals switched and switched back go with no question", async () => {
+    serve();
+    const p = await open("#/agents/calc/edit");
+    await act(async () => { [...p.host.querySelectorAll<HTMLButtonElement>("ol button")].find((b) => /Tools & skills/.test(b.textContent ?? ""))!.click(); });
+    const radio = (value: string) => p.host.querySelector<HTMLInputElement>(`input[name="approvals"][value="${value}"]`);
+    await wait(() => !!radio("never"), "the approvals choice");
+    await act(async () => { radio("never")!.click(); });
+    expect(p.unloadAsks()).toBe(true);
+    await act(async () => { radio("ask")!.click(); });
+    expect(p.unloadAsks()).toBe(false);
+    await act(async () => { p.sidebar("Runs").click(); });
+    await wait(() => location.hash === "#/runs" && !p.instructions(), "on the runs list");
+    expect(p.dialog()).toBeUndefined();
   });
 
   it("an address changed under an edited agent (a link, one typed) is taken back and asks first", async () => {

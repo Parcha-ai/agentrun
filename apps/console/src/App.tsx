@@ -33,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
-import { trackHistory, undoMove } from "@/lib/back";
+import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
@@ -349,9 +349,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     return () => { live = false; };
   }, [v2]);
   // An address moved under a page with unsaved changes (a link, back or forward, one typed) is taken back, and the page
-  // asks first. This listener is added before trackHistory's (below), so the move is undone before that one counts it.
+  // asks first; Leave makes the same move again, so a Back left by keeps going back. This listener is added before
+  // trackHistory's (below), so it reads the move before that one counts it. history.go(0) would reload: never sent.
   useEffect(() => {
-    const on = () => { if (holdsMove(location.hash)) undoMove(); else setWhere(route()); };
+    const on = () => {
+      const steps = stepsBack();
+      if (holdsMove(location.hash, () => { if (steps) history.go(-steps); })) { if (steps) history.go(steps); }
+      else setWhere(route());
+    };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);

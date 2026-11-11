@@ -10,7 +10,7 @@ import { ConfirmDialog } from "@/components/ui/dialog";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { Field as UiField, Input, Textarea } from "@/components/ui/field";
-import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, editBody,harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -176,8 +176,14 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     // Saved, the form as it was sent is the clean one (an edit made while the save was under way stays unsaved).
     if (!p) setClean(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(f) : f);
   };
+  // What a form saves, to tell whether it differs from the clean one: on an agent, the definition its save would send, so
+  // a choice put back to the saved one (or to what the form shows when the definition has none) is no change.
+  const saves = (x: AgentFields) => {
+    const { version: _version, ...def } = agent ? editBody(agent, x, "").definition : { version: 0, ...x };
+    return { ...def, approvals: x.approvals ?? d?.approvals ?? "ask" };
+  };
   // A save under way holds nothing: a new agent's save opens its page itself.
-  const guard = useUnsavedChangesGuard(!saving && (note !== "" || !same(f, clean)));
+  const guard = useUnsavedChangesGuard(!saving && (note !== "" || !same(saves(f), saves(clean))));
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses);
