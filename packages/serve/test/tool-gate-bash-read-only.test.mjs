@@ -352,6 +352,12 @@ test("a refused long option is refused with every prefix GNU getopt takes: sort 
   for (const command of ["sort --out=README.md README.md", "sort --o=README.md README.md", "sort --outp README.md README.md", "sort --comp=sh README.md", "sort --temp=x README.md", "wc --files0=x", "tail --fol README.md", "tail --ret README.md", "diff --to=README.md README.md", "diff --recur packages packages", "grep --deref x .", "rg --pre-g x .", "git log --out=x", "git log --ou=x"]) {
     refuses(command, /not allowed/);
   }
+  // A word an option takes as its value is text, never an option: searching for "--pre" or "-iz" reads.
+  allows("rg -e '--pre' .");
+  allows("grep -rn -e --output README.md");
+  allows("grep --regexp --follow README.md");
+  allows("rg -e -iz .");
+  refuses("rg -e x --pre sh .", /rg --pre is not allowed/);
   // An option that is no prefix of a refused one still reads.
   allows("sort --reverse README.md");
   allows("sort --numeric-sort README.md");

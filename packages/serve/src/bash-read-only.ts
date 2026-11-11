@@ -327,6 +327,22 @@ const LONG_BAN: Readonly<Record<string, readonly string[]>> = {
   rg: ["--pre", "--pre-glob", "--follow", "--search-zip", "--hostname-bin"],
 };
 
+/** The indexes of the words options before `dd` (the `--` that ends them, -1: none) take as their value: the next word
+ *  of a grep/rg option that takes one with none attached (`-e`, `-m`, `--regexp`, `--file`, ...), and of sed's `-e`. */
+function optionValues(program: string, rest: readonly string[], dd: number): Set<number> {
+  const values = new Set<number>();
+  const grepLike = GREP_LIKE.includes(program);
+  const valueOpts = program === "rg" ? RG_VALUE_OPTS : GREP_VALUE_OPTS;
+  for (let k = 0; k < rest.length && (dd < 0 || k < dd); k++) {
+    const a = rest[k]!;
+    if (!a.startsWith("-") || a === "-") continue;
+    const sv = grepLike ? shortValue(program, a) : null;
+    const takes = grepLike ? (sv !== null && sv.attached === "") || valueOpts.has(a) || a === "--regexp" || a === "--file" : program === "sed" && a === "-e";
+    if (takes && k + 1 < rest.length) values.add(++k);
+  }
+  return values;
+}
+
 // A short-option cluster (`-rf`, `-iz`) may carry a refused letter that an exact match would miss.
 const CLUSTER_BAN: Readonly<Record<string, RegExp>> = { rg: /[zL]/, sort: /[oT]/, tail: /[fF]/, diff: /r/ };
 const GIT_CLUSTER_BAN: Readonly<Record<string, RegExp>> = { grep: /[Of]/, blame: /S/, "ls-files": /X/, diff: /O/, log: /O/, show: /O/, "diff-tree": /O/ };
@@ -348,7 +364,10 @@ function checkSegment(folder: Folder, start: string, words: string[]) {
   const exempt = new Set<number>(); // never opened as files: the sed script, git's subcommand and -C, a rev:path
   const patterns = new Set<number>(); // grep/rg patterns: a relaxed check (checkPattern)
   if (dd >= 0) exempt.add(dd);
+  // The words an option takes as its value (grep's `-e --pre`, sed's `-e`): text, never an option of their own.
+  const values = optionValues(program, rest, dd);
   for (let idx = 0; idx < rest.length; idx++) {
+    if (values.has(idx)) continue;
     const name = rest[idx]!.split("=")[0]!;
     if (isOption(idx) && (name === "-files0-from" || name === "--files0-from")) throw new Error(`${program} ${rest[idx]} is not allowed (it reads a list of files to open)`);
     if (isOption(idx) && name.startsWith("--") && (LONG_BAN[program] ?? []).some((bad) => abbreviates(name, bad))) throw new Error(`${program} ${rest[idx]} is not allowed (it writes or names a file to read, follows, or runs a program; a prefix of such an option is refused too)`);
