@@ -1,7 +1,7 @@
 // A run handed its agent's browser sign-in, as the store path serves it (ported from sign-ins.test.mjs's per-run-process
 // cases; each names the cases it carries). What a run says is cut of every pointer it was handed, live or forgotten, by
-// its row's hashes, or withheld whole when one of them can't be read back here (another seal key, a pointer dropped past
-// the newest 32 kept, the sign-in rows gone). Its graph and its review are withheld alike; forget waits for a running run
+// its row's hashes, or withheld whole when one of them can't be read back here (another seal key, the sign-in rows
+// gone). Its graph and its review are withheld alike; forget waits for a running run
 // handed the sign-in; the agent's home never serves the sign-ins. The runs are real (the faux model repeats its message),
 // marked as the runner marks a run it hands a sign-in; a seal key change is the server started again on its data. No
 // sleeps, no process deaths, no lease clocks.
@@ -121,11 +121,11 @@ test("a forgotten sign-in still cuts what its runs said; under another seal key 
 
 // sign-ins.test.mjs: "a run reopened after its first sign-in was forgotten has the old pointer cut from its follow-up,
 // though it was handed a new one", "a run handed several sign-ins is withheld only when one of its own is lost: 33 forgets
-// of the agent's others leave it cut", "a run handed a sign-in forgotten so long ago that it is no longer kept (past the
-// newest 32) is withheld", "an ended run handed several sign-ins whose agent's sign-ins file is gone is withheld".
-test("a run handed several pointers is cut of each, live or forgotten, past the agent's other forgets; withheld once one of its own is dropped past the newest 32, or the sign-ins are gone", { skip: "follow-up: #2067", timeout: 120_000 }, async (t) => {
+// of the agent's others leave it cut", "an ended run handed several sign-ins whose agent's sign-ins file is gone is
+// withheld". Every forgotten pointer is kept, so none of a run's own is ever dropped by later forgets.
+test("a run handed several pointers is cut of each, live or forgotten, past the agent's other forgets, however many; withheld once the sign-ins are gone", { skip: "follow-up: #2067", timeout: 120_000 }, async (t) => {
   const s = await server(t);
-  // 33 of the agent's sign-ins forgotten before (Kernel's): the cap keeps the newest 32 of the agent's, across providers.
+  // 33 of the agent's sign-ins forgotten before (Kernel's): every one kept.
   const churn = (n) => overStore(s, async (store) => {
     for (let i = 0; i < n; i++) {
       await saveSignIn(store, s.seal, { agentId: "alpha", provider: "kernel", pointer: `agentrun-${randomBytes(12).toString("hex")}` });
@@ -144,10 +144,11 @@ test("a run handed several pointers is cut of each, live or forgotten, past the 
   const shown = await reads(s, both);
   assert.match(shown.view.result.final_answer, /^On \[redacted\] \[redacted\] Hold/);
   holdsNone(shown, old, live);
-  // 32 more of the agent's forgotten: `old` is dropped past the newest 32, so `both` can't be cut of it: withheld.
+  // 32 more of the agent's forgotten: `old` is still kept, so `both` is still cut of it.
   await churn(32);
-  withheld(await reads(s, both), old, live);
-  // The run handed only the live one is still cut: only a run whose own pointer is lost is withheld.
+  const still = await reads(s, both);
+  assert.match(still.view.result.final_answer, /^On \[redacted\] \[redacted\] Hold/);
+  holdsNone(still, old, live);
   assert.match((await reads(s, liveOnly)).view.result.final_answer, /^On \[redacted\] Hold/);
   // The agent's sign-ins gone (live and forgotten): nothing it was handed can be read back: withheld.
   written(s, "DELETE FROM sign_ins WHERE agent_id = ?", "alpha");

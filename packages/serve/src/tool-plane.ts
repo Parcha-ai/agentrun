@@ -20,13 +20,10 @@
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { blurbOf } from "./tool-blurbs.js";
-import { readFileSync } from "node:fs";
 import { isToolSettingsKey } from "@parcha/pi-durable-agent";
-import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
-import { writeDurableSync } from "./server-fs.js";
 import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { builtinHarness, harnessOf } from "./harness-table.js";
@@ -80,7 +77,7 @@ export const KIND_KEYS: readonly string[] = ["desktop", "phone"];
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -432,30 +429,13 @@ export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pic
   ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
 });
 
-/** The server's tool settings, beside the agent store in its data directory: not a secret, and not in store.sqlite,
- *  which runs hold open. Read once at the start, written whole and durably (0600) at each PUT; a missing file is every
- *  default, and so is one it cannot read, which it says in one line. */
-/** An empty settings map marked as standing for a file that does not read (SETTINGS_UNREAD, tool-gate.ts): every caller of
- *  readToolSettings inherits the mark, a direct read too (learning's draft check, the learned-draft tools), so none lifts an
- *  ask over a file whose deny it cannot see. */
-const unreadMap = (): ToolSettingsMap => Object.assign({}, { [SETTINGS_UNREAD]: true }) as ToolSettingsMap;
+/** The server's tool settings as read (checkToolSettings, loadToolSettings): the map, a line for each problem, and whether
+ *  the stored value as a whole does not read. */
+export type ToolSettingsRead = { settings: ToolSettingsMap; problems: string[]; unreadable?: true };
 
-/** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
- *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
- *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
- *  changed, naming the file and the field, never a value. `unreadable`: the file as a whole does not read (none, a
- *  missing file is every default). */
-export function readToolSettings(dir: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
-  const file = join(dir, ToolSettings.FILE);
-  let read: unknown;
-  try {
-    read = JSON.parse(readFileSync(file, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
-    return { settings: unreadMap(), problems: [`${file} does not read as JSON`], unreadable: true };
-  }
-  return checkToolSettings(read, file);
-}
+/** An empty settings map marked as standing for settings that do not read (SETTINGS_UNREAD, tool-gate.ts): every reader
+ *  inherits the mark, so none lifts an ask over settings whose deny it cannot see. */
+const unreadMap = (): ToolSettingsMap => Object.assign({}, { [SETTINGS_UNREAD]: true }) as ToolSettingsMap;
 
 /** A parsed tool-settings object (from the file, or the store), checked and failed closed: each entry that reads is kept;
  *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered, reads
@@ -500,14 +480,13 @@ export function checkToolSettings(read: unknown, where: string): { settings: Too
 /** The key the server's tool settings live under in the one store (store.settings). */
 export const TOOL_SETTINGS_KEY = "tool-settings";
 
-/** The server's tool settings read from the one store (store.settings), failing closed as readToolSettings does: no row
- *  is every default. The store-backed replacement for `new ToolSettings(dir)` + get(); the cut wires it. */
-export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
+/** The server's tool settings read from the one store (store.settings), failing closed (checkToolSettings): no row is
+ *  every default. */
+export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<ToolSettingsRead> {
   const read = await store.settings.get(TOOL_SETTINGS_KEY);
   if (read === undefined) return { settings: {}, problems: [] };
   const checked = checkToolSettings(read, "the stored tool settings");
-  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts), as ToolSettings.get does for the file: wherever
-  // these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
+  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts): wherever these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
   // deny the row may hold. A save over it (saveToolSettings) writes a row that reads.
   if (checked.unreadable) (checked.settings as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
   return checked;
@@ -515,7 +494,7 @@ export async function loadToolSettings(store: { settings: Pick<Settings, "get"> 
 
 /** A save of the server's tool settings: `map` (a tool it leaves out takes its defaults) over the settings read before it
  *  (`current`), as kept (the marks within) and as written (the raw values, which a read turns back into those marks).
- *  The one rule both writers keep (ToolSettings.put to the file, saveToolSettings to the store), so they cannot drift:
+ *  The rule saveToolSettings keeps:
  *  - a pin is kept as given, as a pin is a gate fence (tool-gate.ts pinRefusal);
  *  - a broken pin (one that did not read) is kept by every save that keeps the tool's key and sets no pin of its own (a
  *    console's whole map sends the key back, marked pin_broken): only a valid pin, or the key left out, clears it, so an
@@ -535,48 +514,14 @@ export function keptSettings(map: ToolSettingsMap, current: ToolSettingsMap): { 
   return { kept, written };
 }
 
-/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file, by the same rule
- *  (keptSettings): a tool `map` leaves out takes its defaults, a pin is kept, a broken pin is kept until a valid one or the
- *  key left out clears it, and a stand-in sent back unchanged stays a stand-in. Answers the settings as served (the marks
- *  within). The store-backed replacement for ToolSettings.put; the cut wires it. */
+/** Replaces the server's tool settings in the one store, by keptSettings's rule: a tool `map` leaves out takes its
+ *  defaults, a pin is kept, a broken pin is kept until a valid one or the key left out clears it, and a stand-in sent
+ *  back unchanged stays a stand-in. Answers the settings as served (the marks within). */
 export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
   const { settings: current } = await loadToolSettings(store);
   const { kept, written } = keptSettings(map, current);
   await store.settings.put(TOOL_SETTINGS_KEY, written);
   return structuredClone(kept);
-}
-
-export class ToolSettings {
-  static readonly FILE = "tool-settings.json";
-  private current: ToolSettingsMap;
-  /** The file was present but did not read at the start: every tool takes its defaults until a PUT replaces it. */
-  private unread: boolean;
-  constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
-    const { settings, problems, unreadable } = readToolSettings(dir);
-    for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
-    this.current = settings;
-    this.unread = unreadable === true;
-  }
-
-  /** The settings now. While the file does not read, the map carries SETTINGS_UNREAD (tool-gate.ts), so wherever it goes
-   *  (the gate's permission, the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask
-   *  over a deny the file may hold, as the gate itself fails closed. */
-  get(): ToolSettingsMap {
-    const map = structuredClone(this.current);
-    if (this.unread) (map as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
-    return map;
-  }
-
-  /** Replaces the settings: a tool `map` leaves out takes its defaults; pins, broken pins and stand-ins by the one rule
-   *  the store's save keeps too (keptSettings). Durable before it returns. */
-  put(map: ToolSettingsMap): ToolSettingsMap {
-    const { kept, written } = keptSettings(map, this.current);
-    writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
-    this.current = kept;
-    // The file is the one just written: it reads.
-    this.unread = false;
-    return this.get();
-  }
 }
 
 /** GET /v2/agents/{id}'s `tools`: each tool its current revision grants, in `order` (capabilities.tools'), with its
