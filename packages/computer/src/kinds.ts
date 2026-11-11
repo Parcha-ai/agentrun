@@ -90,9 +90,6 @@ export function configurationOf<Configuration extends Pick<KindCapabilities, "im
 	return serving.find((one) => defaultImage !== undefined && one.image === defaultImage) ?? serving.find((one) => one.image === undefined) ?? serving[0];
 }
 
-/** One key a provider takes in Settings: its serve-side name (Settings accepts only these), the option it fills, and whether it is needed. */
-export type ProviderKey = DescriptorKey;
-
 /** A provider as Settings shows it: its descriptor's data, and the setting kinds it serves. */
 export interface ProviderEntry {
 	/** Its id: a line of the provider registry (providers.ts). */
@@ -101,7 +98,7 @@ export interface ProviderEntry {
 	/** Derived: the setting kinds its capabilities serve (serves), never written by hand. */
 	readonly kinds: readonly ComputerSettingKind[];
 	/** The serve-side key names and the options they fill; never a value. */
-	readonly keys: readonly ProviderKey[];
+	readonly keys: readonly DescriptorKey[];
 	/** Settings that are no key but go to its options. */
 	readonly settings?: readonly DescriptorSetting[];
 	/** The mount kinds its computers take; [] cannot mount the run's folder. */

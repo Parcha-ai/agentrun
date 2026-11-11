@@ -11,7 +11,9 @@ import { fakeOrgoDesktop, MACOS_LABELS, WINDOWS_HOME, WINDOWS_LABELS } from "./f
 
 const orgo = await import("../dist/orgo.js");
 const desktop = await import("../dist/orgo-desktop.js");
-const { create, orgoName } = orgo;
+const descriptor = await import("../dist/descriptors/orgo.js");
+const { orgoName } = await import("../dist/orgo-names.js");
+const { create } = orgo;
 
 const HOUR = 3_600_000;
 const RUN = "run-7f3a";
@@ -68,8 +70,8 @@ test("Orgo desktops: create({ os }) builds the Windows or the macOS provider, da
 		{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
 		{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"], image: "macos", options: { os: "macos" } },
 	], "each configuration names the image a setting selects it by, and the os create() builds it with");
-	assert.equal(orgo.ORGO_WINDOWS_IMAGE, "windows");
-	assert.equal(orgo.ORGO_MACOS_IMAGE, "macos");
+	assert.equal(descriptor.ORGO_WINDOWS_IMAGE, "windows");
+	assert.equal(descriptor.ORGO_MACOS_IMAGE, "macos");
 });
 
 test("Orgo desktops' check(): the os's own image, network open, Orgo's sizes for that os (macOS 10 GB, its host's cpus), no user, workdir, pids or mount; nothing called", () => {
@@ -358,10 +360,10 @@ test("Orgo desktops' list, attach and release: the name filters with nothing run
 	const asleep = seeded({ fake }, "windows", { status: "suspended", hex: "00000000000a" });
 	const linux = fake.api.add({ name: orgoName(LABELS, "00000000000b", new Date(Date.now() + HOUR)), os: "linux" });
 	const byRun = (await provider.list({ "agentrun.run": RUN })).value;
-	assert.deepEqual(byRun.map(({ ref }) => ref.id).sort(), [mine.ref.id, asleep.ref.id, linux.id].sort(), "the workspace's listing says no os: a name of this provider's shape is listed");
+	assert.deepEqual(byRun.map(({ ref }) => ref.id).sort(), [mine.ref.id, asleep.ref.id].sort(), "the workspace's listing names each one's os: the Linux desktop is the other provider's");
 	assert.deepEqual(bashCalls(fake, asleep.ref.id), [], "nothing runs in the suspended one");
 	const byTeam = (await provider.list({ team: "a" })).value;
-	assert.deepEqual(byTeam.map(({ ref }) => ref.id), [mine.ref.id, linux.id].filter((id) => fake.boxOf(id).files.size > 0));
+	assert.deepEqual(byTeam.map(({ ref }) => ref.id), [mine.ref.id]);
 	assert.equal(byTeam[0].network, "open");
 	assert.deepEqual(bashCalls(fake, asleep.ref.id), [], "a label only the file proves is not proven by waking it");
 

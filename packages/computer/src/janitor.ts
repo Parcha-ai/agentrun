@@ -1,7 +1,7 @@
 // The janitor: ends computers whose deadline has passed, for a provider whose vendor does not end them itself; and, on a
 // takeover, the run's computers of an older claim.
 import { epochOf, epochProblem, ownerOf, RUN_LABEL, runProblem } from "./labels.js";
-import type { CallContext, ComputerInfo, ComputerProvider, ComputerRef } from "./provider.js";
+import type { CallContext, ComputerInfo, ComputerOwner, ComputerProvider, ComputerRef } from "./provider.js";
 import { type ComputerError, fail, failAs, ok, type Result } from "./result.js";
 
 export interface SweepOptions {
@@ -35,6 +35,19 @@ const alive = (deadline: Date | undefined, at: number, cap: number): boolean => 
 	return !Number.isNaN(time) && time > at && time <= at + cap;
 };
 
+/**
+ * Whose a listed computer is. An agent's: its owner label says so (an owner label that cannot be read too, with no
+ * owner known), or the provider marks it owned (its info's owned, with owner when the listing knows it). A run's
+ * otherwise.
+ */
+function tenureOf(info: Pick<ComputerInfo, "labels" | "owned" | "owner">): { agent: false } | { agent: true; owner?: ComputerOwner } {
+	const label = ownerOf(info.labels);
+	if (!label.ok) return { agent: true };
+	if (label.value !== undefined) return { agent: true, owner: label.value };
+	if (info.owned === true) return { agent: true, ...(info.owner === undefined ? {} : { owner: info.owner }) };
+	return { agent: false };
+}
+
 /** Whether an agent's computer ends: its owner is gone, or it has been detached for longer than its idle TTL. */
 async function ownerEnds(info: ComputerInfo, owner: { agent: string; idleTtlMs?: number }, at: number, ownerGone: SweepOptions["ownerGone"]): Promise<boolean> {
 	if (ownerGone !== undefined && (await ownerGone(owner.agent)) === true) return true;
@@ -50,8 +63,9 @@ async function ownerEnds(info: ComputerInfo, owner: { agent: string; idleTtlMs?:
  * then an error naming it and what was deleted. A provider with sweepLeftovers then removes, with the same labels and
  * time, what its computers left behind (Docker: egress proxies and volumes whose computer is gone).
  *
- * An agent's computer (an owner label) is never deleted by a deadline: only when its owner is gone (ownerGone), or
- * once it has been detached for longer than its owner's idle TTL. One whose owner label cannot be read is kept. A
+ * An agent's computer (an owner label, or an info the provider marks owned) is never deleted by a deadline: only when
+ * its owner is gone (ownerGone), or once it has been detached for longer than its owner's idle TTL. One whose owner
+ * the janitor cannot read is kept. A
  * provider that declares persistence is swept for its agents' computers alone under lifetime "vendor", since no vendor
  * ends them.
  */
@@ -73,10 +87,10 @@ export async function sweep(provider: ComputerProvider, { labels = {}, now, owne
 	let kept = 0;
 	for (const info of listed.value) {
 		const { ref, deadline } = info;
-		const owned = ownerOf(info.labels);
-		// An agent's computer goes by its owner's rules, never a deadline; a run's goes by its deadline, and under lifetime
-		// "vendor" its vendor ends it. An owner label the janitor cannot read keeps the computer.
-		const ends = !owned.ok ? false : owned.value !== undefined ? await ownerEnds(info, owned.value, at, ownerGone) : lifetime === "janitor" ? !alive(deadline, at, cap) : false;
+		const tenure = tenureOf(info);
+		// An agent's computer goes by its owner's rules, never a deadline: one whose owner the janitor cannot read is kept.
+		// A run's goes by its deadline, and under lifetime "vendor" its vendor ends it.
+		const ends = tenure.agent ? tenure.owner !== undefined && (await ownerEnds(info, tenure.owner, at, ownerGone)) : lifetime === "janitor" && !alive(deadline, at, cap);
 		if (!ends) {
 			kept++;
 			continue;
@@ -132,7 +146,7 @@ export interface ReleasedOlder {
  * call starts no further release and says which ran. It revokes no mount: that is the root helper's, inside the
  * computer, and a deleted computer holds none.
  *
- * An agent's computer (an owner label, readable or not) of a lower epoch is detached, never deleted: its state is the
+ * An agent's computer (an owner label, readable or not, or an info marked owned) of a lower epoch is detached, never deleted: its state is the
  * agent's, and the new claim attaches it.
  */
 export async function releaseOlder(provider: ComputerProvider, run: string, epoch: number, { signal }: CallContext = {}): Promise<Result<ReleasedOlder>> {
@@ -147,11 +161,11 @@ export async function releaseOlder(provider: ComputerProvider, run: string, epoc
 	const kept: ComputerRef[] = [];
 	const unproven: ReleasedOlder["unproven"] = [];
 	const newer: string[] = [];
-	for (const { ref, labels } of listed.value) {
+	for (const info of listed.value) {
+		const { ref, labels } = info;
 		if (labels?.[RUN_LABEL] !== run) continue;
 		const read = epochOf(labels);
-		const owner = ownerOf(labels);
-		const owned = !owner.ok || owner.value !== undefined;
+		const owned = tenureOf(info).agent;
 		if (!read.ok) {
 			older.push({ ref, owned });
 			unproven.push({ ref, problem: read.error.message });

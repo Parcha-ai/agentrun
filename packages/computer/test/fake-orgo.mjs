@@ -125,7 +125,7 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 		}
 		if ((match = /^\/workspaces\/([^/]+)$/.exec(path)) && method === "GET") {
 			if (match[1] !== WORKSPACE) return json(404, { error: "Workspace not found", code: "workspace_not_found" });
-			const desktops = [...computers.values()].filter((c) => !c.deleted && c.workspace_id === WORKSPACE).map((c) => ({ id: c.id, name: c.name, status: c.status, created_at: c.created_at }));
+			const desktops = [...computers.values()].filter((c) => !c.deleted && c.workspace_id === WORKSPACE).map((c) => ({ id: c.id, name: c.name, os: c.os, status: c.status, created_at: c.created_at }));
 			return json(200, { id: WORKSPACE, name: "agentrun", desktops });
 		}
 		const routed = extra?.({ method, path, query: Object.fromEntries(searchParams), body, form, record: (match = /^\/computers\/([^/]+)\//.exec(path)) ? computers.get(match[1]) : undefined });

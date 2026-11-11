@@ -4,7 +4,8 @@
 // read only when createProvider() runs. Every sandbox of a run has a bounded life besides its TTL: Daytona stops one
 // after 30 minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider
 // declares it (stopDeletes; see conformanceNotes).
-import { create, DAYTONA_DEFAULT_SNAPSHOT, type DaytonaCreateOptions, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import { create, type DaytonaCreateOptions, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";

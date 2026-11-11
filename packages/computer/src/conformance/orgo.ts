@@ -9,7 +9,9 @@
 // run's image is "windows" or "macos", and `--kind desktop` runs the desktop's cases, with the Windows fixture this
 // package carries. Every computer of a run lives at most 1 h (on Linux and Windows Orgo's shortest end, ends_in_hours
 // 1, deletes it then whatever happens to the run; macOS has no Orgo end, so the janitor alone ends it).
-import { create, ORGO_BASE_IMAGE, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, type OrgoChannel, type OrgoDesktopProvider, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import { ORGO_BASE_IMAGE, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE } from "../descriptors/orgo.js";
+import { create, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import type { OrgoDesktopProvider } from "../orgo-desktop.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 
 /** The environment this module reads, by name: the live switch, the run's template, and the provider's settings. */

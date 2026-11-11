@@ -23,10 +23,9 @@ export {
 	type WatchOptions,
 	watchScreen,
 } from "./screen-watch.js";
-// The provider classes are not loaded from here: each loads by its id through the registry (providerFor), or from its
-// own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /orgo, /phone-harness, /browserbase, /kernel).
-// Their types are here, erased at runtime.
-export type { DockerDesktopOptions, DockerEgressOptions, DockerProvider, DockerProviderOptions } from "./docker.js";
+// The provider classes and their option types are not here: each provider loads by its id through the registry
+// (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /orgo,
+// /phone-harness, /browserbase, /kernel).
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
@@ -45,19 +44,6 @@ export {
 	recipeTag,
 } from "./docker/image.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
-export type { DaytonaProvider, DaytonaProviderOptions, DaytonaTimeouts, WebSocketFactory, WebSocketLike } from "./daytona.js";
-export type {
-	ModalProvider,
-	ModalApp,
-	ModalByteSink,
-	ModalCreateParams,
-	ModalImage,
-	ModalProcess,
-	ModalProviderOptions,
-	ModalSandbox,
-	ModalSdk,
-	ModalTimeouts,
-} from "./modal.js";
 export {
 	ARCHIL_HELPER,
 	ARCHIL_MOUNT_LABEL,
@@ -85,7 +71,6 @@ export {
 	syncingClient,
 } from "./mount-archil.js";
 export {
-	BROWSER_IMAGE,
 	type BrowserStream,
 	BrowserVendorError,
 	CREATE_LABEL,
@@ -96,15 +81,6 @@ export {
 	type RestReply,
 	type UrlStore,
 } from "./browser.js";
-export type {
-	BrowserbaseApi,
-	BrowserbaseDebug,
-	BrowserbaseProvider,
-	BrowserbaseProviderOptions,
-	BrowserbaseSession,
-	BrowserbaseSessionSettings,
-} from "./browserbase.js";
-export type { KernelBrowserSettings, KernelProvider, KernelProviderOptions, KernelRequest } from "./kernel.js";
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
 export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
@@ -126,6 +102,7 @@ export {
 } from "./providers.js";
 export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type ProviderDescriptor } from "./descriptor.js";
 export {
+	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,
 	DAYTONA_DEFAULT_SNAPSHOT,
@@ -153,7 +130,6 @@ export {
 	type KindCapabilities,
 	kindOf,
 	type ProviderEntry,
-	type ProviderKey,
 	PROVIDERS,
 	SETTING_KIND_NAMES,
 	SETTING_KINDS,

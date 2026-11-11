@@ -13,7 +13,8 @@ import { kindOf, serves, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
 
 const orgo = await import("../dist/orgo.js");
-const { CAPABILITIES, create, MOUNT, OrgoProvider, orgoName } = orgo;
+const { CAPABILITIES, create, MOUNT, OrgoProvider } = orgo;
+const { orgoName } = await import("../dist/orgo-names.js");
 
 const RUN = "run-7f3a";
 const SPEC = { image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: { "agentrun.run": RUN, "agentrun.epoch": "3", team: "a" } };
@@ -279,6 +280,11 @@ test("Orgo list: this workspace's computers by name, the run and epoch filtered 
 	assert.deepEqual(byTeam.value.find((info) => info.ref.id === mine.ref.id).labels, SPEC.labels);
 	const all = await fakes.provider.list({});
 	assert.equal(all.value.length, 3, "never a computer whose name is not this provider's");
+	// A Windows or macOS desktop of the same run, in the same workspace, is the desktop provider's: Orgo's listing names
+	// its os, so this provider never lists it, and its janitor never sweeps it.
+	for (const os of ["windows", "macos"]) fakes.api.add({ name: orgoName({ "agentrun.run": RUN, "agentrun.epoch": "3" }, os === "windows" ? "00000000000c" : "00000000000d", new Date(Date.now() + HOUR)), os });
+	assert.deepEqual((await fakes.provider.list({ "agentrun.run": RUN, "agentrun.epoch": "3" })).value.map((info) => info.ref.id), [mine.ref.id]);
+	assert.equal((await fakes.provider.list({})).value.length, 3);
 });
 
 test("Orgo list: a computer that is not running is listed stopped, and never woken to read its labels file", async () => {

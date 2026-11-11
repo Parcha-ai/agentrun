@@ -58,11 +58,6 @@ const fail = failFor("phone-harness");
 
 /** The phone harness's API. */
 export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
-/**
- * What a cloud Android offers through this provider (PHONE_GROUPS, as its capabilities and hello declare them), and the
- * image a phone is read back by (PHONE_IMAGE: a cloud Android has none to choose): its descriptor's.
- */
-export { PHONE_GROUPS, PHONE_IMAGE };
 /** A phone mounts no folder. */
 export const MOUNT: readonly MountKind[] = PHONE_HARNESS.mounts;
 /** The one configuration it offers, as its capabilities() declare it: its descriptor's. */

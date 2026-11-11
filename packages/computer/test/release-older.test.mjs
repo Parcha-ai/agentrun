@@ -165,6 +165,20 @@ test("a computer whose owner label cannot be read is detached as an agent's, nev
 	assert.deepEqual([result.value.detached, result.value.released, asked], [[odd.value], [], ["detach"]]);
 });
 
+test("a computer its provider lists as owned, with no owner label, is detached as an agent's, never deleted", async () => {
+	const fake = fakeComputers({ persistence: { keepsState: true, resume: false } });
+	const { lifetimeMs: _, ...base } = SPEC;
+	const owned = await fake.provider.create({ ...base, owner: { agent: "ag1" }, labels: { ...runLabels("a", 1) } });
+	const list = fake.provider.list;
+	fake.provider.list = async (labels) => {
+		const listed = await list(labels);
+		return { ok: true, value: listed.value.map(({ labels: { "agentrun.owner": _o, "agentrun.idle-ttl-ms": _t, ...rest }, ...info }) => ({ ...info, labels: rest, owned: true })) };
+	};
+	const result = await releaseOlder(fake.provider, "a", 2);
+	assert.equal(result.ok, true, JSON.stringify(result));
+	assert.deepEqual([result.value.detached, result.value.released], [[owned.value], []]);
+});
+
 test("a release that fails: every release is still attempted, and the result is a failure naming each computer left and why", async () => {
 	const { provider, refs, released, alive } = await setup(
 		[

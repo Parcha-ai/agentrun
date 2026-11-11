@@ -93,9 +93,6 @@ import { listTested } from "./test-connection.js";
 /** This module's fail: a vendor failure names Orgo (CP-1's one vendor code). */
 const fail = failFor("orgo");
 
-// The images and each desktop's groups are its descriptor's (descriptors/orgo.ts), declared there once.
-export { MACOS_GROUPS, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, WINDOWS_GROUPS };
-
 export type OrgoDesktopOs = "windows" | "macos";
 
 /** The longest each kind of call may take, and the pause between two polls. */

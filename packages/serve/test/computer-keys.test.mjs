@@ -97,7 +97,9 @@ test("computer keys: each coded error comes back in plain words naming the provi
     invalid: /^E2B's settings are not valid\. \(/,
     unsupported: /^E2B can't be tested here\. \(/,
     vendor: /^E2B answered with an error\. \(/,
-    // A code with no words of its own (gone, not_found, exists, ...) is a failed test, in general words.
+    // A code with no words of its own (gone, not_found, exists, ...) is a failed test, in general words; so is a
+    // per-vendor code the package no longer makes (e2b): it has no case of its own.
+    e2b: /^The test of E2B failed\. \(/,
     gone: /^The test of E2B failed\. \(/,
     not_found: /^The test of E2B failed\. \(/,
   };

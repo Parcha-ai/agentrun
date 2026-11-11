@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
-import { ORGO, ORGO_BASE_IMAGE, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE } from "./descriptors/orgo.js";
+import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
@@ -76,9 +76,6 @@ const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
  * with computerd (the default), then the Windows and the macOS desktops Orgo's own API answers (options.os).
  */
 export const CAPABILITIES: readonly KindCapabilities[] = ORGO.capabilities;
-
-export { ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, OrgoDesktopProvider, orgoName };
-export type { OrgoDesktopOptions };
 
 /** The conformance CLI's module for Orgo: its live switch, the run's 1 h cap and the drifted twin. */
 export const conformance = () => import("./conformance/orgo.js");
@@ -145,7 +142,6 @@ const CPUS = [0.5, 1, 2, 4, 6];
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 /** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and its descriptor's default. */
-export { ORGO_BASE_IMAGE };
 const BASE = ORGO_BASE_IMAGE;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const USER = /^(\d+):(\d+)$/;
@@ -771,7 +767,9 @@ export class OrgoProvider implements ComputerProvider {
 		const infos: ComputerInfo[] = [];
 		for (const record of listed.value) {
 			const parts = nameParts(record.name);
-			if (parts === undefined || record.status === "deleted") continue;
+			// Orgo's workspace listing names each desktop's os: a Windows or macOS one is the desktop provider's
+			// (orgo-desktop.ts), never this one's to list or its janitor's to sweep.
+			if (parts === undefined || record.status === "deleted" || (record.os !== undefined && record.os !== "linux")) continue;
 			if (labels[RUN_LABEL] !== undefined && parts.run !== runHash(labels[RUN_LABEL])) continue;
 			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			const ref = { id: record.id, name: record.name };

@@ -4,7 +4,7 @@
 // reads no environment: this module reads its own COMPUTER_BROWSERBASE_* names (never BROWSERBASE_API_KEY, which may
 // hold another project's key) and passes each to create() as its option. The live switch is checked first, before any
 // other setting is read. The run makes one session, shared by every case, and releases it.
-import { BROWSER_IMAGE } from "../browser.js";
+import { BROWSER_IMAGE } from "../descriptors/shared.js";
 import { type BrowserbaseProvider, type BrowserbaseProviderOptions, create } from "../browserbase.js";
 
 /** The environment this module reads, by name, each for the option its comment names, and the live switch. */
