@@ -362,6 +362,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
+    // proxy admits that search's one request (it goes through the session's port: buildToolHost's `models`) and books it
+    // with each search it ran.
+    ...(launch.plane?.web_search === "native" ? { webSearch: true } : {}),
   });
 
   // The gate before a call's intent: the run's revision's tool settings through runGate (approvals "never" turns the one
@@ -525,7 +529,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
-      // So are its side calls (a learned workflow's nodes): booked in its session, carried by none of pi's answers.
+      // So are its side calls (a learned workflow's nodes, web_search's hosted search with its fee): booked in its session,
+      // carried by none of pi's answers (metrics.ts bookedSpend "side").
       const side = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "side");
       const total = costUsd === null || paid === null || side.usd === null ? null : costUsd + paid + side.usd;
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
@@ -671,6 +676,10 @@ export function buildToolHost(opts: {
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,
+    // The run's models for a tool's own request beside the harness's (web_search's hosted search): the session's port,
+    // under a key labelled for the tool, so the request is shaped, priced and booked on the run's one ledger as the
+    // harness's own are (port-models.ts).
+    models: (label) => run.ledger.models(label),
   };
 }
 
