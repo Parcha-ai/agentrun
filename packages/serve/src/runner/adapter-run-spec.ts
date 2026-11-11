@@ -25,7 +25,7 @@ import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
 import { type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
-import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
+import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
@@ -47,7 +47,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
-import { claimSecrets, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -422,6 +422,16 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       log,
     })
     : undefined;
+  // The decision keys its learned workflows' typed questions need (claim-secrets.ts learnedDecisionKeys), read once the lay
+  // chose them, scoped as the revision's own: each provider the run's gate does not deny, held by the run's one redactor,
+  // onto the tools' environment alone. The model's route was built on the revision's keys above, so a decision key never
+  // becomes its model's.
+  const workflows = seedLaid?.workflows ?? [];
+  if (learnsWorkflows(revision.kind, workflows)) {
+    const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
+    holdClaimed(cut, learnedKeys);
+    Object.assign(toolEnv, learnedKeys);
+  }
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
@@ -438,7 +448,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const handTools = tools.hostTools(withKindTools(granted, tools), results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, seedLaid?.workflows ?? [], native, gate.permissions)).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -480,6 +490,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     signIns: signInReads(deps.store, deps.sealKey),
     handed: runnerSecrets(toolEnv),
     stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
+    // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
+    decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
@@ -639,7 +651,7 @@ export function buildToolHost(opts: {
   return {
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
-    where: { root, work: root, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+    where: { root, work: root, ref: { id: claim.runId } },
     env: opts.env,
     install: (extension) => run.registry.install(extension),
     onConversation: life.register.onConversation,

@@ -10,6 +10,7 @@
 import { join } from "node:path";
 import { type Change, checkProposal, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { baseOf } from "./learn/seed-check.js";
 import { writeDurable } from "./files.js";
 import { type Proposal, PROPOSAL, type Turn } from "./learning.js";
@@ -89,7 +90,7 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  `skills/<name>/SKILL.md`; a draft at `workflows/<name>/workflow.json`, with the README.md the host writes from the
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
-export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">> }): Promise<Proposed> => {
+export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; decisions?: DraftDecisions }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
   // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
   // answer's order; a draft is its two files, given together or not at all.
@@ -122,7 +123,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   // The workflow DSL reads a draft, and is loaded only when there is one to read.
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
-  const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(dsl ? { dsl } : {}) });
+  const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.decisions ? { decisions: input.decisions } : {}), ...(dsl ? { dsl } : {}) });
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
   // and the rest is checked again, until it passes; a problem that names no item, or one that refuses the whole (WHOLE),
   // drops it all, as does a rest with nothing left. A later pass can name what an earlier one did not reach (the

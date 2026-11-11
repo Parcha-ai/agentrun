@@ -30,6 +30,7 @@ import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timelin
 import { sideRequests } from "./cap.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
+import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
@@ -273,11 +274,11 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
 }
 
 /** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
- *  provider `text` asks (its id as the settings key) where it is not allow, with where a deny was set. None when the run
- *  was handed no decisions, or `text` does not parse (the check refuses it then). */
+ *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed
+ *  no decisions (its claim was handed no key: none named, or each denied) has no provider, so a decision node is refused
+ *  in the gate's words when its provider is denied, else as one the host does not have; never asked. */
 function decisionsOf(run: LearnedWorkflowRun, dsl: Parameters<typeof decisionsAsked>[0], text: string) {
-  if (!run.decisions) return undefined;
-  const { providers } = run.decisions;
+  const providers = run.decisions?.providers ?? { providers: {}, default: DEFAULT_DECISION_PROVIDER };
   const gated: Record<string, string> = {};
   // A deny comes from a layer or the default, never from approvals (learnedDraftTools' rule).
   const deniedBy: Record<string, "agent" | "server" | "default"> = {};

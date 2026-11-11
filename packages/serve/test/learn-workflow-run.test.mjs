@@ -268,7 +268,7 @@ test("a learned workflow whose later node is a judge is refused before any node 
   const { runId, rows } = await ran(api, data, "late-judge", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" requires runJudge/, JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" names the decision provider jev, which this host does not have/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 

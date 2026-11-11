@@ -27,7 +27,8 @@ import { isMessageRow, type TimelineEvent } from "@parcha/pi-durable-agent/timel
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readSnapshot } from "../learn/folder.js";
 import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";
-import { SKILL_NAME } from "../learn/skills.js";
+import { type DraftDecisions, SKILL_NAME } from "../learn/skills.js";
+import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
@@ -63,6 +64,10 @@ export interface LearningEndDeps {
   /** Every secret the server keeps sealed, read once at the run's end (store-secrets.ts storeSecrets over the store, the
    *  seal key and the data directory), never learned. A throw is a list that can't be read: the run learns nothing. */
   readonly stored?: () => Promise<readonly string[]>;
+  /** The decision providers a draft's decision nodes may ask (LS-07): built on the host's keys (claim-secrets.ts
+   *  hostDecisionKeys), host-side, never handed to the run. Read once per check; none: a draft with a decision node is
+   *  refused. */
+  readonly decisionProviders?: () => Promise<{ readonly providers: Readonly<Record<string, unknown>>; readonly default: string } | undefined>;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -121,10 +126,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
-    // A seed that could not be read (no seedNotes, no commit): the server dropped its learning at the start, and the run
-    // was never asked to look back.
+    // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
+    // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be
+    // read, or a start that could not be made from it; a start that records none names no reason.
     if (seedFailed(start)) {
-      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) } } }] };
+      const failed = start.seedFailed;
+      const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
     return hookFor(input.runId)(input);
   };
@@ -208,7 +216,7 @@ export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learning
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; decisions?: DraftDecisions }> {
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
   if (revision?.kind !== "agentic") return { tools: [], gated: {} };
@@ -220,7 +228,19 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
   const { tools, gated } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
-  return { tools, gated };
+  // A draft's decision nodes (LS-07): the host's decision providers, each held to the gate by its bare id as the run's
+  // gate holds it (tool-plane.ts DECISION_PROVIDER_KEYS); deny alone refuses one.
+  const providers = await deps.decisionProviders?.();
+  if (!providers) return { tools, gated };
+  const decided: Record<string, string> = {};
+  const deniedBy: Record<string, "agent" | "server" | "default"> = {};
+  for (const id of DECISION_PROVIDER_KEYS) {
+    const { permission, from } = permissionFrom(id, server as never, agent, approvals);
+    if (permission === "allow") continue;
+    decided[id] = permission;
+    if (permission === "deny") deniedBy[id] = from as "agent" | "server" | "default";
+  }
+  return { tools, gated, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy } };
 }
 
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
@@ -228,12 +248,12 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
 async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[] }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
-    const { tools, gated } = await draftTools(deps, input.runId);
+    const { tools, gated, decisions } = await draftTools(deps, input.runId);
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(decisions ? { decisions } : {}) });
     } finally {
       await folder.end();
     }

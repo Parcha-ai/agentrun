@@ -9,9 +9,10 @@ import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
 import { DockerProvider } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 
 const dirs = [];
 after(() => {

@@ -178,6 +178,9 @@ const LINK_REFUSED = "A link is on the way to this path, or is the file: this se
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
   data: string;
+  /** On Postgres: told when this server's owner lock is lost for good (another server took the schema, or the lock could
+   *  not be taken back): every store call is refused from then. The CLI exits 1 on it, so the platform restarts the server. */
+  onStoreLost?: (error: Error) => void;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
   /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
@@ -847,7 +850,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
   // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
-  const store = await openStore({ dataDir: data, role: "server" });
+  // A server deploying while the old one still holds the schema waits for it (said once), never exits at once.
+  const store = await openStore({
+    dataDir: data, role: "server",
+    warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`),
+    ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
+  });
   stops.push(() => store.close());
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
@@ -1110,7 +1118,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
   const computerReady = async (setting: { kind: string; provider?: string }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers);
+    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {

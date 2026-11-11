@@ -12,6 +12,7 @@
 // and leave the sandbox's mount table as a mount would; the daemon answers files.read of /proc/self/mounts and
 // mount.sync from it. Nothing reaches the network, and no SDK is loaded.
 import { createHash } from "node:crypto";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-modal.mjs";
 import { netDevText } from "./net-dev.mjs";
 
@@ -184,7 +185,7 @@ export function fakeE2B({
 			killed: false,
 			lingering: undefined,
 			box: {
-				hello: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: [...LINUX_GROUPS] },
+				hello: { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: [...LINUX_GROUPS] },
 				uid: 2510,
 				gid: 2510,
 				status: {},

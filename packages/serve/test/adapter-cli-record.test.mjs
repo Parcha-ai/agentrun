@@ -1,7 +1,9 @@
 // A CLI harness through the adapter loop keeps the run's visible record the way the kernel reads every harness's: the
 // loop writes the person's input, each call's start (after the gate allowed it, before the call runs) and its end, and
 // what the model said, as journal entries the one reader reads (runner/journal-reader.ts). A call a crash or a fault
-// left with a start and no end is ended interrupted when the session opens again. Here the CLI is a scripted stand-in
+// left with a start and no end is ended interrupted when the session opens again. A call its gate refuses (a deny, or a
+// person's deny of its ask once its turn resumes) is on the record too, as pi writes one: its start and its end refused in
+// the gate's words, the words the model is handed. Here the CLI is a scripted stand-in
 // that calls its tools through the host's gate, as every CLI adapter's tool bridge does.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -11,6 +13,10 @@ import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { callsOf, journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
+const { KINDS } = await import("../dist/runner/journal-kinds.js");
+const { deniedText } = await import("../dist/runner/loop-contract.js");
+const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 /** A lease no stall of a loaded machine outlasts: no case here is about the lease. On a short one (600 ms) a stall of the
  *  box while the call ran let the claim lapse unrenewed, the runner took the run back, and the reopened session ended the
  *  cut call interrupted, never done. */
@@ -115,6 +121,113 @@ test("a call a fault cut off after it ran ends interrupted when the session open
   assert.deepEqual(ran, [{ q: "x" }], "ran once");
   const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
   assert.deepEqual(callsOf(records).map((call) => [call.callId, call.status]), [["call-1", "interrupted"]]);
+});
+
+/** A CLI stand-in whose tool bridge hands the model a refused call's words as its error result, as every CLI adapter's
+ *  bridge does (run-adapters' toolBridge): its turn calls `tool` as call-1 through the gate; a deny is the call's result,
+ *  never run; a park holds the call until the session closes. Its resume log keeps that the turn was sent: a session opened
+ *  again finds it open and recovers it, issuing call-1 again under its id, as a CLI resumes the turn its call parked. */
+function refusingCli(tool, said) {
+  return {
+    id: "stand-in-cli",
+    capabilities: () => ({}),
+    check: () => [],
+    async open(spec, io) {
+      let state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "open_turn" : "new";
+      let turn;
+      const closing = new AbortController();
+      const run = () => (async () => {
+        const call = { callId: "call-1", tool, args: { q: "x" } };
+        const answer = io.gate ? await io.gate(call) : "allow";
+        if (answer !== "allow" && !("deny" in answer)) {
+          await new Promise((resolve) => closing.signal.addEventListener("abort", resolve, { once: true }));
+          return { status: "aborted" };
+        }
+        const result = answer === "allow" ? await spec.tools.find((each) => each.name === tool).call(call.args, { callId: call.callId, signal: io.signal }) : { text: answer.deny, isError: true };
+        said.push(result);
+        io.onEvent({ type: "text", delta: `It said ${result.text}` });
+        io.onEvent({ type: "turn_end", status: "completed" });
+        return { status: "completed" };
+      })();
+      return {
+        get state() { return state; },
+        async send() {
+          await io.writer.append([{ kind: "stand-in.sent", data: null }]);
+          state = "idle";
+          turn = run();
+        },
+        async recover() {
+          state = "idle";
+          turn = run();
+        },
+        async settleOpenTurn() { state = "idle"; },
+        turnEnd: () => turn,
+        async interrupt() {},
+        async close() { closing.abort(); },
+      };
+    },
+  };
+}
+
+/** A CLI run of `refusingCli` on `tool`, its spec's gate `gate`: its row once it rests at `state`, its record and what the
+ *  model was handed. `meanwhile(server)`: what the test does once the run parks (answers its ask), before it rests again. */
+async function refusedRun(t, { gate, state = "ended", meanwhile }) {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const ran = [];
+  const said = [];
+  const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async (args) => { ran.push(args); return { text: "found" }; } };
+  const createLoop = createAdapterLoop(() => ({
+    adapter: refusingCli("lookup", said),
+    session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
+    input: "Find it.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    hooks: quiet,
+    gate,
+  }));
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  t.after(() => runner.close());
+  const rested = (want) => until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return now.state === want && now.runner === null && now;
+  }, `the run ${want} and released`, 10_000);
+  if (meanwhile) {
+    await rested("parked");
+    await meanwhile(opened.server);
+  }
+  const row = await rested(state);
+  const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  return { ran, said, records };
+}
+
+/** The refused call's start and end as the record holds them: its call, its status and its output, in one commit's order. */
+function refusedCall(records) {
+  const ends = records.entries.filter((entry) => entry.kind === KINDS.callEnd);
+  return { calls: callsOf(records).map((call) => [call.callId, call.tool, call.status]), outputs: ends.map((entry) => entry.data.output) };
+}
+
+for (const [how, decision, words] of [
+  ["a deny set on its tool", "deny", setToDenyText("lookup")],
+  ["a deny in the gate's own words (no one can approve its ask)", { deny: "Permission denied: lookup needs the owner's approval, and no one can give it." }, "Permission denied: lookup needs the owner's approval, and no one can give it."],
+]) {
+  test(`a CLI call its gate refuses, by ${how}, is on the record: its start and its end refused in the gate's words, which the model is handed, and it never runs (#2137)`, async (t) => {
+    const { ran, said, records } = await refusedRun(t, { gate: () => decision });
+    assert.deepEqual(ran, [], "never run");
+    assert.deepEqual(said, [{ text: words, isError: true }], "the model is handed the refusal");
+    assert.deepEqual(refusedCall(records), { calls: [["call-1", "lookup", "refused"]], outputs: [words] });
+  });
+}
+
+test("a CLI call parked on its ask and denied with a note is on the record when its turn resumes: refused in the deny's words, never run (#2137)", async (t) => {
+  const { ran, said, records } = await refusedRun(t, {
+    gate: () => "ask",
+    meanwhile: (server) => sendCommand(server, "run-1", { kind: "deny", body: { approval: "call-1", note: "not today" } }),
+  });
+  const words = deniedText("lookup", "not today");
+  assert.deepEqual(ran, [], "never run");
+  assert.deepEqual(said, [{ text: words, isError: true }], "the model is handed the deny");
+  assert.deepEqual(refusedCall(records), { calls: [["call-1", "lookup", "refused"]], outputs: [words] });
 });
 
 test("a pi-style run (the adapter keeps its own record) gets no call or message entries from the loop", async (t) => {

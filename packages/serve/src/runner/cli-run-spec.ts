@@ -50,9 +50,10 @@ import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
-import { claimSecrets, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
-import { TOOL_PLANE_ENV } from "../tool-plane.js";
+import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
+import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
@@ -343,6 +344,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   if (webNames.length || learns) {
     // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
     const toolEnv: NodeJS.ProcessEnv = { ...claimed };
+    // The decision keys its learned workflows' typed questions need, as the pi spec reads them (claim-secrets.ts
+    // learnedDecisionKeys): onto this copy alone, never the CLI's own environment or its model's (cliRunEnv, above), and
+    // held by the redactors as the claim's keys are.
+    if (learns) {
+      const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
+      for (const redact of new Set([held, cut])) holdClaimed(redact, learnedKeys);
+      Object.assign(toolEnv, learnedKeys);
+    }
     handedKeys = runnerSecrets(toolEnv);
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
@@ -381,6 +390,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     signIns: signInReads(deps.store, deps.sealKey),
     handed: handedKeys,
     stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
+    // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
+    decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
@@ -410,10 +421,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
       const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      const costUsd = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model").usd;
-      // Its paid tool calls (a Parallel extract or search, a monid call) and its decisions (a learned workflow's decision
-      // nodes, LS-07), booked on the run's one ledger in their own sessions, are the run's cost too, as the pi spec's.
-      const total = runEndCost({ model: costUsd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: run.ledger?.decisions ? run.ledger.decisions.spentUsd() : 0 });
+      // Its model requests and its decisions (a learned workflow's, LS-07) at what they were booked at (bookedSpend), and
+      // its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
+      // session, are the run's cost (runEndCost: unknown when any part is), as the pi spec's.
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      const total = runEndCost({ model: bookedSpend(all, "model").usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with

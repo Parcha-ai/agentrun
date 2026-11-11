@@ -68,3 +68,21 @@ test("an agent run's end cost counts its decisions beside its model requests and
   assert.equal(runEndCost({ model: 0.01, paid: null, decisions: 0 }), null);
   assert.equal(runEndCost({ model: 0, paid: 0, decisions: 0 }), 0);
 });
+
+test("a run's decisions are their own session's spend, never its model requests': bookedSpend's model sum leaves DECISION_SESSION out, so a run's cost counts a decision once (LS-07)", async () => {
+  const { bookedSpend, runEndCost } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const entries = [
+    e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }),
+    e(1, 2, "agentrun.session.key", { key: "decisions", conversation: 8 }),
+    e(7, 3, "runner.request", { turn: 1, model: "claude-haiku-5-5" }),
+    e(7, 4, "runner.turn", { turn: 1, usd: 0.002, bookedUsd: 0.002 }),
+    e(8, 5, "runner.request", { turn: 1, model: "jev" }),
+    e(8, 6, "runner.turn", { turn: 1, usd: 0.00002, bookedUsd: 0.00002 }),
+  ];
+  const model = bookedSpend(entries, "model").usd;
+  const decisions = bookedSpend(entries, "decisions").usd;
+  assert.equal(model, 0.002, "the model sum holds no decision");
+  assert.equal(decisions, 0.00002);
+  assert.equal(runEndCost({ model, paid: 0, decisions }), 0.002 + 0.00002, "counted once");
+});

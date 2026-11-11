@@ -122,11 +122,27 @@ test("a learned workflow whose decision node's provider is set to deny since it 
   assert.deepEqual(book.admitted, []);
 });
 
-test("a learned workflow with a decision node, on a run handed no decisions, is refused before any node runs", async () => {
+test("a learned workflow with a decision node, on a run handed no decisions (its claim got no key), is refused before any node runs: as a provider the host does not have, or in the gate's words when it is denied", async () => {
   const flow = learned(judgeFlow());
   const out = await runLearned(runOf(flow), flow, { claim: "x" });
   assert.equal(out.isError, true);
-  assert.match(out.text, /judge node "check" requires runJudge/);
+  assert.match(out.text, /judge node "check" names the decision provider jev, which this host does not have/);
+  const denied = await runLearned(runOf(flow, undefined, (name) => (name === "jev" ? "deny" : "allow")), flow, { claim: "x" });
+  assert.ok(denied.text.includes("This workflow's decision node asks jev, which is set to deny for this agent."), denied.text);
+});
+
+test("a proposal's workflow draft with a judge node passes the proposal checks (checkProposal) given the host's decision providers, is refused without them, and in the gate's words when its provider is denied", async (t) => {
+  const { checkProposal } = await import("../dist/learn/index.js");
+  const { registry } = await providers(t);
+  const json = JSON.stringify(judgeFlow());
+  const readme = "---\nname: check\ndescription: Checks whether a claim is right\n---\n";
+  const changes = [{ path: "workflows/check/workflow.json", text: json }, { path: "workflows/check/README.md", text: readme }].map(({ path, text }) => ({ path, status: "added", mode: "100644", bytes: Buffer.from(text) }));
+  const base = { files: ["MEMORY.md"], active: [] };
+  const check = (decisions) => checkProposal({ base, changes, refuseValues: [], outcome: "completed", tools: [], dsl, ...(decisions ? { decisions } : {}) });
+  const decisions = { providers: registry.providers, default: registry.default };
+  assert.deepEqual(check(decisions).problems, [], "proposed");
+  assert.match(check().problems.map((p) => p.detail).join("; "), /judge node "check" requires runJudge/, "no providers: refused");
+  assert.match(check({ ...decisions, gated: { jev: "deny" }, deniedBy: { jev: "server" } }).problems.map((p) => p.detail).join("; "), /This workflow's decision node asks jev, which is set to deny on this server\./);
 });
 
 test("a decision provider is a settings key of its own (jev, parallel, openrouter), allow by default and allow or deny: a run's gate answers allow for it until an owner sets deny", async () => {
