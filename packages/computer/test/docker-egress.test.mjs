@@ -5,7 +5,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DockerProvider, EGRESS_IMAGE, sweep } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { EGRESS_IMAGE, sweep } from "../dist/index.js";
 import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
@@ -142,7 +143,7 @@ test("create() with an allowlist fails in words naming the image when its pull f
 	const { provider, calls, names, volumeNames } = fakeDocker({ images: [EGRESS_IMAGE], pull: "fails" });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false, JSON.stringify(made));
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /^docker pull debian:bookworm-slim failed, so nothing was made: .*pull access denied for debian:bookworm-slim/);
 	assert.deepEqual(calls().filter((args) => args[0] === "volume" || args[0] === "run"), [], "no volume, no proxy, no computer");
 	assert.deepEqual([names(), volumeNames()], [[], []]);
@@ -295,7 +296,7 @@ test("create() fails closed when the proxy ends before it is ready: the computer
 	const { provider, calls, names, volumeNames } = fakeDocker({ egress: "exits" });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /egress proxy .* ended .*: egress: no host list/);
 	assert.equal(computerRunOf(calls()), undefined, "the computer was never run");
 	assert.deepEqual([names(), volumeNames()], [[], []]);

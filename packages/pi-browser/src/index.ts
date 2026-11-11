@@ -18,7 +18,6 @@ export { isPrivateAddress, pinnedLookup, PUBLIC_MAX_BYTES, publicFetch, type Pub
 export { READ_DEADLINE_MS, READ_MAX_CHARS, readPage, type PageRead, type ReadPageOptions } from "./core/read-page.js";
 export * from "./core/receipts.js";
 export * from "./core/redact.js";
-export * from "./core/sites.js";
 export { DEFAULT_BROWSER_POLICY } from "./core/session-control.js";
 export * from "./core/tools.js";
 export * from "./core/usage.js";

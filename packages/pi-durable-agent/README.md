@@ -5,7 +5,7 @@ next: its definition, its skills, its saved sign-ins and every run it has made. 
 the sign-ins it made go back to the home, so the agent's next run starts signed in. The home moves as that directory, or
 as one file, a pack, which leaves the sign-ins behind.
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node 22.19 or later. The agent store and each run's store are
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node 24.22.3 or later. The agent store and each run's store are
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) stores, read and written with pi's own Session, so
 there is no second format. This package opens its own at `synchronous = FULL`.
 
@@ -38,7 +38,7 @@ where each tool runs. The definition names tools; the host binds them. It does n
 npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
-The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
+The package needs Node 24.22.3 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
 to 1.5.0, the one version its peers take. It does not need a browser, a key or a network.
 
@@ -736,6 +736,8 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `costLabel(ended)` | The words before a usage row's cost: "Cost" for a run that has ended, "Cost so far" for one still going. The usage row says them as `timelineOf`'s `ended` option is set |
 | `endedUsage(row)` | A usage row made while the run ran, as an ended run's: its "Cost so far:" read as "Cost:". Any other row as it is. For a host that serves rows it read before the run ended |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
+| `CALL_REFUSED` | The key (`agentrun.refused`) a host sets in a tool result's `details` when the call was refused before it ran (a gate's deny, a person's): `{ [CALL_REFUSED]: true }` on an error result. Its rows read as refused, in plain words ("Refused: write deny.md"), never as a call that ran and failed. Read by that field, never by the result's words |
+| `PAGE_CHANGED_ROW` | A browser step's row label when a person drove the page while the call waited (pi-browser's `page_changed_while_held` in its result's details): "The page changed while you had the browser; the agent takes a new look". Neutral, never a failure: the call did nothing and the agent looks again |
 | `RUN_RESUMED` | The entry kind a host writes on the root as a run's process opens to go on with a run its last process left unfinished (`data`: `after`, `crash` or `server_stop`; `generation`; `at`): a `phase` row of its own at `at`, "Resumed after a crash" or "Resumed after the server stopped", and no request. A reader from before it ignores it, as it does any kind it does not know |
 | `TURN_END` | The entry kind a host writes on the root as a turn on another harness (claude-agent, codex) ends (`data`: `key`, `status`, ...). No row. A message after it is the person's next message, never a `(steer)`, even when the turn's last entry was a tool's result: a stop that came after the result and before the next model request |
 | `scrubUrls(text)` | `text` with each http(s) URL in it kept to its origin, its path and its query keys: query values, the fragment and credentials are dropped, as on every row. A host that adds rows of its own cleans their strings with it |
@@ -876,7 +878,7 @@ carried back later.
 
 ## Requirements
 
-- Node 22.19 or later.
+- Node 24.22.3 or later.
 - `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its suite
   on 1.5.0.
 

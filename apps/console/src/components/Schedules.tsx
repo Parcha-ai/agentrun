@@ -15,7 +15,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -57,6 +57,9 @@ function useRereads(read: () => void, every: number, deps: unknown[]) {
 
 /** A passed one time in words: "Done · ran <when>", or "Its time passed · <when>" with no run known to have started. */
 const onceWords = (state: OnceState): string | null => (!state ? null : "ran" in state ? `Done · ran ${at(state.ran.nominal_at)}` : `Its time passed · ${at(state.passed)}`);
+
+/** The server's refusal of a one time already passed (serve's trigger-schedule.ts), whatever time it names. */
+const PAST_REFUSAL = /has already passed\.?$/;
 
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
@@ -104,11 +107,10 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
                     <Chip>{KIND_WORDS[t.source.kind]}</Chip>
                     {!t.enabled && !onceState(t, now()) && <Chip tone="muted">Paused</Chip>}
                   </div>
-                  <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName)}</p>
+                  <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName, now())}</p>
                 </div>
                 <div className="min-w-0 font-mono text-small text-muted-foreground md:text-right">
-                  {t.source.kind === "schedule" && <p>{onceWords(onceState(t, now())) ?? (t.next_at ? `Next ${at(t.next_at)}` : "No next time")}</p>}
-                  <p className="mt-1 break-words">{lastWords(t)}</p>
+                  <p className="break-words">{lastWords(t)}</p>
                 </div>
               </li>
             ))}
@@ -124,7 +126,7 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
  *  in. These stand in for the page's three buttons, which show once there is a trigger. */
 function FirstTrigger({ go }: { go: (hash: string) => void }) {
   const kinds = [
-    { Icon: CalendarClock, name: "Schedule", what: "At the times you set: a cron line, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
+    { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
     { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
     { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
   ];
@@ -153,8 +155,10 @@ const KIND_WORDS: Record<Trigger["source"]["kind"], string> = { schedule: "Sched
 /** A schedule's raw cron line, the tooltip on its words; none for any other trigger. */
 const cronOf = (t: Trigger): string | undefined => (t.source.kind === "schedule" && "cron" in t.source ? t.source.cron : undefined);
 
-function whatWords(t: Trigger, agentName: (id: string) => string): string {
-  const when = t.source.kind === "schedule" ? whenWords(t.source) : t.source.kind === "github" ? githubWhen(t.source) : hookWhen(t.source);
+/** A schedule's line (scheduleLine: when it fires and its next time, or "Done · ran …" for a one time that ran) or a
+ *  webhook's requests, then the agent it starts or the run it messages. */
+function whatWords(t: Trigger, agentName: (id: string) => string, now: number): string {
+  const when = t.source.kind === "schedule" ? scheduleLine(t.source, t.next_at, { instead: onceWords(onceState(t, now)), now }) : t.source.kind === "github" ? githubWhen(t.source) : hookWhen(t.source);
   return `${when} · ${t.target.kind === "start_run" ? agentName(t.target.agent_id) || t.target.agent_id : `messages run ${runLabel(t.target.run_id)}`}`;
 }
 
@@ -260,7 +264,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <><span title={cronOf(trigger)}>{whenWords(runs.source as Schedule["source"])}</span>{` · ${done ? onceWords(done) : trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</>}</p>
+          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
@@ -369,6 +373,8 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
     set("at")(wall);
     const picked = instantKept(wall, draft.read?.at);
     if (picked !== null && Date.parse(picked) > now()) setIssues(({ "source.at": _gone, ...rest }) => rest);
+    // Still past: the refusal stays, naming the time now picked.
+    else if (picked !== null) setIssues((was) => (was["source.at"] ? { ...was, "source.at": pastWords(picked, { now: now() }) } : was));
   };
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
   // The picked agent's default cap per run (definition.max_cost_usd): with one, the schedule's own cap may be left empty
@@ -393,6 +399,14 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
       }
     } catch (err) {
       const found = issuesOf(err);
+      // A one-time schedule refused at a time already passed: said in the person's own time, as the schedule line reads,
+      // never in the API's ISO time (its error's details keep that). Past by this page's clock, or by the server's own
+      // refusal (serve's trigger-schedule.ts: "Pick a time in the future: <ISO> has already passed."), since a browser
+      // clock running behind the server's can see a time as ahead that the server has already seen pass. Any other
+      // refusal of the time keeps the server's words.
+      const pickedAt = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
+      const atIssue = found.fields["source.at"];
+      if (atIssue && pickedAt !== null && (Date.parse(pickedAt) <= now() || PAST_REFUSAL.test(atIssue))) found.fields["source.at"] = pastWords(pickedAt, { now: now() });
       setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
       setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
       setSaving(false);
@@ -436,7 +450,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
               </Field>
             )}
             {draft.kind === "cron" && (
-              <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The zone the cron line runs in.">
+              <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The time zone this schedule runs in.">
                 <ZonePicker name="timezone" label="Time zone" className="w-full" value={draft.timezone} onChange={set("timezone")} />
               </Field>
             )}

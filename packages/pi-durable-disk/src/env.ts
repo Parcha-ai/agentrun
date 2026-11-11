@@ -692,6 +692,17 @@ function requireSetpriv(path: string): string {
 }
 
 /**
+ * The argv a program starts under for no_new_privs, as archilEnv starts every command by default: `setpriv
+ * --no-new-privs --` on Linux, nothing on macOS (which has no no_new_privs) or with `noNewPrivs: false`. Where it is
+ * wanted and setpriv is not usable, it throws archilEnv's own `SETPRIV_UNAVAILABLE`, in archilEnv's words: a host that
+ * starts another harness's CLI beside pi (agentrun-serve's runner) confines it the way pi's commands are, or refuses.
+ */
+export function noNewPrivsPrefix(options: Pick<ArchilEnvOptions, "noNewPrivs" | "setprivPath"> = {}): string[] {
+  const noNewPrivs = options.noNewPrivs ?? process.platform !== "darwin";
+  return noNewPrivs ? [requireSetpriv(options.setprivPath ?? SETPRIV), "--no-new-privs", "--"] : [];
+}
+
+/**
  * The roots, canonical once here: file operations may use the workspace, the claim's `tmp/` (read only, but for the
  * directories `createTempDir` hands out, which are writable) and `readRoots`.
  * Taken at construction, before any agent runs, so a symlink an agent puts in place of `work` or `tmp` later cannot widen

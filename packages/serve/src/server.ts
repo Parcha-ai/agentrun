@@ -37,7 +37,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -53,7 +53,7 @@ import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -114,6 +114,7 @@ import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -230,6 +231,10 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
+  /** With `faux` only: a fake GitHub App, connected at the start, its API in this process on loopback (github-faux.ts),
+   *  so the console's GitHub flows run with nothing sent to GitHub. Its webhook secret is kept beside the data
+   *  (FAUX_GITHUB_FILE) for a test's signed delivery. Refused on a data directory another GitHub App is connected in. */
+  fauxGitHub?: boolean;
   /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
    *  fake), in place of Kernel's API. */
   fauxKernel?: string;
@@ -515,6 +520,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/promote$/, name: "promoteLearnedWorkflow" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -1123,11 +1129,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
    *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
    *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
-   *  reason, which says how to fix it. */
+   *  reason, which says how to fix it. The provider whose computers run on this machine's container engine is the one
+   *  whose descriptor declares `local`. */
   const dockerDaemon = dockerDaemonCheck({ env });
   const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+    const local = COMPUTER_PROVIDERS.find((one) => one.id === provider)?.local === true;
+    if (local && !fauxBox && (enabledBoxes(env) as ReadonlySet<string>).has(provider)) {
       const daemon = await dockerDaemon();
       if (!daemon.up || box?.available) return daemon;
     } else if (box?.available) return { up: true };
@@ -1154,12 +1162,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
-  const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
+  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
     computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1326,7 +1334,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runReadsDeps: RunReadsDeps = {
     runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
     env,
-    runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
@@ -1434,7 +1442,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Connect GitHub: the server's one GitHub App, in the store's trigger_settings (adapter github, scope server), where the
   // runner reads it per claim (runner/github-app.ts).
   const github = new GitHubConnection(triggerSettings.get("github"));
-  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
+  // --faux-github (with --faux only): the fake App is connected afresh at each start, its API in this process.
+  const was = options.faux && options.fauxGitHub ? github.view() : undefined;
+  if (was && was.slug !== FAUX_GITHUB.slug) throw new Error(`--faux-github connects a fake GitHub App, and this data directory has the GitHub App ${was.slug} connected: use a scratch data directory.`);
+  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub() : undefined;
+  if (fauxGitHub) {
+    stops.push(() => fauxGitHub.close());
+    if (was) await github.remove();
+    await github.save(fauxGitHub.app);
+    await github.setInstallations([{ id: FAUX_GITHUB.installation, account: FAUX_GITHUB.account }]);
+    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories })}\n`, { mode: 0o600 });
+  }
+  const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: fauxGitHub?.url ?? options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
@@ -1589,34 +1608,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
-   *  current revision's, those the gate allows under the server's settings and the agent's own. */
-  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk; decisions?: DraftDecisions }> {
-    const revision = (await needAgent(id)).revision;
-    if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
+   *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
+   *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> {
+    const revision = (entry ?? (await needAgent(id))).revision;
+    if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
+    const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
     const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
     const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
-    const { tools, gated, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"), undefined, undefined, { mcp: true, approvers: await readApprovers(store.settings) });
+    const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
+    // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
+    const { tools, gated, deniedBy, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
     const ask = { asked, fits: learnedAskFits };
     // A draft's decision nodes (LS-07), as a run's learning end checks them: on this server's decision providers (its
     // keys, saved ones among them: env), each held to the gate by its bare id; deny alone refuses one.
-    const [{ permissionFrom }, { decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./tool-gate.js"), import("./decisions.js"), import("./tool-plane.js")]);
+    const [{ decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./decisions.js"), import("./tool-plane.js")]);
     const providers = await decisionProvidersIn(env);
-    if (!providers) return { tools, gated, ask };
+    if (!providers) return { tools, gated, deniedBy, ask };
     const decided: Record<string, string> = {};
-    const deniedBy: Record<string, "agent" | "server" | "default"> = {};
+    const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
     for (const provider of DECISION_PROVIDER_KEYS) {
-      const { permission, from } = permissionFrom(provider, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
+      const { permission, from } = gate(provider);
       if (permission === "allow") continue;
       decided[provider] = permission;
-      if (permission === "deny") deniedBy[provider] = from as "agent" | "server" | "default";
+      if (permission === "deny") decisionDeniedBy[provider] = from as "agent" | "server" | "default";
     }
-    return { tools, gated, ask, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy } };
+    return { tools, gated, deniedBy, ask, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1763,6 +1785,48 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
     const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
     return { entry, warnings };
+  }
+
+  /** Agent `source`'s learned workflow `raw` made into a workflow agent of its own, as POST /agents makes one
+   *  (createAgentOf: the definition's checks, the workflow's validation and what this host refuses of it). Only an active
+   *  one, checked again as a restore checks it (learning-routes.ts promotable). Its revision is a workflow revision of the
+   *  learned workflow.json, its tools those its call nodes call (each one the source agent has and its gate allows), and
+   *  the source's policy as it is now: its own tool settings, its approvals and its default cap, never more. Named
+   *  `body.name`, else the workflow's own; its id is the workflow's name, with -2, -3 and on past an agent's id or name
+   *  already here. The learned workflow stays where it is, unchanged. */
+  async function promoteOf(source: AgentEntry, raw: string, body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    const extra = unknownFields(body, ["name"]);
+    if (body.name !== undefined && (typeof body.name !== "string" || body.name.trim() === "" || body.name.length > 200)) extra.push({ field: "name", reason: "wrong_type", message: "name is the new agent's name: text of 1 to 200 characters" });
+    if (extra.length) throw invalid(extra);
+    const id = source.agent.id;
+    const learned = await promotable(data, id, raw, { refuse: await learningValues(id), draftTools: () => learnedDraftToolsOf(id, source) });
+    // Its policy from the same read of the source as the tools checked above: one revision's, whatever is saved meanwhile.
+    const policy = (source.revision?.body ?? {}) as { toolSettings?: Record<string, unknown>; approvals?: string; maxCostUsd?: number; capMode?: string };
+    const promoted = (agentId: string) => ({
+      id: agentId,
+      name: typeof body.name === "string" ? body.name.trim() : agentId,
+      ...(learned.description ? { description: learned.description } : {}),
+      workflow: learned.workflow,
+      tools: learned.calls,
+      ...(policy.toolSettings ? { tool_settings: policy.toolSettings } : {}),
+      ...(policy.approvals === "never" ? { approvals: "never" } : {}),
+      ...(policy.maxCostUsd !== undefined ? { max_cost_usd: policy.maxCostUsd } : {}),
+      ...(policy.capMode !== undefined ? { cap_mode: policy.capMode } : {}),
+    });
+    const note = `Made from the learned workflow ${learned.name} of agent ${id}.`;
+    // Another promotion (or a create) may take the id between the read and the write: the next one is tried.
+    for (let tries = 0; ; tries++) {
+      const all = [...(await agents.list()), ...(await agents.list({ archived: true }))];
+      const taken = new Set(all.flatMap((entry) => [entry.agent.id, entry.agent.name]));
+      let n = 1;
+      while (taken.has(n === 1 ? learned.name : `${learned.name}-${n}`)) n++;
+      const agentId = n === 1 ? learned.name : `${learned.name}-${n}`;
+      try {
+        return await createAgentOf({ definition: promoted(agentId), note });
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "agent_exists") || tries >= 4) throw error;
+      }
+    }
   }
 
   /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
@@ -2514,6 +2578,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Making a learned workflow an agent of its own gives it runs of its own, outside any agentic run's turn: the owner's
+    // click alone, the same session as an approval.
+    if (found.name === "promoteLearnedWorkflow" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "promote_without_session");
+      throw new ApiError("forbidden", owner ? "Making a learned workflow an agent takes the owner's password sign-in in the console, never a token." : "Making a learned workflow an agent takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
     // approving a note is (never a token a run, an MCP client or a script may hold).
     if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -2688,12 +2758,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "raiseRunCap": {
-        const run = await needRun(id);
+        // The run is read once its body is in, right before the raise row is written: the pause the answer names
+        // (raiseFollowUpId) is the one the run stands at when its runner takes that row, never one an earlier raise ended
+        // while this body was on its way.
+        if (!ID.test(id) || !(await store.runs.get(id))) throw new ApiError("not_found", `no run ${id}`);
         const body = await bodyOf(req);
         const extra = unknownFields(body, ["max_cost_usd"]);
         if (extra.length) throw invalid(extra);
         const cap = body.max_cost_usd;
         if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) throw invalid([{ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is a number above 0" }]);
+        const run = await needRun(id);
         const now = run.maxCostUsd;
         if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
         const { resumed, messageId, note } = await raiseCap(store, run, cap);
@@ -3066,6 +3140,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const shown = secretsShown(refuse);
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
+      }
+      case "promoteLearnedWorkflow": {
+        // The source read once the body is in, as it is then: what promoteOf checks and what it copies are that one read.
+        const body = await bodyOf(req);
+        const source = await needAgent(id);
+        const answer = await idempotent(req, `/agents/${id}/learning/workflows/${second}/promote`, body, async () => {
+          const { entry, warnings } = await promoteOf(source, second!, body);
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
       }
       case "getRunLearning": {
         const run = await needRun(id);
@@ -3459,6 +3543,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     await mcpStopped;
     await githubStopped;
+    // --faux-github's fake GitHub API, once nothing asks it anything.
+    await fauxGitHub?.close();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();

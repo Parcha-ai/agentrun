@@ -6,7 +6,7 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
+import { type TimelineEvent, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
 import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
@@ -163,7 +163,7 @@ type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: stri
  *  cancelled while the call waited. */
 type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
 /** The least a journal entry a reader here reads is: its kind and its data. */
-type JournalEntry = { kind?: string; data?: unknown };
+type JournalEntry = { id?: unknown; kind?: string; data?: unknown };
 const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
 
 /** The tool calls a run waits (or waited) for a person's approval on, from its journal's `agentrun.ask` entries, by the
@@ -240,13 +240,61 @@ type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: num
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
  *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
 function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
-  let mark: BudgetEntry | undefined;
-  for (const entry of entries) {
-    if (entry.kind === KINDS.budget) mark = dataOf<BudgetEntry>(entry);
-    else if (entry.kind === KINDS.raise) mark = undefined;
-  }
-  return mark;
+  return activePark(entries)?.mark;
 }
+
+/** The active cap park and its entry's id: the pause the runner keys a raise's follow-up by (adapter-loop raiseStateOf). */
+function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: string } | undefined {
+  let park: { mark: BudgetEntry; id: string } | undefined;
+  for (const entry of entries) {
+    if (entry.kind === KINDS.budget) park = { mark: dataOf<BudgetEntry>(entry), id: String(entry.id) };
+    else if (entry.kind === KINDS.raise) park = undefined;
+  }
+  return park;
+}
+
+/** The server's row of a run's pause at its cap, and its waiting row while it stands paused: the pause's own words are
+ *  its pending budget's `said`, which a client shows once as its banner, so these rows say no more (#1768). */
+export const BUDGET_PAUSED = "Paused at the run's cap";
+export const BUDGET_WAITING = "Waiting for you to raise the cap";
+
+/** `rows` with each pause at the run's cap shown (its agentrun.budget entry: the cap refused the next step for room, and
+ *  nothing was sent): the server's `phase` row "Paused at the run's cap" (origin server, `paused: true`, its id ending
+ *  NOTE_SUFFIX, so no message any turn took) where the pause came in the journal's order, kept as the run's history once
+ *  a raise clears it; and, after the pause the run stands at now, its `waiting` row "Waiting for you to raise the cap".
+ *  Each new row takes its time from the row before it. `ended`: the run is final (cancelled while paused, say), so it
+ *  waits on nothing and shows no waiting row. */
+export function withBudgetRows(rows: readonly TimelineEvent[], entries: readonly (JournalEntry & { conversationId?: unknown })[], { ended = false }: { ended?: boolean } = {}): TimelineEvent[] {
+  const parks = entries.filter((entry) => entry.kind === KINDS.budget).map((entry) => ({ id: Number(entry.id), conversation: Number(entry.conversationId ?? 1) }));
+  if (parks.length === 0) return [...rows];
+  const active = ended ? undefined : activePauseOf(entries);
+  const entryOf = (row: TimelineEvent): number => Number(row.id.split(":")[1]);
+  const out = [...rows];
+  for (const park of parks) {
+    // Before the first row of a later entry; else before a trailing usage row, the run's last.
+    let at = out.findIndex((row) => entryOf(row) > park.id);
+    if (at < 0) at = out.length > 0 && out[out.length - 1]!.kind === "usage" ? out.length - 1 : out.length;
+    const base = out[at - 1] ?? out[at];
+    const timestamp = base?.timestamp ?? new Date(0).toISOString();
+    const row = (id: string, kind: TimelineEvent["kind"], summary: string, more: Partial<TimelineEvent>): TimelineEvent => ({
+      id, timestamp, created_at: base?.created_at ?? timestamp, kind, summary, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+      tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, conversation_id: park.conversation,
+      ...(base?.seq !== undefined ? { seq: base.seq } : {}), ...more,
+    });
+    const shown = [row(`${park.conversation}:${park.id}${NOTE_SUFFIX}`, "phase", BUDGET_PAUSED, { origin: "server", paused: true })];
+    if (String(park.id) === active) shown.push(row(`${park.conversation}:${park.id}:waiting`, "waiting", BUDGET_WAITING, { text: BUDGET_WAITING }));
+    out.splice(at, 0, ...shown);
+  }
+  return out;
+}
+
+/** The id of the cap park a run stands at now (its agentrun.budget entry's), or undefined when it is not parked: a raise's
+ *  follow-up is sent as `agentrun:raise:<this>` (raiseFollowUpId), so a raise's answer names that message. */
+export const activePauseOf = (entries: readonly JournalEntry[]): string | undefined => activePark(entries)?.id;
+
+/** The id a raised run's follow-up turn is sent under: one per pause, so raises of the same pause (a retry, two at once)
+ *  name the same message, and the runner's re-claim never sends it twice. */
+export const raiseFollowUpId = (pause: string): string => `agentrun:raise:${pause}`;
 
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
@@ -302,6 +350,8 @@ export interface RunView {
    *  view, from the cap park entry): the moment reads them when `pausedAt` finds no turn refusal, so a run parked at its cap
    *  reads paused either way. The file-backed view leaves this unset and the moment reads `pausedAt`. */
   pausedWords?: string;
+  /** The cap park the run stands at (activePauseOf), when the store-backed view knows it: the moment's `pause`. */
+  pause?: string;
   meta: RunViewMeta;
 }
 
@@ -511,6 +561,9 @@ export interface RunMoment {
   readonly pausedWords?: string;
   /** The run is paused at its cap (pausedAt): raising the cap resumes it. */
   readonly paused: boolean;
+  /** The cap park it stands at (its agentrun.budget entry's id, activePauseOf), when the store knows it: a raise's answer
+   *  names the follow-up message the runner sends for it (raiseFollowUpId). */
+  readonly pause?: string;
   /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next step, not the one under
    *  way. */
   readonly live: boolean;
@@ -553,6 +606,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     ...(run.meta.max_cost_usd !== undefined ? { maxCostUsd: run.meta.max_cost_usd } : {}),
     ...(pausedWords !== undefined ? { pausedWords } : {}),
     paused: pausedWords !== undefined,
+    ...(pausedWords !== undefined && run.pause !== undefined ? { pause: run.pause } : {}),
     live,
     // Whether it waits on a person (runs.ts waitsOnPerson): a parked approval, a pause at its cap (read through a message
     // counted but not shown), or a question its turn ended on.

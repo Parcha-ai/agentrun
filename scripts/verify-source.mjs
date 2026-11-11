@@ -21,8 +21,8 @@ await saveReceipt();
 let temporary;
 
 try {
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  assert.ok(major > 24 || major === 24 && minor >= 11, 'Source verification requires Node.js >=24.11.0');
+  const [major, minor, patch] = process.versions.node.split('.').map(Number);
+  assert.ok(major > 24 || major === 24 && (minor > 22 || minor === 22 && patch >= 3), 'Source verification requires Node.js >=24.22.3');
   assert.equal(process.argv.length, 2, 'Usage: node scripts/verify-source.mjs');
   temporary = await mkdtemp(join(tmpdir(), 'agentrun-source-consumer-'));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:PATH|SystemRoot|TMPDIR|TEMP|TMP|LANG|LC_ALL)$/i.test(key)));

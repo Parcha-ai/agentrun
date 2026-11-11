@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, VOLUME_SUBPATH_ENGINE } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { VOLUME_SUBPATH_ENGINE } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";

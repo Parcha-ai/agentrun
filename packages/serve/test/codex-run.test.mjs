@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, runDir, scratch, serve, serverLog } from "./support.mjs";
+import { agent, follow, scratch, scratchDir, serve, serverLog } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** The gateway's key in these tests: no real one. */
@@ -93,8 +93,7 @@ test("a codex run whose cap can't cover one request's least is refused before an
   assert.equal(ended.cost.usd, 0);
 });
 
-// SKIP (follow-up #2080): the Codex CLI on the runner does not run under setpriv --no-new-privs as pi's commands do.
-test.skip("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
   // How many fit at once is this host's memory (admission.test.mjs).
@@ -111,7 +110,7 @@ test.skip("a run on codex goes through the adapter's proxy to serve's gateway, p
   assert.ok(child, "Codex's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(runDir(data, run.body.run_id), "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(scratchDir(data, run.body.run_id)), "in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
