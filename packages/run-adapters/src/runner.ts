@@ -84,7 +84,7 @@ export type BeforeRequest = (request: {
 /** A host's refusal of a request: its words, and, from a spend cap, whether no raise could send it (`forGood`) and, for
  *  one a raise could, its figures (what the cap counted as taken, what the request needs at the least, the least cap that
  *  sends it): what the run's end is decided from (the kernel cap's parkOf). */
-export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number };
+export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd: number; needsUsd: number; leastCapUsd: number; boundUsd?: number; step?: { name: string; holdUsd: number; basis: string } };
   /** The refusal's code, from a host that gives one (a spend cap's: `spend_cap_reached`): carried on the error that ends
    *  the node (HarnessRunError.refusal), so a reader knows the refusal by it, never by its words. */
   code?: string };

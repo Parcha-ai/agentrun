@@ -11,10 +11,9 @@ import { Chip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
-import { when } from "@/lib/format";
-import { hookUrlOf, isScheduleTrigger, type Schedule, whenWords } from "@/lib/schedules";
+import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { choicesOf, grantsOf, issuesAt, needsOf, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choiceOptions, grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -196,14 +195,13 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
               </div>
             );
         })}
-        {/* Each schedule the apply made: when it runs, in words in its zone, and its next run, as the Triggers page says
-            them. */}
+        {/* Each schedule the apply made: its line (scheduleLine), as the Triggers page says it. */}
         {schedules.length > 0 && (
           <ul className="mt-4 divide-y border" aria-label="Schedules">
             {schedules.map((s) => (
               <li key={s.id} data-trigger={s.id} className="px-4 py-3">
                 <a href={`#/triggers/${encodeURIComponent(s.id)}`} className="break-words text-prose font-semibold hover:underline">{s.name}</a>
-                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{whenWords(s.source)} · {s.next_at ? `next ${when(s.next_at)}` : "no next time"}</p>
+                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>
               </li>
             ))}
           </ul>
@@ -224,17 +222,17 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           {params.map(([key, p]) => (
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
               <label className="block">
-                <span className="caps text-small font-semibold">{paramLabel(key)}{p.required && <span className="text-destructive-text"> *</span>}</span>
-                {/* The parameter's own words; its pattern is the server's to check, never printed. */}
-                <span className="mb-1.5 block text-small text-muted-foreground">{p.description}</span>
+                <span className="caps text-small font-semibold">{paramLabel(key, p)}{p.required && <span className="text-destructive-text"> *</span>}</span>
+                {/* The parameter's own words (a cron line's or a zone's without their format, which the picker says in
+                    words); its pattern is the server's to check, never printed. */}
+                <span className="mb-1.5 block text-small text-muted-foreground">{paramHelp(p)}</span>
                 {/* A parameter with its own list of choices offers just those, whatever its format: the server holds it to them. */}
-                {choicesOf(p)
-                  ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)}
-                      options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
+                {choiceOptions(p)
+                  ? <Picker label={paramLabel(key, p)} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} options={choiceOptions(p)!} />
                   : p.format === "cron" && p.type === "string"
-                  ? <ScheduleWhen label={key} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
+                  ? <ScheduleWhen label={paramLabel(key, p)} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
                   : p.format === "timezone" && p.type === "string"
-                  ? <ZonePicker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
+                  ? <ZonePicker label={paramLabel(key, p)} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
                   : p.type === "boolean"
                   ? <input type="checkbox" className="size-4 accent-primary" checked={values[key] === "true"} onChange={(e) => setParam(key, e.target.checked ? "true" : "false")} />
                   : <Input type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}

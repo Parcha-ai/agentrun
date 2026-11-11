@@ -27,8 +27,10 @@ import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BROWSER_IMAGE, browserClient, browserHello, carries, labelsProblem } from "./browser.js";
+import { browserClient, browserHello, carries, labelsProblem } from "./browser.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
+import { LOCAL } from "./descriptors/local-chrome.js";
+import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import { parseAllow } from "./docker/egress-proxy.js";
 import type { KindCapabilities } from "./kinds.js";
 import { BROWSER_FILE, type BrowserRecord, type BrowserState, CHROME_PID_FILE, EGRESS_SOCKET_FILE, PROFILE_DIR, READY_MS, STATE_FILE, SUPERVISOR_FILE, type SupervisorLine } from "./local-supervisor.js";
@@ -48,7 +50,7 @@ import type {
 	NetworkSpec,
 	Refusal,
 } from "./provider.js";
-import { checkLifetime } from "./provider.js";
+import { checkTenure, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -63,11 +65,11 @@ const SOCKET_PATH_MAX = 107;
 /** How long a release waits for the supervisor, then for Chrome, to end. */
 const END_MS = 10_000;
 
-/** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = [];
-/** The networks a local browser runs on, through its egress proxy: public addresses ("open"), or only the hosts of a list
- *  ("allow"), public ones still. It cannot have none: a browser with no network has nothing to do. */
-export const NETWORK: readonly NetworkForm[] = ["open", "allow"];
+/** A browser takes no mount: its descriptor's (descriptors/local-chrome.ts). */
+export const MOUNT: readonly MountKind[] = LOCAL.mounts;
+/** The networks a local browser runs on, its descriptor's: through its egress proxy, public addresses ("open"), or only
+ *  the hosts of a list ("allow"), public ones still. */
+const NETWORK: readonly NetworkForm[] = LOCAL.network;
 
 /** A spec's network as this browser's proxy takes it: open (no list), a list (parseAllow's), or why it can't. */
 export function browserNetworkOf(network: unknown): { allow?: string[] } | { problem: string } {
@@ -94,8 +96,8 @@ const networkRecord = (network: unknown): { allow?: string[] } => {
 /** A browser's network as list, attach and network() read it back from browser.json. */
 const networkRead = (record: BrowserRecord): NetworkPolicy => (record.allow ? { allow: [...record.allow] } : "open");
 
-/** The one configuration it offers: a browser with a CDP target. No live view: a person watching runs it headed. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp"] }];
+/** The one configuration it offers, its descriptor's: a browser with a CDP target. */
+export const CAPABILITIES: readonly KindCapabilities[] = LOCAL.capabilities;
 
 export interface LocalBrowserOptions {
 	/** The Chrome or Chromium to run; default the one findChrome finds in `env`, then in the usual places. */
@@ -128,7 +130,7 @@ const readJson = async <T>(file: string): Promise<T | undefined> => {
 
 /** Computers that are this machine's Chrome. */
 export class LocalBrowserProvider implements ComputerProvider {
-	readonly id = "local";
+	readonly id = "local-chrome";
 	readonly version = VERSION;
 	readonly #executablePath: string | undefined;
 	readonly #env: Readonly<Record<string, string | undefined>>;
@@ -183,9 +185,10 @@ export class LocalBrowserProvider implements ComputerProvider {
 	check(spec: ComputerSpec): Refusal[] {
 		const refusals: Refusal[] = [];
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, labels } = given;
+		const { image, lifetimeMs, owner, network, labels } = given;
 		if (image !== BROWSER_IMAGE) refusals.push({ field: "image", message: `a local browser is this machine's Chrome: image is "${BROWSER_IMAGE}", not ${JSON.stringify(image)}` });
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		// A run's browser: it declares no persistence, so an agent's (spec.owner) is refused in words.
+		refusals.push(...checkTenure({ lifetimeMs, owner }, this.capabilities(), LOCAL.label));
 		const net = browserNetworkOf(network);
 		if ("problem" in net) refusals.push({ field: "network", message: net.problem });
 		if (labels !== undefined) {
@@ -226,11 +229,11 @@ export class LocalBrowserProvider implements ComputerProvider {
 		if (Buffer.byteLength(join(dir, EGRESS_SOCKET_FILE)) > SOCKET_PATH_MAX) return fail("invalid", `the local browser's root ${this.root} is too long for a Unix socket under it: set the root option to a shorter directory`);
 		const now = Date.now();
 		const record: BrowserRecord = {
-			provider: "local",
+			provider: LOCAL.id,
 			id,
 			labels: { ...spec.labels },
 			created: new Date(now).toISOString(),
-			deadline: new Date(now + spec.lifetimeMs).toISOString(),
+			deadline: new Date(now + runLifetimeMs(spec)).toISOString(),
 			executablePath: this.executable() as string,
 			args: [...CHROME_FLAGS, ...(this.#headed ? [] : ["--headless=new"]), WINDOW],
 			...networkRecord(spec.network),
@@ -319,7 +322,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 
 	async #record(id: string): Promise<BrowserRecord | undefined> {
 		const record = await readJson<BrowserRecord>(join(this.#dir(id), BROWSER_FILE));
-		return record?.provider === "local" && record.id === id ? record : undefined;
+		return record?.provider === LOCAL.id && record.id === id ? record : undefined;
 	}
 
 	/** Chrome's state, when the Chrome it names still runs on this browser's profile. */
@@ -476,4 +479,4 @@ export function create(options: LocalBrowserOptions = {}): LocalBrowserProvider 
 }
 
 /** The conformance CLI's module for the local browser: its live switch, its image and its notes. */
-export const conformance = () => import("./conformance/local.js");
+export const conformance = () => import("./conformance/local-chrome.js");

@@ -34,7 +34,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, overCapOf, paidRefusal, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -275,12 +275,15 @@ export interface AdapterLoopOptions {
 const TURN_ERROR_MAX = 500;
 
 /** A paid call's refusal an earlier claim kept (KINDS.pausePending) whose pause never landed: the newest one with no
- *  pause (KINDS.budget) and no end after it. Undefined when there is none. */
+ *  pause (KINDS.budget), no end and no park on a person's question (KINDS.personAsked: the turn ended on the ask with no
+ *  next request, so the refusal is spent, and the person's answer is no retry of the call) after it. Undefined when there
+ *  is none. */
 export function pendingPauseOf(entries: readonly { readonly kind?: string; readonly data?: unknown }[]): Refusal | undefined {
   for (let at = entries.length - 1; at >= 0; at--) {
     const entry = entries[at]!;
-    if (entry.kind === KINDS.budget || entry.kind === KINDS.end) return undefined;
-    if (entry.kind === KINDS.pausePending) return entry.data as Refusal;
+    if (entry.kind === KINDS.budget || entry.kind === KINDS.end || entry.kind === KINDS.personAsked) return undefined;
+    // A kept refusal, or none: a drop kept as null (the call would since fit, or the turn ended on a question).
+    if (entry.kind === KINDS.pausePending) return (entry.data ?? undefined) as Refusal | undefined;
   }
   return undefined;
 }
@@ -1161,10 +1164,34 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // bound, and that bound kept, so a possible cache miss pauses the run, never fails it).
           return overCapOf(await sessions.read(spec.session.key), others, cap);
         };
+        /** A paid call's pending pause as it lands, at the model's next request: said again with the run's spend as it is
+         *  now (every session's booked spend; the turn's calls have all ended, so nothing else is held), so the budget card
+         *  counts what parallel calls settled since the refusal. Undefined when the call would now fit (one of them settled
+         *  for less than it held): no pause, and the request goes to the cap as any does. A refusal with no call named on
+         *  it, or a spend unknown, lands as it was. */
+        const landing = async (pending: Refusal): Promise<Refusal | undefined> => {
+          const step = pending.figures?.step;
+          const cap = capNow();
+          if (!step || cap === undefined) return pending;
+          let spent = 0;
+          for (const key of await sessions.keys()) {
+            const spend = sessionSpendOf(await sessions.read(key)).spentUsd;
+            if (spend === null) return pending;
+            spent += spend;
+          }
+          if (spent + step.holdUsd <= cap + FIT_TOLERANCE) return undefined;
+          const { text, figures } = paidRefusal(cap, spent, 0, step.name, step.holdUsd, step.basis);
+          return { ...pending, refuse: text, figures };
+        };
         const beforeRequest: BeforeRequest = async (request) => {
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause).
           const over = await overCap();
+          if (!over && pendingPause) {
+            pendingPause = await landing(pendingPause);
+            // Fits now: dropped for good, on the root too, so a later claim never revives the old refusal.
+            if (pendingPause === undefined) await keepPending(null);
+          }
           const answer = over ? { refuse: over, forGood: true } : (pendingPause ?? (await theCap().before(request)));
           if (answer && "refuse" in answer) {
             refused = answer;
@@ -1178,15 +1205,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run.
         pauseFor = async (refusal) => {
           pendingPause = refusal;
+          await keepPending(refusal);
+        };
+        /** The pending pause kept on the root (KINDS.pausePending): a refusal, or null once it is dropped for good (the call
+         *  would now fit, or the turn ended on a question), which pendingPauseOf reads as none. */
+        async function keepPending(refusal: Refusal | null): Promise<void> {
           if (!harness || !gate || gate.sealed) return;
           const on = harness;
           try {
             const conversation = root ?? (await on.root(context));
             await on.commit(async (tx) => void (await tx.appendEntry(conversation.id, { kind: KINDS.pausePending, data: refusal as unknown as JsonValue })), context);
           } catch {
-            // Not kept (the journal sealed: the claim lost or the run parking): this claim's own request still parks it.
+            // Not kept (the journal sealed: the claim lost or the run parking): a refusal still parks this claim's own
+            // request; a drop leaves the next claim to judge the old refusal again when it lands (landing).
           }
-        };
+        }
         async function pauseAt(answer: Refusal): Promise<void> {
           {
             // A refusal a raise could fix (the cap's rule, parkOf) journals its pause, the run parked, before the refusal
@@ -1643,6 +1676,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // its claim, as the browser's hand-over does, the person's time held under its cap (waitInClaim); their answer is
             // its next turn, on the same session. With nothing open, it parks (parkOnAsk).
             const callId = endedOnTurnEndingTool(settledEntries as never)!;
+            // Ended on the question with no next request: a paid call's pending pause from this turn is spent, so the
+            // person's answer is never refused in that call's words (pendingPauseOf stops at the ask's park too).
+            if (pendingPause) {
+              pendingPause = undefined;
+              await keepPending(null);
+            }
             const waited = await waitInClaim(harness, callId);
             if (waited) {
               turn = waited.next;
