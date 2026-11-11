@@ -124,6 +124,10 @@ type stream struct {
 	eof    bool
 	// drained: the program has exited and every byte it wrote to this stream before then is in the ring and the log.
 	drained bool
+	// owed is what collect still has to handle before the stream is drained: the bytes left unread in it when collect
+	// first looked after the program exited (sampled), less what it has handled since.
+	owed    int
+	sampled bool
 }
 
 // notify wakes every read and wait parked on p. Hold p.mu.
@@ -339,9 +343,9 @@ func (p *proc) releaseRings() int64 {
 }
 
 // collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO. Once
-// the program has exited, it also marks the stream drained when nothing the program wrote is left unread: watch's
-// deadline wakes a read parked on an empty stream for that, and the stream is read on with no deadline after it, for
-// what a process left in the group still writes.
+// the program has exited, it also marks the stream drained when it has handled all the program wrote (markDrained):
+// watch's deadline wakes a read parked on an empty stream for that, and the stream is read on with no deadline after
+// it, for what a process left in the group still writes.
 func (p *proc) collect(s *stream) {
 	buf := make([]byte, 32<<10)
 	for {
@@ -369,7 +373,7 @@ func (p *proc) collect(s *stream) {
 		if err != nil {
 			break
 		}
-		p.markDrained(s)
+		p.markDrained(s, n)
 	}
 	p.lockInput()
 	p.mu.Lock()
@@ -407,12 +411,10 @@ func (p *proc) watch() {
 	p.table.hold(0)
 }
 
-// DrainLimit bounds how long the end waits for the streams to give up what the program wrote before it exited. Only
-// a process left in the group that keeps a stream from ever going empty reaches it.
-const DrainLimit = 5 * time.Second
-
 // drain waits, once the program has exited, until every stream holds all it wrote: so a wait that returns, and a read
 // that says exited, come after the last of its output is in the rings and the log, never while a pipe still holds some.
+// It has no time limit: what it waits for is bytes already written, and what a process left in the group writes later
+// is never waited for (markDrained).
 func (p *proc) drain() {
 	p.mu.Lock()
 	p.exiting = true
@@ -426,8 +428,6 @@ func (p *proc) drain() {
 			p.mu.Unlock()
 		}
 	}
-	limit := time.NewTimer(DrainLimit)
-	defer limit.Stop()
 	for {
 		p.mu.Lock()
 		done := true
@@ -439,20 +439,27 @@ func (p *proc) drain() {
 		if done {
 			return
 		}
-		select {
-		case <-changed:
-		case <-limit.C:
-			return
-		}
+		<-changed
 	}
 }
 
-// markDrained marks s drained once the program has exited and nothing is left unread in it. Only collect calls it,
-// between reads, so no bytes it has read are still unhandled.
-func (p *proc) markDrained(s *stream) {
+// markDrained is collect's count, between reads, of handled bytes once the program has exited; handled is what it
+// handled since the last call. The first call after the exit takes how many bytes are left unread in the stream: every
+// byte the program wrote is in the ring and log already or among them, since collect holds no unhandled bytes between
+// reads. The stream is drained once collect has handled that many more, or once it reads empty. Bytes a process left
+// in the group writes after that are read on as before but never waited for, so they can't hold the end.
+func (p *proc) markDrained(s *stream, handled int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.exiting && !s.drained && unread(s.reader) == 0 {
+	if !p.exiting || s.drained {
+		return
+	}
+	if !s.sampled {
+		s.owed, s.sampled = unread(s.reader), true
+	} else {
+		s.owed -= handled
+	}
+	if s.owed <= 0 || unread(s.reader) == 0 {
 		s.drained = true
 		p.notify()
 	}

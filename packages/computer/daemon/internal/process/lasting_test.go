@@ -103,17 +103,23 @@ func TestTheEndComesAfterTheLastOutput(t *testing.T) {
 	if err != nil || res.Size != size || !res.Exited {
 		t.Fatalf("stdout right after the wait: %+v %v", res, err)
 	}
-	// A process left in the group that keeps its stdout open doesn't hold the end: the program's own bytes are drained,
-	// and the wait returns while the leftover still runs.
-	left := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "printf mine; sleep 30 &"}})
+	// A process left in the group (kept, so it outlives the program) that holds stdout open doesn't hold the end: the
+	// program's own bytes are drained, and the wait returns while the leftover still runs with the pipe open.
+	left := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "sleep 301 & printf %s $!"}, Orphans: "keep"})
 	began := time.Now()
 	wait(t, tbl, left.ID)
-	if waited := time.Since(began); waited > process.DrainLimit/2 {
-		t.Fatalf("the wait with a leftover holding stdout took %v", waited)
-	}
+	waited := time.Since(began)
 	res, err = tbl.Read(context.Background(), process.ReadParams{ID: left.ID, Stream: "stdout", Offset: off(0)})
-	if err != nil || string(res.Data) != "mine" {
-		t.Fatalf("the program's own output, with a leftover holding stdout: %+v %v", res, err)
+	if err != nil || res.Exited {
+		t.Fatalf("stdout, held open by the leftover: %+v %v", res, err)
+	}
+	pid := pidsIn(t, string(res.Data))[0]
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if !running(pid) {
+		t.Fatalf("the leftover %d had ended by the wait's return, so it held nothing open", pid)
+	}
+	if waited > 5*time.Second {
+		t.Fatalf("the wait with a leftover holding stdout took %v", waited)
 	}
 }
 
