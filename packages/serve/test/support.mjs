@@ -311,7 +311,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   // tokens the browser writes.
   // Its tools' fakes and its harness table too, as the server hands a run's process its own (server.ts fauxEnvOf): each
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
-  const env = { ...withoutFaux(process.env), ...(faux ? fauxEnvOf({ ...switches, faux }) : {}) };
+  // A test's harness table reaches the runner with or without the faux model (fauxEnvOf hands it either way): a CLI
+  // harness's run on a gateway or a vendor's fake runs on the table's harness, never on the real CLI.
+  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }) };
   let seal;
   try {
     seal = await bootSealKey(store, data, { role: "runner" });
