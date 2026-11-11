@@ -10,7 +10,7 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, metricsOf, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -520,4 +520,34 @@ test("the answer's schema keeps the agent's file limits when it lives under eval
     room -= size;
   }
   assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /answer\.schema\.json: takes the agent's files over \d+ bytes together/.test(e.message), "and it counts toward the agent's bytes together");
+});
+
+test("template eval metricsOf: a run's metrics from GET /stats?agent=, null whenever the read gives none, never a throw", async () => {
+  const stats = (totals, tools = []) => async () => ({ status: 200, body: { analytics: { totals, tools } } });
+  const totals = { runs_with_metrics: 1, input: 120, cache_read: 900, cache_write: 40, output: 75, requests: 3, unmetered: 0 };
+  // The read asks for the run's own agent, with a signal that bounds it.
+  let asked;
+  const ok = await metricsOf(async (method, path, body, headers, options) => {
+    asked = { method, path, signal: options?.signal instanceof AbortSignal };
+    return stats(totals, [{ tool: "read", calls: 4, errors: 1 }, { tool: "bash", calls: 2, errors: 0 }])();
+  }, "agt_1");
+  assert.deepEqual(asked, { method: "GET", path: "/stats?agent=agt_1", signal: true });
+  assert.deepEqual(ok, { input: 120, cache_read: 900, cache_write: 40, output: 75, requests: 3, unmetered: 0, tool_calls: 6, tools: { read: { calls: 4, errors: 1 }, bash: { calls: 2, errors: 0 } } });
+
+  // None kept, a failed answer, a read that throws: null.
+  assert.equal(await metricsOf(stats({ ...totals, runs_with_metrics: 0 }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => ({ status: 500, body: { error: { message: "boom" } } }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => ({ status: 200, body: "not json" }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => { throw new Error("the server did not answer"); }, "agt_1"), null);
+
+  // A read that stalls: null once the timeout passes, or as soon as the eval stops.
+  const stalls = async (method, path, body, headers, options) => new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+  let started = Date.now();
+  assert.equal(await metricsOf(stalls, "agt_1", undefined, 50), null);
+  assert.ok(Date.now() - started < 5_000);
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(new Error("stopped")), 20);
+  started = Date.now();
+  assert.equal(await metricsOf(stalls, "agt_1", stop.signal, 60_000), null);
+  assert.ok(Date.now() - started < 5_000);
 });

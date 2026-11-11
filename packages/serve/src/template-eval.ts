@@ -573,8 +573,9 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
 type Answered = { status: number; body: unknown };
-/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). */
-type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true }) => Promise<Answered>;
+/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `signal`: the
+ *  request and the read of its body stop when it aborts, and the call rejects. */
+export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; signal?: AbortSignal }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
 function apiOf(baseUrl: string, token: string): Api {
@@ -584,6 +585,7 @@ function apiOf(baseUrl: string, token: string): Api {
       method,
       headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": raw ? "text/markdown" : "application/json" }), ...headers },
       ...(body === undefined ? {} : { body: raw ? body : JSON.stringify(body) }),
+      ...(options.signal ? { signal: options.signal } : {}),
     }).catch((error: unknown) => {
       throw new ApiFailure(`${method} ${path}: the server did not answer (${(error as Error).cause instanceof Error ? ((error as Error).cause as Error).message : (error as Error).message})`);
     });
@@ -686,10 +688,15 @@ async function presentOf(api: Api, runId: string, paths: readonly string[]): Pro
 }
 
 const costOf = (view: Json): number | null => (isObject(view.cost) && typeof view.cost.usd === "number" ? view.cost.usd : null);
+/** How long a run's metrics read may take before the run is reported without them. */
+export const METRICS_TIMEOUT_MS = 10_000;
 /** The metrics of the one run `agentId` made (RunMetrics), from GET /stats?agent=; null when the server kept none (the run
- *  has not ended, or ended without them) or the read fails: a run's result never fails on its metrics. */
-async function metricsOf(api: Api, agentId: string): Promise<RunMetrics | null> {
-  const read = await api("GET", `/stats?agent=${encodeURIComponent(agentId)}`).catch(() => undefined);
+ *  has not ended, or ended without them) or the read fails, takes over `timeoutMs`, or is stopped by `signal` (the eval's
+ *  stop, which its caller then throws): a run's result never fails on its metrics. */
+export async function metricsOf(api: Api, agentId: string, signal?: AbortSignal, timeoutMs = METRICS_TIMEOUT_MS): Promise<RunMetrics | null> {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const bound = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const read = await api("GET", `/stats?agent=${encodeURIComponent(agentId)}`, undefined, {}, { signal: bound }).catch(() => undefined);
   const analytics = read?.status === 200 && isObject(read.body) && isObject(read.body.analytics) ? read.body.analytics : undefined;
   const totals = analytics && isObject(analytics.totals) ? analytics.totals : undefined;
   if (!analytics || !totals || !(typeof totals.runs_with_metrics === "number" && totals.runs_with_metrics > 0)) return null;
@@ -926,7 +933,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
   await settle(ctx, runId, ended.status);
   // Its metrics once it has ended (a cancelled run's end writes them too), before the eval's server can go.
-  const metrics = await metricsOf(api, agentId);
+  const metrics = await metricsOf(api, agentId, options.signal);
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
