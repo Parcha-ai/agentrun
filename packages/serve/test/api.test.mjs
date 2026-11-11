@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { capabilities, ERROR_STATUS, startServe } from "../dist/index.js";
-import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
+import { thinkingLevel } from "../dist/model.js";
 import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, uploads up to their limits", async (t) => {
@@ -267,12 +267,9 @@ test("a run's input is checked against the default schema {content: string} befo
   assert.deepEqual((await api("GET", "/agents/plain/runs")).body, { runs: [], next_cursor: null });
 });
 
-test("a run thinks at its effort, else its revision's thinking level, else the host's AGENT_THINKING, else medium; never off", () => {
-  assert.equal(thinkingOf({ [EFFORT_ENV]: "low", AGENT_THINKING: "max" }, "high"), "low");
-  assert.equal(thinkingOf({ AGENT_THINKING: "max" }, "high"), "high");
-  assert.equal(thinkingOf({ AGENT_THINKING: "max" }, undefined), "max");
-  assert.equal(thinkingOf({}, undefined), "medium");
-  assert.equal(thinkingOf({ AGENT_THINKING: "off" }, "off"), "medium");
+test("a thinking level is one of the levels, exactly; never off", () => {
+  assert.deepEqual(["low", "medium", "high", "xhigh", "max"].map(thinkingLevel), ["low", "medium", "high", "xhigh", "max"]);
+  for (const value of ["off", "minimal", " high", "HIGH", "", undefined, 3]) assert.equal(thinkingLevel(value), undefined, String(value));
 });
 
 test("the tool table is closed: a name outside it is refused by name, and a tool's missing variables are named, never their values", async () => {

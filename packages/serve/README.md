@@ -874,11 +874,13 @@ it starts:
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
-`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
-it is never off, and a model node that names its own thinking level keeps it. An agentic run started with an `effort` also
-gets a short note on how to work, right after its instructions, on every harness (`src/effort-guidance.ts`): `low`
-answers directly, `medium` plans briefly and checks once, `high` plans each part, fills the gaps and reviews. A run
-started with none gets no note.
+`high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING` (one of those
+levels exactly), else at its harness's own default; it is never off, and a model node that names its own thinking level
+keeps it. The level is fixed in the run's launch when it starts, and its metrics name the level its harness ran at: one
+above the harness's highest runs at that highest (Codex and OpenCode stop at `xhigh`). An agentic run whose level is
+`low`, `medium` or `high` also gets a short note on how to work, right after its instructions, on every harness
+(`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
+the gaps and reviews. A run with no level, or one above `high`, gets no note.
 
 ## Tools
 

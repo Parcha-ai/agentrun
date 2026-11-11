@@ -176,6 +176,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const runner = name === undefined ? undefined : resolveHarness(name);
   if (!name || !entry?.facts || !entry.adapter || !runner) throw new Error(`run ${claim.runId}: ${JSON.stringify(name)} is not a CLI harness this runner runs`);
   const facts = entry.facts;
+  // The level the harness thinks at: the run's effort, else above its highest (codex stops at xhigh) its highest. The
+  // run's metrics name this level, the one it ran at, never a level the harness has not.
+  const thinking = launch.effort ? thinkingFor(facts, launch.effort) : undefined;
 
   // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
   // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in
@@ -376,7 +379,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // redactor, as pi's do.
     tools: [...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
-    ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
+    ...(thinking ? { thinking } : {}),
   };
 
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
@@ -423,7 +426,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // (metrics.ts bookedSpend over every session of its journal), as a pi run's are at its answers' costs.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const { metrics } = runMetrics(entries as never, { ...(thinking ? { effort: thinking } : {}), model:`${chosen.model.provider}/${chosen.model.modelId}` });
       // Its model requests and its decisions (a learned workflow's) at what they were booked at (bookedSpend).
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const model = bookedSpend(all, "model").usd;
