@@ -30,7 +30,7 @@ export const dataOfRun = (runDir: string): string => resolve(runDir, "..", "..",
 export const HOMES_DIR = "homes";
 /** Paths in an agent's home that only the host reads and writes (another component owns them): the home API reads and
  *  writes neither, and lists each by its name alone. `learning` (learning.ts, read through its own API) and `sign-ins`
- *  (sign-ins.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
+ *  (sign-ins-store.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
  *  GET /agents/{id}). */
 export const HOME_HOST_OWNED = ["learning", "sign-ins"];
 /** An agent's home directory's name: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ only

@@ -12,7 +12,6 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import Ajv2020 from "ajv/dist/2020.js";
 import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
 import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
-import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
 import { scratch, serve } from "./support.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -159,8 +158,8 @@ test("a case whose answer fails a grader of every type fails, each failure named
 });
 
 test("a fake MCP server answers from its fixture and records each call; tool_used's args match a call or fail naming it", { timeout: 600_000 }, async () => {
-  // update_contact is pinned to id 7 (evalpkg's agent.md): on its own server the runner pins it as an owner would before
-  // the apply, so the granted write reaches the fake; without that pin the apply would make it deny (AGENT_LAYER_PINS).
+  // update_contact is pinned to id 7 (evalpkg's agent.md): the agent keeps that pin, and on its own server the runner pins
+  // it too, as an owner would before the apply, so the granted write reaches the fake.
   const match = await caseOf("mcp-match");
   assert.equal(match.pass, true, JSON.stringify(match, null, 1));
   const [run] = match.runs;
@@ -223,11 +222,10 @@ test("on an owner's server it applies that server's package only when it is this
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
   // The owner's settings are theirs, and the runner writes none of them. Unpinned there, the pinned write is held by the
-  // agent's own pin once the store keeps one (AGENT_LAYER_PINS), and the case passes; until then it stays deny and the
-  // case fails on it.
+  // agent's own pin, and the case passes.
   const before = (await api("GET", "/settings/tools")).body;
   const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
-  assert.equal(unpinned.pass, AGENT_LAYER_PINS, JSON.stringify(unpinned.cases[0].runs.map((r) => r.error ?? r.status)));
+  assert.equal(unpinned.pass, true, JSON.stringify(unpinned.cases[0].runs.map((r) => r.error ?? r.status)));
   assert.deepEqual((await api("GET", "/settings/tools")).body, before, "the runner wrote no setting of the owner's");
   assert.equal((await api("PUT", "/settings/tools", { ...before, "mcp:crm/update_contact": { pin: { id: "7" } } })).status, 200);
   const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });

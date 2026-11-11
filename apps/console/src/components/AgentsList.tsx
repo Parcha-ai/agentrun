@@ -12,8 +12,9 @@ import { workflowShape } from "@/lib/workflowDoc";
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
- *  its revision and runs, and its actions). Archived agents are their own view. */
-export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null }) {
+ *  its revision and runs, and its actions). Archived agents are their own view.
+ *  `handoff`: the way to build an agent with the person's coding agent, beside New agent (not in the archived view). */
+export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: React.ReactNode }) {
   const [q, setQ] = useState("");
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
@@ -26,6 +27,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
             className="flex-1 max-sm:portrait:placeholder:text-transparent" />
         </label>
         <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>
+        {!archived && handoff}
         {!archived && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
       </div>
       {error ? <p className="border p-4 font-mono text-body text-destructive-text" role="alert">{error}</p>

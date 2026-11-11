@@ -5,8 +5,8 @@
 // and lets one as pinned through. `pin_broken` is the server's mark of a pin its own settings file holds that does not
 // read; in an agent's settings it is refused.
 //
-// This is the cutover's acceptance for the agent-level pin (#1990's rules): agents in the one store, which keeps a
-// revision's body as given (store-tool-pin.test.mjs), keep the pin whole.
+// The acceptance for the agent-level pin (#1990's rules), over the one store, which keeps a revision's body as given
+// (store-tool-pin.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
