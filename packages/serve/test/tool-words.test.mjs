@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { hostToolOf } = await import("../dist/host-tools.js");
-const { BROWSER_KEEPS, browserToolsFor } = await import("@parcha/pi-browser");
+const { BROWSER_KEEPS, SIGNED_IN_LINE, browserSection, browserToolsFor } = await import("@parcha/pi-browser");
 
 const COLD = "it reads one page cold";
 const runOf = (signIns) => browserToolsFor(signIns).find((tool) => tool.name === "run");
@@ -24,6 +24,31 @@ test("the browser with no saved sign-in says it keeps cookies across pages and c
   assert.ok(!plain.includes(BROWSER_KEEPS.signIns), "no sign-in claimed without one");
   const signedIn = runOf(true).description;
   assert.ok(signedIn.includes(BROWSER_KEEPS.signIns), signedIn);
+});
+
+test("handed its agent's saved profile, the browser says it opens with it, conditionally signed in, and that web_fetch reads signed out", () => {
+  const signedIn = runOf(true).description;
+  assert.match(signedIn, /This browser opens with this agent's saved browser profile: a site the agent was signed in to there opens signed in here/);
+  assert.match(signedIn, /web_fetch reads every page signed out/);
+  assert.doesNotMatch(runOf(false).description, /saved browser profile|signed in to there/, "no profile claimed without one");
+});
+
+test("the browser's prompt section names the agent's saved profile, before the tools, only when the browser opens with one, and promises no sign-in", () => {
+  const signedIn = browserSection({ idleReleaseS: 180 }, { signedIn: true });
+  const lines = signedIn.split("\n");
+  assert.equal(lines[0], "You control one remote browser:");
+  assert.equal(lines[1], SIGNED_IN_LINE, "said once, before the tools");
+  assert.match(SIGNED_IN_LINE, /use the browser \(run, snapshot, browser_read\), not web_fetch: web_fetch reads every page signed out/);
+  // A profile on an agent's first run is new and holds no sign-in, and a restore that failed starts a session signed out
+  // while the saved sign-in stays: the line says a sign-in page means this session has none, never that none is saved,
+  // and never claims the browser "opens signed in" outright.
+  assert.match(SIGNED_IN_LINE, /If the browser shows a sign-in page, this session has no sign-in for that site/);
+  assert.doesNotMatch(SIGNED_IN_LINE, /holds no sign-in|none is saved/);
+  assert.doesNotMatch(SIGNED_IN_LINE, /it opens signed in\b/);
+  // It names no profile id, pointer or account.
+  assert.doesNotMatch(SIGNED_IN_LINE, /default|pointer|context|@/);
+  assert.ok(!browserSection({ idleReleaseS: 180 }).includes(SIGNED_IN_LINE), "no sign-in line without one");
+  assert.ok(!browserSection({ idleReleaseS: 180 }, { signedIn: false }).includes(SIGNED_IN_LINE));
 });
 
 test("a CLI harness's web_fetch, as its session is handed it (a host tool), carries the same description: it reads one page cold", () => {

@@ -17,11 +17,11 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
-import type { ApprovalDecision, RunMoment } from "./run-view.js";
+import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
@@ -181,9 +181,12 @@ export async function message(
 /** A steer command row, as message() writes it. */
 export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
 
-/** The raise command rows this run already has, newest last, with the cap each names. */
-async function raiseRows(store: RunsStore, runId: string): Promise<number[]> {
-  return (await store.commands(runId, 0)).filter((c) => c.kind === "raise").map((c) => Number((c.body as { capUsd?: unknown })?.capUsd)).filter((n) => Number.isFinite(n));
+/** The raise command rows this run already has, newest last: the cap each names, and whether its runner has taken it. */
+async function raiseRows(store: RunsStore, runId: string): Promise<{ capUsd: number; taken: boolean }[]> {
+  return (await store.commands(runId, 0))
+    .filter((c) => c.kind === "raise")
+    .map((c) => ({ capUsd: Number((c.body as { capUsd?: unknown })?.capUsd), taken: c.takenAt !== null }))
+    .filter((row) => Number.isFinite(row.capUsd));
 }
 
 /** Raises the cap of an agentic or workflow run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the
@@ -197,9 +200,15 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
   const raises = await raiseRows(store, moment.id);
   const last = raises.at(-1);
-  // The same raise again (a retry): what the first one did stands, no second row.
-  if (Math.abs(cap - from) <= CAP_TOLERANCE && last !== undefined && Math.abs(last - cap) <= CAP_TOLERANCE) {
-    return moment.paused ? { resumed: true } : { resumed: false };
+  // An agentic run paused at its cap goes on with one follow-up turn the runner sends under its pause's id
+  // (raiseFollowUpId): the answer names it, so every raise of this pause (a retry, two sent at once) names the same message.
+  // A workflow run sends none (the step that waits is judged again), so its answer names no message.
+  const resumed = (): { resumed: true; messageId?: string } => ({ resumed: true, ...(moment.kind === "agentic" && moment.pause !== undefined ? { messageId: raiseFollowUpId(moment.pause) } : {}) });
+  // The same raise again (a retry): what the first one did stands, no second row. It resumes the run only while that raise
+  // is still on its way (its row untaken): once taken, a pause the run stands at now is a new one, under the raised cap,
+  // which this retry does not raise (it answers resumed false, and the run stays paused).
+  if (Math.abs(cap - from) <= CAP_TOLERANCE && last !== undefined && Math.abs(last.capUsd - cap) <= CAP_TOLERANCE) {
+    return moment.paused && !last.taken ? resumed() : { resumed: false };
   }
   if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
   try {
@@ -212,7 +221,7 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
     throw error;
   }
   // A run paused at its cap is brought back by the raise (its runner claims it and sends its continuation).
-  if (moment.paused) return { resumed: true };
+  if (moment.paused) return resumed();
   // A run its runner holds takes the raise as its next command: its next step is admitted under the raised cap (the
   // runner's loop holds the run to its newest raise), and a step already under way keeps the cap it was admitted at.
   return { resumed: false, ...(moment.live ? { note: `The ${money(cap)} cap holds from the run's next step; a step already under way keeps the ${money(from)} cap it was admitted at.` } : {}) };
@@ -334,6 +343,9 @@ export interface StartDeps {
   /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
    *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
+  /** Holds the run's files for it (uploads.ts Uploads.hold) before its row is written, so a file deleted after the start
+   *  is still the run's at its claim; `release` lets go of a hold whose run was never written (or was another's). */
+  readonly files?: { hold(runId: string, ids: readonly string[]): Promise<void>; release(runId: string): Promise<void> };
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
   /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
@@ -391,7 +403,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
@@ -410,7 +422,10 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
     // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...grade };
+    // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
+    // agent's impact counts a run as started from, beside its notes and skills.
+    const workflows = chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...grade };
   } catch {
     return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
   }
@@ -425,7 +440,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) }));
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -433,6 +448,22 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
       const row = existing && (await store.runs.get(existing.runId));
       if (row) return row;
     }
+    throw error;
+  }
+}
+
+/** Writes run `runId` with `write`, its files (launch.files) held for it first (StartDeps.files): a hold that fails part
+ *  way, a write that fails, or one that answers another run (an origin key's run started before), lets go of the hold. */
+async function withHeldFiles(deps: StartDeps, runId: string, launch: RunLaunch, write: () => Promise<RunRow>): Promise<RunRow> {
+  const ids = launch.files ?? [];
+  if (!ids.length || !deps.files) return await write();
+  try {
+    await deps.files.hold(runId, ids);
+    const row = await write();
+    if (row.id !== runId) await deps.files.release(runId);
+    return row;
+  } catch (error) {
+    await deps.files.release(runId).catch(() => undefined);
     throw error;
   }
 }
@@ -465,12 +496,12 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await store.runs.createInline({
+    return await withHeldFiles(deps, runId, launch, () => store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
       launch: { body: launchBody(launch) },
-    });
+    }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) {
       const { source, kind, id, version } = external;

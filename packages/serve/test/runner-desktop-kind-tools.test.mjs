@@ -9,7 +9,7 @@
 // a grey screen. Loopback only: no provider, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -110,6 +110,18 @@ function findAll(dir, name, found = []) {
   return found;
 }
 
+/** The claim's spec, its release first keeping a copy of each CODEX_HOME under `dir` in `kept`: the release sweeps the
+ *  CLI's scratch folder, its home with it, so the test reads the home the run had once the run has settled. */
+function keepingHomes(spec, dir, kept) {
+  return {
+    ...spec,
+    release: async () => {
+      for (const home of findAll(dir, "codex-home")) cpSync(home, join(kept, String(readdirSync(kept).length), "codex-home"), { recursive: true });
+      await spec.release?.();
+    },
+  };
+}
+
 /** A codex run on the runner path, on Codex's stand-in, its agent's computer --faux's desktop, whose model calls `tool`
  *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings. Returns the tools
  *  Codex was handed and the call's answer from Codex's session record (undefined when none came within 15 s). */
@@ -119,6 +131,7 @@ async function codexCall(t, tool, args, settings) {
   t.after(() => (was === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = was)));
   const origin = await gateway(t, "Codex answered.");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-tools-"));
+  const kept = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-tools-homes-"));
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyStandIn(standIn);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -129,6 +142,7 @@ async function codexCall(t, tool, args, settings) {
     await store.close().catch(() => {});
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
+    rmSync(kept, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the desktop.", harness: "codex", tools: ["read"], computer: FAUX_DESKTOP } });
   if (settings) await server.settings.put("tool-settings", settings);
@@ -150,7 +164,7 @@ async function codexCall(t, tool, args, settings) {
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
     createLoop: createDispatchLoop({
       launchOf: (runId) => store.runs.launch(runId),
-      resolve: (name, given) => (name === "codex" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined),
+      resolve: (name, given) => (name === "codex" ? createAdapterLoop(async (claim, run) => keepingHomes(await cliRunSpecFromLaunch(given, run, deps, claim), dir, kept)) : undefined),
     }),
   });
   const end = Date.now() + 90_000;
@@ -162,7 +176,9 @@ async function codexCall(t, tool, args, settings) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.ok(["ended", "parked"].includes(row.state), `the run did its turn: ${JSON.stringify(row)}; log ${JSON.stringify(log)}`);
-  const homes = findAll(dir, "codex-home");
+  // Codex's home as the claim's release found it (keepingHomes): the release follows the run's end commit, so it is waited for.
+  for (const by = Date.now() + 15_000; !findAll(kept, "codex-home").length && Date.now() < by; ) await new Promise((resolve) => setTimeout(resolve, 25));
+  const homes = findAll(kept, "codex-home");
   assert.equal(homes.length, 1, `one CODEX_HOME for the run: ${JSON.stringify(homes)}`);
   const rollouts = readdirSync(join(homes[0], "sessions"), { recursive: true }).map(String).filter((path) => path.endsWith(".jsonl"));
   assert.ok(rollouts.length >= 1, "Codex recorded its session");

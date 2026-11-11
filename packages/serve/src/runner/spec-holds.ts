@@ -13,6 +13,9 @@ type Held = {
   readonly ws?: { end(): Promise<void> };
   /** The claim's Archil keys, dropped from memory last, once nothing more reads the disk (the CLI spec's). */
   readonly keys?: { release(): void } | undefined;
+  /** The CLI's files on this machine for this claim (its private folder in the run's scratch), swept once the rest is let
+   *  go: every claim lays its own again, the harness's state coming back from the run's journal. */
+  readonly scratch?: { sweep(): Promise<void> } | undefined;
   /** What the spec hands the loop, which lets it go itself (the claim's MCP): let go here only when the build throws. */
   readonly passed?: { release(): void } | undefined;
 };
@@ -36,19 +39,20 @@ export class SpecHolds {
   }
 
   /** Everything held let go, once: the tools' end (background processes ended, scratch swept), the computer, the Archil
-   *  mount credential (idempotent: the computer's release revokes it too), the Workspace's end, then the claim's keys
-   *  where they are held. A second call waits for the first and does nothing more. */
+   *  mount credential (idempotent: the computer's release revokes it too), the Workspace's end, the CLI's scratch, then
+   *  the claim's keys where they are held. A second call waits for the first and does nothing more. */
   release(): Promise<void> {
     return (this.#released ??= this.#releaseAll());
   }
 
   async #releaseAll(): Promise<void> {
-    const { tools, computer, archil, ws, keys } = this.#held;
+    const { tools, computer, archil, ws, scratch, keys } = this.#held;
     const log = this.#log;
     await tools?.end().catch((error: unknown) => log(`the run's tools' end failed: ${words(error)}`));
     await computer?.release().catch((error: unknown) => log(`the run's computer could not be let go: ${words(error)}`));
     await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${words(error)}`));
     await ws?.end().catch((error: unknown) => log(`the run's workspace end failed: ${words(error)}`));
+    await scratch?.sweep().catch((error: unknown) => log(`the run's scratch folder could not be swept: ${words(error)}`));
     keys?.release();
   }
 

@@ -27,8 +27,8 @@ export interface RunCapOptions {
   capUsd(): number | undefined;
   readonly mode?: CapMode;
   readonly now?: () => number;
-  /** The run's model requests' models (its decisions' are the cap's own). */
-  modelOf(id: string): CapModel | undefined;
+  /** The run's model requests' models, by id and route (BeforeRequestOptions.modelOf; its decisions' are the cap's own). */
+  modelOf(id: string, route?: string): CapModel | undefined;
   previousOf?(model: string): Previous | undefined;
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
@@ -107,7 +107,7 @@ export function runCap(options: RunCapOptions): RunCap {
     capUsd: options.capUsd,
     mode,
     ...(options.now ? { now: options.now } : {}),
-    modelOf: (id) => deciding.get(id) ?? options.modelOf(id),
+    modelOf: (id, route) => deciding.get(id) ?? options.modelOf(id, route),
     ...(options.previousOf ? { previousOf: (model: string) => (deciding.has(model) ? undefined : options.previousOf!(model)) } : {}),
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),

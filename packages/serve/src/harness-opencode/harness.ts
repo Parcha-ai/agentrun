@@ -387,7 +387,6 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       }
       if (event.type === "session.error" && turn) {
         const error = isPlain(p.error) ? p.error : {};
-        const data = isPlain(error.data) ? error.data : {};
         if (error.name === "MessageAbortedError") turn.error = undefined;
         else turn.error = errorText(error);
         turn.busy = true;
