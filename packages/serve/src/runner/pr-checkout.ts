@@ -22,7 +22,7 @@
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
 // the next claim of the same run.
 import { randomUUID } from "node:crypto";
-import { GITHUB_WEB, githubCall, type GithubPull, githubPullOf } from "../github.js";
+import { GITHUB_WEB, type GithubPull, githubPullOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { COMMAND_MAX_MS } from "../workspace/archil-exec.js";
 import { shellEnv } from "../workspace/hands.js";
@@ -90,6 +90,9 @@ export interface PrCheckoutOptions {
   readonly workspace: Workspace;
   /** The run's first input (its launch's): its payload tag names the pull request. */
   readonly input: unknown;
+  /** Whether a github trigger started the run (its launch's inputOrigin): only then is its payload tag the server's own,
+   *  and read. Anyone may write the tag's text into a run of their own. */
+  readonly fromGitHub?: boolean;
   /** The server's GitHub App mint, when it has an App the runner can open: none, the fetch is anonymous. */
   readonly mint?: GithubAppMint;
   /** The token revoked at GitHub once the fetch is done: best effort, a failure leaves it to its hour. */
@@ -121,7 +124,7 @@ const tail = (text: string, secrets: readonly string[]): string => {
  *  could not be made: the run is told why, and reads the change some other way. */
 export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout> {
   const { workspace } = options;
-  const pull = githubPullOf(isObject(options.input) ? options.input.content : options.input);
+  const pull = githubPullOf(isObject(options.input) ? options.input.content : options.input, { payload: options.fromGitHub === true });
   if (!pull) return noCheckout("No checkout was made: this run was not started by a GitHub pull request event, so there is no repo/ folder. Read the change through the GitHub tools if you have them.");
   const web = (options.web ?? GITHUB_WEB).replace(/\/+$/, "");
   const name = `${pull.repo}#${pull.number}`;
@@ -192,19 +195,18 @@ function checkoutNote(pull: GithubPull, mergeBase: string | undefined): string {
   return `The pull request ${pull.repo}#${pull.number} is checked out in ${CHECKOUT_DIR}/, detached at its head ${pull.head} (ref pr/head), by the server before this run began. ${base} It is a shallow clone, and no credential is kept in it.`;
 }
 
-/** The checkout a claim's spec makes (the pi and the CLI spec alike): the server's GitHub App opened as the MCP step opens
- *  it (github-app.ts), its secrets held by the run's redactor `redact`, its removal by the spec's holds (`held`) from the
+/** The checkout a claim's spec makes (the pi and the CLI spec alike) for its launch: the server's GitHub App opened as the
+ *  MCP step opens it (github-app.ts, its payload tag read only for a github trigger's run), its secrets held by the run's redactor `redact`, its removal by the spec's holds (`held`) from the
  *  moment the fetch starts, and `signal` (the claim's, a person's stop included) ending the fetch. */
 export async function prCheckoutForClaim(
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "githubApi" | "githubWeb">,
   workspace: Workspace,
-  input: unknown,
+  launch: { readonly input: unknown; readonly inputOrigin?: { readonly kind: string; readonly source?: string } | undefined },
   redact: { hold(values: readonly string[]): void },
   signal?: AbortSignal,
   held?: (part: { end(): Promise<void> }) => void,
 ): Promise<PrCheckout> {
-  const access = await githubAppAccess(deps.store, deps.sealKey, input, deps.githubApi ? { api: deps.githubApi } : {});
-  const at = access?.api;
-  const revoke = async (token: string): Promise<void> => void (at && (await githubCall(at, "/installation/token", { method: "DELETE", jwt: token })));
-  return prCheckout({ workspace, input, ...(access ? { mint: access.mint, revoke } : {}), hold: (secrets) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) });
+  const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
+  const access = await githubAppAccess(deps.store, deps.sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold: (values) => redact.hold(values) });
+  return prCheckout({ workspace, input: launch.input, fromGitHub, ...(access ? { mint: access.mint } : {}), ...(access?.revoke ? { revoke: access.revoke } : {}), hold: (secrets) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) });
 }

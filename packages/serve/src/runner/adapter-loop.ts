@@ -35,7 +35,7 @@ import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold 
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { portModels, type PortModels } from "../port-models.js";
+import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions">;
@@ -248,8 +248,9 @@ export interface RunLedger {
   readonly paid: RunTools;
   /** The session's proxied models for a request the host sends beside the harness's own, under `label` (portModels on
    *  the session's port), read at each request: a spec may take them at its build, before the session opens; a request
-   *  made while no port is up (no session, or a harness with none) finds no model. */
-  models(label: string): Promise<PortModels>;
+   *  made while no port is up (no session, or a harness with none) finds no model. `tier`: the run's model of that tier
+   *  (AdapterSession.port's `tier`), listed under tierProvider(tier). */
+  models(label: string, tier?: string): Promise<PortModels>;
   /** A paid call the run's cap refused that pauses the run (an agent's ask for a person's browser time: main's paidCall
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
@@ -1035,7 +1036,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           // Lazy, as main's process takes them (portModels(() => sessionPort?.(...))): a spec takes them at its build, and
           // each request reads the session's port then, there once the session is open.
-          models: (label) => portModels(() => session?.port?.(label)),
+          models: (label, tier) => portModels(() => session?.port?.(label, tier), undefined, tier === undefined ? PORT_PROVIDER : tierProvider(tier)),
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },

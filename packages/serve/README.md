@@ -752,11 +752,14 @@ this server's run folder says why there. The save checks the shape, and only a s
 and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
 computer is made with the GPUs asked.
 
-- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
-  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
-  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
-  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
-  its network allowlist, are not yet proven live.
+- **Daytona** gives one `H100`, the GPU of its GPU snapshot `daytona-gpu` (the computer package's `DAYTONA_GPU`:
+  `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
+  made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
+  deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
+  run on one can be cut short. The Daytona org needs GPU credits. It takes no mount (`mounts: []`: the snapshot's user
+  is not root and has no Archil client), so it can't hold the run's folder from Archil: in Mode 2 this server refuses a
+  Daytona sandbox with a `gpu`, and `GET /v2/computers` says why in Daytona's `gpu.why`. In Mode 1 a sandbox runs on
+  Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -1885,7 +1888,8 @@ could not be made, with GitHub's reason, and the next launch (a resume) mints a 
 
 An agent whose definition says `checkout: pull_request` starts each run a GitHub event about a pull request started in a
 checkout of it, made by the server at each claim before the first turn ([runner/pr-checkout.ts](src/runner/pr-checkout.ts)).
-It reads the repository, number, head and base from the server's own payload tag, never from anyone's words, and runs one
+It reads the repository, number, head and base from the server's own payload tag, only on a run a github trigger started
+(its launch's input origin) and never from anyone's words, and runs one
 command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init repo`, a fetch of the head and
 the base 50 commits deep, deepened until their merge base is in (about 3,200 commits at most), then a detached checkout
 of the head, with refs `pr/head`, `pr/base` and `pr/merge-base`. The fetch takes an installation token minted for that

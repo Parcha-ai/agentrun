@@ -115,11 +115,13 @@ function payloadAttrs(content: string): { at: number; attrs: Record<string, stri
 
 /** The repository a run is about, from its first message: the GitHub event it was started for (the server's own payload
  *  tag, the first one, with its installation and repository), else the first https://github.com/<owner>/<repo> its owner's
- *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. */
-export function githubTargetOf(content: unknown): { installation?: number; repo: string } | undefined {
+ *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. The tag is read only
+ *  for a run a github trigger started (`payload`, from its launch's inputOrigin): anyone may write the tag's text into a
+ *  run of their own, and it names an installation. */
+export function githubTargetOf(content: unknown, { payload = false }: { payload?: boolean } = {}): { installation?: number; repo: string } | undefined {
   if (typeof content !== "string") return undefined;
   const tag = payloadAttrs(content);
-  if (tag) {
+  if (tag && payload) {
     const { attrs } = tag;
     if (attrs.source === "github" && typeof attrs.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(attrs.repo)) return { repo: attrs.repo, ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}) };
   }
@@ -137,10 +139,11 @@ const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 const NAME = /^[A-Za-z0-9._-]{1,100}$/;
 
 /** The pull request a run was started for: read from its first message's payload tag alone (the server's, made from a
- *  signed GitHub delivery: trigger-signatures.ts attrsOf), never from anyone's words. Undefined when the run was not
- *  started by a GitHub event about a pull request with a head (a comment event has none). */
-export function githubPullOf(content: unknown): GithubPull | undefined {
-  if (typeof content !== "string") return undefined;
+ *  signed GitHub delivery: trigger-signatures.ts attrsOf), never from anyone's words, and only for a run a github trigger
+ *  started (`payload`, from its launch's inputOrigin, as githubTargetOf reads it). Undefined when the run was not started
+ *  by a GitHub event about a pull request with a head (a comment event has none). */
+export function githubPullOf(content: unknown, { payload = false }: { payload?: boolean } = {}): GithubPull | undefined {
+  if (typeof content !== "string" || !payload) return undefined;
   const attrs = payloadAttrs(content)?.attrs;
   if (!attrs || attrs.source !== "github") return undefined;
   const [owner, name, extra] = (attrs.repo ?? "").split("/");

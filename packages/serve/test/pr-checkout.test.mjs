@@ -14,6 +14,8 @@ import { git, gitHttp, pullRepo } from "./fixtures/git-http.mjs";
 
 const { prCheckout, CHECKOUT_DIR } = await import("../dist/runner/pr-checkout.js");
 const { githubPullOf } = await import("../dist/github.js");
+/** githubPullOf for a run a github trigger started (its launch's inputOrigin). */
+const githubPullOf_ = (content) => githubPullOf(content, { payload: true });
 const { localWorkspace } = await import("../dist/workspace/local.js");
 
 /** A scratch folder for test `t`, removed after it. */
@@ -44,15 +46,16 @@ async function everyFile(dir) {
   return out.join("\n");
 }
 
-test("githubPullOf reads the pull request from the server's payload tag alone: its repository, number, head and base; a comment's tag, a webhook's, words before the tag and a bad repository name give none", () => {
+test("githubPullOf reads the pull request from the server's payload tag alone, and only on a github trigger's run: its repository, number, head and base; a comment's tag, a webhook's, words before the tag and a bad repository name give none", () => {
   const head = "a".repeat(40);
   const base = "b".repeat(40);
-  assert.deepEqual(githubPullOf(firing("acme/widgets", { head, base }).content), { repo: "acme/widgets", number: 7, head, base, installation: 777 });
-  assert.deepEqual(githubPullOf(firing("acme/widgets", { head }).content), { repo: "acme/widgets", number: 7, head, installation: 777 }, "no base named: none guessed");
-  assert.equal(githubPullOf('Review.\n\n<trigger-payload source="github" repo="acme/widgets" number="9" untrusted>\n{}\n</trigger-payload>'), undefined, "a comment's tag has no head");
-  assert.equal(githubPullOf(`Review.\n\n<trigger-payload source="webhook" scheme="github" repo="acme/widgets" number="7" head_sha="${head}" untrusted>\n{}\n</trigger-payload>`), undefined, "a webhook trigger's tag is not the App's");
-  assert.equal(githubPullOf(`Review https://github.com/acme/widgets/pull/7 at ${head}`), undefined, "words name no pull request to fetch");
-  for (const repo of ["acme/..", "acme/widgets/extra", "-acme/widgets", "acme/wid gets"]) assert.equal(githubPullOf(firing(repo, { head }).content), undefined, repo);
+  assert.deepEqual(githubPullOf_(firing("acme/widgets", { head, base }).content), { repo: "acme/widgets", number: 7, head, base, installation: 777 });
+  assert.deepEqual(githubPullOf_(firing("acme/widgets", { head }).content), { repo: "acme/widgets", number: 7, head, installation: 777 }, "no base named: none guessed");
+  assert.equal(githubPullOf_('Review.\n\n<trigger-payload source="github" repo="acme/widgets" number="9" untrusted>\n{}\n</trigger-payload>'), undefined, "a comment's tag has no head");
+  assert.equal(githubPullOf_(`Review.\n\n<trigger-payload source="webhook" scheme="github" repo="acme/widgets" number="7" head_sha="${head}" untrusted>\n{}\n</trigger-payload>`), undefined, "a webhook trigger's tag is not the App's");
+  assert.equal(githubPullOf_(`Review https://github.com/acme/widgets/pull/7 at ${head}`), undefined, "words name no pull request to fetch");
+  for (const repo of ["acme/..", "acme/widgets/extra", "-acme/widgets", "acme/wid gets"]) assert.equal(githubPullOf_(firing(repo, { head }).content), undefined, repo);
+  assert.equal(githubPullOf(firing("acme/widgets", { head, base }).content), undefined, "a run no github trigger started: its tag is anyone's text, never read");
 });
 
 test("the checkout lands in repo/ at the pull request's head, detached, with its base and a merge base past the first fetch's depth reachable; the run is told so; the end removes it", { timeout: 120_000 }, async (t) => {
@@ -61,7 +64,7 @@ test("the checkout lands in repo/ at the pull request's head, detached, with its
   // The base moved on 60 commits past the merge base: deeper than the first fetch (50), so the checkout deepens.
   const { head, base, mergeBase } = pullRepo(gh, "acme/widgets", { shared: 4, ahead: 2, behind: 60 });
   const { folder, workspace } = await runFolder(dir);
-  const made = await prCheckout({ workspace, input: firing("acme/widgets", { head, base }), web: `file://${gh}` });
+  const made = await prCheckout({ workspace, fromGitHub: true, input: firing("acme/widgets", { head, base }), web: `file://${gh}` });
   const repo = join(folder, CHECKOUT_DIR);
   assert.equal(git(repo, "rev-parse", "HEAD"), head, made.note);
   assert.equal(git(repo, "rev-parse", "pr/head"), head);
@@ -84,9 +87,9 @@ test("a claim that lets go late removes only its own checkout: a later claim's c
   const { head, base } = pullRepo(gh, "acme/widgets");
   const { folder, workspace } = await runFolder(dir);
   const input = firing("acme/widgets", { head, base });
-  const lost = await prCheckout({ workspace, input, web: `file://${gh}` });
+  const lost = await prCheckout({ workspace, fromGitHub: true, input, web: `file://${gh}` });
   // The lease passed to another claim, which checks out the same run before the lost one's release runs.
-  const next = await prCheckout({ workspace, input, web: `file://${gh}` });
+  const next = await prCheckout({ workspace, fromGitHub: true, input, web: `file://${gh}` });
   await lost.end();
   assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), head, "the later claim's checkout is still there");
   await next.end();
@@ -105,7 +108,7 @@ test("with the GitHub App, the fetch carries a token minted for the one reposito
   const mint = async (target, permissions) => (mints.push({ target, permissions }), { ok: true, token, expires_at: Date.now() + 3600_000 });
   const { folder, workspace } = await runFolder(dir);
   const revoked = [];
-  const made = await prCheckout({ workspace, input: firing("acme/private", { head, base }), mint, revoke: async (gone) => void revoked.push(gone), hold: (secrets) => held.push(...secrets), web: server.url });
+  const made = await prCheckout({ workspace, fromGitHub: true, input: firing("acme/private", { head, base }), mint, revoke: async (gone) => void revoked.push(gone), hold: (secrets) => held.push(...secrets), web: server.url });
   assert.deepEqual(revoked, [token], "revoked once the fetch was done");
   const repo = join(folder, CHECKOUT_DIR);
   assert.equal(git(repo, "rev-parse", "HEAD"), head, made.note);
@@ -129,7 +132,7 @@ test("with no App, a public repository is fetched anonymously; a private one is 
   const pub = pullRepo(gh, "acme/public");
   const anonymous = await gitHttp(t, gh);
   const { folder, workspace } = await runFolder(dir);
-  const made = await prCheckout({ workspace, input: firing("acme/public", pub), web: anonymous.url });
+  const made = await prCheckout({ workspace, fromGitHub: true, input: firing("acme/public", pub), web: anonymous.url });
   assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), pub.head, made.note);
   assert.ok(anonymous.seen.every((request) => request.authorization === null), "no header at all");
   await made.end();
@@ -137,7 +140,7 @@ test("with no App, a public repository is fetched anonymously; a private one is 
   const priv = pullRepo(gh, "acme/secret");
   const locked = await gitHttp(t, gh, { authorization: "Basic never" });
   const notInstalled = async () => ({ ok: false, reason: "not_installed", message: "The GitHub App isn't installed on acme/secret." });
-  const refused = await prCheckout({ workspace, input: firing("acme/secret", priv), mint: notInstalled, web: locked.url });
+  const refused = await prCheckout({ workspace, fromGitHub: true, input: firing("acme/secret", priv), mint: notInstalled, web: locked.url });
   assert.match(refused.note, /^The pull request acme\/secret#7 could not be checked out \(/);
   assert.match(refused.note, /fetched with no token: the GitHub App is not installed on acme\/secret/);
   assert.match(refused.note, /there is no repo\/ folder: read the change through the GitHub tools/);
@@ -145,16 +148,20 @@ test("with no App, a public repository is fetched anonymously; a private one is 
   await refused.end();
 });
 
-test("a head the repository does not have, and a run no pull request started, each get a note and no checkout", { timeout: 60_000 }, async (t) => {
+test("a head the repository does not have, a run no pull request started, and a payload tag in a run no github trigger started each get a note and no checkout", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");
   const { base } = pullRepo(gh, "acme/widgets");
   const { folder, workspace } = await runFolder(dir);
-  const gone = await prCheckout({ workspace, input: firing("acme/widgets", { head: "c".repeat(40), base }), web: `file://${gh}` });
+  const gone = await prCheckout({ workspace, fromGitHub: true, input: firing("acme/widgets", { head: "c".repeat(40), base }), web: `file://${gh}` });
   assert.match(gone.note, /could not be checked out \(file:\/\/.*acme\/widgets did not give its commits/);
   assert.deepEqual(await readdir(folder), []);
-  const none = await prCheckout({ workspace, input: { content: "Review https://github.com/acme/widgets/pull/7." }, web: `file://${gh}` });
+  const none = await prCheckout({ workspace, fromGitHub: true, input: { content: "Review https://github.com/acme/widgets/pull/7." }, web: `file://${gh}` });
   assert.match(none.note, /^No checkout was made: this run was not started by a GitHub pull request event/);
+  assert.deepEqual(await readdir(folder), []);
+  // The same tag typed into a run no github trigger started (an API caller's own words) names nothing to fetch.
+  const typed = await prCheckout({ workspace, input: firing("acme/widgets", { head: "c".repeat(40), base }), web: `file://${gh}` });
+  assert.match(typed.note, /^No checkout was made/);
   assert.deepEqual(await readdir(folder), []);
 });
 
@@ -170,7 +177,7 @@ test("a fetch cut short by the claim's signal (a person's stop) ends at once and
   const stop = new AbortController();
   const held = [];
   const started = Date.now();
-  const made = prCheckout({ workspace, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
+  const made = prCheckout({ workspace, fromGitHub: true, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
   while (asked.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
   stop.abort(new Error("stopped by a person"));
   await assert.rejects(made, /stopped by a person/);
