@@ -472,7 +472,7 @@ test("a stop while the run waits for the hand-back ends it stopped at once, and 
   assert.deepEqual(run.ends, ["released"], "the release ends the take released");
 });
 
-test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", { timeout: 120_000 }, async (t) => {
+test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut; the end opens the run again with it (#2134 review)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -482,11 +482,13 @@ test("a message while the run waits for the hand-back is not placed, so no turn 
   // Rows are handed to the run in order: the message meets the wait, then the hand-back ends it.
   const message = await world.server().command("run-1", { kind: "steer", body: { text: "one more thing" } });
   await world.route("handBackRunComputer");
+  // The message was left untaken for the run's end (no turn placed into the ending claim), and that end opened the run
+  // again with it: the next claim takes it as a new turn, and the run ends again on that turn's answer.
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }], "the ending claim let the desktop go handed back");
   const row = await world.ended();
   assert.equal(row.state, "ended");
   const left = (await world.server().commands("run-1", 0)).find((command) => command.id === message.id);
-  assert.equal(left.refused, "the run ended before this command was taken", "the message was left for the end, no turn placed for it");
-  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }]);
+  assert.ok(left.takenAt !== null && left.refused === null, `the message ran as the reopened run's turn, never refused: ${JSON.stringify(left)}`);
 });
 
 test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", { timeout: 120_000 }, async (t) => {

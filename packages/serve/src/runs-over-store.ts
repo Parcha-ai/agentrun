@@ -195,10 +195,17 @@ async function steerOrReopen(store: RunsStore, moment: RunMoment, command: Steer
       await store.runs.reopen(moment.id, command);
     } catch (again) {
       if (!(again instanceof RunFinal)) throw again;
-      // Worded by the run's end as the store holds it now: the moment may have been read before that end (a race).
-      const state = (await store.runs.get(moment.id))?.state;
-      const terminalKind = state === "failed" ? "failed" : state === "stopped" ? "cancelled" : "completed";
-      throw finished({ ...moment, terminal: true, terminalKind });
+      // Refused: another message may have opened the run again meanwhile, so the steer is sent once more, to the run now
+      // running. Refused that too, the run takes no message.
+      try {
+        await sendCommand(store, moment.id, command);
+      } catch (last) {
+        if (!(last instanceof RunFinal)) throw last;
+        // Worded by the run's end as the store holds it now: the moment may have been read before that end (a race).
+        const state = (await store.runs.get(moment.id))?.state;
+        const terminalKind = state === "failed" ? "failed" : state === "stopped" ? "cancelled" : "completed";
+        throw finished({ ...moment, terminal: true, terminalKind });
+      }
     }
   }
 }

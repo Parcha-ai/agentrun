@@ -156,6 +156,35 @@ test("a message to a cancelled run answers 409 finished in today's words, nothin
   assert.equal((await store.runs.get("run-1")).state, "stopped");
 });
 
+test("two messages racing at a completed agentic run are both taken as steers: one reopens it, the other lands on the reopened run, neither is refused", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-two", { state: "ended", summary: "The first answer." });
+  const done = moment({ id: "run-two", working: false, terminal: true, terminalKind: "completed" });
+  // Both read the run ended and are refused their steer; the other message's reopen lands between this one's refusal and
+  // its own reopen, so this one's reopen finds the run running again.
+  let raced = false;
+  const racing = {
+    runs: {
+      ...store.runs,
+      reopen: async (runId, command) => {
+        if (!raced) {
+          raced = true;
+          await message(store, done, "first");
+        }
+        return store.runs.reopen(runId, command);
+      },
+    },
+    command: (...args) => store.command(...args),
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+  };
+  const answer = await message(racing, done, "second");
+  assert.equal(answer.mode, "follow_up");
+  assert.equal((await store.runs.get("run-two")).state, "running");
+  const rows = await commandsOf(store, "run-two");
+  assert.deepEqual(rows.map((row) => [row.kind, row.body.text, row.takenAt]), [["steer", "first", null], ["steer", "second", null]], "both steers, in the order the run took them");
+});
+
 test("a message racing a run's end (the moment read before it) is refused by the store's reopen in that end's words: cancelled or failed, nothing written", async () => {
   const store = await freshStore();
   for (const [id, patch, words] of [
