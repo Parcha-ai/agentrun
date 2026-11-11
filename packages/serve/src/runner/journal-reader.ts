@@ -146,7 +146,7 @@ export function messagesOf(from: readonly EntryRecord[] | JournalRecords): Messa
   const out: MessageRecord[] = [];
   const records = asRecords(from);
   // The end-of-run turn's, from the entry its input placed on (the reader's tag, as the server's labelled() reads it).
-  const from_ = reflectFrom(records.submissions ?? []);
+  const from_ = reflectFrom(records.submissions ?? [], records.entries);
   const turn = (entry: number) => (from_ !== undefined && entry >= from_ ? { learning: true as const } : {});
   for (const entry of recordOf(records.entries)) {
     const at = entryNumber(entry);
