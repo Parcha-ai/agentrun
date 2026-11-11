@@ -287,6 +287,19 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
+// The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
+// moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
+// what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
+// drain. A second signal a while after the first, still during the start, is a person who wants out now: exit 130.
+let stopping: (() => void) | undefined;
+let askedAt: number | undefined;
+const signalled = () => {
+  if (stopping) return stopping();
+  if (askedAt === undefined) askedAt = Date.now();
+  else if (Date.now() - askedAt >= REPEAT_MS) process.exit(130);
+};
+process.on("SIGINT", signalled);
+process.on("SIGTERM", signalled);
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
@@ -344,7 +357,8 @@ try {
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
-if (!values["no-runner"]) {
+// A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
+if (!values["no-runner"] && askedAt === undefined) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
     // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
@@ -389,9 +403,10 @@ const stop = stopOnSignals({
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+stopping = stop;
 // Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
 // waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
 writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
 chmodSync(record, 0o600);
+// A stop asked during the start runs now, as one asked from here on would.
+if (askedAt !== undefined) stop();
