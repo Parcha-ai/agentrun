@@ -56,13 +56,13 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow, inspect }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
   const server = await openSqliteStore({ dataDir: dir, role: "server", ...(serverNow ? { now: serverNow } : {}) });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const fake = await startFakeMcp({ token: fakeToken });
+  const fake = await startFakeMcp({ token: fakeToken, ...(inspect ? { inspect } : {}) });
   let runner;
   t.after(async () => {
     await runner?.close();
@@ -301,6 +301,39 @@ test("R10: a priced MCP call with room is sent once, held at its price and booke
   // Booked once: on the one ledger, never again by the gateway's own marks on the run's root.
   assert.equal(entries.filter((entry) => entry.kind === "runner.request" && entry.data.model === "paid:mcp:fake/paid").length, 1, "one hold");
   assert.deepEqual(await entriesOf(server, TOOL_COST), [], "no second booking on the run's root");
+});
+
+// The money fence on the runner's ledger path: a priced MCP call's hold is written and made durable before the call
+// leaves, so a box lost once the server has it still counts its charge after the next claim (the ledger's box-loss case:
+// run-adapters' kernel-cap-decisions-one-ledger.test.mjs). Read from the order on a real store and runner: each flush of
+// the runner's store, noting whether the call's hold was already committed when it began, and the moment the fake
+// server receives the call.
+test("R10b: a priced MCP call reaches its server only after a flush that began with its hold committed", async (t) => {
+  const script = [{ call: "mcp__fake__paid", args: { query: "q" } }, { sayLastResult: true }];
+  const events = [];
+  let fake;
+  let server;
+  const held = async () => (await journalOf(server)).some((entry) => entry.kind === "runner.request" && entry.data.model === "paid:mcp:fake/paid");
+  const before = async (world) => {
+    ({ fake, server } = world);
+    const flush = world.store.flush.bind(world.store);
+    world.store.flush = async () => {
+      const withHold = await held();
+      await flush();
+      events.push(withHold ? "flushed with the hold" : "flushed");
+    };
+  };
+  // Called as the fake logs a request, before it answers: the call has left the runner.
+  const inspect = () => {
+    const last = fake.log.at(-1);
+    if (last?.method === "tools/call" && last.tool === "paid") events.push("sent");
+  };
+  const { row } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 5, before, inspect });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const sent = events.indexOf("sent");
+  assert.ok(sent > 0, `the call reached its server once: ${JSON.stringify(events)}`);
+  assert.equal(events.filter((event) => event === "sent").length, 1, `once: ${JSON.stringify(events)}`);
+  assert.ok(events.slice(0, sent).includes("flushed with the hold"), `its hold was flushed before it left: ${JSON.stringify(events)}`);
 });
 
 /** An OAuth sign-in's token set, its authorization server at auth.example.com, its access token ending at `expires`. */
