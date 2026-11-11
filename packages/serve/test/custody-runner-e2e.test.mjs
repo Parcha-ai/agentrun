@@ -130,13 +130,32 @@ async function usedKeys(t, { harness }) {
     const read = await api("GET", `/runs/${runId}/files/${file.path}`);
     fileTexts.push({ where: `the run's file ${file.path}`, text: typeof read.body === "string" ? read.body : JSON.stringify(read.body) });
   }
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The server tells a run's end on its own timer, after the run's last row: wait for this run's run.ended to arrive.
+  const endedBy = Date.now() + 30_000;
+  const endedSent = () =>
+    hook.bodies.some((sent) => {
+      try {
+        const message = JSON.parse(sent.body);
+        return message.type === "run.ended" && message.data?.run_id === runId;
+      } catch {
+        return false;
+      }
+    });
+  while (!endedSent()) {
+    assert.ok(Date.now() < endedBy, `the server sent run ${runId}'s run.ended within 30 s (${hook.bodies.length} webhook bodies so far)`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // /usage and /stats are read only as they answered: an error body would pass the scan and read nothing.
+  const usage = await api("GET", "/usage");
+  const stats = await api("GET", "/stats");
+  assert.equal(usage.status, 200, `GET /usage: ${JSON.stringify(usage.body)}`);
+  assert.equal(stats.status, 200, `GET /stats: ${JSON.stringify(stats.body)}`);
   const sources = [
     { where: "the timeline rows followed", text: JSON.stringify(rows) },
     { where: "GET /runs/{id}/timeline", text: JSON.stringify(served) },
     { where: "GET /runs/{id}", text: JSON.stringify(view) },
-    { where: "GET /usage", text: JSON.stringify((await api("GET", "/usage")).body) },
-    { where: "GET /stats", text: JSON.stringify((await api("GET", "/stats")).body) },
+    { where: "GET /usage", text: JSON.stringify(usage.body) },
+    { where: "GET /stats", text: JSON.stringify(stats.body) },
     { where: "GET /runs (the list)", text: JSON.stringify((await api("GET", "/runs")).body) },
     { where: "the run's file list", text: JSON.stringify(files) },
     ...fileTexts,
