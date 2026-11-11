@@ -112,6 +112,11 @@ const allowedEndpoints = {
     // The README's example of the address the command prints.
     ['README.md', 'http://127.0.0.1:41297/'],
   ],
+  computer: [
+    // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
+    ['dist/chrome.js',
+      'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
+  ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
