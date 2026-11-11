@@ -25,12 +25,12 @@ export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from ".
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
 export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
-export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
+export { ARCHIL_MAX_EXEC_S, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type RunComputer, type RunHold, runTools, type RunTools, withKindTools } from "./run-tools.js";
 export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export {
-  type ClaimSide, computerReadiness, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
-  type ProviderEntry, resolveComputer, type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
+  type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
+  type ResolvedComputer, runShellOf, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export {

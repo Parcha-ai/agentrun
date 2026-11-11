@@ -38,24 +38,30 @@ const flow = (second) => ({
 
 async function graphed(t, id, second, extra = {}, cleared = []) {
   withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, ...extra }, [...NAMES, ...Object.keys(extra), ...cleared]);
-  const { api } = await serve(t);
+  const { api, data } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent(id, flow(second), { tools: ["llm"] }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { question: "x" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 50_000 });
-  return { api, runId: started.body.run_id };
+  return { api, data, runId: started.body.run_id };
 }
 
-test("a workflow run's graph shows its llm call's output and a failed call's error with the held key redacted, 0 times whole or in part", { timeout: 60_000, skip: "waits on a workflow call node's output and error in the store journal (learning-1's (C) work on call nodes): its effects read [] on the switch; the graph's cut itself is proven by graph-custody.test.mjs" }, async (t) => {
-  const { api, runId } = await graphed(t, "graph-keyed", true);
+test("a workflow run's graph shows its llm call's output and a failed call's error with the held key redacted, 0 times whole or in part", { timeout: 60_000 }, async (t) => {
+  const { api, data, runId } = await graphed(t, "graph-keyed", true);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.deepEqual(graph.effects.map((e) => [e.tool, e.status]), [["llm", "done"], ["llm", "failed"]], JSON.stringify(graph.effects.map((e) => [e.tool, e.status, e.error])));
   noKey(JSON.stringify(graph), "the graph");
+  // Cut at write too: the node log the graph reads keeps no part of the key in the store.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  t.after(() => db.close());
+  const logged = db.prepare("SELECT record FROM pi_entries WHERE run_id = ?").all(runId).map((row) => String(row.record)).filter((record) => record.includes("agentrun.node.effect"));
+  assert.equal(logged.length, 4, "each call's start and end are on the node log");
+  noKey(logged.join("\n"), "the node log in the store");
   assert.equal(graph.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.match(graph.effects[1].error, /\[redacted\]/, graph.effects[1].error);
 });
 
-test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000, skip: "waits on a workflow call node's output and error in the store journal (learning-1's (C) work on call nodes): its effects read [] on the switch; the graph's cut itself is proven by graph-custody.test.mjs" }, async (t) => {
+test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000, skip: "a second read of the same graph with the same keys still makes redaction passes (answerPasses rises), though its parts are cached (#2464)" }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
   await api("GET", `/runs/${runId}/graph`);
   const read = refusal.answerPasses.count;

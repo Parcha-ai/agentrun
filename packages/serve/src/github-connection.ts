@@ -222,7 +222,9 @@ export class GitHubConnect {
       setup_on_update: true,
       public: false,
       default_permissions: { ...APP_PERMISSIONS },
-      default_events: ["pull_request", "issue_comment"],
+      // The events the templates' github triggers take: code-review's pull requests and comments, release-notes'
+      // published releases. A trigger takes only what the App is subscribed to.
+      default_events: ["pull_request", "issue_comment", "release"],
     };
     // GitHub reads the state from the form's URL; the form posts only the manifest.
     return { action: `${page}?state=${encodeURIComponent(state)}`, manifest, state };
