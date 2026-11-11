@@ -113,7 +113,7 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. `archil`: Mode 2
  *  over that disk fake, Archil's control plane the fake as a fetch function (`control`: no port, every request recorded). `env`: more of the
  *  runner's environment; `model`: the launch's model. */
-async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" }, deps: given = {} } = {}) {
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" }, prepare, deps: given = {} } = {}) {
   const control = archil ? archilControlFetch() : undefined;
   // A second net: in Mode 2, any fetch to a host other than this machine's loopback is refused and recorded (`outbound`).
   const outbound = [];
@@ -141,6 +141,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
+  await prepare?.(dir);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"] } });
   const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -174,6 +175,20 @@ function noComputer() {
       return { release: async () => void (released += 1) };
     },
   };
+}
+
+// Ported from date-line.test.mjs: every harness's system prompt starts with one line saying today's date in UTC and where
+// the run works, the same line pi's spec puts first (runner-system-prompt.test.mjs), before the revision's instructions.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`the ${harness} session's system prompt starts with the environment line, the same as pi's, then the revision's instructions`, async (t) => {
+    const { environmentLine } = await import("../dist/environment.js");
+    // The data directory's harnesses, linked as a first use installs them.
+    const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : undefined;
+    const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
+    assert.equal(built.session.system[0], environmentLine(), "the date line first");
+    assert.match(built.session.system[0], /^Today is \d{4}-\d{2}-\d{2} \(UTC\)\./);
+    assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
+  });
 }
 
 test("a claude-agent run, claimed by the runner, runs its first turn through the dispatch on the CLI spec, on the pinned Agent SDK and CLI, and ends with its answer", { timeout: 180_000 }, async (t) => {

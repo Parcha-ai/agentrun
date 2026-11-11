@@ -662,7 +662,6 @@ export function buildToolHost(opts: {
     personWait: life.register.personWait,
     // The run row's summary staged on a commit of the run's (a hand-over's wait, its claim held: run.needs_input).
     ...(run.rowSummaryOn ? { rowSummaryOn: run.rowSummaryOn } : {}),
-    handoverInJournal: true,
     store: opts.store,
     claim,
     sealKey: opts.sealKey,
