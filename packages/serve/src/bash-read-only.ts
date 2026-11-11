@@ -538,7 +538,8 @@ export function checkReadOnly(command: string, folder: Folder, start = ""): void
     if (first[0] === "cd") {
       if (pipeline.length !== 1 || pipeline[0]!.length !== first.length) throw new Error("cd must be a command of its own");
       if (first.length !== 2) throw new Error("cd needs exactly one directory");
-      if (first[1] === "-" || /[*?[\]]/.test(first[1]!)) throw new Error(`cd ${first[1]} is not allowed`);
+      // An option-shaped word (`-`, `--`, `-P`) is cd's option, never a directory: with none left, cd goes to $HOME.
+      if (first[1]!.startsWith("-") || /[*?[\]]/.test(first[1]!)) throw new Error(`cd ${first[1]} is not allowed: give cd one directory inside the run's folder`);
       here = checkPath(folder, here, first[1]!, "cd");
       continue;
     }

@@ -399,6 +399,8 @@ test("a line with a cd joins its commands by && only: a cd that fails would leav
   refuses("cd packages ; sed -n 1,5p ../README.md", /joins its commands with && only/);
   refuses("cd a && ls ; cat ../x", /joins its commands with && only/);
   allows("cd packages && cd serve && ls");
+  // An option-shaped word is cd's option, not a directory: cd -- or cd -P alone goes to $HOME, outside the folder.
+  for (const command of ["cd -- && cat profile.txt", "cd -P && cat profile.txt", "cd -L && ls", "cd -P packages && ls", "cd -e"]) refuses(command, /cd .* is not allowed|cd needs exactly one directory/);
   allows("cd packages;");
 });
 
