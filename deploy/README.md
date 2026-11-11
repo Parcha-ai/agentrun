@@ -5,7 +5,8 @@ AgentRun runs as two kinds of process on one store:
 - **The server** serves the API and the console, sets the store up (it is the only one that migrates it), and records
   each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner beside itself
   (a single container, as on Render).
-- **A runner** claims runs from the store and runs them, many at once (`--loops`, default `AGENTRUN_MAX_RUNS`, else as
+- **A runner** claims runs from the store and runs them, many at once, as many as its host's memory holds by each run's
+  harness (a claude-agent run 288 MB, a pi run 128 MB) and at most `--loops` (default `AGENTRUN_MAX_RUNS`, else as
   many pi runs as its host's memory holds, as the server's `--max-runs`); the rest wait queued. Run as many runners as
   you need; each one holds a run under a claim it renews every 10 s. A runner that stops lets each busy run finish its
   turn for up to `--drain-timeout` (default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`, the image's server drain), then hands the rest back, and the runs of

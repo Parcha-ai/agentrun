@@ -5,9 +5,6 @@
 export const SECRET_SEGMENTS: readonly string[] = Object.freeze(["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASS", "PAT", "CREDENTIAL", "CREDENTIALS", "DSN"]);
 const SEGMENTS = new Set(SECRET_SEGMENTS);
 
-/** The rule in words, for a message that names why a name was refused. */
-export const SECRET_NAME_RULE = `a ${SECRET_SEGMENTS.slice(0, -1).join(", ")} or ${SECRET_SEGMENTS.at(-1)} segment, or a last PWD segment after another`;
-
 /**
  * Whether `name` is a secret's name: one of its `_`-separated segments, in any case, is one of SECRET_SEGMENTS, or its last
  * segment is PWD after another (DB_PWD). Segments, not suffixes, so MODAL_TOKEN_ID, FOO_TOKEN_BAR and MY_TOKEN_FILE are
