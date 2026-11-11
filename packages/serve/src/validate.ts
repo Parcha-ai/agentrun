@@ -23,7 +23,7 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "output_schema", "checkout"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "output_schema", "max_tool_calls", "checkout"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
@@ -32,6 +32,8 @@ export const CHECKOUTS = ["pull_request", "none"] as const;
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
 };
+/** The most tool calls an agent's budget (max_tool_calls, tool-budget.ts) may name. */
+export const MAX_TOOL_CALLS = 1_000;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 /** `provider/model-id`. */
@@ -119,6 +121,12 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
     else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
+  }
+  // The tool calls each conversation of an agentic run may make (tool-budget.ts): above 0 sets the budget, 0 clears it, and
+  // an edit that leaves it out keeps the agent's, as the default cap is kept.
+  if (d.max_tool_calls !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.max_tool_calls`, "not_allowed", "A workflow revision keeps no tool-call budget: its nodes are its steps.", `Remove ${at}.max_tool_calls.`));
+    else if (!(Number.isSafeInteger(d.max_tool_calls) && (d.max_tool_calls as number) >= 0 && (d.max_tool_calls as number) <= MAX_TOOL_CALLS)) out.push(issue(`${at}.max_tool_calls`, "wrong_type", `${at}.max_tool_calls is a whole number from 0 to ${MAX_TOOL_CALLS}: above 0, the tool calls each conversation of a run may make before every further call is refused with words that say to answer now; 0 clears it`));
   }
   // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
   if (d.cap_mode !== undefined) {
