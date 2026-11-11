@@ -21,7 +21,7 @@ import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
-import { notKept, said, STOPPED } from "../learning-words.js";
+import { notKept, SAME_NOTE, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
 import { clustersOf, clustersWithin, consolidatePrompt, heldToClusters, rankOf } from "../learn/consolidate.js";
 import type { ConsolidationMain } from "../learn/commit.js";
@@ -75,7 +75,7 @@ export interface MergeChange {
 }
 
 export type LearningCommitResult =
-  | { readonly ok: true; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly left?: readonly { readonly path: string; readonly reason: "same" | "taken" }[] }
+  | { readonly ok: true; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly left?: readonly { readonly path: string; readonly reason: "same" | "taken" }[]; readonly already?: true }
   | { readonly ok: false; readonly reason: "conflict" | "refused"; readonly problems: readonly Problem[] }
   | { readonly ok: false; readonly reason: "unavailable"; readonly error: string };
 
@@ -102,8 +102,11 @@ export interface LearningLoopDeps {
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
   /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
-   *  already holds is settled alone (takenOnMain). None: main is taken to hold none of them. */
-  mainTexts?(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
+   *  already holds is settled alone (takenOnMain). */
+  mainTexts(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
+  /** Whether run `runId`'s merge is on main already (learn/folder.ts readRunDiff: its diff file, named by the run as its
+   *  commit's Run-Id trailer names it): a resume after its commit, before its end was recorded. */
+  merged(ws: unknown, runId: string): Promise<boolean>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
   /** Consolidation (learn/consolidate.ts), all of it or none: a loop without it never runs one and never queues one. */
@@ -142,7 +145,9 @@ const ROOT = ROOT_CONVERSATION_ID;
  *  any ask's are unknown. */
 export type GradedData = { readonly source: string; readonly verdict: Verdict; readonly usd: number | null; readonly tokens?: Tokens | null; readonly graded: Readonly<Record<string, string>> };
 export type DroppedData = { readonly source: string; readonly reason: string; readonly detail: string; readonly problems?: readonly Problem[]; readonly usd?: number | null; readonly tokens?: Tokens | null };
-export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string };
+/** `verdict`: each item's final decision once the merge settled it (takenOnMain's and the commit's left-out notes dropped,
+ *  with their words), which the run's learning end reads in place of the grade's (store-reads/learning.ts). */
+export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string; readonly verdict: Verdict };
 type UnavailableData = { readonly source: string; readonly error: string };
 
 /** The graded item a proposal's file is judged as (grade.ts itemOf): a draft's README.md with its workflow.json, every
@@ -152,9 +157,6 @@ const itemOf = (file: string): string => {
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
 
-/** The why of a note main already holds the same (a run's new note, or a skill re-filed as one): no change, so its words
- *  never say it. */
-export const SAME_NOTE = "The same rule is already one of the agent's notes.";
 /** The why of a note whose name main already holds with other text, which it does not supersede: never written over,
  *  and the rest of what the run learned merges. */
 export const NOTE_NAME_TAKEN = (name: string) => `A note named ${name} was added since this run started, or was there already; this one wasn't kept.`;
@@ -279,6 +281,25 @@ export function leftOf(merging: KeptProposal, verdict: Verdict, left: readonly {
   return { merging: { ...merging, notes: merging.notes.filter(({ file }) => !why.has(file)) }, verdict: { ...verdict, items } };
 }
 
+/** What a merge already on main settled (learn/commit.ts: its files, and `left`, the new notes it did not write): each
+ *  note the grade kept is kept when the merge wrote it, else left out, saying why as takenOnMain said it (`taken`, its
+ *  verdict after main was read) or as the commit does, else as the same rule. Skills and drafts as the grade kept them. */
+export function resumedOf(proposal: KeptProposal, graded: Verdict, taken: Verdict, result: { readonly files: readonly string[]; readonly left?: readonly { readonly path: string; readonly reason: "same" | "taken" }[] }): { merging: KeptProposal; verdict: Verdict } {
+  const written = new Set(result.files);
+  const said = new Map((result.left ?? []).map(({ path, reason }) => [path, reason]));
+  const notes = new Set(proposal.notes.map(({ file }) => file));
+  const items = graded.items.map((item, i) => {
+    const file = item.note?.file ?? item.file;
+    if (!item.keep || !(item.note || notes.has(file)) || written.has(file)) return item;
+    const before = taken.items[i];
+    if (before && !before.keep && before.why !== SAME_NOTE) return before;
+    const why = said.get(file) === "taken" ? NOTE_NAME_TAKEN(file.replace(/\.md$/, "")) : SAME_NOTE;
+    return { file: item.file, keep: false, question: "Duplicate", why, ...(item.note ? { note: item.note } : {}) };
+  });
+  const verdict = { ...graded, items };
+  return { merging: keptOf(proposal, verdict), verdict };
+}
+
 /** The skills and drafts a proposal names, by their item's file: what a merge the grader refused loses (notKept). */
 export const lostOf = (proposal: KeptProposal): LearnedFile[] => (proposal.files ?? []).flatMap(({ file }) => {
   const place = learnedPlace(file);
@@ -400,19 +421,22 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
 
           // Each note it keeps whose file main already holds (another run merged one by that name since, or a skill
           // re-filed as one) is settled alone (takenOnMain): never written over unless it supersedes it, and never a
-          // refusal of everything else the run learned.
+          // refusal of everything else the run learned. Not when this run's own merge is on main already (the runner
+          // stopped after its commit, before it recorded it): the notes there are that merge's, never "already there", so
+          // the grade's verdict goes to the commit, which answers with that merge, and its files settle each item
+          // (resumedOf).
           const notePaths = graded.verdict.items.flatMap((item) => (!item.keep ? [] : item.note ? [item.note.file] : proposal.notes.some(({ file }) => file === item.file) ? [item.file] : []));
           let onMain: Readonly<Record<string, string>> = {};
-          if (notePaths.length && learning.mainTexts) {
-            try {
-              onMain = await learning.mainTexts(ws, notePaths);
-            } catch (error) {
-              // Main could not be read: parked as for a write that could not reach the folder, tried again after a backoff.
-              await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
-              return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
-            }
+          let already = false;
+          try {
+            already = await learning.merged(ws, source.runId);
+            if (!already && notePaths.length) onMain = await learning.mainTexts(ws, notePaths);
+          } catch (error) {
+            // Main could not be read: parked as for a write that could not reach the folder, tried again after a backoff.
+            await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
+            return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
           }
-          const taken = takenOnMain(proposal, graded.verdict, onMain);
+          const taken = already ? { verdict: graded.verdict, replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
           const verdict = taken.verdict;
           if (!verdict.merge) {
             await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
@@ -424,13 +448,16 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           if (result.ok) {
             // What the merge left out against the main it committed on (a rule a note holds, a name one holds), each
             // item alone: said as takenOnMain says it, and nothing of it learned.
-            const settled = leftOf(merging, verdict, result.left ?? []);
+            // A merge already on main (a resume after its commit): what it wrote is what its files say, so each note is
+            // settled by the files: one written is kept as the grade kept it, one not written is left out (as takenOnMain
+            // or the commit says why).
+            const settled = result.already ? resumedOf(proposal, graded.verdict, verdict, result) : leftOf(merging, verdict, result.left ?? []);
             if (!settled.verdict.items.some((item) => item.keep) && !result.files.length) {
               await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(settled.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
             const detail = mergedWords(settled.merging, settled.verdict, checked);
-            await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
+            await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail, verdict: settled.verdict } satisfies MergedData, "ended");
             // Whether the agent's learning is due a consolidation now (never a fault of this merge).
             if (afterwards && learning.consolidation) await learning.consolidation.afterMerge(ws, { agentId: source.agentId, runId: source.runId, files: result.files }).catch(() => {});
             return { state: "ended" };

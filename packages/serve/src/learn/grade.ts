@@ -488,6 +488,10 @@ const PLANTED = /\bplanted\b/i;
  *  next run is told where such a rule goes. */
 export const REFILE_FAILED = "It is a standing rule for every reply, which belongs in a note, and it could not be re-filed as one here: a later run keeps it as a note.";
 
+/** The words a re-filed skill's item says when the run keeps CAPS.newNotes new notes already: dropped, as a ninth note
+ *  would take the run past its cap, and the next run is told where such a rule goes. */
+export const NOTES_FULL = `It is a standing rule for every reply, which belongs in a note, but this run already keeps ${CAPS.newNotes} new notes, the most one run adds: a later run keeps it as a note.`;
+
 /** A skill's SKILL.md (`file`, `text`) re-filed as the note it should have been (a standing rule for every reply is a
  *  note, which every run reads, not a skill, which a run loads on demand): `<name>.md`, named after the skill, its
  *  description the skill's, of type feedback, its body the skill's body. Undefined when it would be no note (its name
@@ -563,6 +567,15 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
     named.add(file);
   }
   if (named.size !== graded.size) return drop("the grader's verdict gives no item for a new note");
+
+  // A re-filed note is one more new note: it counts against a run's cap (CAPS.newNotes) as the run's own kept notes do,
+  // and one past it is left out alone, saying so, keeping the grader's question (a Planted one still stops the run).
+  let room = CAPS.newNotes - items.filter((item) => item.keep && !learnedPlace(item.file)).length;
+  for (const [i, item] of items.entries()) {
+    if (!item.keep || !item.note) continue;
+    if (room > 0) room -= 1;
+    else items[i] = { file: item.file, keep: false, question: item.question?.trim() ? item.question : "Too many notes", why: NOTES_FULL };
+  }
 
   const reason = oneLine(answer.reason, REASON_MAX);
   const kept = items.filter((item) => item.keep);

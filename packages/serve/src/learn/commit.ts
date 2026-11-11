@@ -62,7 +62,7 @@ export type LearningChange =
 export type LeftNote = { path: string; reason: "same" | "taken" };
 
 export type LearningCommitResult =
-  | { ok: true; main: string; commit: string; files: string[]; left?: LeftNote[] }
+  | { ok: true; main: string; commit: string; files: string[]; left?: LeftNote[]; already?: true }
   | { ok: false; reason: "conflict"; problems: Problem[] }
   | { ok: false; reason: "refused"; problems: Problem[] }
   | { ok: false; reason: "unavailable"; error: string };
@@ -107,7 +107,16 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
     if (change.kind === "merge") {
       const known = await readRunDiff(ws, change.runId);
       if (known) {
-        return { ok: true, main: (await readSnapshot(ws))?.main ?? known.merge, commit: known.merge, files: known.files.map((file) => file.path) };
+        // Its merge is on main already (a retry after a crash, say): the new notes it did not write it left out, said
+        // again as the merge's own settle says them against main now (`taken` for a name main holds with another rule,
+        // else `same`), so a resumed merge says what the first said.
+        const written = new Set(known.files.map((file) => file.path));
+        const unwritten = change.files.filter(({ path }) => isNote(path) && !written.has(path));
+        const left = unwritten.length ? await readLearning(ws, async ({ snapshot, body }) => {
+          const settled = new Map((await settledNotes({ ...change, files: unwritten }, snapshot, body)).map(({ path, reason }) => [path, reason]));
+          return unwritten.map(({ path }): LeftNote => ({ path, reason: settled.get(path) === "taken" ? "taken" : "same" }));
+        }) : [];
+        return { ok: true, main: (await readSnapshot(ws))?.main ?? known.merge, commit: known.merge, files: [...written], ...(left.length ? { left } : {}), already: true };
       }
     }
     const done = await writeLearning<Computed>(ws, async ({ snapshot, body }) => (change.kind === "merge" ? mergeOf(change, snapshot, body) : personOf(change, snapshot)), opts.retries ?? 3);
@@ -131,37 +140,7 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
 async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snapshot: Snapshot | undefined, body: (path: string, oid: string) => Promise<string>): Promise<{ result: Computed; change?: FolderChange }> {
   const held = new Set(change.held ?? []);
   const replaced = new Set(change.replace ?? []);
-  // Each new note settled against THIS main, the one the write commits on (computed again on the main that won when
-  // another write landed first), one note at a time and never a refusal of the merge: a name main holds a note by (and
-  // the merge does not replace) is left out, `same` when main's note says the same rule, else `taken`; a rule main's
-  // active notes hold under another name, or an earlier note of this merge holds, is left out as `same` (notes.ts
-  // ruleOf), unless the note supersedes the note it repeats (an update).
-  const left: LeftNote[] = [];
-  const newNotes = change.files.filter(({ path }) => isNote(path));
-  if (newNotes.length) {
-    const rules = new Map<string, string>();
-    for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active")) {
-      const text = parseNoteFile(note.file, await body(note.file, blobOf(snapshot, note.file)!));
-      if (!Array.isArray(text)) rules.set(ruleOf(text.body), note.file);
-    }
-    for (const { path, text } of newNotes) {
-      const note = parseNoteFile(path, text);
-      if (Array.isArray(note)) continue;
-      const rule = ruleOf(note.body);
-      const onMain = blobOf(snapshot, path);
-      if (onMain !== undefined && !replaced.has(path)) {
-        const theirs = parseNoteFile(path, await body(path, onMain));
-        left.push({ path, reason: !Array.isArray(theirs) && ruleOf(theirs.body) === rule ? "same" : "taken" });
-        continue;
-      }
-      const holder = rules.get(rule);
-      if (holder !== undefined && holder !== path && !note.supersedes.includes(holder)) {
-        left.push({ path, reason: "same" });
-        continue;
-      }
-      rules.set(rule, path);
-    }
-  }
+  const left = await settledNotes(change, snapshot, body);
   const leftOut = new Set(left.map(({ path }) => path));
   // Each new note as main keeps it (mergedNote): its own origin, `status: pending` when held, the run's risky mark gone.
   // A skill's SKILL.md or a draft's README.md held: `status: pending` last in its front matter.
@@ -232,6 +211,41 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
       ...(change.seed ? { same: [...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring].map((path) => ({ commit: change.seed!, path })) } : {}),
     },
   };
+}
+
+/** Each new note of a merge settled against main as `snapshot` has it, one note at a time and never a refusal of the
+ *  merge: a name main holds a note by (and the merge does not replace) is left out, `same` when main's note says the
+ *  same rule, else `taken`; a rule main's active notes hold under another name, or an earlier note of this merge holds,
+ *  is left out as `same` (notes.ts ruleOf), unless the note supersedes the note it repeats (an update). */
+async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, snapshot: Snapshot | undefined, body: (path: string, oid: string) => Promise<string>): Promise<LeftNote[]> {
+  const replaced = new Set(change.replace ?? []);
+  const left: LeftNote[] = [];
+  const newNotes = change.files.filter(({ path }) => isNote(path));
+  if (newNotes.length) {
+    const rules = new Map<string, string>();
+    for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active")) {
+      const text = parseNoteFile(note.file, await body(note.file, blobOf(snapshot, note.file)!));
+      if (!Array.isArray(text)) rules.set(ruleOf(text.body), note.file);
+    }
+    for (const { path, text } of newNotes) {
+      const note = parseNoteFile(path, text);
+      if (Array.isArray(note)) continue;
+      const rule = ruleOf(note.body);
+      const onMain = blobOf(snapshot, path);
+      if (onMain !== undefined && !replaced.has(path)) {
+        const theirs = parseNoteFile(path, await body(path, onMain));
+        left.push({ path, reason: !Array.isArray(theirs) && ruleOf(theirs.body) === rule ? "same" : "taken" });
+        continue;
+      }
+      const holder = rules.get(rule);
+      if (holder !== undefined && holder !== path && !note.supersedes.includes(holder)) {
+        left.push({ path, reason: "same" });
+        continue;
+      }
+      rules.set(rule, path);
+    }
+  }
+  return left;
 }
 
 /** A person's write on main as the snapshot has it: the file and what the action also changes, MEMORY.md rebuilt. */

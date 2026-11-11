@@ -6,7 +6,8 @@
 //              (passed in by the runner's wiring);
 //   folder     the agent's learning folder in the server's data (learn/folder.ts learningWorkspace), ended after each run;
 //   readMain   main as the grader reads it, from the folder's snapshot (learn/commit.ts readMain);
-//   commit     the folder's one write (learn/commit.ts learningCommit).
+//   commit     the folder's one write (learn/commit.ts learningCommit);
+//   merged     whether the run's merge is on main already (learn/folder.ts readRunDiff), for a resume after its commit.
 
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,7 +17,7 @@ import { consolidationDue, driftedPairs } from "../learn/consolidate.js";
 import { PROPOSAL } from "../learning.js";
 import { proposeRun } from "../propose.js";
 import { agentLearningOverStore } from "../store-reads/learning.js";
-import { learningWorkspace } from "../learn/folder.js";
+import { learningWorkspace, readRunDiff } from "../learn/folder.js";
 import type { Store } from "../store/store.js";
 import type { Workspace } from "../workspace/index.js";
 import { type CheckedAnswer, createLearningLoop, type GradeMain, type KeptProposal, type LearningCommitResult, type LearningLoopDeps, type Problem } from "./learning-loop.js";
@@ -118,6 +119,7 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
         deps.log?.(`learning: a consolidation of ${agentId}'s learning is queued (${due}) as ${id}`);
       },
     },
+    merged: async (ws, runId) => (await readRunDiff(ws as Workspace, runId)) !== undefined,
     ...(deps.now ? { now: deps.now } : {}),
   });
 }
