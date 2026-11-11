@@ -14,7 +14,7 @@ import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { claudeAgentExecutable, CLAUDE_AGENT_SDK_VERSION } from "@parcha/agentrun-harness-claude";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, client, follow, scratch, serve } from "./support.mjs";
+import { agent, client, follow, retried, scratch, serve } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -168,7 +168,7 @@ async function firstUseEnv(t, registry, anthropic) {
  *  stand-in for the one AgentRun ships), with an agent on claude-agent. */
 async function firstUseServe(t, registry, data, more = {}) {
   const served = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, ...(data ? { data } : {}), ...more });
-  assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(served.api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   return served;
 }
 
@@ -332,7 +332,7 @@ test.skip("a launch that waited for the install refreshes its MCP OAuth tokens a
   const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
   const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: started.headers.get("set-cookie")?.split(";")[0] ?? "" } });
   assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
-  assert.equal((await api("POST", "/agents", agent("claude-docs", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude-docs", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
   const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
   const run = await api("POST", "/agents/claude-docs/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -562,7 +562,7 @@ test.skip("runs that wait for the install keep their places: at max_concurrent_r
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
   const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const first = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   await until("the run waits for the install", async () => (await api("GET", `/runs/${first.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
@@ -598,8 +598,8 @@ test.skip("a run cancelled while it waits for the install gives its place back a
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
   const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
-  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("plain"))).status, 201);
   const waiting = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(waiting.status, 202, JSON.stringify(waiting.body));
   await until("the run waits for the install", async () => (await api("GET", `/runs/${waiting.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
@@ -637,7 +637,7 @@ console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
     child.once("exit", (code) => reject(new Error(`the first server exited (${code}) before it served`)));
   });
   const api = client(first.url, first.token);
-  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await until("npm runs on the data", async () => (await npmOn(data)).length > 0, 120_000);

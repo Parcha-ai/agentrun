@@ -25,7 +25,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { REQUESTS_ENV, notedRequests, rolesOf } from "./fixtures/faux-requests.mjs";
-import { agent, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, retried, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
@@ -65,9 +65,9 @@ async function owner(server) {
 /** Agent `id` on `harness` that fetches `url` once with web_fetch, and one run of it. */
 async function fetching(api, id, harness, url = PAGE, extra = {}) {
   const ask = `Fetch ${url} once.`;
-  const made = await api("POST", "/agents", agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
+  const made = await retried(api)("POST", "/agents",agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const run = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
+  const run = await retried(api)("POST", `/agents/${id}/runs`, { input: { content: ask } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body.run_id;
 }
@@ -194,7 +194,7 @@ test("capabilities and an agent's tools show each tool's permission, its default
   // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
   assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
 
-  const made = await api("POST", "/agents", agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
+  const made = await retried(api)("POST", "/agents",agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const own = byName((await api("GET", "/agents/set")).body.tools);
   assert.deepEqual([own.read.permission, own.read.permission_from, own.read.default_permission], ["deny", "server", "deny"], "a server deny is absolute: the agent's own allow does not reach past it");
@@ -462,11 +462,11 @@ test.skip("a deny refuses the call at once and the run goes on, on every harness
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
-  const saved = await api("POST", "/agents", { definition: { id: "site", name: "site", workflow: flow, tools: ["web_fetch"] } });
+  const saved = await retried(api)("POST", "/agents",{ definition: { id: "site", name: "site", workflow: flow, tools: ["web_fetch"] } });
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
   // The same deny set in the agent's own tool settings names the agent.
   assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
-  const own = await api("POST", "/agents", { definition: { id: "site-own", name: "site-own", workflow: flow, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "deny" } } } });
+  const own = await retried(api)("POST", "/agents",{ definition: { id: "site-own", name: "site-own", workflow: flow, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "deny" } } } });
   assert.deepEqual([own.status, own.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny for this agent."]]);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const refused = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
@@ -479,7 +479,7 @@ test.skip("a deny refuses the call at once and the run goes on, on every harness
   // A catalog tool (default ask) is no call node's tool here: a workflow whose call node names one is refused at its save,
   // so none runs unapproved.
   const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: "monid.run", args: { endpoint: "/x" }, out: "Page", as: "home", deadline_s: 60 }] } };
-  const catalog = await api("POST", "/agents", { definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
+  const catalog = await retried(api)("POST", "/agents",{ definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
   assert.deepEqual([catalog.status, catalog.body.error?.code, catalog.body.error?.fields?.[0]?.reason], [422, "input_invalid", "not_an_option"], JSON.stringify(catalog.body));
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "allow" } })).status, 200);
   const allowed = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
@@ -507,8 +507,8 @@ test("a deny lifted mid-run is lifted at the next call: a run launched with web_
     assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
     const file = join(go, lifted);
     const ask = `Fetch ${url} again once ${file} exists.`;
-    assert.equal((await api("POST", "/agents", agent(`lifted-${lifted}`, { harness: "pi", instructions: ask, tools: ["web_fetch"] }))).status, 201);
-    const runId = (await api("POST", `/agents/lifted-${lifted}/runs`, { input: { content: ask } })).body.run_id;
+    assert.equal((await retried(api)("POST", "/agents",agent(`lifted-${lifted}`, { harness: "pi", instructions: ask, tools: ["web_fetch"] }))).status, 201);
+    const runId = (await retried(api)("POST", `/agents/lifted-${lifted}/runs`, { input: { content: ask } })).body.run_id;
     const first = await firstFetch(api, runId);
     assert.deepEqual([first.tool_status, first.tool_result_preview], ["failed", deniedText("web_fetch")], `${lifted}: launched denied`);
     assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: lifted } })).status, 200);
@@ -538,7 +538,7 @@ test("a workflow's call node calling web_fetch set to deny: its run is refused b
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
-  const saved = await api("POST", "/agents", { definition: { id: "denied", name: "denied", workflow: flow, tools: ["web_fetch"] } });
+  const saved = await retried(api)("POST", "/agents",{ definition: { id: "denied", name: "denied", workflow: flow, tools: ["web_fetch"] } });
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
   const refused = await api("POST", "/agents/denied/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
@@ -561,7 +561,7 @@ for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its t
       { node: "call", label: "Second read", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "second", deadline_s: 60 },
     ] },
   };
-  assert.equal((await api("POST", "/agents", { definition: { id: "twice", name: "twice", workflow: flow, tools: ["web_fetch"] } })).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",{ definition: { id: "twice", name: "twice", workflow: flow, tools: ["web_fetch"] } })).status, 201);
   const started = await api("POST", "/agents/twice/runs", { input: { website: `${PAGE}notes.txt` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   for (let i = 0; !existsSync(`${hold}.waiting`); i++) {
@@ -587,11 +587,11 @@ for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its t
 test("a settings key the agent store would refuse is refused before the agent is made: 422, and its id stays free", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, GATE);
   for (const key of ["monid.foo.bar", "mcp:srv/a/b"]) {
-    const refused = await api("POST", "/agents", agent("keyed", { instructions: "Answer.", tools: ["web_fetch"], tool_settings: { [key]: { permission: "ask" } } }));
+    const refused = await retried(api)("POST", "/agents",agent("keyed", { instructions: "Answer.", tools: ["web_fetch"], tool_settings: { [key]: { permission: "ask" } } }));
     assert.deepEqual([refused.status, refused.body.error?.code], [422, "input_invalid"], `${key}: ${JSON.stringify(refused.body)}`);
   }
   assert.equal((await api("GET", "/agents/keyed")).status, 404, "nothing was stored");
-  assert.equal((await api("POST", "/agents", agent("keyed", { instructions: "Answer.", tools: ["web_fetch"] }))).status, 201, "the same id makes an agent");
+  assert.equal((await retried(api)("POST", "/agents",agent("keyed", { instructions: "Answer.", tools: ["web_fetch"] }))).status, 201, "the same id makes an agent");
 });
 
 const ASKS = (tool) => `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`;
@@ -667,7 +667,7 @@ test("on pi, monid's calls at their default ask park by their settings keys, and
   const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });
   const answer = await owner(server);
   const { api } = server;
-  assert.equal((await api("POST", "/agents", agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
   const started = await api("POST", "/agents/enrich-asks/runs", { input: { content: "Enrich with monid: Ada at Example." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -982,8 +982,8 @@ test("a stop or a cancel cuts an approved call in flight: the tool sees the abor
   const calls = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   for (const [end, said] of [["stop", "stopped"], ["cancel", "cancelled"]]) {
     // monid.run asks by default: the call parks; monid's /slow then runs until its caller stops it.
-    assert.equal((await api("POST", "/agents", agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
-    const runId = (await api("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
+    assert.equal((await retried(api)("POST", "/agents",agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
+    const runId = (await retried(api)("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
     const { view } = await parked(api, runId);
     const before = (await calls()).length;
     assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
