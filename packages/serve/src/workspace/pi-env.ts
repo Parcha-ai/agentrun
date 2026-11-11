@@ -56,6 +56,8 @@ export type PiEnvOptions = {
   readonly aliases?: readonly string[];
   /** bash's whole environment: nothing of this process's is passed. */
   readonly env: Readonly<Record<string, string>>;
+  /** Shell text bash runs before each command string (a bash policy's, bash-read-only.ts policyPrelude). */
+  readonly prelude?: string;
   /** bash's deadline when a call names none, in seconds. */
   readonly defaultTimeoutS: number;
 };
@@ -208,7 +210,8 @@ export function piEnv(workspace: Workspace, options: PiEnvOptions): ExecutionEnv
         keep(data);
       },
     });
-    const argvs = typeof command === "string" ? [["bash", "-c", command], ["sh", "-c", command]] : [[...command]];
+    const line = typeof command === "string" ? `${options.prelude ?? ""}${command}` : undefined;
+    const argvs = line !== undefined ? [["bash", "-c", line], ["sh", "-c", line]] : [[...command]];
     let ran: Awaited<ReturnType<typeof run>> | undefined;
     try {
       for (const argv of argvs) {
