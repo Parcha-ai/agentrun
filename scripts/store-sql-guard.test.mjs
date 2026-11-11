@@ -25,7 +25,6 @@ const TODAY = [
   "packages/pi/src/durable/readers.ts",
   "packages/pi/src/durable/recording.ts",
   "packages/serve/src/cap.ts",
-  "packages/serve/src/import-summary.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
 ];

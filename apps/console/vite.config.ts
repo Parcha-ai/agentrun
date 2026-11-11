@@ -21,7 +21,7 @@ const workers = wanted === "" ? undefined : Number(wanted);
 const alias = {
   "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
   // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
-  "@timeline": fileURLToPath(new URL("../../packages/pi-durable-agent/src/timeline", import.meta.url)),
+  "@timeline": fileURLToPath(new URL("../../packages/serve/src/timeline", import.meta.url)),
   "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
   "@": fileURLToPath(new URL("./src", import.meta.url)),
 };

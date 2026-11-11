@@ -68,10 +68,10 @@ export const EXCEPTIONS = [
   ['packages/pi/src/extension-service.ts', 'packages/jev', 1, 'the Pi runtime reads Jev\'s error type to report a failed decision', 'the same change: the provider reports its own failures'],
   ['apps/console/tsconfig.json', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
-  ['apps/console/tsconfig.json', 'packages/pi-durable-agent', 1, ...CONSOLE_SOURCE],
+  ['apps/console/tsconfig.json', 'packages/serve', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
-  ['apps/console/vite.config.ts', 'packages/pi-durable-agent', 1, ...CONSOLE_SOURCE],
+  ['apps/console/vite.config.ts', 'packages/serve', 1, ...CONSOLE_SOURCE],
   ['packages/agentrun/package.json', 'packages/serve', 1, ...LAUNCHER_SERVER],
   ['packages/agentrun/lib/start.mjs', 'packages/serve', 1, ...LAUNCHER_SERVER],
 ];
