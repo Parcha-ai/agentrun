@@ -1370,8 +1370,12 @@ node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before
 sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags })`, which lists running sandboxes
 only, so a finished one needs no sweep). `--after` refuses, exit 2, before it lists anything, a file whose app or
 server is not the one the environment names now, or that names none: every computer of another app would read as
-new. Otherwise it terminates every such sandbox not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
-longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
+new. Otherwise it reads the tags (`getTags()`) of every such sandbox not in that file and terminates each that carries
+a conformance run's label (`agentrun.conformance`, which every computer of a run carries): one another user of the app
+made during the run, with no such label, is left alone, and so is one whose tags it cannot read (said on stderr). It
+reads each terminated sandbox back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, where
+`leftAlone` counts the new sandboxes it did not terminate. It exits 0 when
 every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file or one of
 another app or server, a missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
 named by any call.
@@ -1610,13 +1614,16 @@ node packages/computer/dist/conformance/daytona-sweep.js --after /tmp/daytona-be
 ```
 
 `--before <file>` writes the id of every sandbox carrying `agentrun.computer=1`, whatever its name or state, into the
-file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file,
-then reads each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
-`{"swept":n,"notFound":m,"stillThere":[ids]}`, where `swept` counts the sandboxes not there before and `notFound` plus
-`stillThere`'s length is `swept`. A sandbox in the file is never named by any call. A new sandbox without a computer's
-name is not this provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads
-404, 1 when one is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused
-(nothing is deleted then). Anything else that creates a labelled sandbox between the two runs is swept too.
+file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file
+and that carries a conformance run's label (`agentrun.conformance`, which every computer of a run carries), then reads
+each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
+`{"swept":n,"notFound":m,"stillThere":[ids],"leftAlone":k}`, where `swept` counts the conformance sandboxes not there
+before, `notFound` plus `stillThere`'s length is `swept`, and `leftAlone` counts the new labelled sandboxes with no
+conformance label: another user of the account (a server's computers) made them during the run, and no call names
+them. A sandbox in the file is never named by any call. A new conformance sandbox without a computer's name is not this
+provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads 404, 1 when one
+is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused (nothing is
+deleted then).
 
 ### Not yet known
 
@@ -1908,8 +1915,11 @@ computer capped at 30 minutes, Hobby's plan for conformance
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
 `dist/conformance/e2b-sweep.js --before <file>` records every sandbox E2B lists with `agentrun.computer=1`; `--after
-<file>` kills every one not in the file, reads each back until `getInfo` no longer finds it and the listing no longer
-shows it, up to 60 s each, and prints `{"swept":n,"gone":m,"stillThere":[ids]}`. Exit 0 when every swept sandbox is
+<file>` kills every one not in the file whose metadata carries a conformance run's label (`agentrun.conformance`),
+leaving alone one another user of the account made during the run, reads each killed one back until `getInfo` no longer
+finds it and the listing no longer shows it, up to 60 s each, and prints
+`{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`leftAlone`: the new labelled sandboxes with no conformance
+label, which no call names). Exit 0 when every swept sandbox is
 gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
 killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the conformance module does, and needs no
 live switch.
