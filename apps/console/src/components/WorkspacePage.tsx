@@ -30,7 +30,7 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 
 /** Settings → Workspace: Archil, the disk runs keep their folders on (Mode 2), as GET /v2/workspace/archil answers it. On
  *  or off with its disk and region; its fields and its secret as a SecretRow said ARCHIL_API_KEY (never a value). Save
- *  sends the fields, and the key only when pasted (PUT), and a refusal is said under its field; Remove asks, then saves
+ *  sends the fields, the host pins as loaded, and the key only when pasted (PUT), and a refusal is said under its field; Remove asks, then saves
  *  the key null; Test (POST …/test) says the server's detail or its why as given; Turn off (DELETE) asks first, and the
  *  key is kept. */
 export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
@@ -72,7 +72,12 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
 
   const keyValue = () => (form.current?.elements.namedItem(KEY) as HTMLInputElement | null)?.value ?? "";
   const put = async (key: string | null | undefined) => {
-    const body: ArchilBody = { diskId: fields.diskId, region: fields.region, s3Url: fields.s3Url, ...(fields.image ? { image: fields.image } : {}), ...(key !== undefined ? { keys: { [KEY]: key } } : {}) };
+    // The mount's host pins have no field here (they are set through the API): a save keeps the ones loaded, since a PUT
+    // replaces the settings whole.
+    const body: ArchilBody = {
+      diskId: fields.diskId, region: fields.region, s3Url: fields.s3Url, ...(fields.image ? { image: fields.image } : {}),
+      ...(view.hosts ? { hosts: view.hosts } : {}), ...(key !== undefined ? { keys: { [KEY]: key } } : {}),
+    };
     setBusy(true); setInvalid(null); setProblem(null);
     try {
       const answer = await v2.saveArchil(body);

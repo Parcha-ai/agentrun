@@ -6,7 +6,7 @@ import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { Archil } from "@/lib/v2";
+import type { Archil, ArchilBody } from "@/lib/v2";
 
 // Settings → Workspace over GET, PUT and DELETE /v2/workspace/archil and POST /v2/workspace/archil/test: Archil (Mode 2)
 // on or off with its disk and region, its key as a SecretRow said ARCHIL_API_KEY (never a value), a save that sends the fields and the key only when pasted and says a refusal by field, a key the environment
@@ -134,6 +134,28 @@ describe("Settings → Workspace", () => {
     await click(/^Cancel$/, host.querySelector("form")!);
     await click(/^Remove$/, host.querySelector('li[data-secret="workspace:archil"]')!);
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  it("keeps the host pins it loaded on every save, the key's removal among them, though it shows no field for them", async () => {
+    const hosts = { "mount.example.internal": "10.0.0.10" };
+    const pinned: Archil = { ...on, hosts };
+    const { v2, calls } = server([pinned], () => json(200, pinned));
+    const { host, click, submit } = await open(v2);
+    await submit();
+    await click(/^Remove$/, host.querySelector('li[data-secret="workspace:archil"]')!);
+    await click(/^Remove$/, host.querySelector("[data-confirm-key]")!);
+    const puts = calls.filter((c) => c.method === "PUT").map((c) => c.body as ArchilBody);
+    expect(puts).toHaveLength(2);
+    expect(puts[1]!.keys).toEqual({ ARCHIL_API_KEY: null });
+    for (const body of puts) expect(body.hosts).toEqual(hosts);
+    expect(host.querySelector('input[name="hosts"]')).toBeNull();
+  });
+
+  it("sends no host pins when it loaded none", async () => {
+    const { v2, calls } = server([on]);
+    const { submit } = await open(v2);
+    await submit();
+    expect(Object.hasOwn(calls.find((c) => c.method === "PUT")!.body as object, "hosts")).toBe(false);
   });
 
   it("sends an image only when one is given", async () => {
