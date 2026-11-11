@@ -1,37 +1,9 @@
 // Advisories the package gate accepts until a date, each scoped to one package under the parents it names.
-export const AUDIT_EXCEPTIONS = [
-  // Root cause: @earendil-works/pi-coding-agent publishes an npm-shrinkwrap.json that pins
-  // brace-expansion 5.0.9 (every release through 1.0.0). A dependency's shrinkwrap locks its
-  // subtree, so neither consumer overrides nor `npm audit fix` can reach it. Upstream:
-  // https://github.com/earendil-works/pi/issues/10288
-  {
-    package: 'brace-expansion',
-    under: 'node_modules/@earendil-works/pi-coding-agent/',
-    advisories: ['GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p', 'GHSA-q2hr-2g5m-vwhr'],
-    expires: '2026-12-01',
-  },
-  // @earendil-works/pi-coding-agent pins undici 8.10.2 exactly in every release before 1.5.0, and the pi family these packages
-  // support is below 1.4.0, so no supported pi version carries a fixed undici and this nested copy cannot reach one from here.
-  // The highs it carries: GHSA-2m5v-pch6-74hx (TLS certificate validation), GHSA-4w7w-5xrc-9h26 (response caching across
-  // cross-origin redirects) and GHSA-qrxm-fqhp-jwvm (TLS renegotiation, availability). Extended once, to 2026-11-13, by the
-  // maintainer's decision; the follow-up is supporting pi 1.5.0 (undici 8.12.3), which removes this entry. Only this copy is
-  // covered: the `disk` SDK's copy is fixed (disk 1.12.0 takes undici ^8.12.3).
-  {
-    package: 'undici',
-    under: 'node_modules/@earendil-works/pi-coding-agent/',
-    advisories: [
-      'GHSA-xjj6-f33q-929c', // high: availability.
-      'GHSA-4qv8-2p9j-2685', // moderate: availability.
-      'GHSA-f72v-6w45-q472', // moderate: availability.
-      'GHSA-4w7w-5xrc-9h26', // high: response caching across cross-origin redirects (confidentiality).
-      'GHSA-2m5v-pch6-74hx', // high: TLS certificate validation (integrity and confidentiality).
-      'GHSA-qrxm-fqhp-jwvm', // high: availability (TLS renegotiation).
-      'GHSA-9fm3-97px-rjf6', // moderate: availability (WebSocket client).
-      'GHSA-55wc-3pg8-jfw6', // moderate: availability (decompression).
-    ],
-    expires: '2026-11-13',
-  },
-];
+// None today: the two this list held (brace-expansion 5.0.9 and undici 8.10.2, each pinned under
+// @earendil-works/pi-coding-agent before 1.5.0) left the tree with pi 1.5.0, which pins neither. An entry names a parent the
+// lockfile holds (audit-exceptions.test.mjs checks it), so one whose copy is gone is taken out, not left to expire.
+/** @type {{ package: string, under: string | string[], advisories: string[], expires: string }[]} */
+export const AUDIT_EXCEPTIONS = [];
 
 const advisoryId = via => typeof via === 'object' && via !== null ? String(via.url ?? '').match(/GHSA(?:-[a-z0-9]{4}){3}$/)?.[0] : undefined;
 
