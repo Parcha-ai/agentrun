@@ -1211,6 +1211,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
         // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
         const wrapUp = async (): Promise<boolean> => {
+          // A run whose spec gives no cap (no runCap) has none to wrap up at, as overCap reads it.
+          if (!spec.runCap) return false;
           const capUsd = capNow();
           if (capUsd === undefined) return false;
           let taken: number | null = 0;
