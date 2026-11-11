@@ -4,8 +4,8 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { CAPS, costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
+import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { wireName } from "../catalog.js";

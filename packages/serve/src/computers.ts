@@ -91,8 +91,9 @@ export type GpuView = GpuCapability & { why?: string };
 
 /** A computer with no network: its programs run in a network of their own, so a run's allow-list is never offered it. */
 export const NO_NETWORK_WORDS = "no network, so this server's allow-list isn't offered";
-/** A computer on the vendor's own network: open, which this server's allow-list doesn't reach. */
-export const VENDOR_NETWORK_WORDS = "the vendor's own network; this server's allow-list doesn't apply";
+/** A computer on an open network (the vendor's own, or Local Chrome's public addresses from this machine), which this
+ *  server's allow-list doesn't narrow. */
+export const VENDOR_NETWORK_WORDS = "an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply";
 
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone or "open" alone; none where the allow-list applies (Docker), or nothing is declared. */

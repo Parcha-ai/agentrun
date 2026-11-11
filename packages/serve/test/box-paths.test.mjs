@@ -11,7 +11,7 @@ import { request } from "node:http";
 import { release } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
-import { runDirIn } from "@parcha/pi-durable-agent";
+import { agentDiskDir } from "../dist/server-fs.js";
 import { follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -139,7 +139,7 @@ test.skip("demo through the API: the server in a container, its data a named vol
   const [run] = fake.runs();
   const hash = createHash("sha256").update(runId).digest("hex").slice(0, 16);
   // The run's work/ on the agent's disk: `disk/agents/<key>/runs/<run>/work` below the data directory, and nothing above it.
-  const work = join(runDirIn(data, "boxed", runId), "work");
+  const work = join(join(agentDiskDir(data, "boxed"), "runs", runId), "work");
   assert.deepEqual(flags(run, "--mount"), [
     `type=volume,source=agentrun_agentrun-data,target=/workspace,volume-subpath=${relative(data, work)},volume-nocopy`,
     `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/egress,volume-subpath=box-egress/${hash},volume-nocopy,readonly`,
