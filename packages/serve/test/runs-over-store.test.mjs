@@ -336,7 +336,7 @@ test("an answer whose write lands just after a stop's, and whose run's stopped e
     (e) => e.code === "not_continuable" && e.message === "The tool call call-1 was already withdrawn when its run was stopped.",
   );
   const rows = await commandsOf(store, id);
-  assert.deepEqual(rows.map((row) => [row.kind, row.takenAt !== null, row.refused !== null]), [["stop", true, false], ["approve", false, true]], "the end took the stop and refused the answer");
+  assert.deepEqual(rows.map((row) => [row.kind, row.takenAt !== null, row.refused !== null]), [["stop", true, false], ["approve", true, true]], "the end took the stop and refused the answer (a refused row reads taken, with its refusal)");
 });
 
 test("approve of a call the run never had is 404, nothing written", async () => {

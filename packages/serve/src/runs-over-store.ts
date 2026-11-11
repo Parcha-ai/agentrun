@@ -232,12 +232,20 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
   return row && { decision: row.kind === "approve" ? "allow" : "deny", at: row.id };
 }
 
-/** The run's first stop or cancel row its runner has not taken yet, written before row `before` (any, with none given).
- *  The runner reads a run's rows in order and stops at it: a row after it is never acted on, and the stopped end refuses
- *  it. */
+/** The stop or cancel that withdraws the answer row `before` (with none given: any answer written now). The runner reads a
+ *  run's rows in order and stops at a stop: a row after an untaken one is never acted on. Once the runner has taken the
+ *  stop, its stopped end has refused every row left behind it, the answer's too. Either way the answer never runs. Read
+ *  from one read of the run's rows: an untaken stop or cancel written before `before`, else (the end already written) the
+ *  answer row's own refusal, said by the stop or cancel before it. */
 async function endingAhead(store: RunsStore, runId: string, before = Number.POSITIVE_INFINITY): Promise<"stop" | "cancel" | undefined> {
-  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.takenAt === null && command.id < before);
-  return row?.kind as "stop" | "cancel" | undefined;
+  const rows = await store.commands(runId, 0);
+  const endings = rows.filter((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before);
+  const untaken = endings.find((command) => command.takenAt === null);
+  if (untaken) return untaken.kind as "stop" | "cancel";
+  const answer = rows.find((command) => command.id === before);
+  const last = endings.at(-1);
+  if (answer?.refused != null && last) return last.kind as "stop" | "cancel";
+  return undefined;
 }
 
 /** The refusal of an answer that a stop or cancel written before it withdrew: its call never runs. */
@@ -276,7 +284,8 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
     if (ending) throw withdrawnBy(id, ending);
     return settle(won);
   }
-  // A stop written between the check above and this write is read first: this answer never runs.
+  // A stop written between the check above and this write is read first, or its stopped end has already refused this
+  // answer: it never runs.
   const ending = await endingAhead(store, moment.id, written);
   if (ending) throw withdrawnBy(id, ending);
 }

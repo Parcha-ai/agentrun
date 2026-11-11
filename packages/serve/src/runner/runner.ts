@@ -484,6 +484,16 @@ export function startRunner(options: RunnerOptions): Runner {
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
   };
 
+  /** Whether the run under `claim` never started: its journal has no conversation yet, so no input of it went out. A
+   *  journal that cannot be read says no (the claim's loop applies the stop as it would). */
+  const neverStarted = async (claim: Claim): Promise<boolean> => {
+    try {
+      return (await store.journal(claim).scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items.length === 0;
+    } catch {
+      return false;
+    }
+  };
+
   /** A claim of a run whose stopped end was refused (its untaken stop row has tries): it only ends the run, with no loop,
    *  so no turn, model request or tool runs on a run that is stopping. */
   const endRetried = async (claim: Claim, stop: Command) => {
@@ -643,8 +653,9 @@ export function startRunner(options: RunnerOptions): Runner {
       const sentAt = clock.now();
       const claims = await store.runs.claimMany(name, free, { leaseMs });
       // A claim whose run must only end, with no loop (endRetried), so no turn, model request or tool runs on it:
-      // - a run stopped or cancelled while still queued: it never started, so nothing of it starts now, not even its first
-      //   input (a loop started first would send that input before the stop reached it);
+      // - a run stopped or cancelled while it had not started: claimed from queued, or claimed from running when an earlier
+      //   claim was lost before the run's journal had anything (its runner gone before it wrote a word). Nothing of it
+      //   starts now, not even its first input: a loop started first would send that input before the stop reached it;
       // - a run whose untaken stop row has tries, which failed to apply that stop before. Either source of tries counts: a
       //   refused stopped end (endRefused, released running) or a failed resume (resumeFailed's store.retry, released
       //   parked).
@@ -653,7 +664,8 @@ export function startRunner(options: RunnerOptions): Runner {
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
         const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
-        if (stop && (claim.from === "queued" || stop.tries > 0) && !closed && !killed && !runs.has(claim.runId)) {
+        const endsOnly = stop !== undefined && (claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))));
+        if (stop && endsOnly && !closed && !killed && !runs.has(claim.runId)) {
           const ending = endRetried(claim, stop);
           endings.add(ending);
           void ending.finally(() => endings.delete(ending));
