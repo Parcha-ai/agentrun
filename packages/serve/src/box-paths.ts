@@ -107,15 +107,6 @@ export const FAUX_MOUNTINFO_ENV = "AGENTRUN_SERVE_FAUX_MOUNTINFO";
 /** What the server hands a run's process: the paths, as JSON; empty on a host. */
 export const RUN_BOX_PATHS_ENV = "AGENTRUN_RUN_BOX_PATHS";
 
-/** The run's process's reading of RUN_BOX_PATHS_ENV: the paths, or undefined when it is empty or not theirs. */
-export function runBoxPathsOf(env: NodeJS.ProcessEnv): BoxPaths | undefined {
-  try {
-    const paths = JSON.parse(env[RUN_BOX_PATHS_ENV] || "null") as Partial<BoxPaths> | null;
-    return typeof paths?.at === "string" && typeof paths.volume === "string" ? { at: paths.at, volume: paths.volume } : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** The directory the runs' egress proxy sockets are in, for a server in a container: on its data volume, so a box can
  *  mount its run's (box-egress.ts egressDir). */

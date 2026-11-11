@@ -1063,7 +1063,16 @@ export class DaytonaProvider implements ComputerProvider {
 			})());
 		const bound = AbortSignal.timeout(this.#timeouts.helloMs);
 		const either = signal ? AbortSignal.any([signal, bound]) : bound;
-		const opened = await Promise.race([stream.open, new Promise<Result<void>>((done) => either.addEventListener("abort", () => done(fail("aborted", "")), { once: true }))]);
+		// The stream's open raced against the bound; the abort listener is removed once the race is decided, so no connect
+		// leaves one behind on its signal.
+		let onAbort: () => void = () => {};
+		const aborted = new Promise<Result<void>>((done) => {
+			onAbort = () => done(fail("aborted", ""));
+			if (either.aborted) onAbort();
+			else either.addEventListener("abort", onAbort, { once: true });
+		});
+		const opened = await Promise.race([stream.open, aborted]);
+		either.removeEventListener("abort", onAbort);
 		const timedOut = () => fail("timeout", `the daemon in ${sb.name ?? sb.id} did not answer hello within ${this.#timeouts.helloMs / 1000} s`);
 		if (!opened.ok) {
 			await close();
@@ -1242,12 +1251,17 @@ export class DaytonaProvider implements ComputerProvider {
 
 	/**
 	 * For the sweep after a live run: every sandbox Daytona lists with agentrun.computer=1, whatever its name or state, as
-	 * Daytona reports it. list() keeps only this provider's computers; this keeps everything the label query returns.
+	 * Daytona reports it, with its labels (the sweep deletes only a conformance run's). list() keeps only this provider's
+	 * computers; this keeps everything the label query returns.
 	 */
-	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; name?: string; state?: string }>>> {
+	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; name?: string; state?: string; labels: Record<string, string> }>>> {
 		const listed = await this.#listOwn(signal);
 		if (!listed.ok) return listed;
-		return ok(listed.value.filter((sb) => typeof sb?.id === "string").map((sb) => ({ id: sb.id, ...(typeof sb.name === "string" ? { name: sb.name } : {}), ...(typeof sb.state === "string" ? { state: sb.state } : {}) })));
+		return ok(
+			listed.value
+				.filter((sb) => typeof sb?.id === "string")
+				.map((sb) => ({ id: sb.id, ...(typeof sb.name === "string" ? { name: sb.name } : {}), ...(typeof sb.state === "string" ? { state: sb.state } : {}), labels: { ...(sb.labels ?? {}) } })),
+		);
 	}
 
 	/** For the sweep: GET /sandbox/{id} once, retried as every read is, and the status Daytona answered (404: none). */

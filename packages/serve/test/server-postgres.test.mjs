@@ -1,17 +1,20 @@
 // A deployment on Postgres: the server started with AGENTRUN_STORE_URL opens that store (store/open.ts), never SQLite in
 // its data directory, and holds the schema's owner lock; a runner started apart (`runner`, beside a `--no-runner` server)
 // on the same URL and schema claims and runs what the server's API started, and the server reads it completed. With the
-// server on SQLite and the runner on Postgres they are two stores, and the run is never claimed.
+// server on SQLite and the runner on Postgres they are two stores, and the run is never claimed. A role with no CREATE on
+// the database starts the server on a schema an administrator made ahead of time and gave it, and is refused, in words that
+// say what to do, on a schema that does not exist.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
-import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
+import { client as pgClient, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
-const { openPostgresStore, StoreOwned } = await import("../dist/store/index.js");
+const { migrationsIn, openPostgresStore, StoreOwned } = await import("../dist/store/index.js");
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const TOKEN = `ar_test_${"p".repeat(40)}`;
@@ -29,6 +32,84 @@ function cli(t, args, env) {
   });
   return child;
 }
+
+/** The environment a server on the Postgres store at `url`, in `schema`, starts with. */
+function storeEnv(root, url, schema) {
+  return {
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    HOME: root,
+    XDG_CONFIG_HOME: join(root, "config"),
+    TMPDIR: process.env.TMPDIR ?? root,
+    AGENTRUN_ACCOUNTS: "0",
+    AGENTRUN_TOKEN: TOKEN,
+    AGENTRUN_SEAL_KEY: SEAL,
+    AGENTRUN_STORE_URL: url,
+    AGENTRUN_STORE_SCHEMA: schema,
+  };
+}
+
+/** `text` on the test database as its own user (an administrator), on a client of its own. */
+async function admin(text, params = []) {
+  const c = await pgClient();
+  try {
+    return (await c.query(text, params)).rows;
+  } finally {
+    await c.end();
+  }
+}
+
+/** A login role of the test's own, not a superuser, with no CREATE on the database (asserted, not assumed), dropped after
+ *  the test with what it owns. Answers its name and the test database's URL as that role. */
+async function roleWithoutCreate(t) {
+  const role = `${await freshSchema()}_role`;
+  // A password made here, for a role that lives only as long as the test: none is written in this file.
+  const password = randomBytes(18).toString("hex");
+  await admin(`CREATE ROLE ${role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${password}'`);
+  t.after(async () => {
+    await admin("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1", [role]);
+    await admin(`DROP OWNED BY ${role} CASCADE`);
+    await admin(`DROP ROLE IF EXISTS ${role}`);
+  });
+  const [{ db }] = await admin("SELECT quote_ident(current_database()) AS db");
+  await admin(`REVOKE CREATE ON DATABASE ${db} FROM ${role}`);
+  const [{ can_create: create }] = await admin("SELECT has_database_privilege($1, current_database(), 'CREATE') AS can_create", [role]);
+  assert.equal(create, false, "the role has no CREATE on the database, from any grant");
+  const url = new URL(PG_URL);
+  url.username = role;
+  url.password = password;
+  return { role, url: url.href };
+}
+
+test("a role with no CREATE on the database starts the server on a schema an administrator made ahead of time and gave it, and the server migrates it", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
+  const { role, url } = await roleWithoutCreate(t);
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  await admin(`CREATE SCHEMA ${schema} AUTHORIZATION ${role}`);
+  const root = await scratch(t);
+  const server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], storeEnv(root, url, schema));
+  const out = await printed(server, /^Open /m);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
+  const health = await fetch(`http://127.0.0.1:${port}/v2/health`);
+  assert.deepEqual({ status: health.status, body: await health.json() }, { status: 200, body: { status: "ok", checks: { store: "ok", disk: "ok" } } });
+  const applied = await admin(`SELECT version FROM ${schema}.schema_migrations ORDER BY version`);
+  assert.deepEqual(applied.map((row) => Number(row.version)), migrationsIn().map((m) => m.version), "every migration applied to the schema");
+  const [{ owner }] = await admin("SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = $1", [schema]);
+  assert.equal(owner, role, "the schema is still the one the administrator made for the role");
+});
+
+test("a role with no CREATE on the database, on a schema that does not exist, is refused at the server's start, naming the schema and what to do", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
+  const { url } = await roleWithoutCreate(t);
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const root = await scratch(t);
+  const server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], storeEnv(root, url, schema));
+  const refused = await printed(server, /^Open /m).then(() => undefined, (error) => error);
+  assert.ok(refused, "the server did not start");
+  assert.match(refused.message, /the server exited \(1\)/);
+  assert.match(refused.message, new RegExp(`the Postgres schema ${schema} does not exist, and this role may not create it \\(no CREATE on the database\\): create the schema ahead of time, owned by this role, or grant this role CREATE on the database`));
+  assert.ok(!refused.message.includes(new URL(url).password), "never the password");
+  assert.deepEqual(await admin("SELECT nspname FROM pg_namespace WHERE nspname = $1", [schema]), [], "no schema made");
+});
 
 test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
   const schema = await freshSchema();

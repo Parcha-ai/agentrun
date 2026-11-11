@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.33 (2026-11-10)
+
+- A run parked at its spend cap no longer shows a "Model request failed: 400 {…agentrun_proxy…}" row in its Timeline. The model proxy refused that request before it was sent, and the park's row already says what happened. That refused request also no longer counts as a model request in the run's usage line.
+
+  The cap's refusal now carries its code through to the proxy as a field: the runner's `Refusal.code`, then `HarnessRunError.refusal`. The proxy writes `code: "spend_cap_reached"` in its refusal body. The Timeline matches on that code and `type: "agentrun_proxy"`, never on the words. Every other model failure, a provider's 400 included, keeps its row.
+
 ## 0.1.0-beta.32 (2026-11-10)
 
 - The code copied from the upstream durable harness is now AgentRun's own: the port froze, and the pristine upstream copies, the named patches, the import tables, `scripts/port-durable-harness.mjs` and `npm run verify:port` are gone. `vendor/durable-harness/UPSTREAM.json` still records where each copy came from, and each copy keeps its header and NOTICE its attribution. With it go the kernel's paths that never run:

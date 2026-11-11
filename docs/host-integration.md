@@ -48,31 +48,6 @@ Store the workflow digest together with interpreter, adapter and policy versions
 
 Existing flat graphs retain their older effect keys. Repeated calls with the same label, transport and resolved input can reuse a memoized result, including across loop iterations. Use `call.poll` for repeated status checks and include an operation identifier for distinct effects. New composed graphs use path-scoped keys; this does not migrate old stores.
 
-`@parcha/agentrun-pi/durable` runs on pi-durable and chord 1.5.0 exactly; CI tests 1.5.0. A run store opened by this release moves to pi-durable SQLite schema 2, which pi 1.3.0 or earlier cannot open, so there is no rollback past it.
-
-### The agentrun tool in a pi-durable session
-
-`createWorkflowTool(host)` from `@parcha/agentrun-pi/durable` gives an agent in a pi-durable session the agentrun tool. Its actions are the coding-agent extension's, run by the same code:
-
-- `describe`: the host's tools and the language.
-- `inspect`: validates a complete workflow and keeps it as the conversation's draft, a session document.
-- `dry-run`: runs the draft on synthetic values, with no model, Jev or tool call, and answers `passed`, `not_run` or `failed`.
-- `save`, `load` and `list`: the project store of `@parcha/agentrun-pi/workflows` under `host.projectDir`.
-- `run`: described below.
-
-```ts
-const { extension, workflow } = createWorkflowTool({ projectDir, tools, task: { options, run }, runCode });
-registry.install(extension); // and list the tool's name, `agentrun`, in the agent definition
-```
-
-- `run` starts the draft as one `agentrun.workflow` task of the calling conversation, in the background. The tool's own commit creates the task, so no Harness is needed. The call waits for the task and answers with its outcome and the run's last progress lines. While the run goes on, the progress lines the coding-agent extension shows are written to the call's running output. A run of the same draft on the same input in the same conversation is the same run: a call after a restart waits for the live task, and a call after it ended answers with its outcome, so its effects happen once. `again: true` starts a fresh run of them. How many fresh runs were asked for is a session document (`agentrun.runs`), so a later `run`, after a restart too, reaches the newest.
-- `tools` are the tools a drafted workflow may use, as a call's tool and as an agent node's tools (`read`, `grep` and the like included): the host decides, and nothing else is admitted. Inspect refuses a workflow that uses any other, naming each and pointing at `createWorkflowTool`'s `tools`.
-- Give each tool a workflow calls a `resultSchema`, the JSON Schema of what your `runEffect` returns for it. `describe` gives it to the authoring agent as the call's result contract, so the call's `out` declares those fields and the next node reads them typed. Without one, `describe` reports pi's result envelope (`{ content, details }`, `details` undeclared) and tells the agent not to invent fields inside it, so the result reaches the next node untyped. The run checks each call's result against its `out`.
-- List every extension the agent's conversation needs in the root agent's extensions, the workflow tool's included; installing in the registry alone is not enough. For example, with another extension `other`, `harness.root(context, { agent: { model, extensions: [other, workflowTool.extension] } })` offers the tools of both, and with only `[workflowTool.extension]` the conversation is offered `agentrun` alone.
-- `task` is `createWorkflowExtension`'s host, so the run has the same driver, journal, stops and ladder as a run the host starts itself. `workflow.read` and `workflow.stop` reach it from the host's side.
-- Code nodes run only through `host.runCode`. Without it, a dry run of a workflow with code is `not_run`, and a run of one is refused before it starts.
-- `createWorkflowExtension`'s `start` and `read` take a tool's `api` as well as a Harness (`WorkflowCaller`). A caller with no root conversation names the conversation in `options.conversationId`. A start with a cancel needs a Harness.
-
 ## Decision receipts
 
 Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `verify` review) is one decision. Supply `recordDecision(receipt, exchange)` to keep them:
@@ -85,22 +60,6 @@ Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `v
 - `exchange.request` is the request as `runJudge` received it, and `exchange.result` is the object `runJudge` returned, so a host reads back anything of its own it put there.
 
 To make decisions durable across a restart, also supply `recovery.decision(id)`. When it returns an `answered` receipt, its answers are used and the judge is not asked again: a resumed run decides what the interrupted run decided, including a loop's `until: ask` and a route whose branch had already started. Such a decision is not recorded again and its event carries `replayed: true`. Any other receipt, or none, means the request is asked. A receipt is evidence of what was decided, not of what was committed: the node's commit is still `recovery.commit`.
-
-A pi-durable host keeps a run's typed-question decisions as rows of `agentrun.decisions`, from `@parcha/agentrun-pi/durable`: one keyed document per row, written once (a store that already holds the older single document, a `receipts` list, keeps writing that form to the end of its run, and a reader reads either). The recording of a run therefore grows with its questions, not with their square.
-
-A host that folds cost, or counts asks, from a recording's lines or a run's store itself (a spend cap, a dashboard, an audit) must read both forms of `agentrun.decisions` since this release: the single document (`value.receipts`, a list) and the keyed documents (a line with a `key`, whose `value` is one row; read the rows in key order, or from the store with `durableDecisions(file)`). A reader of the list alone finds no row in a keyed run, and a cost fold that does so counts nothing: a run past its cap looks like a run under it. A recording holds one form, never both. `createDecisionWriter({ open })` commits rows in the order they are recorded and opens the run's Session only when the first row needs it; the session `open` returns needs `commit` and `snapshot` (a `Harness` has both), since the form the store holds is read from it. `settled()` reports the first commit that failed and keeps the Session; `flush()` also commits any row recorded while it runs, releases every Session the writer opened, then reports the first failed commit (or, when none failed, a failed release). `readDecisions(read)` returns the rows in commit order from a Session or a Harness. A row (`DecisionRow`, version 1) is a stored format and does not change with the interpreter: the host fills it, including the request's size and metering, which the interpreter does not know.
-
-Inside a workflow task (`createWorkflowExtension`), `decisionRecovery(invocation)` gives both hooks over the task's own commit, from the invocation the host's `run` is handed. `recordDecision` commits each receipt as a row, in the order receipts are recorded, and resolves once that row is durable; the task's state is untouched. `decision(id)` rebuilds the receipt from the last answered row this run recorded under `id`. A row it writes also carries the receipt's `decision_id`, its `request` position, its `state_sha256` and the run's key (`run_key`), so the row is the whole receipt again for that run. Every run in a Session shares the rows' document and a receipt's id does not name its run, so another run's row never answers, and neither does a row without these fields. Wire them in the host's `run`:
-
-```ts
-run: (invocation) => {
-  const decisions = decisionRecovery(invocation);
-  const deps = withRecovery(invocation.driver, { runJudge, recordDecision: decisions.recordDecision });
-  return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
-},
-```
-
-A run's store can be recorded as durable lines (`agentrun.recording/1`): one line per document revision, conversation record (`pi.conversation`: its id, fork parent and owner, no content), conversation entry and task record, with the store's commit and the line's order inside it. A disk run's store admits one connection, so the recorder runs inside each of the run's processes: after the run is opened and before it resumes, write `snapshotLines(storage, { at, context })` (every document as it stands, `at` the store's latest commit), then `recordCommits(harness, { from: snapshot, write })`, which writes each later commit's lines as pi adopts it. `from` carries the snapshot's generation and its node attempts' conversations into the recorder, so a node the run resumes keeps its path on the records of its conversation. `recordingLines(file)` reads a store no process holds; it sees only the revisions pi kept, since pi deletes a current-only document's older revisions when it writes a new base.
 
 ## Host policy around generative nodes
 
@@ -143,7 +102,7 @@ Authoring has the same split as execution. The package owns the language: `autho
 
 `authorWorkflow` returns the candidate as authored. A host with prose output types validates and runs `applyHostOutputTypes(workflow, host)` and keeps the authored bytes for its digest. A host that accepts other spellings of its type names passes `{ normalizeType }`, a function from an authored type to one of `host.outputTypes` (or null): `applyHostOutputTypes(workflow, host, { normalizeType })`. Without it a type is matched exactly.
 
-An addendum cannot change a language rule: it is appended after the language, which states that host rules add to it. Keep procedural knowledge a domain teaches in the host's expert data rather than in `rules`; the addendum is for what the host is, not what a domain learned. The Pi extension's addendum (`PI_HOST_ADDENDUM`) is a working example: its trusted-run command, its missing SOP text, and the transports it does not offer. A host registers the rendered contract, not the neutral skill: the Pi package builds `dist/skills/author` with the addendum appended to `SKILL.md` and its language reference, so a session reads the host rules without calling any tool. `describe` also returns the addendum as `authoring.host`. The package's own skill and its generated `language.md` stay host-neutral.
+An addendum cannot change a language rule: it is appended after the language, which states that host rules add to it. Keep procedural knowledge a domain teaches in the host's expert data rather than in `rules`; the addendum is for what the host is, not what a domain learned. A host registers the rendered contract (`renderAuthorContract({ host })`), not the neutral skill, so a session reads the host rules without calling any tool. The package's own skill and its generated `language.md` stay host-neutral.
 
 ## Adopt the document with another interpreter
 
@@ -163,7 +122,5 @@ partial-result persistence. This is a trusted host boundary, not a user callback
 sandbox. Without it the interpreter detaches JSON values and preserves unsafe non-JSON
 shapes for host validation.
 
-Pi uses this boundary to enforce its existing per-event byte, depth and value limits
-before copying a full oversized event. The generic DSL adds no payload or resource
-limit. Scoped location and child-label forwarding preserve the observation boundary,
+The generic DSL adds no payload or resource limit. Scoped location and child-label forwarding preserve the observation boundary,
 so one event is prepared once regardless of graph nesting.
