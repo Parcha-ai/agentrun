@@ -312,7 +312,7 @@ export interface RunView {
 export interface RunFacts {
   /** A workflow run paused at its cap, as its process wrote it (budgetWaiting). */
   budgetWaiting(): boolean;
-  /** A workflow run paused in its process (pausedIn(run.dir)). */
+  /** A workflow run paused (the store-backed view reads it from the run's journal). */
   paused(): boolean;
   /** The ask its agent made for the person in its browser the run waits on (browser-commands.ts browserAsk, over its journal). */
   browserAsk(): PendingAsk | undefined;
