@@ -77,10 +77,44 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
   const rows = async () => (await runTimeline(server, "run-1", ctx)).map((row) => row.summary);
   /** The run's computer.hold entries' states, in order. */
   const holdEntries = async () => (await runEntries(server, "run-1", ctx)).filter((entry) => entry.kind === "computer.hold" && entry.data?.state).map((entry) => entry.data.state);
-  const begin = async (loop) => {
+  /** A runner on the data directory, running `loop`: `runner-a` on TIMING unless `options` say otherwise. */
+  const begin = async (loop, options = {}) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
-    runners.push(startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING }));
+    const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING, ...options });
+    runners.push(runner);
+    return runner;
+  };
+  /** The run on a runner whose computer, as computerForClaim makes it, is a new one with each claim: a hold of its own
+   *  per claim (`holds`, in claim order), its release recorded (`releases`). The agent looks once (its first look waits in
+   *  the shot until `letGo`) and then answers in plain text. `options`: the runner's (its name, its lease). */
+  const startPerClaim = async (options = {}) => {
+    const holds = [];
+    const releases = [];
+    let shotStarted;
+    const inShot = new Promise((resolve) => (shotStarted = resolve));
+    let letGo;
+    const released = new Promise((resolve) => (letGo = resolve));
+    const loopOf = () => createAdapterLoop(async (claim, run) => {
+      const hold = computerHold();
+      holds.push(hold);
+      const ends = [];
+      hold.on((event) => event.type === "state" && event.ended && ends.push(event.ended));
+      const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+      const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+      const base = await piAdapterSpec({ script: [{ call: "look" }, { say: "done" }], tools: { look }, hooks: quiet })(claim, run);
+      return {
+        ...base, agentId: "agent-1", computer: { kind: "desktop", hold },
+        release: async () => {
+          releases.push({ claim: holds.indexOf(hold) + 1, state: hold.state(), ends: [...ends] });
+          hold.close();
+          await base.release?.();
+        },
+      };
+    });
+    const first = await begin(loopOf(), options);
+    await inShot;
+    return { holds, releases, letGo, first, hold: { state: () => holds.at(-1).state() }, second: (more = {}) => begin(loopOf(), { ...options, ...more }) };
   };
   /** The run on a runner: its first look at the screen waits inside the shot until `letGo`; with `second`, its second look
    *  waits too, until `letGoSecond`. */
@@ -176,7 +210,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     if (row.state !== "running" && row.state !== "queued") return { over: row };
     return (await check()) && { running: row };
   }, what);
-  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
+  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startPerClaim, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
 }
 
 test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, and the Timeline says both at their own times", async (t) => {
@@ -452,4 +486,26 @@ test("a take-over after the hand-back, while the run's end-of-run step runs, is 
   finishStep();
   await world.ended();
   assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }], "released once, with the agent driving: no take was cut");
+});
+
+test("a person's take outlives the runner that held the run: another runner that claims the run after a lapse keeps the person driving, the run waiting for their hand-back, and only then ends it (#2134)", async (t) => {
+  const world = await setup(t);
+  // A short lease, so the second runner claims the run as soon as the first one's has run out.
+  const lease = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200 };
+  const run = await world.startPerClaim(lease);
+  await heldWhileAnswering(world, run);
+  const words = holdWords("desktop");
+  const seen = await world.runningUntil(async () => (await world.rows()).includes(words.ending), "the run says it waits for the hand-back");
+  assert.ok(seen.running, `the run waits for the hand-back: ${seen.over?.state}`);
+  // The first runner goes as a crash goes (its lease lapses, nothing of it is released or written), and another runner
+  // takes the run over once that lease has run out.
+  run.first.kill();
+  await run.second({ name: "runner-b" });
+  const kept = await world.runningUntil(async () => run.holds.length === 2 && run.holds[1].state() === "person" && (await world.hold()) === "person", "the second claim's computer comes up with the person driving");
+  assert.ok(kept.running, `the run still waits for the person's hand-back on the second claim: ${kept.over?.state}; second claim's hold ${run.holds[1]?.state()}`);
+  assert.deepEqual(run.releases, [], "nothing let the desktop go under the person's hand");
+  await world.route("handBackRunComputer");
+  const row = await world.ended();
+  assert.equal(row.state, "ended");
+  assert.deepEqual(run.releases, [{ claim: 2, state: "agent", ends: ["given"] }], "the second claim let the desktop go once, after the hand-back");
 });
