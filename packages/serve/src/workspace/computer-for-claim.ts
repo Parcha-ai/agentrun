@@ -10,8 +10,8 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
-import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
+import type { ComputerProvider, ComputerSpec, MountReadBack, Result } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -36,13 +36,16 @@ export interface ClaimLaunch {
   /** What the run's computer may reach, as its launch resolved it (run-launch.ts boxAllow): "none" or absent is no
    *  network, a list an allow-list. The computer's spec takes it. */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set that (run-launch.ts boxAllowSet), not the default. */
+  readonly boxAllowSet?: true;
 }
 
-/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach; and what the
- *  provider declares it makes (its capabilities()): its networks and its longest lifetime. Absent, the spec asks as the
- *  run allows. */
+/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach, and whether the
+ *  operator set that; and what the provider declares it makes (its capabilities()): its networks and its longest
+ *  lifetime. Absent, the spec asks as the run allows. */
 export interface ComputerRun {
   readonly boxAllow?: readonly string[] | "none";
+  readonly boxAllowSet?: true;
   readonly networks?: readonly ("none" | "open" | "allow")[];
   readonly maxLifetimeMs?: number;
 }
@@ -258,18 +261,6 @@ async function providerLaunch(
   };
 }
 
-/** The runner's start: every computer of `providers` with all of `labels` whose deadline (its agentrun.computer.deadline
- *  label) has passed is ended, once (the janitor's sweep), each provider apart. A provider whose vendor ends its own
- *  computers answers its refusal in words; nothing throws. */
-export async function sweepComputers(providers: readonly ComputerProvider[], labels: Readonly<Record<string, string>>, now: Date = new Date()): Promise<{ readonly provider: string; readonly swept: Result<Swept> }[]> {
-  const out: { provider: string; swept: Result<Swept> }[] = [];
-  for (const provider of providers) {
-    const swept = await sweep(provider, { labels: { ...labels }, now }).catch((error: unknown): Result<Swept> => ({ ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } }));
-    out.push({ provider: provider.id, swept });
-  }
-  return out;
-}
-
 /** The run's computer for this claim, started and registered; `{ computer: undefined }` for none. Throws with code
  *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
 export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
@@ -299,6 +290,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const { network: networks, maxLifetimeMs } = provider.capabilities();
       const run: ComputerRun = {
         ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
+        ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
         ...(networks ? { networks } : {}),
         ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
       };
