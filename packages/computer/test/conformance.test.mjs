@@ -16,7 +16,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent", "secrets"];
 /** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
 const OPTIONAL_GROUPS = ["lifetime", "mount"];
 
@@ -372,8 +372,8 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		assert.ok(c.level === "core" || c.level === "full", `${c.id}: level ${c.level}`);
 		for (const need of c.needs) assert.ok(CAPABILITIES.includes(need), `${c.id} needs ${need}`);
 		// A Core case needs only what some kind or daemon mode may require: groups, network none and a child daemon's
-		// vendor-agent, never an optional provider method.
-		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none", "vendor-agent"].includes(need)), `${c.id}: a Core case needs only groups, network:none and vendor-agent`);
+		// vendor-agent, never an optional provider method; or a secret the provider takes (secrets), for the no-key case.
+		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none", "vendor-agent", "secrets"].includes(need)), `${c.id}: a Core case needs only groups, network:none, vendor-agent and secrets`);
 		assert.equal(typeof c.run, "function");
 	}
 	// lifetime's one case is Full: extend is optional for every kind. So is every mount case, until the cutover decides.
@@ -568,8 +568,13 @@ test("the CLI as a process prints a report of more than 1 MiB whole through a pi
 	assert.equal(code, 1, stderr);
 	assert.ok(stdout.length > 1024 * 1024, `${stdout.length} bytes`);
 	const report = JSON.parse(stdout);
-	assert.equal(report.results.length, 4);
-	for (const result of report.results) assert.ok(result.reason.length > 512 * 1024, result.id);
+	assert.equal(report.results.length, 6);
+	// Every case that needs the computer fails on the refused create, at length. health.no-key-in-errors is skipped before
+	// it: the fixture takes no secret.
+	const failed = report.results.filter((result) => result.status === "fail");
+	assert.equal(failed.length, 5);
+	for (const result of failed) assert.ok(result.reason.length > 512 * 1024, result.id);
+	assert.deepEqual(report.results.filter((result) => result.status === "skip").map((result) => result.id), ["health.no-key-in-errors"]);
 });
 
 test("provider.check-refuses deletes a computer that create made though check refused its spec, and fails", async () => {
