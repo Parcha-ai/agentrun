@@ -47,7 +47,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
-import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -382,15 +382,15 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // tool calls and its decisions all on one rule and one booking), so the spec carries no beforeRequest of its own.
   const capUsd = launch.maxCostUsd;
   const capModel = capModelOf(route);
-  // And each tier's model (tierRoutes, filled below), priced as its own: a learned node's request on it is admitted and
-  // booked at its price.
-  const tierCapModel = (id: string): CapModel | undefined => {
-    for (const tierRoute of tierRoutes.values()) if (tierRoute.model === id) return capModelOf(tierRoute);
-    return undefined;
-  };
+  // And each tier's model (tierRoutes, filled below), by the route its request names (its tier's proxy, ModelRequest.route),
+  // priced as that route books it: one id the run's model and a tier share is priced apart, never at the other's price.
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
-    modelOf: (id) => (id === route.model ? capModel : tierCapModel(id)),
+    modelOf: (id, by) => {
+      if (by === undefined) return id === route.model ? capModel : undefined;
+      const tierRoute = tierRoutes.get(by as Tier);
+      return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
+    },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
@@ -442,7 +442,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // node fails in those words (learnedWorkflowHostTool), never on another model.
   const tierUnreachable = new Map<Tier, string>();
   if (learnsWorkflows(revision.kind, workflows)) {
-    for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
+    // The keys those tiers' models need (tierModelKeys: a key saved in Settings too, which claimSecrets opened only for the
+    // run's own model), held by the run's one redactor, on the tiers' route env alone (withModelKeys, never enumerable),
+    // never on the tools' (toolEnv).
+    const tierKeys = await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+    holdClaimed(cut, tierKeys);
+    const tierEnv = withModelKeys(deps.env, { ...toolEnv, ...tierKeys });
+    for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
       if ("why" in routed) tierUnreachable.set(tier, routed.why);
       else tierRoutes.set(tier, routed);
     }

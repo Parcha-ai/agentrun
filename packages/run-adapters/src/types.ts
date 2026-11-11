@@ -158,6 +158,10 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
+   *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
+   *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
+  route?: string;
 }
 
 /** What a paid request cost, once it completed. */

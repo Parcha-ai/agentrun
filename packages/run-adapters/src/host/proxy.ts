@@ -512,6 +512,10 @@ export interface ModelProxyOptions {
   hooks: ModelProxyHooks;
   /** The session's model, as the runner names it to `beforeRequest`. The policy fixes the body's model. */
   model: string;
+  /** This proxy's route among the session's, told to `beforeRequest` with each request (ModelRequest.route) so the host
+   *  prices it at this proxy's price: a proxy beside the session's for another tier's model names its tier. Absent: the
+   *  session's own. */
+  route?: string;
   /** The provider's base: its origin and, for a gateway that serves the API under a path, that path
    *  (`https://api.example.com`, `https://gateway.example/api`). A route's path is appended to it. A base with userinfo, a
    *  query or a fragment is refused, so the key goes only where the base reads. */
@@ -992,6 +996,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(host === undefined ? {} : { host }),
+        ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).

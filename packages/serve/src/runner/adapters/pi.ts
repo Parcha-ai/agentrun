@@ -130,8 +130,10 @@ export interface TierProxies {
 /** A proxy on `hooks` (the session's booking: its requests are the run's, under its one cap) for `route`'s model, with its
  *  origin, credential, price and fetch, its provider's errors through `redact`. `tools`: the tool names its policy admits
  *  by name on a request of the session's own key (none for a tier's: only side keys reach it). */
-async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: readonly string[], redact?: (text: string) => string): Promise<ModelProxy> {
+async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: readonly string[], redact?: (text: string) => string, tier?: string): Promise<ModelProxy> {
   return startModelProxy({
+    // A tier's proxy names its tier on each request (ModelRequest.route), so the run's cap prices it as this route books it.
+    ...(tier === undefined ? {} : { route: tier }),
     policy: await policyFor(route.provider, route.model, tools),
     hooks,
     model: route.model,
@@ -156,7 +158,7 @@ export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hoo
     for (const { proxy } of open.values()) await proxy.close().catch(() => undefined);
   };
   try {
-    for (const [tier, route] of tiers) open.set(tier, { proxy: await routeProxy(route, hooks, [], redact), route });
+    for (const [tier, route] of tiers) open.set(tier, { proxy: await routeProxy(route, hooks, [], redact, tier), route });
   } catch (error) {
     await close();
     throw error;

@@ -48,11 +48,11 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools, webToolNames } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
-import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -326,10 +326,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by. A
-    // learned node's request on a tier's model (tierRoutes) is priced as that model.
-    modelOf: (id) => {
-      for (const tierRoute of tierRoutes.values()) if (tierRoute.model === id) return capModelOfRoute(tierRoute);
-      return capModel;
+    // learned node's request on a tier's proxy names its tier (ModelRequest.route) and is priced as that route books it,
+    // even under an id the run's model shares.
+    modelOf: (id, by) => {
+      if (by === undefined) return capModel;
+      const tierRoute = tierRoutes.get(by as Tier);
+      return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
@@ -394,7 +396,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (learns) {
       // A tier the learned workflows name that the host has a model of, routed as pi's are (learnedTierRoutes: the run's
       // keys, pi's wires, since pi-ai's client sends these, never the CLI); one refused fails its node in its words.
-      const modelEnv = withModelKeys(deps.env, claimed);
+      // Their models' keys (tierModelKeys: a saved one too, which claimSecrets opened only for the run's own model), held by
+      // the redactors, on the tiers' route env alone (withModelKeys, never enumerable), never on the tools' (toolEnv).
+      const tierKeys = await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+      for (const redact of new Set([held, cut])) holdClaimed(redact, tierKeys);
+      const modelEnv = withModelKeys(deps.env, { ...claimed, ...tierKeys });
       const tiers = new Map<string, LearnedTier>();
       for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
         if ("why" in routed) tiers.set(tier, { why: routed.why });

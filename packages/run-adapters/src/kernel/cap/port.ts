@@ -17,8 +17,9 @@ const refusalOf = (error: CapRefused) => ({ refuse: error.message, code: error.c
 export interface BeforeRequestOptions {
   /** The run's cap, read before every request. Undefined: no cap, nothing refused. */
   capUsd(): number | undefined;
-  /** A model as the cap prices it, by its id; undefined: a model with no price here. */
-  modelOf(id: string): CapModel | undefined;
+  /** A model as the cap prices it, by its id and the route its request came by (ModelRequest.route; absent, the
+   *  session's own): one id two routes price apart is priced as its route books it. Undefined: a model with no price here. */
+  modelOf(id: string, route?: string): CapModel | undefined;
   /** The session's previous request on a model, as its usage reported it: none prices the input uncached. */
   previousOf?(model: string): Previous | undefined;
   /** What the run spent beside the session's model requests, which the runner's booking does not hold: its priced tools'
@@ -42,7 +43,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
   return (request) => {
     const capUsd = options.capUsd();
     if (capUsd === undefined) return undefined;
-    const model = options.modelOf(request.model) ?? unpriced(request.model);
+    const model = options.modelOf(request.model, request.route) ?? unpriced(request.model);
     // A request the host sends beside the harness's own (its host label: a learned workflow's node) is another
     // conversation's prompt: nothing of the session's cache is read for it, so it is priced as a cache miss.
     const previous = request.host === undefined ? options.previousOf?.(request.model) : undefined;
@@ -61,7 +62,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     // neither (no hold, no price or no measure) cannot be kept within the cap: refused for good, as an unmeasured input.
     let inFlight = 0;
     for (const flight of request.inFlight) {
-      const figure = isFigure(flight.holdUsd) ? flight.holdUsd : worstOf(options.modelOf(flight.model), flight.inputTokensMax, flight.outputTokensMax);
+      const figure = isFigure(flight.holdUsd) ? flight.holdUsd : worstOf(options.modelOf(flight.model, flight.route), flight.inputTokensMax, flight.outputTokensMax);
       if (figure === undefined) return { refuse: unmeasured(capUsd), code: SPEND_CAP_REACHED };
       inFlight += figure;
     }

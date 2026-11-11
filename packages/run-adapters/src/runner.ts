@@ -70,6 +70,8 @@ export type BeforeRequest = (request: {
   /** The label of a request the host sent beside the harness's own (ModelRequest.host): a learned workflow's model node,
    *  under the same check as the harness's own. */
   host?: string;
+  /** The route it came by (ModelRequest.route), absent for the session's own: the host prices it by model and route. */
+  route?: string;
   /** This session's paid requests admitted and not yet answered (in this process), oldest first, each with its own
    *  `inputTokensMax`, the output limit it was admitted with (`outputTokensMax`) and what its host held for it
    *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
@@ -87,7 +89,7 @@ export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd:
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string };
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
@@ -301,7 +303,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string): Error =>
     options.stop ? options.stop(reason, message, code) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }), ...(code === undefined ? {} : { refusal: code }) });
-  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, noted, inputTokensMaxWithoutNote, host }: ModelRequest): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, noted, inputTokensMaxWithoutNote, host, route }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
     const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
     if (stopped) throw stopped;
@@ -309,7 +311,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
-      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(feeUsd === undefined ? {} : { feeUsd }), ...(paid ? { paid } : {}), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }) });
+      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(feeUsd === undefined ? {} : { feeUsd }), ...(paid ? { paid } : {}), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse, typeof verdict.code === "string" ? verdict.code : undefined);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
     // What a cache miss adds to the hold: kept beside it, so a request that never answers counts at both (sessionSpendOf).
@@ -366,7 +368,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
       throw stoppedLate;
     }
-    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }) });
+    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {
