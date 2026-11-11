@@ -39,6 +39,12 @@ describe("Chip", () => {
   it("writes each tone's words in the tone's -text colour", () => {
     for (const [tone, cls] of [["success", "text-success-text"], ["warning", "text-warning-text"], ["error", "text-destructive-text"], ["info", "text-info-text"], ["active", "text-run-active"]] as const) expect(html(<Chip tone={tone}>x</Chip>)).toContain(cls);
   });
+  it("keeps its words on one line at its own width in a narrow row: a status badge is never cut (\"INPUT REQUI\")", () => {
+    const host = mount(<div style={{ display: "flex", width: 60 }}><span>A long run title that takes the row</span><Chip tone="warning">Input required</Chip></div>);
+    const chip = host.querySelector("span.caps")!;
+    expect(chip.textContent).toBe("Input required");
+    expect(chip.className.split(" ")).toEqual(expect.arrayContaining(["whitespace-nowrap", "shrink-0"]));
+  });
 });
 
 describe("Field", () => {

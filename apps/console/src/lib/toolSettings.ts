@@ -96,7 +96,7 @@ const BY_TOOL: Record<string, { label: Record<string, string>; help: Record<stri
 export const providerLabel = (provider: string, tool?: string) => (tool && BY_TOOL[tool]?.label[provider]) ?? PROVIDER[provider] ?? provider;
 
 const HELP: Record<string, string> = {
-  auto: "The harness's own search, or the model provider's hosted one, else keyless Exa.",
+  auto: "The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.",
   native: "The harness's own search, or the model provider's hosted one, never a third party: unavailable where there is none.",
   "exa-keyless": "Exa's keyless search: no key, a third party.",
   parallel: "Parallel: needs the Parallel key.",

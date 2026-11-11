@@ -40,7 +40,9 @@ describe("the browser's provider names and help", () => {
     expect(["auto", "native", "exa-keyless", "parallel"].map((p) => providerLabel(p, "web_search"))).toEqual(["auto", "native", "Exa keyless", "Parallel"]);
     expect(["kernel", "parallel"].map((p) => providerLabel(p, "web_fetch"))).toEqual(["kernel fetch", "Parallel"]);
     expect(providerHelp("kernel", "web_fetch")).toBe("This server's own fetch, guarded against private addresses.");
-    expect(providerHelp("auto", "web_search")).toBe("The harness's own search, or the model provider's hosted one, else keyless Exa.");
+    // auto's order as the server resolves it (tool-plane.ts): the harness's or provider's own, Parallel on the server's
+    // key, then keyless Exa. Parallel is named, so a person with its key knows auto uses it.
+    expect(providerHelp("auto", "web_search")).toBe("The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.");
     // A caller that names no tool reads the shared names, as before.
     expect(providerLabel("kernel")).toBe("kernel fetch");
   });

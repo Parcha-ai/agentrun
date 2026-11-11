@@ -15,7 +15,9 @@ const TONE: Record<ChipTone, string> = {
   muted: "border-border-strong/60 text-muted-foreground",
 };
 
-/** `title`: what the label means, on hover. */
+/** `title`: what the label means, on hover. A chip keeps its words on one line and its own width: in a narrow row (a
+ *  phone, a run's header beside a long title) the row's other text gives way, never the chip's words, which a fixed
+ *  height would otherwise cut ("INPUT REQUI"). */
 export function Chip({ tone = "plain", className, title, children }: { tone?: ChipTone; className?: string; title?: string; children: React.ReactNode }) {
-  return <span title={title} className={cn("caps inline-flex h-5 items-center gap-1 border px-1.5 text-micro leading-none", TONE[tone], className)}>{children}</span>;
+  return <span title={title} className={cn("caps inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap border px-1.5 text-micro leading-none", TONE[tone], className)}>{children}</span>;
 }
