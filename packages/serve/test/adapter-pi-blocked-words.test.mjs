@@ -13,7 +13,7 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { deniedText, refusedText } = await import("../dist/tool-gate.js");
-const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+const { timelineOf } = await import("../dist/timeline/index.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);

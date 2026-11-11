@@ -19,7 +19,7 @@
 // off is never run again (`replay: "never"`): it is answered interrupted.
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { sideRequests } from "./cap.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";

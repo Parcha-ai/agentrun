@@ -1,4 +1,4 @@
-// The store's one sealing rule: every sealed column is today's AES-256-GCM seal (pi-durable-agent's seal/unseal, the one
+// The store's one sealing rule: every sealed column is today's AES-256-GCM seal (sealing.ts seal/unseal, the one
 // the tool keys use) under the server's seal key, bound to where it lives by its AAD, "<table>|<row key>|<column>". A value
 // copied to another row, column or table does not open. The store holds only the sealed bytes; the key stays in the
 // server's (and a runner's) environment, and the server's writer and the runner's unseal both seal and open through here.
@@ -7,7 +7,7 @@
 // credential as JSON with the server's origin inside it. Opened for a row whose url has another origin (an edit of the url
 // column by someone who can write the store but has no key), it is refused as damaged, so a credential is never sent to a
 // host it was not saved for.
-import { seal, unseal } from "@parcha/pi-durable-agent";
+import { seal, unseal } from "../sealing.js";
 
 /** Where a sealed value lives: its table, its row's key and its column. */
 export interface SealedAt {

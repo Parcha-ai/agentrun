@@ -24,7 +24,7 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_COST } from "./timeline/index.js";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
 import { type PaidBooking, paidStep } from "./paid-calls.js";
 import { logLine } from "./print.js";

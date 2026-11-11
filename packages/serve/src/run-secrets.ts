@@ -1,7 +1,7 @@
 // Which secrets a run is handed: every secret but the server's own and the decision keys (RUN_SECRETS), less each tool key
 // that unlocks none of the tools its revision binds and each model key its model does not need (keysFor over needsOf).
 // The runner's claim reads them (runner/claim-secrets.ts).
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "./agent-rows.js";
 import { harnessModelKeys } from "./adapters.js";
 import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";

@@ -14,7 +14,6 @@ const STORE = "packages/serve/src/store/";
 /** The files outside the store that held SQL when the store landed. Each goes at the cutover. */
 const TODAY = [
   "packages/serve/src/cap.ts",
-  "packages/serve/src/import-summary.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
   // The copy of pi/src/durable/readers.ts serve runs (its workflow code moved into serve; pi's copy goes with pi).
