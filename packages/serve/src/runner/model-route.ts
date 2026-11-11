@@ -63,7 +63,7 @@ type PiModel = { id: string; provider: string; api: string; baseUrl?: string; co
 const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
-type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string }[] };
+type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string; thinking?: string }[] };
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`; a claimed run's pin, sent as
  *  pinned: chooseModel's PinnedModel), resolved from `env` as main resolves a run's model, on a wire of `wires` (the
@@ -228,6 +228,15 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                     again = true;
                     break;
                   }
+                }
+                // The reply's thinking first, as the streamed branch sends it: one block, its whole text through the run's
+                // one redactor before pi's session journals it.
+                const thought = (message.content ?? []).filter((each) => each.type === "thinking").map((each) => each.thinking ?? "").join("");
+                if (thought) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "", signature: "" } });
+                  send({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: redact(thought) } });
+                  send({ type: "content_block_stop", index });
                 }
                 if (read.text) {
                   const index = blocks++;
