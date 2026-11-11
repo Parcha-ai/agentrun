@@ -8,7 +8,7 @@ import { isHeld, held, retiredLearned } from "./skills.js";
 import { buildIndex, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, ruleOf, supersede } from "./notes.js";
 import { mergeProblems, type Problem, supersededBy } from "./check.js";
 import type { IndexEntry, NoteText } from "./grade.js";
-import { folderAt, FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
+import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, textsAt, topOf, writeLearning } from "./folder.js";
 import type { Workspace } from "../workspace/index.js";
 
 export type LearningChange =
@@ -237,7 +237,8 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
       const onMain = blobOf(snapshot, path);
       if (onMain !== undefined && !replaced.has(path)) {
         const theirs = parseNoteFile(path, await body(path, onMain));
-        left.push({ path, reason: !Array.isArray(theirs) && ruleOf(theirs.body) === rule ? "same" : "taken" });
+        // The same rule only when main's note keeps it active: a retired or superseded one is a name main holds.
+        left.push({ path, reason: !Array.isArray(theirs) && theirs.status === "active" && ruleOf(theirs.body) === rule ? "same" : "taken" });
         continue;
       }
       const holder = rules.get(rule);
@@ -284,16 +285,15 @@ export async function mainTexts(ws: Workspace, paths: readonly string[]): Promis
 }
 
 /** Run `runId`'s merge on the folder, when its diff file names one (readRunDiff): the texts its own commit holds at
- *  `paths`, each a note's file (one it holds no note at is not in it), read at that commit (folderAt: one read-only
- *  exec), never main's now, which a person may have edited since. Undefined when the run merged nothing here. */
+ *  `paths`, each a note's file (one it holds nothing at is not in it), read at that commit, those paths alone (textsAt:
+ *  one read-only exec, bounded by the paths asked, never the whole folder or its log), never main's now, which a person
+ *  may have edited since. Undefined when the run merged nothing here. */
 export async function mergedAt(ws: Workspace, runId: string, paths: readonly string[]): Promise<{ texts: Record<string, string> } | undefined> {
   const diff = await readRunDiff(ws, runId);
   if (!diff) return undefined;
-  if (!paths.length) return { texts: {} };
-  const at = await folderAt(ws, diff.merge);
-  if (!at) throw new Error(`the run's merge ${diff.merge} is not in the learning folder`);
-  const oids = new Map(at.snapshot.notes.map((note) => [note.file, note.oid]));
-  return { texts: Object.fromEntries(paths.flatMap((path) => { const blob = oids.has(path) ? at.blobs.get(oids.get(path)!) : undefined; return blob ? [[path, blob.toString("utf8")] as const] : []; })) };
+  const texts = await textsAt(ws, diff.merge, paths);
+  if (!texts) throw new Error(`the run's merge ${diff.merge} is not in the learning folder`);
+  return { texts };
 }
 
 /** Main as the grader reads it (the runner's learning loop `readMain`): every active note's index line, the whole text
@@ -314,7 +314,7 @@ export async function readMain(ws: Workspace, proposal: { readonly notes: readon
     for (const note of added as LearnedNote[]) {
       if (!oids.has(note.file)) continue;
       const theirs = parseNoteFile(note.file, await body(note.file, oids.get(note.file)!));
-      taken.push({ path: note.file, reason: !Array.isArray(theirs) && ruleOf(theirs.body) === ruleOf(note.body) ? "same" : "taken" });
+      taken.push({ path: note.file, reason: !Array.isArray(theirs) && theirs.status === "active" && ruleOf(theirs.body) === ruleOf(note.body) ? "same" : "taken" });
     }
     const notes = (added as LearnedNote[]).filter((note) => !oids.has(note.file));
     const problems = mergeProblems({ files: topOf(snapshot), active: main.filter((note) => note.status === "active") }, notes);
