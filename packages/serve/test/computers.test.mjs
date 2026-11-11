@@ -69,6 +69,26 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   );
 });
 
+test("under AGENTRUN_BOX_ALLOW=none a computer that runs only on the vendor's own network is not ready, and a kind only such computers serve is not offered, in words; a host list leaves them as they are", async (t) => {
+  const keys = { PHONE_HARNESS_API_KEY: "good-phone", BROWSERBASE_API_KEY: "good-browser", BROWSERBASE_PROJECT_ID: "project", KERNEL_API_KEY: "good-kernel" };
+  const none = await (await setup(t, { env: { ...keys, AGENTRUN_BOX_ALLOW: "none" } })).routes.view();
+  for (const [kind, id, label] of [["phone", "phone-harness", "Phone harness"], ["browser", "browserbase", "Browserbase"], ["browser", "kernel", "Kernel"]]) {
+    const provider = providerOf(none, kind, id);
+    assert.equal(provider.ready, false, `${id} is never usable on a server with no network`);
+    assert.equal(provider.why, `${label} runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network, or set AGENTRUN_BOX_ALLOW to a host list`);
+    assert.equal(provider.network, "the vendor's own network, which this server refuses: its AGENTRUN_BOX_ALLOW is none");
+  }
+  for (const kind of ["phone", "browser"]) {
+    assert.equal(kindOf(none, kind).offered, false, `${kind}: every provider of it runs only on the vendor's own network`);
+    assert.equal(kindOf(none, kind).why, `every provider of a ${kind} computer runs only on the vendor's own network, and this server's AGENTRUN_BOX_ALLOW is none (no network)`);
+  }
+  // A computer with no network of its own, or one that takes the list, is as it was.
+  assert.deepEqual([kindOf(none, "sandbox").offered, providerOf(none, "sandbox", "docker").ready, providerOf(none, "desktop", "orgo").network], [true, true, "no network, so this server's allow-list isn't offered"]);
+  // A host list: the vendor's own network runs, and Settings says the list doesn't reach it.
+  const listed = await (await setup(t, { env: { ...keys, AGENTRUN_BOX_ALLOW: "pypi.org" } })).routes.view();
+  assert.deepEqual([providerOf(listed, "phone", "phone-harness").ready, kindOf(listed, "phone").offered, providerOf(listed, "phone", "phone-harness").network], [true, true, "the vendor's own network; this server's allow-list doesn't apply"]);
+});
+
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
