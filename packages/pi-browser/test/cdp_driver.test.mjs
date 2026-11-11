@@ -119,6 +119,20 @@ test("a tab the page opens is followed (the old ids dropped, the rest of the bat
   assert.match(await driver.snapshot(), /^\[page\] /);
 });
 
+test("through the driving guard (one action at a time), an action that opens a tab stops the batch: the goto after it is never sent", async (t) => {
+  const { page, driver } = await open(t);
+  await driver.snapshot();
+  page.state.tabs.push({ targetId: "POPUP", url: "https://example.test/pay", openerId: "PAGE" });
+  const session = { driver, tag: "ar-run-1-1", sessionId: "sess-1", record: { lastUrl: "https://example.test/form" }, notice: null, interrupted: null, recorded: false, effects: null, downloads: null };
+  const port = { session: async () => session, dispatching: async () => {}, journal: async () => {}, mark: async () => {}, settle: async () => {}, ended: async () => false, dropped: async () => {}, navigated: async () => {} };
+  const call = { callId: "c1", conversationId: 1, signal: undefined, label: "node", redact: (value) => value, evidence: { file: async () => ({ path: "evidence/x.md" }) } };
+  const batch = await drivingGuarded(pageTools()).run({ actions: [{ op: "click", id: "0-11" }, { op: "goto", url: "https://example.test/elsewhere" }, { op: "click", id: "0-13" }] }, port, call);
+  assert.notEqual(batch.isError, true, batch.content[0].text);
+  assert.match(batch.content[0].text, /\[ok\] click \[0-11\] button "Add" -> page changed\n\[tab\] the page opened a new tab; now driving it: https:\/\/example\.test\/pay\. Take a snapshot before acting by id\.\n\[stopped\] 2 more actions not run: they name the old tab's snapshot ids\./);
+  assert.equal(page.calls.filter((c) => c.method === "Page.navigate").length, 0, "the goto never reached the popup");
+  assert.equal(driver.movedTab(), true);
+});
+
 test("an id the latest snapshot does not show, and a page that navigated since it, fail as a stale snapshot before anything is sent", async (t) => {
   const { page, driver } = await open(t);
   await assert.rejects(driver.run({ actions: [{ op: "click", id: "0-11" }] }), /No hydrated snapshot exists/);

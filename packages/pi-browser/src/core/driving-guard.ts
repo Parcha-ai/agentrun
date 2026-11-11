@@ -97,7 +97,9 @@ function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoc
               // The batch was checked as one before any was sent, as the browser's own batch checks it once: an action after
               // the first is not refused because the page's address moved under the batch's own earlier actions (a
               // same-page link). The person's take-over is still fenced before each one, above.
-              answer = (await value.call(target, index === 0 ? { actions: [action] } : { actions: [action], checked: true })) as typeof answer;
+              // `rest`: how many follow, for a driver that stops the batch here (it moved to another tab) to say so.
+              const rest = list.length - index - 1;
+              answer = (await value.call(target, { actions: [action], ...(index === 0 ? {} : { checked: true as const }), ...(rest ? { rest } : {}) })) as typeof answer;
             } catch (error) {
               if (completed > 0) throw partway(error, completed, list.length);
               throw error;
@@ -105,6 +107,10 @@ function epochFenced<D extends BrowserDriver>(driver: D, gate: DrivingGate, epoc
             if (typeof answer === "string") {
               lines.push(answer);
               completed += 1;
+              // The action moved the driver to another tab (a popup it opened): the batch's later actions name the old
+              // tab's ids, so none is sent; the driver's answer says how many were not run.
+              const movedTab = (target as { movedTab?: () => boolean }).movedTab;
+              if (typeof movedTab === "function" && movedTab.call(target)) return lines.join("\n");
               continue;
             }
             completed += typeof answer?.completed === "number" ? answer.completed : 1;

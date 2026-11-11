@@ -79,6 +79,8 @@ export function cdpDriver(): DriverFactory<PageDriver> {
     const seen = new Set<string>();
     /** The tab that opened each tab the driver followed, to go back to when that one closes. */
     const openers = new Map<string, string>();
+    /** Whether the last run moved to another tab (movedTab). */
+    let movedTab = false;
     try {
       const tabs = await tabsOf(cdp);
       for (const t of tabs) seen.add(t.targetId);
@@ -172,7 +174,8 @@ export function cdpDriver(): DriverFactory<PageDriver> {
         return moved ? `${moved}\n${shot}` : shot;
       },
 
-      run: async ({ code, actions, checked }) => {
+      run: async ({ code, actions, checked, rest: after = 0 }) => {
+        movedTab = false;
         if (code !== undefined) throw refusedError(CDP_CODE_REFUSED);
         if (!actions?.length) throw refusedError("run requires exactly one of code or actions");
         await check(actions, checked === true);
@@ -191,14 +194,18 @@ export function cdpDriver(): DriverFactory<PageDriver> {
           // The action already took effect, so a failure to look is not its failure.
           const moved = await follow().catch(() => undefined);
           if (moved) {
+            movedTab = true;
             lines.push(`${moved} Take a snapshot before acting by id.`);
-            const rest = actions.length - i - 1;
+            // This run's actions after this one, and the batch's that the guard would send after them.
+            const rest = actions.length - i - 1 + after;
             if (rest) lines.push(`[stopped] ${rest} more action${rest === 1 ? "" : "s"} not run: they name the old tab's snapshot ids.`);
             break;
           }
         }
         return lines.join("\n");
       },
+
+      movedTab: () => movedTab,
 
       checkActions: (actions) => check(actions),
 

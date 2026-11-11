@@ -8,7 +8,8 @@
 // return their one line instead of printing it; no REPL prompt, no hidden file-input listing and no file chooser; type
 // appends after the field's whole text (not End, which stops at a line's end) and paces its characters by a delay; press
 // takes modifier combinations (Shift+Tab, Control+A); the hit-test also checks the point on each enclosing page of a
-// same-origin iframe, so an overlay over the iframe covers its target. The
+// same-origin iframe, so an overlay over the iframe covers its target; a select and a native date or time fill, which
+// set the value directly, go through the same hit-test first, so a disabled, hidden or covered control is refused. The
 // AX-id scheme, the POINT_JS hit-test (point), scroll then centre, press and release click, insertText plus a real last
 // key, the settle wait and the one-line change result are Pi's.
 import { setTimeout as delay } from "node:timers/promises";
@@ -494,6 +495,9 @@ export class AxHelpers {
   select(display: string, values: string | string[]) {
     const wanted = Array.isArray(values) ? values : [values];
     return this.act("select", display, async (page, id) => {
+      // The value is set directly, not by a click: the control must still be one a person could use (enabled, not
+      // inert, shown, in view, not covered), or nothing is changed.
+      await this.point(page, id);
       const labels = await this.onNode<string[]>(
         page,
         id,
@@ -565,6 +569,8 @@ export class AxHelpers {
     );
     if (kind.tag === "SELECT") throw new Error('a select takes {"op":"select"} with the option, not text');
     if (replace && kind.tag === "INPUT" && ["date", "time", "datetime-local", "month", "week"].includes(kind.type)) {
+      // Set directly, as a select is: the field must still be one a person could use, or nothing is changed.
+      await this.point(page, id, true);
       await this.onNode(
         page,
         id,

@@ -131,3 +131,27 @@ test("a real Chrome: a button in an iframe under the top page's overlay is refus
   await driver.run({ actions: [{ op: "click", id: again[1] }] });
   assert.equal((await evaluate(`document.getElementById("f").contentDocument.title`)).result.value, "clicked");
 });
+
+// Controls whose value the driver sets directly (a select, a native date field): one disabled, one under an overlay.
+const DIRECT = `<title>Direct</title><body style="margin:0">
+<select id="size" aria-label="Size" disabled><option value="s">Small</option><option value="l">Large</option></select>
+<input id="when" type="date" aria-label="When" style="position:absolute;left:20px;top:100px">
+<div id="veil" style="position:absolute;left:0;top:90px;width:400px;height:60px;z-index:9;background:#eee">Busy</div>`;
+
+test("a real Chrome: a disabled select and a covered date field are refused, and their values are not changed", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+  const { url, evaluate } = await chromeWith(t, DIRECT);
+  const driver = await cdpDriver()({ sdkCdpUrl: url });
+  t.after(() => driver.close(), { timeout: 30_000 });
+  const shot = await driver.snapshot();
+  const id = (pattern) => {
+    const found = pattern.exec(shot);
+    assert.ok(found, `the snapshot shows ${pattern}:\n${shot}`);
+    return found[1];
+  };
+  const size = id(/\[(\d+-\d+)\] [^\n]*"Size"/);
+  const when = id(/\[(\d+-\d+)\] [^\n]*"When"/);
+  await assert.rejects(driver.run({ actions: [{ op: "select", id: size, values: "Large" }] }), /Target disabled/);
+  assert.equal((await evaluate(`document.getElementById("size").value`)).result.value, "s");
+  await assert.rejects(driver.run({ actions: [{ op: "fill", id: when, value: "2026-11-11" }] }), /Target covered by .*nothing was clicked/);
+  assert.equal((await evaluate(`document.getElementById("when").value`)).result.value, "");
+});
