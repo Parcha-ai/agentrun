@@ -4,7 +4,8 @@
 // which trusted any dist already there, a stale one after a merge too.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -110,4 +111,92 @@ test('the build loop builds each package once in order, skips one with no build,
   calls.length = 0;
   assert.deepEqual(mod.buildAll(packages, order, (name) => (calls.push(name), name === 'c' ? 2 : 0)), { built: ['a'], failed: 'c', status: 2 });
   assert.deepEqual(calls, ['a', 'c'], 'nothing after the failed build ran');
+});
+
+// Freshness (#1025): a package builds against its dependencies' dists as the tree's sources make them. The root build rebuilds
+// everything in order; `--only` and `--changed` key on the sources: a package is stale when its dist is missing or older than a
+// file of the package, or a package it depends on is stale.
+const packagesAB = [{ name: 'a', deps: [], build: true }, { name: 'b', deps: ['a'], build: true }, { name: 'c', deps: ['b'], build: true }, { name: 'n', deps: ['a'], build: false }];
+/** Modification times by package name, as `stalePackages` reads them. */
+const times = (sources, dist) => ({ sources: (p) => sources[p.name] ?? 0, dist: (p) => dist[p.name] ?? 0 });
+
+test('a package is stale when its dist is missing or older than its sources, and so is each package that depends on it; fresh ones are not', async () => {
+  const mod = await ordering();
+  assert.ok(mod?.stalePackages, 'scripts/build-workspaces.mjs exports stalePackages');
+  const order = mod.buildOrder(packagesAB);
+  // Every dist newer than every source: nothing to build.
+  assert.deepEqual([...mod.stalePackages(packagesAB, order, times({ a: 5, b: 5, c: 5 }, { a: 9, b: 9, c: 9 }))], []);
+  // a's source changed after its dist was built: a, and b and c that compile against it. The package with no build is never stale.
+  assert.deepEqual([...mod.stalePackages(packagesAB, order, times({ a: 10, b: 5, c: 5 }, { a: 9, b: 9, c: 9 }))], ['a', 'b', 'c']);
+  // Only c changed: c alone.
+  assert.deepEqual([...mod.stalePackages(packagesAB, order, times({ a: 5, b: 5, c: 10 }, { a: 9, b: 9, c: 9 }))], ['c']);
+  // No dist at all: stale.
+  assert.deepEqual([...mod.stalePackages(packagesAB, order, times({ a: 5, b: 5, c: 5 }, { a: 9, c: 9 }))], ['b', 'c']);
+});
+
+test('a build of some packages builds the stale ones they depend on, and leaves fresh ones alone', async () => {
+  const mod = await ordering();
+  assert.ok(mod?.withStaleDeps, 'scripts/build-workspaces.mjs exports withStaleDeps');
+  assert.deepEqual(mod.withStaleDeps(packagesAB, ['c'], new Set(['a', 'b'])).sort(), ['a', 'b', 'c'], 'c with its stale dependencies, through any depth');
+  assert.deepEqual(mod.withStaleDeps(packagesAB, ['c'], new Set()), ['c'], 'nothing stale: just c');
+  assert.deepEqual(mod.withStaleDeps(packagesAB, ['c'], new Set(['a'])).sort(), ['a', 'c'], 'a stale dist under a fresh one is still built');
+});
+
+test('the newest mtime walks a package without its dist and node_modules', async () => {
+  const mod = await ordering();
+  assert.ok(mod?.newestMtime, 'scripts/build-workspaces.mjs exports newestMtime');
+  const dir = mkdtempSync(join(tmpdir(), 'build-workspaces-mtime-'));
+  try {
+    const touch = (path, at) => { mkdirSync(join(dir, path, '..'), { recursive: true }); writeFileSync(join(dir, path), ''); utimesSync(join(dir, path), at, at); };
+    touch('src/deep/a.ts', 100);
+    touch('tsconfig.json', 300);
+    touch('dist/index.js', 900);
+    touch('node_modules/x/index.js', 800);
+    assert.equal(mod.newestMtime(dir), 300_000, 'the tsconfig, not the dist or node_modules');
+    assert.equal(mod.newestMtime(join(dir, 'dist'), new Set()), 900_000);
+    assert.equal(mod.newestMtime(join(dir, 'absent')), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The script itself, on a tree of its own: a stale dist and a changed source must rebuild, and nothing changed must not.
+test('--changed rebuilds a package and its dependents after a source changes, and builds nothing when nothing changed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'build-workspaces-run-'));
+  try {
+    const write = (path, text) => { mkdirSync(join(dir, path, '..'), { recursive: true }); writeFileSync(join(dir, path), text); };
+    // A build writes dist/built and appends its name to the tree's log, so the test reads what was built and in what order.
+    const build = (name) => `node -e "const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/built',String(Date.now()));fs.appendFileSync('${join(dir, 'log').replaceAll('\\', '/')}','${name}\\n')"`;
+    write('package.json', JSON.stringify({ name: 'root', workspaces: ['packages/*'] }));
+    for (const [name, deps] of [['a', {}], ['b', { '@t/a': '1' }]]) write(`packages/${name}/package.json`, JSON.stringify({ name: `@t/${name}`, version: '1.0.0', dependencies: deps, scripts: { build: build(name) } }));
+    write('packages/a/src/index.ts', 'one');
+    write('packages/b/src/index.ts', 'one');
+    const run = (...args) => { const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-workspaces.mjs'), '--root', dir, ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stdout + r.stderr); return r; };
+    const built = () => (existsSync(join(dir, 'log')) ? readFileSync(join(dir, 'log'), 'utf8').trim().split('\n') : []);
+    // A dist from before the sources' last edit: its files aged by a minute.
+    const aged = (path) => { const at = Date.now() / 1000 - 60; utimesSync(join(dir, path), at, at); };
+
+    run('--changed');
+    assert.deepEqual(built(), ['a', 'b'], 'no dist: both build, a first');
+    run('--changed');
+    assert.deepEqual(built(), ['a', 'b'], 'nothing changed: nothing builds');
+    assert.match(run('--changed').stdout, /up to date/);
+
+    // A source of a changes after its dist was built (a's dist is a minute older than its source): a rebuilds, and b with it,
+    // which compiles against a's new dist.
+    aged('packages/a/dist/built');
+    assert.equal(run('--stale').stdout, '@t/a\n@t/b\n', 'a and its dependent are stale');
+    run('--changed');
+    assert.deepEqual(built(), ['a', 'b', 'a', 'b'], 'a, then b');
+    assert.equal(run('--stale').stdout, '', 'built again: fresh');
+
+    // A build of b alone builds the stale dependency it would compile against, and not a fresh one.
+    aged('packages/a/dist/built');
+    run('--only', '@t/b');
+    assert.deepEqual(built(), ['a', 'b', 'a', 'b', 'a', 'b'], 'b with its stale dependency a, a first');
+    run('--only', '@t/b');
+    assert.deepEqual(built(), ['a', 'b', 'a', 'b', 'a', 'b', 'b'], 'a fresh: only b');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
