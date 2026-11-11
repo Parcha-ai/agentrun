@@ -23,7 +23,7 @@ const HELD = `not-a-secret-node-${process.pid}-held`;
 
 /** Run `id` of agent-1 started at `start`, ended `seconds` later at `usd`: `learning` its launch's learning start, `calls`
  *  its job's tool calls ([name, args, ok]), `extra` more entries after them, `kept` its kept learning row's proposal. */
-async function run(store, clock, { id, start, seconds = 10, usd = 0.1, learning, calls = [], extra = [], kept }) {
+async function run(store, clock, { id, start, seconds = 10, usd = 0.1, learning, calls = [], extra = [], kept, open = false }) {
   clock.now = start;
   await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: id, place: { mode: "runner" }, ...(learning ? { learning } : {}) } });
   const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
@@ -33,13 +33,15 @@ async function run(store, clock, { id, start, seconds = 10, usd = 0.1, learning,
     for (const [i, [name, args, ok]] of calls.entries()) {
       const call = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: `c${i}`, name, arguments: args }], timestamp: start + i }] };
       const result = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: `c${i}`, toolName: name, content: [{ type: "text", text: ok ? "done" : "it failed" }], isError: !ok, timestamp: start + i }] };
-      writes.push({ type: "entry", value: call }, { type: "entry", value: result });
+      // `ok` null: a call still running, with no result yet.
+      writes.push({ type: "entry", value: call }, ...(ok === null ? [] : [{ type: "entry", value: result }]));
     }
     for (const entry of extra) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, ...entry } });
     await commitWrites(journal, writes, context);
   }
   const also = kept ? [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }] : [];
-  await store.runs.update(claim, { state: "ended", costUsd: usd, endedAt: start + seconds * 1000 }, { also });
+  // `open`: a run still at work (a completed run resumed for a follow-up keeps its learning record): not settled.
+  await store.runs.update(claim, open ? { state: "running" } : { state: "ended", costUsd: usd, endedAt: start + seconds * 1000 }, { also });
 }
 /** The entry a claim writes of what it laid (KINDS.learningLaid). */
 const laid = (skills = [], workflows = []) => ({ kind: "agentrun.learning.laid", data: { skills, workflows } });
@@ -84,7 +86,7 @@ test("a run's learning says which offered skills its job read and which learned 
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
   await run(store, clock, {
-    id: "r1", start: T0, learning: start({ skills: ["weekly-report", "find-policies"], workflows: ["answer"] }), kept: lookedBack(T0, 5),
+    id: "r1", start: T0, learning: start({ skills: ["weekly-report", "find-policies"], workflows: ["answer"] }), kept: lookedBack(T0, 5), extra: [laid(["weekly-report", "find-policies"], ["answer"])],
     calls: [
       ["read", { path: ".agents/skills/weekly-report/SKILL.md" }, true],
       // A CLI adapter's read of a skill's file, and claude-agent's Skill tool: read from the call's recorded arguments,
@@ -96,11 +98,37 @@ test("a run's learning says which offered skills its job read and which learned 
       ["learned_workflow", { name: "answer", input: { question: "two" } }, false],
     ],
   });
-  await run(store, clock, { id: "r2", start: T0 + 10_000, learning: start({ skills: ["weekly-report", "find-policies", "keep-dates", "unread"] }), kept: lookedBack(T0 + 10_000, 5), calls: [["read_skill_file", { skill: "find-policies", path: "SKILL.md" }, true], ["Skill", { skill: "keep-dates" }, true]] });
+  await run(store, clock, { id: "r2", start: T0 + 10_000, learning: start({ skills: ["weekly-report", "find-policies", "keep-dates", "unread"] }), kept: lookedBack(T0 + 10_000, 5), extra: [laid(["weekly-report", "find-policies"]), laid(["keep-dates", "unread"])], calls: [["read_skill_file", { skill: "find-policies", path: "SKILL.md" }, true], ["Skill", { skill: "keep-dates" }, true]] });
   const learning = await reads.runLearningOverStore(store, "r1", secretsShown([]), []);
   assert.deepEqual(learning.used, { skills: [{ name: "weekly-report", read: true }, { name: "find-policies", read: true }], workflows: [{ name: "answer", calls: 2, failed: 1 }] });
   const second = await reads.runLearningOverStore(store, "r2", secretsShown([]), []);
   assert.deepEqual(second.used.skills, [{ name: "weekly-report", read: false }, { name: "find-policies", read: true }, { name: "keep-dates", read: true }, { name: "unread", read: false }], "read_skill_file and Skill by their arguments; another file of a skill is no read of its SKILL.md");
+});
+
+// Review on #2337: a learned skill the claim did not lay (the revision holds a skill of that name, so only the revision's
+// copy is installed) is not credited, even when the job read that path: `used.skills` is what the run's claims laid.
+test("a run's used skills are the ones its claims laid: an offered skill a claim left out, the revision's own of that name read, is not credited", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, {
+    id: "r1", start: T0, learning: start({ skills: ["weekly-report", "find-policies"] }), kept: lookedBack(T0, 5), extra: [laid(["find-policies"])],
+    calls: [["read", { path: ".agents/skills/weekly-report/SKILL.md" }, true], ["read", { path: ".agents/skills/find-policies/SKILL.md" }, true]],
+  });
+  const learning = await reads.runLearningOverStore(store, "r1", secretsShown([]), []);
+  assert.deepEqual(learning.used.skills, [{ name: "find-policies", read: true }], JSON.stringify(learning.used));
+});
+
+// Review on #2337: a learned_workflow call still running (no result yet, e.g. a resumed run's follow-up) is not a failure.
+// (Once the run settles, a call with no result was cut, and its row reads failed: that one counts.)
+test("a learned workflow call with no result yet, on a run still at work, counts as a call, never as failed", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, {
+    id: "r1", start: T0, learning: start({ workflows: ["answer"] }), kept: lookedBack(T0, 5), extra: [laid([], ["answer"])],
+    calls: [["learned_workflow", { name: "answer", input: { question: "one" } }, true], ["learned_workflow", { name: "answer", input: { question: "two" } }, false], ["learned_workflow", { name: "answer", input: { question: "three" } }, null]], open: true,
+  });
+  const learning = await reads.runLearningOverStore(store, "r1", secretsShown([]), []);
+  assert.deepEqual(learning.used.workflows, [{ name: "answer", calls: 3, failed: 1 }], JSON.stringify(learning.used));
 });
 
 test("a run's use of learned skills and workflows sits apart from what it learned: a run that learned a skill keeps its learned list", async () => {

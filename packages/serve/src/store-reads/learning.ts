@@ -253,20 +253,24 @@ function readsSkill(call: { tool: string; args: Record<string, unknown> }, name:
   return false;
 }
 
-export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map()): LearnedUse {
+/** `laid`: what the run's claims laid (laidOf): a skill its launch offered but no claim laid (over the budget, or a name
+ *  the revision's own skill holds, whose copy is the one installed) is not the run's learned skill, whatever it read. */
+export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map(), laid: Pick<Laid, "skills"> = { skills: [] }): LearnedUse {
   const job = rows.filter((row) => !reflects(reflect as Reflect | undefined, row.id));
   const results = new Map(job.flatMap((row) => (row.kind === "tool_result" && row.tool_use_id ? [[row.tool_use_id, row.tool_status] as const] : [])));
   const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id).flatMap((row) => {
     const call = args.get(row.tool_use_id!);
     return call ? [{ id: row.tool_use_id!, ...call }] : [];
   });
-  const skills = (started?.skills ?? []).map((name) => ({ name, read: calls.some((call) => results.get(call.id) === "success" && readsSkill(call, name)) }));
+  const installed = new Set(laid.skills);
+  const skills = (started?.skills ?? []).filter((name) => installed.has(name)).map((name) => ({ name, read: calls.some((call) => results.get(call.id) === "success" && readsSkill(call, name)) }));
   const workflows = new Map<string, { calls: number; failed: number }>();
   for (const call of calls) {
     if (!WORKFLOW_CALLS.has(call.tool) || typeof call.args.name !== "string") continue;
     const seen = workflows.get(call.args.name) ?? { calls: 0, failed: 0 };
     seen.calls += 1;
-    if (results.get(call.id) !== "success") seen.failed += 1;
+    // Only a result that says so: a call with no result yet (one still running) is no failure.
+    if (results.get(call.id) === "failed") seen.failed += 1;
     workflows.set(call.args.name, seen);
   }
   return { skills, workflows: [...workflows].map(([name, seen]) => ({ name, ...seen })) };
@@ -305,5 +309,5 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
-  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries)) }, shown, secrets);
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries)) }, shown, secrets);
 }

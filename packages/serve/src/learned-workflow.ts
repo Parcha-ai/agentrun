@@ -17,6 +17,7 @@
 // `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
 // own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
 // off is never run again (`replay: "never"`): it is answered interrupted.
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
@@ -184,10 +185,19 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
       const ledger = ledgerOf(api, context);
-      const said = await runLearned(run, flow, input, context?.abortSignal, ledger);
       // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row; a trace
-      // that can't be kept never fails the call.
-      if (said.nodes.length) await api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: said.nodes } as never })), context).catch(() => undefined);
+      // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
+      // written outside the stopped call's context, and still ends as a stop.
+      const trace: LearnedNode[] = [];
+      const keep = (signal: Context) => (trace.length ? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace } as never })), signal).catch(() => undefined) : undefined);
+      let said: Awaited<ReturnType<typeof runLearned>>;
+      try {
+        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace);
+      } catch (error) {
+        await keep(BACKGROUND_CONTEXT);
+        throw error;
+      }
+      await keep(context);
       return forModel(said.text, { isError: said.isError });
     },
   });
@@ -195,9 +205,9 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
 
 /** `flow` run on `input` for `run`: its output as JSON, or why it did not run, and each of its nodes that ran (at most
  *  LEARNED_NODES_MAX), none for one refused before any node ran. Never throws, but on an abort. `ledger`: the tool call's,
- *  which each call node's paid requests are booked under, as a call of its own within it. */
-export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger): Promise<{ text: string; isError: boolean; nodes: LearnedNode[] }> {
-  const nodes: LearnedNode[] = [];
+ *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
+ *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. */
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[] }> {
   const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
