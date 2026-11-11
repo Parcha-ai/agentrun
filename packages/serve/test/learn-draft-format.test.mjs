@@ -41,7 +41,7 @@ const cardDraft = (instructions) => JSON.stringify({
 });
 const DROPS = "Categorise the transactions and sum them.";
 const KEEPS = "Reply with the table '| Category | Count | Total |', then 'Flagged: ' and the merchants over $500, then 'Grand total: $' and the sum.";
-const block = (json) => `\`\`\`\`workflow card-report\n---\ndescription: Reports a week's card transactions by category; use when the user pastes them\nexample: {"text":"2026-11-03 | Staples | 427.98"}\n---\n${json}\n\`\`\`\``;
+const block = (json) => `\`\`\`\`workflow card-report\n---\ndescription: Reports a week's card transactions by category; use when the user pastes them\n---\n${json}\n\`\`\`\``;
 
 /** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
 async function folderWith(data, id, files) {
