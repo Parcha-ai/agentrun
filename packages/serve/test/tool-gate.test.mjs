@@ -11,14 +11,14 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { REPLAY } from "../dist/host-tools.js";
-import { runsTestHooks } from "../dist/runs.js";
 import { BOX_WORK } from "../dist/place.js";
-import { deniedText, RESUME_PREFIX, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
+import { deniedText, TURN_ORIGIN_FILE } from "../dist/tool-gate.js";
+import { liveSettings, runnerGate } from "./gate-support.mjs";
 import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -152,63 +152,40 @@ test("the gate's settings: ask offered where the kernel runs the approved call i
   assert.equal(resolveCapability("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask" }), "native", "pi's native search is a tool of the run's, which the gate holds");
 });
 
-test("the end-of-run turn writes no file under work/.learning/: its write or edit there is refused, whatever the tool's permission and by this machine's path or the box's, in words that keep its notes to its answer; outside .learning/, on any other turn, a write follows its permission, and a read is untouched; a run's gate reads the settings at each call, parks one call at a time, and a workflow's model node cannot park", async (t) => {
+test("the end-of-run turn writes no file under work/.learning/: its write or edit there is refused, whatever the tool's permission and by this machine's path or the box's, in words that keep its notes to its answer; outside .learning/, on any other turn, a write follows its permission, and a read is untouched; a run's gate reads the settings at each call", async (t) => {
   const work = await scratch(t);
   await mkdir(join(work, ".learning", "sub"), { recursive: true });
-  const quiet = { commit: async (change) => change({ appendEntry: async () => undefined }), parked: () => undefined };
   const gateOf = async (permission, origin) => {
-    const [at, settings] = [await scratch(t), await scratch(t)];
+    const at = await scratch(t);
     if (origin) await writeFile(join(at, TURN_ORIGIN_FILE), JSON.stringify({ origin }));
-    return new RunGate({ root: at, work, data: settings, runId: "rg" }, { write: { permission }, edit: { permission }, read: { permission } });
+    return runnerGate({ root: at, work, overrides: { write: { permission }, edit: { permission }, read: { permission } } });
   };
   for (const permission of ["allow", "ask", "deny"]) {
     const reflecting = await gateOf(permission, "reflect");
     for (const [tool, path] of [["write", ".learning/notes.md"], ["edit", ".learning/sub/notes.md"], ["write", ".learning/new/deeper/x.md"], ["write", join(work, ".learning", "x.md")], ["write", `${BOX_WORK}/.learning/x.md`], ["write", "@.learning/x.md"]]) {
-      assert.deepEqual(await reflecting.enter(tool, { path, content: "x" }, `c-${permission}-${tool}-${path}`, quiet), { text: NOTE_ONLY, isError: true }, `${permission}: ${tool} ${path}`);
+      assert.deepEqual(await reflecting.decide(tool, { path, content: "x" }), { deny: NOTE_ONLY }, `${permission}: ${tool} ${path}`);
     }
   }
   const allowed = await gateOf("allow", "reflect");
-  for (const path of ["notes.md", ".learning-other/x.md", ".learning/../notes.md"]) assert.equal(await allowed.enter("write", { path, content: "x" }, `c-out-${path}`, quiet), undefined, `outside .learning/, its permission: ${path}`);
-  assert.equal(await allowed.enter("read", { path: ".learning/notes.md" }, "c-read", quiet), undefined, "a read is untouched");
-  assert.equal(await (await gateOf("allow")).enter("write", { path: ".learning/notes.md", content: "x" }, "c-person", quiet), undefined, "a person's turn: allowed, it runs");
-  assert.equal((await (await gateOf("ask")).enter("write", { path: ".learning/notes.md", content: "x" }, "c-person-ask", quiet))?.parked, true, "a person's turn: under ask, it parks");
+  for (const path of ["notes.md", ".learning-other/x.md", ".learning/../notes.md"]) assert.equal(await allowed.decide("write", { path, content: "x" }), "allow", `outside .learning/, its permission: ${path}`);
+  assert.equal(await allowed.decide("read", { path: ".learning/notes.md" }), "allow", "a read is untouched");
+  assert.equal(await (await gateOf("allow")).decide("write", { path: ".learning/notes.md", content: "x" }), "allow", "a person's turn: allowed, it runs");
+  assert.equal(await (await gateOf("ask")).decide("write", { path: ".learning/notes.md", content: "x" }), "ask", "a person's turn: under ask, it asks");
 
-  const [root, data] = [await scratch(t), await scratch(t)];
-  const gate = new RunGate({ root, work, data, runId: "r1" }, { web_fetch: { permission: "deny" } });
-  const written = [];
-  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => written.push(entry) }), parked: (id) => written.push({ parked: id }) };
+  const root = await scratch(t);
+  const settings = liveSettings({});
+  const gate = runnerGate({ root, work, settings: settings.read, overrides: { web_fetch: { permission: "deny" } } });
   assert.equal(gate.policy("write"), "allow");
-  await writeFile(join(data, "tool-settings.json"), JSON.stringify({ write: { permission: "ask" }, web_fetch: { permission: "allow" }, "mcp:srv/*": { permission: "deny" } }));
+  settings.set({ write: { permission: "ask" }, web_fetch: { permission: "allow" }, "mcp:srv/*": { permission: "deny" } });
   assert.equal(gate.policy("write"), "ask", "the server's setting, read again");
   assert.equal(gate.policy("web_fetch"), "deny", "the revision's own over it");
   assert.equal(gate.policy("mcp:srv/echo"), "deny", "an MCP server's wildcard");
   assert.equal(gate.policy("mcp:other/echo"), "ask", "another server's tool: the default");
   // The deny is the revision's own (the agent's settings), so the words name the agent.
-  assert.deepEqual(await gate.enter("web_fetch", { url: PAGE }, "c1", park), { text: deniedText("web_fetch", undefined, "agent"), isError: true });
+  assert.deepEqual(await gate.decide("web_fetch", { url: PAGE }), { deny: deniedText("web_fetch", "web_fetch", "agent") });
   await writeFile(join(root, TURN_ORIGIN_FILE), JSON.stringify({ origin: "reflect" }));
-  assert.deepEqual(await gate.enter("write", { path: ".learning/notes.md", content: "x" }, "c2", park), { text: NOTE_ONLY, isError: true }, "a reflect write in work/.learning/ is refused");
-  assert.deepEqual(written, []);
-  const parkedWrite = await gate.enter("write", { path: "notes.md", content: "x" }, "c3", park);
-  assert.deepEqual(parkedWrite, { text: waitingText("write"), isError: false, parked: true }, "outside it, the reflect turn asks");
-  assert.deepEqual([written[0].kind, written[0].data.phase, written[0].data.tool, written[0].data.call_id, written[0].data.args_preview, written[1]], ["agentrun.tool_approval", "requested", "write", "c3", '{"path":"notes.md","content":"x"}', { parked: "c3" }]);
-  assert.deepEqual(await gate.enter("write", { path: "notes.md", content: "x" }, "c3", park), parkedWrite, "the same call again parks as the same request");
-  assert.equal(written.filter((entry) => entry.kind).length, 1, "written once");
-  assert.match((await gate.enter("write", { path: "b.md" }, "c4", park)).text, /^This write call was not run: the write call c3 already waits for a person's approval\./, "one call waits at a time");
-  const node = new RunGate({ root, work, data, runId: "r2" }, {}, false);
-  assert.deepEqual(await node.enter("write", { path: "notes.md" }, "c5", park), { text: "This write call needs a person's approval, which a workflow's model node cannot wait for; it was not run.", isError: true });
-});
-
-test("two ask calls entered at once, as pi runs a turn's calls in parallel: exactly one parks, and the other is refused in the usual words", async (t) => {
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  const gate = new RunGate({ root, work, data, runId: "r1" }, { write: { permission: "ask" } });
-  const written = [];
-  // A commit answers after its own await, as the run's store does.
-  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => written.push(entry) }), parked: (id) => written.push({ parked: id }) };
-  const [first, second] = await Promise.all([gate.enter("write", { path: "a.md" }, "c1", park), gate.enter("write", { path: "b.md" }, "c2", park)]);
-  assert.deepEqual(first, { text: waitingText("write"), isError: false, parked: true }, "the first parks");
-  assert.equal(second.parked, undefined, "the second does not");
-  assert.match(second.text, /^This write call was not run: the write call c1 already waits for a person's approval\./);
-  assert.deepEqual(written.filter((entry) => entry.kind).map((entry) => entry.data.call_id), ["c1"], "one request in the run's store");
+  assert.deepEqual(await gate.decide("write", { path: ".learning/notes.md", content: "x" }), { deny: NOTE_ONLY }, "a reflect write in work/.learning/ is refused");
+  assert.equal(await gate.decide("write", { path: "notes.md", content: "x" }), "ask", "outside it, the reflect turn asks");
 });
 
 test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
@@ -251,8 +228,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   assert.deepEqual(denied, Object.fromEntries(Object.keys(denied).map((harness) => [harness, "unavailable: denied"])), "no provider is asked, on any harness");
 });
 
-/** web_fetch set to ask on `harnesses` at once, the case below: each run parks, the owner answers more than a minute later,
- *  allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal. */
+/** web_fetch set to ask on `harnesses` at once, the case below: each run parks, its claim let go, and the owner answers
+ *  then; allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal. */
 async function askedOn(t, harnesses, { resumes = true } = {}) {
   const dialled = await network(t);
   // Each request pi's faux model is asked, by run: counted below, and shown when an answer is not what it should be.
@@ -285,9 +262,24 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     Object.assign(run, { approval: view.pending.id, callId: call.tool_use_id });
   }
   assert.deepEqual(await dialled(), [], "nothing ran while they wait");
-  // A real wait, past any CLI's own tool timeout: no CLI sits in a call meanwhile.
-  await sleep(61_000);
-  for (const run of runs) assert.equal((await api("GET", `/runs/${run.runId}`)).body.status, "input_required", `${run.harness} still parked`);
+  // The park is a release: no runner holds the run and no session is open while it waits, so how long the owner takes
+  // changes nothing (no clock is waited on; #2292). The answer reaches the run's next claim.
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    for (const run of runs) {
+      // The view reads input_required as the park lands; the runner lets go of its claim just after: polled, to a deadline.
+      let row;
+      for (const until = Date.now() + 15_000; ; await sleep(50)) {
+        row = await store.runs.get(run.runId);
+        if (row.state === "parked" && row.runner === null) break;
+        assert.ok(Date.now() < until, `${run.harness}: parked with its claim let go within 15 s: ${JSON.stringify(row)}`);
+      }
+      assert.deepEqual([row.state, row.runner], ["parked", null], `${run.harness}: parked, its claim let go`);
+      assert.equal((await api("GET", `/runs/${run.runId}`)).body.status, "input_required", `${run.harness} still parked`);
+    }
+  } finally {
+    await store.close();
+  }
 
   const byToken = await api("POST", `/runs/${runs[0].runId}/approvals/${runs[0].approval}`, { decision: "allow" });
   assert.deepEqual([byToken.status, byToken.body.error.code], [403, "forbidden"], "a token never answers an approval: an agent's MCP client or a script may hold one");
@@ -337,7 +329,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
   assert.deepEqual(await dialled(), harnesses.map(() => PAGE), "each allowed call ran once, no denied one ran");
 }
 
-test("web_fetch set to ask on pi: the run parks with its pending approval and is answered more than a minute later by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
+test("web_fetch set to ask on pi: the run parks with its pending approval, its claim let go, and is answered by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
 
 test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000, skip: "waits on the approval row reading after the call's own rows once the call ran: on the switch the call's result row is written after the answer, and the approval row keeps the call row's place" }, (t) => askedOn(t, ["pi"]));
 
@@ -615,14 +607,9 @@ const NOTE_ONLY = "A note is kept only from your answer: write it in a ```note b
 const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. It was not run: nothing was sent and nothing was charged.`;
 
 test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
-  // The run's gate, told no one can approve here: a catalog tool at its default ask is refused, and nothing is recorded.
-  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
-  const written = [];
-  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => written.push(entry) }), parked: (id) => written.push({ parked: id }) };
-  const lone = new RunGate({ root, work, data, runId: "r1" }, {}, true, false);
-  assert.deepEqual(await lone.enter("monid.run", { path: "/person/enrich" }, "c1", park), { text: NO_APPROVER("monid.run"), isError: true }, "a catalog tool's default ask");
-  assert.deepEqual(written, [], "no request kept, no park");
-  assert.equal((await new RunGate({ root, work, data, runId: "r2" }, {}, true, true).enter("monid.run", { path: "/person/enrich" }, "c2", park)).parked, true, "where someone can approve, it parks");
+  // The run's gate, told no one can approve here: a catalog tool at its default ask is refused, never asked.
+  assert.deepEqual(await runnerGate({ approvers: false }).decide("monid.run", { path: "/person/enrich" }), { deny: NO_APPROVER("monid.run") }, "a catalog tool's default ask");
+  assert.equal(await runnerGate({ approvers: true }).decide("monid.run", { path: "/person/enrich" }), "ask", "where someone can approve, it asks");
 
   // A server with accounts off: web_fetch set to ask is refused on every harness, and the run goes on.
   const dialled = await network(t);
@@ -870,43 +857,6 @@ test.skip("a person's message while an approval waits declines the call, with th
   }
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "neither call ran");
-});
-
-// SKIP (follow-up #2078): it hangs on the runner until its own timeout
-test.skip("an answer or a stop that lands while a declining message is on its way stands: an allow stays allow and runs once, and a stop stays withdrawn with no resume", { timeout: 150_000 }, async (t) => {
-  const dialled = await network(t);
-  const server = await serve(t, GATE);
-  const { api } = server;
-  const answer = await owner(server);
-  t.after(() => (runsTestHooks.personsTurn = undefined));
-  for (const [lands, url] of [["allow", PAGE], ["stop", `${PAGE}notes.txt`]]) {
-    const runId = await fetching(api, `latched-${lands}`, "pi", url, { tool_settings: { web_fetch: { permission: "ask" } } });
-    const id = (await parked(api, runId)).view.pending.id;
-    // The message has read the call waiting, and is held as it sends its turn (runs.ts personsTurn).
-    let release, reached;
-    const held = new Promise((resolve) => (release = resolve));
-    const at = new Promise((resolve) => (reached = resolve));
-    runsTestHooks.personsTurn = () => (reached(), held);
-    const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
-    await at;
-    if (lands === "allow") assert.equal((await answer(runId, id, { decision: "allow" })).status, 204);
-    else assert.deepEqual(((await api("POST", `/runs/${runId}/stop`, {})).body ?? {}).stopped, true);
-    runsTestHooks.personsTurn = undefined;
-    release();
-    assert.ok([200, 202].includes((await sent).status), `${lands}: the message is taken`);
-    const { rows } = await follow(api, runId, ["completed", "input_required"], { deadlineMs: 55_000 });
-    const kept = JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).approvals[id];
-    const resumes = resumeRows(rows);
-    if (lands === "allow") {
-      assert.deepEqual([kept.decision, kept.by], ["allow", undefined], "the allow stands: first answer wins");
-      await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-      assert.deepEqual((await dialled()).filter((dial) => dial === url), [url], "and its call ran once");
-    } else {
-      assert.equal(kept.decision, "withdrawn", "the stop stands");
-      assert.deepEqual(resumes, [], "nothing resumes the parked call");
-      assert.deepEqual((await dialled()).filter((dial) => dial === url), [], "and it never ran");
-    }
-  }
 });
 
 // SKIP (follow-up #2078): it hangs on the runner until its own timeout

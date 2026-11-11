@@ -96,7 +96,8 @@ const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.m
 
 /** `problem` as it may be printed: its path and detail cut of `values` and of secret shapes, whole when over PRINT_MAX. */
 export const printable = (problem: Problem, values: readonly string[]): Problem => ({
-  rule: problem.rule,
+  // A rule is one of Rule's words as the checks write it; a kept row read back is untrusted, so it is cut too.
+  rule: redactSecrets(problem.rule, values) as Problem["rule"],
   ...(problem.path === undefined ? {} : { path: redactSecrets(problem.path, values) }),
   detail: redactSecrets(problem.detail, values),
 });

@@ -14,9 +14,11 @@ import { release } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { BOX_ENV } from "../dist/run-box.js";
 import { follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { startServe } from "../dist/index.js";
+
+/** The whole environment of a box's programs, as the server gives it: a constant, never its own. */
+const BOX_ENV = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -111,7 +113,7 @@ function viaSocket(socketPath, options) {
 }
 
 test("AGENTRUN_BOX_ALLOW, read in one place: unset or empty is the default list, never no list; `none` is none; a comma list of names replaces the default; `*`, an address, a CIDR or a URL refuses, naming the setting", async () => {
-  const { boxAllowOf } = await import("../dist/run-box.js");
+  const { boxAllowOf } = await import("../dist/box-settings.js");
   assert.deepEqual(boxAllowOf({}), DEFAULT);
   assert.deepEqual(boxAllowOf({ [BOX_ALLOW_ENV]: "" }), DEFAULT);
   assert.deepEqual(boxAllowOf({ [BOX_ALLOW_ENV]: "  " }), DEFAULT);

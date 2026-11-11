@@ -6,7 +6,7 @@
 // run whose launch names harness "learning", which the runner's dispatch runs on the learning loop). A run that does
 // not learn is asked nothing and keeps nothing.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -21,7 +21,7 @@ const { runReflect } = await import("../dist/store-reads/journal.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const { learningFolderOf, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
-const { saveToolSettings, ToolSettings } = await import("../dist/tool-plane.js");
+const { saveToolSettings } = await import("../dist/tool-plane.js");
 const endModule = await import("../dist/runner/learning-end.js").catch(() => ({}));
 const learningEndOfRun = (...args) => (typeof endModule.learningEndOfRun === "function" ? endModule.learningEndOfRun(...args) : assert.fail("learningEndOfRun is not there"));
 
@@ -137,18 +137,33 @@ test("a run that does not learn, through the same runner, is asked nothing and k
   assert.ok(!(await w.server.learning.proposal("run-1")), "no learning kept");
 });
 
-test("the tools the end-of-run prompt offers a workflow draft follow the server's tool settings in the store, never a settings file in the data directory", async (t) => {
-  // The store denies web_search; a stale file in the data directory allows it. The prompt offers what the store says.
+test("the tools the end-of-run prompt offers a workflow draft follow the server's tool settings in the store", async (t) => {
+  // The store denies web_search: the prompt offers what the store says.
   const w = await world(t, { instructions: "Answer.", tools: ["read", "web_search"], learning: true }, async (dir) => {
     const seed = await seedOf(dir, "agent-1");
     return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
   }, async (server, dir) => {
     await saveToolSettings(server, { web_search: { permission: "deny" } });
-    writeFileSync(join(dir, ToolSettings.FILE), JSON.stringify({ web_search: { permission: "allow" } }));
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
   const row = await w.ended();
   const prompt = (await w.turnOf(row)).users[1] ?? "";
   assert.match(prompt, /It has no call node on a tool\./, `the store's deny leaves web_search out of the draft's tools: ${prompt.slice(prompt.indexOf("call node") - 80, prompt.indexOf("call node") + 120)}`);
-  assert.ok(!prompt.includes("web_search"), "the file's allow is never read");
+  assert.ok(!prompt.includes("web_search"), "the store's deny keeps it out");
+});
+
+test("a learned skill that served 3 earlier runs of the agent, with no learned workflow of its name, gets its job asked for as a workflow draft in the next run's end-of-run prompt", async (t) => {
+  // Three earlier runs of the agent were offered the skill (their launches say so); run-1 is offered it too.
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt.includes("Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
+  assert.equal(prompt.split("has now served").length - 1, 1, "one line, once");
 });

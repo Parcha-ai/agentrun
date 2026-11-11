@@ -119,3 +119,19 @@ test("notes that score the same are read newest first, as recency orders them: r
   assert.deepEqual(whole, [...whole].sort((a, b) => Number(b.slice(-5, -3)) - Number(a.slice(-5, -3))), `newest first: ${whole.join(", ")}`);
   assert.equal(whole[0], "refunds-46.md");
 });
+
+test("past 25 KB of budget, the room kept for the rest's lines is only what is served of them (200 lines, 25 KB): with 150 notes and 32 KB, the notes that bear on the run are picked whole (#2274 review)", () => {
+  const { INDEX_BYTES } = { INDEX_BYTES: 25_000 };
+  // 150 notes: each line 250 bytes (37.5 KB of lines in all, past what is served of them), each note 600 bytes whole.
+  const notes = Array.from({ length: 150 }, (_, i) => {
+    const topic = i < 5 ? "refund" : `topic${i}`;
+    return { note: { file: `n-${i}.md`, name: `${topic} ${i}`, description: `About ${topic}`, body: `${topic} ${topic} rule ${i}.` }, bytes: 600, lineBytes: 250 };
+  });
+  const budget = 32_000;
+  const choice = byRelevance({ notes, indexBytes: 0, indexComplete: true, budget }, { input: { content: "A refund request came in." } });
+  assert.ok(choice.whole.length > 0, `notes that bear on the run are picked whole: ${choice.whole.length}`);
+  assert.ok(choice.whole.every((note) => note.name.startsWith("refund")), JSON.stringify(choice.whole.map((note) => note.name)));
+  // What is served fits the budget: the whole notes and the lines served of the rest, at most 25 KB of them.
+  const served = choice.whole.length * 600 + choice.lines.length * 250;
+  assert.ok(choice.lines.length * 250 <= INDEX_BYTES && served <= budget, JSON.stringify({ whole: choice.whole.length, lines: choice.lines.length, served }));
+});
