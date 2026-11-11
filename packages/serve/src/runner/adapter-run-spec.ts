@@ -66,10 +66,12 @@ import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedact
 import { githubAppAccess } from "./github-app.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 
-/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+/** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
+ *  and names its runner), its revision, its place and any computer choice. */
 export interface ClaimLaunch {
   readonly runId: string;
   readonly epoch: number;
+  readonly claim?: unknown;
   readonly revisionId: string;
   readonly place?: unknown;
   readonly computer?: unknown;
@@ -87,6 +89,8 @@ export interface ClaimDeps {
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: unknown;
+  /** A desktop's or a phone's kind and the person's hold on it: the spec's `computer`, which the adapter loop journals. */
+  readonly held?: unknown;
   release(): Promise<void>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
@@ -312,7 +316,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
@@ -512,6 +516,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
+    // A desktop's or a phone's hold: the adapter loop journals its changes and applies the owner's take-over and hand-back
+    // rows to it (runner/computer-journal.ts), which the live view and the routes read.
+    ...(computer.held ? { computer: computer.held } : {}),
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).

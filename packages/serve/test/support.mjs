@@ -22,7 +22,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
-import { computerDepsFrom } from "../dist/workspace/index.js";
+import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { FAUX_ENV, withoutFaux } from "../dist/model.js";
 import { bootSealKey } from "../dist/seal-key.js";
@@ -302,8 +302,9 @@ export async function triggerStore(of) {
  *  `gradeTimeoutMs` when given. It holds at most the server's run cap (`maxRuns`, else AGENTRUN_MAX_RUNS, else what the
  *  host's memory holds: host.ts maxRunsOf), as the CLI's runner does; a run past it waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
- *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
+ *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
+ *  provider loader for the run's claim-time computer. */
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, computers: own, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), booted as the CLI's runner boots it: the one
@@ -319,11 +320,12 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
     await store.close();
     throw error;
   }
-  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
-  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows; a Docker computer's
-  // mounts by where the Docker has the data directory, as the CLI's runner reads it (box-paths.ts dockerPathsForRuns).
+  // The run's claim-time computer, composed once the one way, as the CLI's runner composes it (main.ts runnerComputers, a
+  // desktop's or a phone's live view with it): none for the runner's place, the real kinds otherwise, keys read from this
+  // env then the store's sealed rows; a Docker computer's mounts by where the Docker has the data directory, as the CLI's
+  // runner reads it (box-paths.ts dockerPathsForRuns). `computers`: a test's kind registry and provider loader.
   const sealKey = seal.key;
-  const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
+  const computers = runnerComputers(store, env, sealKey, { dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env), ...own });
   let runner;
   let beats = 0;
   try {

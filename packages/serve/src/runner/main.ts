@@ -23,7 +23,9 @@ import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import { computerDepsFrom } from "../workspace/computer-deps.js";
+import { openClaimView } from "../computer-live.js";
+import type { KeyEnv } from "../key-meta.js";
+import { computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -113,6 +115,13 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
   return out;
 }
 
+/** The run's computer at its claim, composed once for a runner (workspace/computer-deps.ts computerDepsFrom), the live view
+ *  of a desktop or a phone (computer-live.ts openClaimView) with it: runnerLoop's, runnerBeside's and a test's in-process
+ *  runner's. `own`: where Docker has the data directory and this host's addresses, and a test's kind registry and
+ *  provider loader in place of the computer package's. */
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses"> = {}) =>
+  computerDepsFrom({ env, store, sealKey, openComputerView: openClaimView, ...own });
+
 /** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
  *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a
  *  run without --faux, as the server's own withoutFaux keeps it from the server), then `switches`, the ones this start
@@ -132,10 +141,11 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
-  // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
-  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
-  // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
-  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
+  // The run's computer at its claim, composed once (runnerComputers): none for the runner's place, a box's computer by the
+  // agent's setting, its keys read from the run environment first, then the store's sealed rows; a Docker computer's
+  // mounts by where this process's Docker has the data directory (box-paths.ts), read once; a desktop's or a phone's live
+  // view opened with it.
+  const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,

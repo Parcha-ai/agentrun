@@ -203,7 +203,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
@@ -411,6 +411,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
+    // A desktop's or a phone's hold, journalled by the adapter loop, as the pi spec's.
+    ...(computer.held ? { computer: computer.held } : {}),
     workRoot: root,
     // The end's metrics from the run's record; a CLI run's carry its model. Its cost is its booking's: the harness's own
     // record carries no per-request cost, so its model requests are counted at what the run's model proxy booked them at
