@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -182,7 +182,7 @@ test('a receipt names every installed package smoke, the agent home included, an
   assert.match(readFileSync(new URL('./verify-packages.mjs', import.meta.url), 'utf8'), /assert\.deepEqual\(smoke, runtimeSmokeChecks\);/, 'verify-packages asserts its smoke against the set the preflight requires');
 }));
 
-test('only the scoped, unexpired audit exception admits a high advisory to publication', () => fixture(async root => {
+test('a high advisory blocks publication, with no exception to admit it: missing, mismatched or unlisted reports block too', () => fixture(async root => {
   const advisory = id => ({ url: `https://github.com/advisories/${id}`, severity: 'high' });
   const entry = (overrides = {}) => ({ severity: 'high', nodes: ['node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion'],
     via: ['GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p', 'GHSA-q2hr-2g5m-vwhr'].map(advisory), ...overrides });
@@ -190,28 +190,26 @@ test('only the scoped, unexpired audit exception admits a high advisory to publi
   const report = vulnerabilities => putJson(join(root, '.release/npm-audit.json'), { vulnerabilities, metadata: { vulnerabilities: counts } });
   const before = Date.parse('2026-10-02T00:00:00Z');
   await assert.rejects(checkReleaseAudit(root, counts, before), /High dependency advisories block publication; .release\/npm-audit.json is missing/);
+  // The real list holds no exception (audit-exceptions.mjs): the copy an expired one named blocks.
   await report({ 'brace-expansion': entry() });
-  await checkReleaseAudit(root, counts, before);
-  await assert.rejects(checkReleaseAudit(root, counts, Date.parse('2026-12-01T00:00:00Z')), /High dependency advisories/);
-  await assert.rejects(checkReleaseAudit(root, { ...counts, high: 2, total: 2 }, before), /differs from the verification receipt/);
+  await assert.rejects(checkReleaseAudit(root, counts, before), /High dependency advisories/);
   await report({ 'brace-expansion': entry({ nodes: ['node_modules/brace-expansion'] }) });
   await assert.rejects(checkReleaseAudit(root, counts, before), /High dependency advisories/);
-  await report({ 'brace-expansion': entry({ via: [advisory('GHSA-aaaa-bbbb-cccc')] }) });
-  await assert.rejects(checkReleaseAudit(root, counts, before), /High dependency advisories/);
+  await assert.rejects(checkReleaseAudit(root, { ...counts, high: 2, total: 2 }, before), /differs from the verification receipt/);
   await report({});
   await assert.rejects(checkReleaseAudit(root, counts, before), /npm audit counts high or critical advisories it does not list/);
 }));
 
-test('the release path runs the audit exception check on the receipt it publishes', { skip: Date.now() >= Date.parse('2026-12-01T00:00:00Z') && 'the brace-expansion exception has expired' }, () => fixture(async root => {
+test('the release path runs the audit check on the receipt it publishes', () => fixture(async root => {
   const counts = { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 };
   const path = join(root, '.release/verification.json');
   await putJson(path, { ...JSON.parse(await readFile(path)), audit: { vulnerabilities: counts } });
-  const vulnerabilities = { 'brace-expansion': { severity: 'high', nodes: ['node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion'],
-    via: ['GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p', 'GHSA-q2hr-2g5m-vwhr'].map(id => ({ url: `https://github.com/advisories/${id}`, severity: 'high' })) } };
+  const vulnerabilities = { 'brace-expansion': { severity: 'high', nodes: ['node_modules/brace-expansion'],
+    via: ['GHSA-qhr7-859c-m2p7'].map(id => ({ url: `https://github.com/advisories/${id}`, severity: 'high' })) } };
   await putJson(join(root, '.release/npm-audit.json'), { vulnerabilities, metadata: { vulnerabilities: { ...counts, high: 2, total: 2 } } });
   await assert.rejects(preflight(root), /differs from the verification receipt/);
   await putJson(join(root, '.release/npm-audit.json'), { vulnerabilities, metadata: { vulnerabilities: counts } });
-  assert.equal((await preflight(root)).status, 'passed');
+  await assert.rejects(preflight(root), /High dependency advisories/);
 }));
 
 test('Pi release rejects a missing, stale, or ranged Jev dependency', () => {
@@ -472,6 +470,66 @@ test('the preflight passes on a tree the fold produced, for that tag', () => fix
   assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Held bullet\.\n- A new change\.\n/);
   assert.equal((await preflight(root)).status, 'passed');
 }));
+
+/** A repository whose tag `v${version}` is the release pull request's fold plus two pull requests the queue merged before the tag. */
+async function taggedRelease(fn) {
+  const root = await mkdtemp(join(tmpdir(), 'agentrun-release-tree-'));
+  const git = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: root });
+  try {
+    await putJson(join(root, 'package.json'), { version, private: true });
+    await mkdir(join(root, 'packages/pi-browser'), { recursive: true });
+    await putJson(join(root, 'packages/pi-browser/package.json'), { name: '@parcha/pi-browser', version });
+    await writeFile(join(root, 'packages/pi-browser/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n');
+    await writeFile(join(root, 'CHANGELOG.md'), `# Changelog\n\n## Unreleased\n\n## ${version} (2026-01-02)\n\n- Folded by the release pull request.\n`);
+    await mkdir(join(root, 'changes'));
+    await writeFile(join(root, 'changes/README.md'), 'How to add a change.\n');
+    await writeFile(join(root, 'changes/late-root.md'), '---\npackages: repo\nkind: fix\n---\nMerged after the fold.\n');
+    await writeFile(join(root, 'changes/late-browser.md'), '---\npackages: @parcha/pi-browser\nkind: feature\n---\nA browser change merged after the fold.\n');
+    await git('init', '-q'); await git('add', '-A'); await git('commit', '-q', '-m', 'the tagged commit'); await git('tag', `v${version}`);
+    await fn(root, git);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+test('the release tree is the tag plus the fold: the fragments the tag carries are in this version\'s sections, and nothing else differs', () => taggedRelease(async root => {
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold of v0\.1\.0-beta\.1's fragments into 0\.1\.0-beta\.1/, 'unfolded');
+  await fold(root, version, '2026-01-02');
+  assert.deepEqual(await checkReleaseTree(root, `v${version}`, version), ['late-browser.md', 'late-root.md']);
+  assert.match(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Folded by the release pull request\.\n- Merged after the fold\.\n/);
+  assert.match(await readFile(join(root, 'packages/pi-browser/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- A browser change merged after the fold\.\n/);
+  // Anything besides the fold stops the release: an edited manifest, a new file, a changelog bullet taken out.
+  await putJson(join(root, 'packages/pi-browser/package.json'), { name: '@parcha/pi-browser', version, edited: true });
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /must be the tagged commit plus the changelog fold/);
+  await putJson(join(root, 'packages/pi-browser/package.json'), { name: '@parcha/pi-browser', version });
+  await writeFile(join(root, 'stray.txt'), 'x\n');
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /must be the tagged commit plus the changelog fold/);
+  await rm(join(root, 'stray.txt'));
+  const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  await writeFile(join(root, 'CHANGELOG.md'), folded.replace('- Merged after the fold.\n', ''));
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold of v0\.1\.0-beta\.1's fragments into 0\.1\.0-beta\.1; run node scripts\/changes\.mjs --fold/);
+  await writeFile(join(root, 'CHANGELOG.md'), folded.replace('- Merged after the fold.\n', '- Merged after the fold.\n- And a line written at release time.\n'));
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold/, 'the fold plus a hand edit is not the fold');
+  await writeFile(join(root, 'CHANGELOG.md'), folded);
+  assert.deepEqual(await checkReleaseTree(root, `v${version}`, version), ['late-browser.md', 'late-root.md']);
+}));
+
+test('a tag that carries no fragment needs a clean tree, as before', () => taggedRelease(async (root, git) => {
+  await git('rm', '-q', 'changes/late-root.md', 'changes/late-browser.md');
+  await git('commit', '-q', '-m', 'folded'); await git('tag', '-f', `v${version}`);
+  assert.deepEqual(await checkReleaseTree(root, `v${version}`, version), []);
+  await writeFile(join(root, 'CHANGELOG.md'), `# Changelog\n\n## Unreleased\n\n## ${version} (2026-01-02)\n\n- Folded by the release pull request.\n- Edited at release time.\n`);
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold/);
+}));
+
+test('the release workflow folds what its tag carries before it installs, builds or packs anything, and the preflight checks it after', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const at = text => { const index = workflow.indexOf(text); assert.ok(index > 0, `release.yml runs ${text}`); return index; };
+  const foldStep = at('run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"');
+  assert.ok(at('run: node scripts/release-ci-gate.mjs') < foldStep, 'after the tagged commit is known to have passed CI');
+  assert.ok(foldStep < at('- run: npm ci --ignore-scripts'), 'before the install');
+  assert.ok(foldStep < at('- run: npm run build\n'), 'before the build');
+  assert.ok(foldStep < at('- run: npm run verify:packages -- --console'), 'before the archives are packed and verified');
+  assert.ok(at('- run: npm run verify:packages -- --console') < at('- run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"'), 'the preflight reads the folded tree');
+});
 
 test("a release is refused while a published package's own changelog still has entries under Unreleased; a held package's may keep them", () => fixture(async root => {
   assert.ok(releasePackages.includes('pi-browser'), 'pi-browser is published in this checkout');

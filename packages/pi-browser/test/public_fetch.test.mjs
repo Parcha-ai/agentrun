@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import test from "node:test";
 import { fetch as undiciFetch } from "undici";
-import { BrowserFailureError, createWebTools, isPrivateAddress, pinnedLookup, publicFetch, readPage } from "../dist/index.js";
+import { BrowserFailureError, isPrivateAddress, pinnedLookup, publicFetch, readPage } from "../dist/index.js";
 
 const PUBLIC = "93.184.216.34";
 const PAGE = '<html><head><title>Public</title></head><body><p>Hello.</p><a href="/next">Next</a></body></html>';
@@ -255,22 +255,4 @@ test("a reply the fetch does not read (not text, an error status, a redirect) ne
 test("private, loopback, link-local and v4-mapped addresses are private; ordinary ones are not", () => {
   for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "not an address"]) assert.equal(isPrivateAddress(ip), true, ip);
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
-});
-
-test("web_fetch tells the model a backup's publicFetch refusal as a refusal: a private host, a non-text page and an oversized page are refused, not a failure worth retrying", async () => {
-  const sources = {
-    "http://rebind.example/": { lookup: ["127.0.0.1"] },
-    "http://public.example/blob": { lookup: ["93.184.216.34"], reply: () => new Response("%PDF", { status: 200, headers: { "content-type": "application/pdf" } }) },
-    "http://public.example/huge": { lookup: ["93.184.216.34"], reply: () => new Response(new Uint8Array(6 * 1024 * 1024), { status: 200, headers: { "content-type": "text/plain" } }) },
-  };
-  const options = { lookup: async (host) => Object.entries(sources).find(([url]) => new URL(url).hostname === host)[1].lookup, fetchImpl: async (url) => sources[url.href].reply() };
-  const backup = { name: "http", fetch: async (url, signal) => (await publicFetch(url, { ...options, ...(signal ? { signal } : {}) })).body };
-  const web = createWebTools({ name: "none", evidence: { file: async () => null }, scope: () => ({ label: "t", proxies: false }), backups: [backup] });
-  for (const url of Object.keys(sources)) {
-    const out = await web.fetch(1, { url });
-    const failure = JSON.parse(out.text);
-    assert.equal(out.isError, true, url);
-    assert.deepEqual([failure.code, failure.retryable], ["refused", false], `${url}: ${out.text}`);
-    assert.doesNotMatch(failure.message, /Try once more/, `${url}: a refusal is not worth retrying`);
-  }
 });

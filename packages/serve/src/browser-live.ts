@@ -1,10 +1,11 @@
 // The owner watches a run's browser live, and takes it over (browser-person.ts). The run's process runs pi-browser's own
 // viewer (createLiveView, take-over) on an ephemeral loopback port of its own, for every provider: the vendors' own live-view URLs never leave that process.
-// As each session launches, the process hands its viewer to the server in a file of that session's own, in a directory in
-// the run's directory, outside work/ (BROWSER_LIVE_DIR/<tag>.json, 0600 in 0700, written whole and renamed into place):
-// the port, the viewer's path id, its token, the session's tag and when. Its own file goes when the session is released,
-// and the token dies with it (pi-browser kills it then); a session's release never touches another's file, so an old
-// session's release that crosses a new one's launch (a relaunch) leaves the new one handed over.
+// As each session launches, the run's runner hands its viewer to the server through the store, under the run's claim (a
+// row of that session's own, its token sealed): the port, the viewer's path id, its token, the session's tag and when.
+// No file holds it: on the runner the run's folder is its workspace, which the agent and the run's file list reach. Its
+// own row goes when the session is released, and the token dies with it (pi-browser kills it then); a session's release
+// never touches another's row, so an old session's release that crosses a new one's launch (a relaunch) leaves the new
+// one handed over.
 //
 // The server reads the newest for the owner alone (GET /v2/runs/{id}/browser, and GET /v2/runs/{id}/computer, the computer
 // family's, the browser as kind browser there) and answers the viewer under the run's path (/v2/runs/{id}/browser/live/*,
@@ -12,23 +13,16 @@
 // the pi-browser it has installed, never anything a run's port answers: a run's port only ever carries the viewer's
 // WebSocket, data and no code, proxied to that port alone and only from this server's own origin. The page is served
 // under a CSP whose frame-ancestors is 'self' (the console's own origin). The token is never in a record, a timeline row, a run's view, its files (work/ alone is served), the model's
-// context, a home, an export or an archive: only this file and the owner's answer hold it.
-import { randomBytes } from "node:crypto";
-import type { Stats } from "node:fs";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, rm, writeFile } from "node:fs/promises";
+// context, a home, an export or an archive: only its sealed row and the owner's answer hold it.
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect } from "node:net";
-import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { dialHost, isLiveHost, LIVE_PROOF_HEADER, liveProof, type LiveReach } from "./live-reach.js";
 import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
 import type { Claim, LiveViewerRow, Store, ViewerKind } from "./store/store.js";
 
-/** The hand-over directory in the run's directory (never in work/): one file per open session. */
-export const BROWSER_LIVE_DIR = "browser-live";
 /** What the run's process hands the server for one session's viewer; `at`, when (the newest is the one shown). `kind`, the
- *  computer it views, as the store's row says it (a hand-over file is the browser's). */
+ *  computer it views, as the store's row says it. */
 export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number; kind?: ViewerKind; host?: string };
 /** The computer kinds a store row may name. */
 const VIEWER_KINDS: readonly string[] = ["browser", "desktop", "phone"] satisfies ViewerKind[];
@@ -57,72 +51,6 @@ export function handoverOf(fullscreen: string, tag: string, liveHost?: string): 
   if (url.protocol !== "http:" || (url.hostname !== LOOPBACK && !remote) || !Number.isInteger(port) || port < 1 || port > 65_535 || !id || !VIEWER_ID.test(id) || !TOKEN.test(token) || !TAG.test(tag)) return undefined;
   return { port, id, token, tag, ...(remote ? { host: liveHost } : {}) };
 }
-
-/** Whether `at` is this user's alone, and not a link: a directory (0700) or a file (0600). */
-const ownAlone = (at: Stats, dir: boolean): boolean => (dir ? at.isDirectory() : at.isFile()) && !at.isSymbolicLink() && (at.mode & 0o077) === 0 && (!process.getuid || at.uid === process.getuid());
-
-/** Writes `handover` into `runDir` as its session's own file: whole, 0600, under a name of its own first, then renamed
- *  into place. The time it was handed over goes with it. */
-export async function writeHandover(runDir: string, handover: LiveHandover): Promise<void> {
-  if (!TAG.test(handover.tag)) throw new Error("a hand-over's tag is not a session's tag");
-  const dir = join(runDir, BROWSER_LIVE_DIR);
-  await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "EEXIST") throw error;
-  });
-  if (!ownAlone(await lstat(dir), true)) throw new Error("the run's live view directory is not this user's alone");
-  const making = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
-  await writeFile(making, `${JSON.stringify({ ...handover, at: handover.at ?? Date.now() })}\n`, { mode: 0o600, flag: "wx" });
-  try {
-    await rename(making, join(dir, `${handover.tag}.json`));
-  } catch (error) {
-    await rm(making, { force: true });
-    throw error;
-  }
-}
-
-/** Removes session `tag`'s hand-over, and no other's; with no tag, every one (the run's process let its sessions go). */
-export async function dropHandover(runDir: string, tag?: string): Promise<void> {
-  if (tag === undefined) return void (await rm(join(runDir, BROWSER_LIVE_DIR), { recursive: true, force: true }));
-  if (TAG.test(tag)) await rm(join(runDir, BROWSER_LIVE_DIR, `${tag}.json`), { force: true });
-}
-
-/** Every hand-over in `runDir`, newest first: each a plain file of this user's alone in a directory of this user's alone
- *  (not a link), and one; anything else is left out. */
-export async function readHandovers(runDir: string): Promise<LiveHandover[]> {
-  const dir = join(runDir, BROWSER_LIVE_DIR);
-  try {
-    if (!ownAlone(await lstat(dir), true)) return [];
-    const found: LiveHandover[] = [];
-    for (const name of await readdir(dir)) {
-      if (!name.endsWith(".json") || !TAG.test(name.slice(0, -5))) continue;
-      const file = join(dir, name);
-      try {
-        // Opened without following a link, and checked on the handle it read: a name swapped meanwhile reads nothing.
-        const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-        let text: string;
-        try {
-          if (!ownAlone(await handle.stat(), false)) continue;
-          text = await handle.readFile("utf8");
-        } finally {
-          await handle.close();
-        }
-        const value = JSON.parse(text) as Partial<LiveHandover>;
-        const ok = Number.isInteger(value.port) && value.port! > 0 && value.port! < 65_536 && VIEWER_ID.test(String(value.id)) && TOKEN.test(String(value.token)) && value.tag === name.slice(0, -5) && Number.isFinite(value.at);
-        if (ok) found.push({ port: value.port!, id: value.id!, token: value.token!, tag: value.tag!, at: value.at! });
-      } catch {
-        // gone meanwhile, or not one
-      }
-    }
-    return found.sort((a, b) => b.at! - a.at! || b.tag.localeCompare(a.tag));
-  } catch {
-    return [];
-  }
-}
-
-/** The newest hand-over in `runDir`, or undefined. */
-export const readHandover = async (runDir: string): Promise<LiveHandover | undefined> => (await readHandovers(runDir))[0];
-/** The hand-over of the viewer whose path id is `id`, or undefined. */
-export const handoverById = async (runDir: string, id: string): Promise<LiveHandover | undefined> => (await readHandovers(runDir)).find((handover) => handover.id === id);
 
 /** The store's live viewers (store.liveViewers: put and drop under the runner's claim, of() for the server) carry the
  *  hand-over across processes, once serve and the runner share only the store. The token is never plaintext there: the
@@ -229,13 +157,14 @@ export async function computerViewerLink(store: LiveViewerStore, sealKey: Buffer
  *  sealed). */
 export type ViewerSeam = { put(handover: LiveHandover): Promise<unknown>; drop(tag?: string): Promise<void> };
 
-/** Where the browser tool hands its sessions' viewers over: through `seam` on the runner (the store, under its claim),
- *  else, on the old per-run process, the run directory `root`'s files. `changed`: a session launched (its viewer put) or
- *  released (its own hand-over dropped, never another's); `reopened`: a kept session's viewer opened again after a
- *  restart; `released`: the run let its sessions go, every hand-over of it dropped. */
-export function sessionHandovers(root: string, seam?: ViewerSeam, liveHost?: string) {
-  const put = (handover: LiveHandover): Promise<unknown> => (seam ? seam.put(handover) : writeHandover(root, handover));
-  const drop = (tag?: string): Promise<void> => (seam ? seam.drop(tag) : dropHandover(root, tag));
+/** Where the browser tool hands its sessions' viewers over: through `seam` (the store, under the run's claim), and nowhere
+ *  else: with no seam no viewer is handed over, and nothing is written (never a file in the run's folder, the agent's
+ *  workspace). `changed`: a session launched (its viewer put) or released (its own hand-over dropped, never another's);
+ *  `reopened`: a kept session's viewer opened again after a restart; `released`: the run let its sessions go, every
+ *  hand-over of it dropped. `liveHost`: the runner's live host, when it is on another host than its server. */
+export function sessionHandovers(seam: ViewerSeam | undefined, liveHost?: string) {
+  const put = async (handover: LiveHandover): Promise<unknown> => seam?.put(handover);
+  const drop = async (tag?: string): Promise<void> => seam?.drop(tag);
   return {
     changed: async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string): Promise<void> => {
       if (change === "released") return drop(row.session.tag);

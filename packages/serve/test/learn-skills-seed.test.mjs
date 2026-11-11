@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { builtinHarness } from "../dist/harness-table.js";
 import { agentFolderOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
@@ -17,7 +16,7 @@ import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { ended, git, pinOf, resnap } from "./learn-support.mjs";
-import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, runDir, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
@@ -29,6 +28,8 @@ const skillMd = (name, body) => `---\nname: ${name}\ndescription: What ${name} i
 const filler = (bytes) => "Keep each figure as the source gives it.\n".repeat(Math.ceil(bytes / 40)).slice(0, bytes);
 const UNITS = skillMd("check-units", "Convert every amount to one unit before comparing. Read reference/units.md for the table.");
 const UNITS_TABLE = "cents = dollars x 100\n";
+/** UNITS as a run is given it (learn/skills.ts servedSkill): its name and description quoted. */
+const UNITS_SERVED = UNITS.replace("name: check-units\ndescription: What check-units is for.", 'name: "check-units"\ndescription: "What check-units is for."');
 const CITE = skillMd("cite", "Cite every source you read.");
 const { dropSeed, layPinnedSkills, learningTestHooks, pinSeed, readPin, secretsShown, seedOf, skillsAt, withLearned } = learning;
 const PLAIN = { budget: 8000, read: false, shown: secretsShown([]) };
@@ -72,8 +73,6 @@ async function runWith(t, files) {
 const skillsDir = (work) => join(work, ".agents", "skills");
 const workOf = (data, runId) => join(runDir(data, runId), "work");
 const inlined = (prompt) => [...prompt.matchAll(/<skill name="([^"]+)">/g)].map((match) => match[1]);
-/** A model request's system prompt, as text. */
-const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
 
 /** Agent `id`, learning, on `harness`, with the revision's skill `cite`; its run made and ended: its id, its prompt as
  *  the faux model or harness says it, and its view. */
@@ -107,7 +106,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   assert.deepEqual(pin, { seed: sha, skills: ["check-units/SKILL.md"], skills_left_out: ["big-notes"] });
   assert.deepEqual(await readPin(runDir), pin);
   assert.deepEqual(readdirSync(skillsDir(work)).sort(), ["check-units", "cite"], "the one left out is not laid");
-  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
+  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS_SERVED);
 
   // Without the budget the 200 KiB one would be laid too: the set is over the adapter's 1 MiB, and every skill, the
   // revision's among them, goes back in the prompt.
@@ -117,25 +116,33 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   assert.deepEqual([unbudgeted.native, inlined(unbudgeted.system)], [[], ["big-notes", "check-units", "cite"]]);
 });
 
-test("on claude-agent's real adapter: with 900 KiB of the revision's skills, the learned one that fits is loaded through the Skill tool beside them, the 200 KiB one is left out, and no skill is inlined", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
-  t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
-  const { api, data } = await serve(t, { faux: undefined });
-  const sha = await folderWith(data, "native", asLearned({ "big-notes": { "SKILL.md": skillMd("big-notes", filler(200 * KIB)) }, "check-units": { "SKILL.md": UNITS } }));
-  const skills = { "cite/SKILL.md": CITE, "cite/reference/data.md": filler(900 * KIB) };
-  const created = await api("POST", "/agents", { ...agent("native", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-4-5", instructions: "Answer the question.", skills: ["cite"] }), skills });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const run = await api("POST", "/agents/native/runs", { input: { content: "Answer." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
-  const first = fake.messages().find((m) => m.tools.includes("Skill"));
-  assert.deepEqual(inlined(systemText(first?.body ?? fake.messages()[0]?.body)), [], "no skill is inlined");
-  assert.ok(first, `the Skill tool is offered: ${JSON.stringify(fake.messages().map((m) => m.tools))}`);
-  const body = JSON.stringify(first.body);
-  assert.ok(body.includes("agentrun:cite") && body.includes("agentrun:check-units"), "the revision's skill and the learned one that fits are the CLI's own");
-  assert.ok(!body.includes("big-notes"), "the one left out is nowhere");
-  assert.equal((await pinOf({ data }, run.body.run_id)).seed, sha, "started from the seed its launch names");
+test("at the 1 MiB cap the revision's skills are sized in each form a harness is handed: a learned skill that fits them only as stored is left out for OpenCode (served, quoted), and one that fits them only as served is left out for claude-agent (stored)", { timeout: 60_000 }, async (t) => {
+  const SKILL_BYTES = 1024 * KIB;
+  const data = join(await scratch(t), "agents");
+  await folderWith(data, "edge", asLearned({ "check-units": { "SKILL.md": skillMd("check-units", filler(100 * KIB)) } }));
+  const seed = await seedOf(data, "edge");
+  const room = seed.skills[0].bytes;
+  // The revision's SKILL.md at exactly the room the learned one needs, as stored; served (servedSkill), its plain
+  // description of backslashes is quoted as JSON writes it, each one doubled: 2,000 bytes more than stored.
+  const grows = `---\nname: cite\ndescription: ${"\\".repeat(2000)}\n---\n`;
+  const atRoom = (head, extra = 0) => ({ "cite/SKILL.md": head + filler(SKILL_BYTES - room - Buffer.byteLength(head) + extra) });
+  const quoted = atRoom(grows);
+  const opencode = await runWith(t, quoted);
+  const pin = await pinSeed(opencode.runDir, opencode.ws, seed, { ...PLAIN, own: Object.keys(quoted) });
+  assert.deepEqual([pin.skills ?? [], pin.skills_left_out], [[], ["check-units"]], "it fits the revision's stored bytes, not what OpenCode is served");
+  const check = await builtinHarness("opencode").skillCheck();
+  assert.ok(check, "OpenCode's own check");
+  const learned = await withLearned(opencode.runDir, opencode.ws, "Answer.", Object.keys(quoted));
+  const { system, native } = await systemOf(learned.instructions, learned.skills, opencode.ws, check);
+  assert.deepEqual([native.map(({ name }) => name), inlined(system)], [["cite"], []], "the revision's stay OpenCode's own, none in the prompt");
+
+  // The other way: a front matter key servedSkill drops makes the served form smaller than the stored one, which
+  // claude-agent and codex are handed. One byte short of room as stored: left out, though it would fit as served.
+  const shrinks = `---\nname: cite\ndescription: Cite.\nlicense: ${"x".repeat(2000)}\n---\n`;
+  const dropped = atRoom(shrinks, 1);
+  const claude = await runWith(t, dropped);
+  const pinned = await pinSeed(claude.runDir, claude.ws, seed, { ...PLAIN, own: Object.keys(dropped) });
+  assert.deepEqual(pinned.skills_left_out, ["check-units"], "claude-agent is handed the revision's as stored");
 });
 
 test("the learned skills' budget is 256 KiB, whatever room the revision's leave: the newest that fit, whole, and the rest named as left out", { timeout: 60_000 }, async (t) => {
@@ -170,11 +177,11 @@ for (const harness of ["pi", "codex"]) {
     assert.ok(!prompt.includes(CANARY) && !prompt.includes("waiting-skill"), `a skill held for its owner's OK is not served: ${prompt}`);
     assert.equal(existsSync(join(skillsDir(workOf(data, runId)), "waiting-skill")), false);
     assert.notEqual(view.learning?.reason, "seed_failed", JSON.stringify(view.learning));
-    assert.ok(prompt.includes(`<skill name="check-units">\n${UNITS.trim()}\n</skill>`), prompt);
+    assert.ok(prompt.includes(`<skill name="check-units">\n${UNITS_SERVED.trim()}\n</skill>`), prompt);
     assert.ok(prompt.includes(`<skill name="cite">\n${CITE.trim()}\n</skill>`), prompt);
     assert.deepEqual(inlined(prompt), ["check-units", "cite"]);
     const work = workOf(data, runId);
-    assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
+    assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS_SERVED);
     assert.equal(readFileSync(join(skillsDir(work), "check-units", "reference", "units.md"), "utf8"), UNITS_TABLE);
     assert.equal((await pinOf({ data }, runId)).seed, sha, "started from the seed its launch names");
   });
@@ -242,7 +249,7 @@ test("a learned skill's copy is the host's: a copy that fails takes it back with
   writeFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "written by the run\n");
   writeFileSync(join(skillsDir(work), "check-units", "scratch.md"), "written by the run\n");
   await layPinnedSkills(ws, pin, () => skillsAt(data, "copied", sha));
-  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS);
+  assert.equal(readFileSync(join(skillsDir(work), "check-units", "SKILL.md"), "utf8"), UNITS_SERVED);
   assert.equal(readFileSync(join(skillsDir(work), "check-units", "reference", "units.md"), "utf8"), UNITS_TABLE);
   assert.equal(existsSync(join(skillsDir(work), "check-units", "scratch.md")), false);
   assert.equal(readFileSync(join(skillsDir(work), "cite", "SKILL.md"), "utf8"), CITE, "the revision's is not touched");

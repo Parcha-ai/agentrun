@@ -48,7 +48,9 @@ export type LearnedFileRef = { file: string; name: string; pending?: true };
 export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
 /** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
  *  changes. */
-export type Retired = { at: string; by: "person" | "run" };
+/** When and by whom an item was retired, and `from`, the status its restore gives back: `active`, or `pending` (it goes
+ *  back to waiting for your OK). */
+export type Retired = { at: string; by: "person" | "run"; from: "active" | "pending" };
 /** The newest change to an item's file, as the server names it (absent when it names none). */
 export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
 const VERBS: Record<LastChange["kind"], string> = { approved: "Approved", edited: "Edited", created: "Created", retired: "Retired", restored: "Restored", learned: "Learned", superseded: "Replaced" };
@@ -81,17 +83,20 @@ export type NoteText = { note: string; etag: string | null };
 export const NO_VERSION = "Can't tell which version this is: reload.";
 /** Said when the note changed since a card showed it. */
 export const CHANGED = "It changed since you opened it.";
-/** What a restore says before it is made: what it changes. */
-export const RESTORES = "It becomes active again for the next run.";
+/** What a restore says before it is made: what it changes, by the status it goes back to. Only an item that was active
+ *  before its retire becomes active; one that waited for your OK waits again. */
+export const restores = (from: Retired["from"] | undefined): string => (from === "active" ? "It becomes active again for the next run." : "It goes back to waiting for your OK: no run uses it until you approve it.");
+/** What "Make this an agent" makes, said in its confirm: a workflow agent of its own, under this agent's policy, with the
+ *  learned workflow left where it is. */
+export const PROMOTES = (name: string) => `It makes a new agent that runs the steps of ${name} on their own, with no agent loop, under this agent's tool settings, approvals and cap. ${name} stays here, unchanged.`;
+/** A promotion made by a token, not the owner's password sign-in: the server refuses it (403). */
+export const PROMOTE_SIGN_IN = "Making an agent from it takes your password sign-in in the console.";
 /** A restore made by a token, not the owner's password sign-in: the server refuses it (403). */
 export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the console.";
 
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
-/** A note's file name, as the server takes one: at the folder's top, a letter or digit first, then letters, digits, dots,
- *  dashes and underscores, ending .md; never MEMORY.md, which the server builds. */
-export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 export const NOTE_TYPES: readonly NoteType[] = ["feedback", "project", "reference", "user"];
 /** Each type in plain words, as a card and the editor's picker show it (the API's value is in its tooltip). */
 export const TYPE_LABEL: Record<NoteType, string> = { user: "About you", feedback: "How to work", project: "About the work", reference: "Where to look" };
@@ -252,6 +257,15 @@ const value = (v: string) => {
 };
 /** The parts as a note's whole text, the one a write sends. */
 export const noteText = (p: NoteParts) => `---\nname: ${value(p.name)}\ndescription: ${value(p.description)}\ntype: ${p.type}\n${p.rest.map((l) => `${l}\n`).join("")}---\n${p.body.replace(/^\n*/, "\n")}`;
+/** The notes a note says it replaces, by file: its front matter's `supersedes`, a `[a.md, b.md]` list or one name, read
+ *  as the server reads it (serve's learn/notes.ts: the whole value unquoted, then listOf). None when it names none. */
+export function supersedesOf(text: string): string[] {
+  const line = noteParts(text).rest.find((l) => /^supersedes:/.test(l));
+  // The whole value unquoted first, then the list split, as the server reads it: a quoted `"[old.md]"` is one list.
+  const raw = line ? unquote(line.replace(/^supersedes:\s*/, "").trim()).trim() : "";
+  if (!raw) return [];
+  return (/^\[.*\]$/.test(raw) ? raw.slice(1, -1).split(",") : [raw]).map((item) => unquote(item.trim())).filter(Boolean);
+}
 /** A note's body alone: its text past the front matter. */
 export const bodyOf = (text: string) => noteParts(text).body.replace(/^\n+/, "");
 

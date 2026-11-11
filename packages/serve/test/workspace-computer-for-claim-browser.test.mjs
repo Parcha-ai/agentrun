@@ -55,7 +55,7 @@ function browserProvider(id, url, record) {
 for (const [provider, keys, url] of [
   ["browserbase", { BROWSERBASE_API_KEY: "bb-test", BROWSERBASE_PROJECT_ID: "proj-test" }, "wss://connect.browserbase.test/?signingKey=SECRET-bb"],
   ["kernel", { KERNEL_API_KEY: "kn-test" }, "wss://cdp.kernel.test/browser/k1?jwt=SECRET-kn"],
-  ["local", {}, "ws://127.0.0.1:9222/devtools/browser/abc"],
+  ["local-chrome", {}, "ws://127.0.0.1:9222/devtools/browser/abc"],
 ]) {
   test(`a ${provider} browser computer: the claim makes nothing; the browser tool opens, attaches to and releases each session through its provider, and the claim's release lets go of what it left`, async () => {
     const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-claim-browser-")));
@@ -119,8 +119,8 @@ test("a browser computer's live view rides the session the browser tool opened: 
   const url = "ws://127.0.0.1:9222/devtools/browser/abc";
   const record = { created: [], released: [], connects: 0 };
   const viewers = [];
-  const answer = await computerForClaim({ runId: "run-1", epoch: 2, computer: { kind: "browser", provider: "local" } }, store, {
-    mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: { local: () => browserProvider("local", url, record) },
+  const answer = await computerForClaim({ runId: "run-1", epoch: 2, computer: { kind: "browser", provider: "local-chrome" } }, store, {
+    mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: { "local-chrome": () => browserProvider("local-chrome", url, record) },
     spec: () => ({ image: "browser", lifetimeMs: 600_000, network: "open" }), workspace: localWorkspace(root), check: { readBackOf, epoch: 2 },
     // The desktop's and phone's viewer (computer-live.ts): never for a browser, whose view is the browser tool's own.
     openComputerView: async (opened) => (viewers.push(opened), { ok: false, refused: "unused", message: "unused" }),
@@ -140,5 +140,5 @@ test("a browser computer's live view rides the session the browser tool opened: 
   assert.deepEqual(viewers, [], "no desktop viewer for a browser");
   await sessions.release(session);
   await answer.release();
-  assert.deepEqual(record.released, [["local-1", "delete"]], "and that one session is let go once");
+  assert.deepEqual(record.released, [["local-chrome-1", "delete"]], "and that one session is let go once");
 });

@@ -55,7 +55,7 @@ export function paidRefusal(cap: number, spent: number, held: number, name: stri
   const leastCapUsd = raiseFigure(cap, spent + held + holdUsd);
   return {
     text: `${SPEND_CAP_REACHED}: Not sent: this run has ${spentOf(spent, held, cap)}, and the next step, ${name}, could cost up to ${money(holdUsd)} (${basis}). Raise the cap to at least $${leastCapUsd.toFixed(2)} to continue.`,
-    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd },
+    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd, step: { name, holdUsd, basis } },
   };
 }
 
@@ -70,6 +70,22 @@ export function overCapWords(spentUsd: number | null, capUsd: number | undefined
   const byMiss = boundUsd > 0 && spentUsd - capUsd <= boundUsd + FIT_TOLERANCE;
   return byMiss ? `Went ${centsUp(spentUsd - capUsd)} over its cap on a cache miss (at most ${centsUp(boundUsd)}).` : `Spent ${centsMoney(spentUsd)}, ${centsUp(spentUsd - capUsd)} over the run's cap of ${centsMoney(capUsd)}`;
 }
+
+/** How a run ends whose booked cost `spentUsd` passed `capUsd`: failed, in these words (main's run end), the answer that
+ *  crossed it booked. None at or under the cap, with no cap, with no known cost, or when it passed by no more than
+ *  `boundUsd` (a cache miss within the bound it was admitted at: the run pauses at its next request instead). */
+export function overCapEnd(spentUsd: number | null, capUsd: number | undefined, boundUsd = 0): string | undefined {
+  if (capUsd === undefined || typeof spentUsd !== "number" || spentUsd <= capUsd + FIT_TOLERANCE) return undefined;
+  if (boundUsd > 0 && spentUsd - capUsd <= boundUsd + FIT_TOLERANCE) return undefined;
+  return `${OVER_CAP_END}${centsMoney(spentUsd)}, ${centsUp(spentUsd - capUsd)} over its cap of ${centsMoney(capUsd)}.`;
+}
+
+/** How overCapEnd's words begin, and only theirs: a reader of a run's summary serves one that does as the error
+ *  spend_cap_reached, its message the words after `spend_cap_reached: ` (overCapMessage). */
+export const OVER_CAP_END = `${SPEND_CAP_REACHED}: The run cost `;
+/** The message of a run's end in overCapEnd's words: what follows its code; undefined for any other summary. */
+export const overCapMessage = (summary: string | null | undefined): string | undefined =>
+  typeof summary === "string" && summary.startsWith(OVER_CAP_END) ? summary.slice(`${SPEND_CAP_REACHED}: `.length) : undefined;
 
 export const unmeasured = (cap: number): string => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 export const noPrice = (cap: number): string => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no price here, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;

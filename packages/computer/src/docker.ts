@@ -8,22 +8,26 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { daemonCopy, defaultDaemonCache } from "./daemon-copy.js";
+import { DOCKER } from "./descriptors/docker.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
-	CPU_PERIOD_US,
-	DAEMON_DIR_IN_COMPUTER,
 	DAEMON_IN_COMPUTER,
 	DEADLINE_LABEL,
 	DEFAULT_CPUS,
 	DEFAULT_MEMORY_MB,
 	DEFAULT_PIDS,
+	helloDrift,
+	WORK,
+} from "./drift.js";
+import {
+	CPU_PERIOD_US,
+	DAEMON_DIR_IN_COMPUTER,
 	type DockerHost,
 	type DockerInspect,
 	type DriftExpected,
 	drift,
 	egressShaped,
-	helloDrift,
 	hostOf,
 	inspectDrift,
 	mountAsked,
@@ -31,8 +35,7 @@ import {
 	networkOf,
 	samePolicy,
 	tmpfsOf,
-	WORK,
-} from "./drift.js";
+} from "./docker/inspect.js";
 import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import {
 	ALLOW_PORTS,
@@ -65,20 +68,24 @@ import {
 	type CallContext,
 	type ComputerCapabilities,
 	checkGpu,
-	checkLifetime,
+	checkTenure,
 	type ComputerConnection,
 	type ComputerInfo,
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
-	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
+
+/** This module's failures: one with code vendor names Docker. */
+const fail = failFor("docker");
 
 /**
  * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
@@ -143,15 +150,10 @@ export interface DockerProviderOptions {
 }
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
-export const MOUNT: readonly MountKind[] = ["bind"];
-/** The networks a Docker computer takes: none, open, or an allowlist through the server's egress proxy. */
-export const NETWORK: readonly NetworkForm[] = ["none", "open", "allow"];
+export const MOUNT: readonly MountKind[] = DOCKER.mounts;
 
-/** The machine kind and groups of each configuration: a linux computer, and one made with the desktop option. */
-export const CAPABILITIES: readonly KindCapabilities[] = [
-	{ kind: "linux", groups: ["exec", "files", "processes"] },
-	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
-];
+/** The machine kind and groups of each configuration (its descriptor's): a linux computer, and a desktop. */
+export const CAPABILITIES: readonly KindCapabilities[] = DOCKER.capabilities;
 
 /** What create() takes: the provider's options, the daemon optional. */
 export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
@@ -205,6 +207,8 @@ const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is ref
 const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
+/** The most CPUs whose quota (CPU_PERIOD_US each) is still a whole number Docker takes. */
+const MAX_CPUS = Math.floor(Number.MAX_SAFE_INTEGER / CPU_PERIOD_US);
 const HELLO_TIMEOUT_MS = 30_000;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
@@ -331,7 +335,7 @@ export class DockerProvider implements ComputerProvider {
 		return {
 			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
-			network: [...NETWORK],
+			network: [...DOCKER.network],
 			allow: { domains: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, cidrs: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, mixed: true },
 			networkReadBack: true,
 			isolation: "container",
@@ -352,6 +356,11 @@ export class DockerProvider implements ComputerProvider {
 	 */
 	image(options: CallContext & Pick<EnsureImageOptions, "timeoutMs" | "onWait"> = {}): Promise<Result<string>> {
 		return ensureImage(this.#image, { ...options, docker: this.#docker });
+	}
+
+	/** The provider contract's prepareImage (its descriptor declares it): image(), its recipe built or its image pulled. */
+	prepareImage(context: CallContext & Pick<EnsureImageOptions, "onWait"> = {}): Promise<Result<string>> {
+		return this.image(context);
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, a bind or an
@@ -389,12 +398,14 @@ export class DockerProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Docker"));
 		if (typeof network === "object" && network !== null && "allow" in network) {
 			const allow = allowOf((network as { allow: unknown }).allow);
 			if ("problem" in allow) refuse("network", allow.problem);
 		} else if (network !== "none" && network !== "open") refuse("network", NETWORKS);
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= 0.01)) refuse("cpus", "cpus must be a number of CPUs of at least 0.01");
+		// Its CFS quota is a whole number of microseconds per period: a count too large for one is no quota Docker takes.
+		else if (cpus !== undefined && !Number.isSafeInteger(Math.round(cpus * CPU_PERIOD_US))) refuse("cpus", `cpus must be at most ${MAX_CPUS}`);
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb >= MIN_MEMORY_MB)) {
 			refuse("memoryMb", `memoryMb must be a whole number of MiB, at least ${MIN_MEMORY_MB}`);
 		}
@@ -485,7 +496,7 @@ export class DockerProvider implements ComputerProvider {
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		// The lifetime counts from here: what the proxy and docker run take comes out of it.
 		const lifetimeFrom = Date.now();
-		const deadline = new Date(lifetimeFrom + spec.lifetimeMs).toISOString();
+		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
 			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
@@ -527,7 +538,7 @@ export class DockerProvider implements ComputerProvider {
 		if (!started.ok || started.value.exitCode !== 0) {
 			// A run that failed or was aborted may still have made the container; an allowlist's proxy and volume go with it.
 			const released = await this.release({ id: name, name }, "delete");
-			if (started.ok) return fail("docker", `docker run failed: ${started.value.stderr.trim()}`);
+			if (started.ok) return vendorFail("docker",`docker run failed: ${started.value.stderr.trim()}`);
 			// Cut off before its own exit: the daemon may still make the computer after release looked, and then its egress
 			// volume with it (#settle).
 			const left = await this.#settle([name], allow === undefined ? [] : [egressNameOf(name)]);
@@ -545,11 +556,11 @@ export class DockerProvider implements ComputerProvider {
 		if (state?.Running !== true) {
 			await this.release(ref, "delete");
 			// Init exits 0 at its deadline: one that passed before docker run finished is a lifetime the host's start ate.
-			if (state?.ExitCode === 0 && Date.now() >= lifetimeFrom + spec.lifetimeMs) {
-				return fail("timeout", `the computer ${name}'s lifetime of ${spec.lifetimeMs / 1000} s ended before docker run finished (it took ${Math.round(ranMs / 100) / 10} s), so init ended it and it was removed`);
+			if (state?.ExitCode === 0 && Date.now() >= lifetimeFrom + runLifetimeMs(spec)) {
+				return fail("timeout", `the computer ${name}'s lifetime of ${runLifetimeMs(spec) / 1000} s ended before docker run finished (it took ${Math.round(ranMs / 100) / 10} s), so init ended it and it was removed`);
 			}
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
-			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
+			return vendorFail("docker",`the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
 		if (this.#desktop) {
 			const shown = await this.#startDisplay(ref, this.#desktop, signal);
@@ -578,7 +589,7 @@ export class DockerProvider implements ComputerProvider {
 		if (found.value.exitCode === 0) return ok(undefined);
 		const pulled = await this.#run(["pull", image], signal);
 		if (!pulled.ok) return signal?.aborted ? aborted() : pulled;
-		if (pulled.value.exitCode !== 0) return fail("docker", `docker pull ${image} failed, so nothing was made: ${pulled.value.stderr.trim()}`);
+		if (pulled.value.exitCode !== 0) return vendorFail("docker",`docker pull ${image} failed, so nothing was made: ${pulled.value.stderr.trim()}`);
 		return ok(undefined);
 	}
 
@@ -643,7 +654,7 @@ export class DockerProvider implements ComputerProvider {
 		const proxy = egressNameOf(name);
 		const volume = await this.#run(egressVolumeArgs(name, user, deadline, labels), signal);
 		if (!volume.ok) return volume;
-		if (volume.value.exitCode !== 0) return fail("docker", `docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
+		if (volume.value.exitCode !== 0) return vendorFail("docker",`docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
 		const { image, hint, readyMs } = this.#egress;
 		const args = egressRunArgs({ name, user, image, allow, local: this.#hostLocal(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
 		const ran = await this.#run(args, signal);
@@ -653,7 +664,7 @@ export class DockerProvider implements ComputerProvider {
 			const words = left === undefined ? "the proxy and its volume, if Docker made them after, were removed" : `the proxy and its volume could not all be removed: ${left}`;
 			return fail(ran.error.code, `${ran.error.message === "docker run was aborted" ? "create was aborted during docker run of the egress proxy" : ran.error.message}; ${words}`);
 		}
-		if (ran.value.exitCode !== 0) return fail("docker", `docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
+		if (ran.value.exitCode !== 0) return vendorFail("docker",`docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
 		// Every call of the poll ends at the readiness bound, so a docker that stops answering cannot hold create past it: a
 		// call the bound cut off is the timeout, and the caller's own abort stays aborted.
 		const bound = AbortSignal.timeout(readyMs);
@@ -674,7 +685,7 @@ export class DockerProvider implements ComputerProvider {
 			const state = found.value[0]?.State;
 			if (state?.Running !== true) {
 				const words = said.trim().split("\n").filter(Boolean).slice(-3).join("; ");
-				return fail("docker", `the egress proxy ${proxy} ended (exit code ${state?.ExitCode ?? "unknown"}) before it was ready${words ? `: ${words}` : ""}`);
+				return vendorFail("docker",`the egress proxy ${proxy} ended (exit code ${state?.ExitCode ?? "unknown"}) before it was ready${words ? `: ${words}` : ""}`);
 			}
 			await sleep(EGRESS_POLL_MS, undefined, { signal: either }).catch(() => undefined);
 			if (signal?.aborted) return fail("aborted", `create was aborted while the egress proxy ${proxy} started`);
@@ -806,12 +817,12 @@ export class DockerProvider implements ComputerProvider {
 		if (this.#host) return ok(this.#host);
 		const ran = await this.#run(["info", "--format", INFO_FORMAT], signal);
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0) return fail("docker", `docker info failed: ${ran.value.stderr.trim()}`);
+		if (ran.value.exitCode !== 0) return vendorFail("docker",`docker info failed: ${ran.value.stderr.trim()}`);
 		let info: unknown;
 		try {
 			info = JSON.parse(ran.value.stdout);
 		} catch {
-			return fail("docker", `docker info wrote what is not JSON: ${ran.value.stdout.slice(0, 200)}`);
+			return vendorFail("docker",`docker info wrote what is not JSON: ${ran.value.stdout.slice(0, 200)}`);
 		}
 		this.#host = hostOf(info as Parameters<typeof hostOf>[0]);
 		return ok(this.#host);
@@ -922,7 +933,8 @@ export class DockerProvider implements ComputerProvider {
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${ref.name} did not answer hello within ${HELLO_TIMEOUT_MS / 1000} s`);
 			if (hello.error.code !== "gone") return hello;
 			const words = stderr.trim() || hello.error.message;
-			return fail(noSuchContainer(words) ? "not_found" : "docker", `cannot reach the daemon in ${ref.name}: ${words}`);
+			const why = `cannot reach the daemon in ${ref.name}: ${words}`;
+			return noSuchContainer(words) ? fail("not_found", why) : vendorFail("docker", why);
 		}
 		return ok({ client, hello: hello.value, close });
 	}
@@ -968,7 +980,7 @@ export class DockerProvider implements ComputerProvider {
 	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
 		const ran = await this.#run(["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`, "--format", "{{.Names}}"], signal);
 		if (!ran.ok) return countTested("Docker", ran);
-		if (ran.value.exitCode !== 0) return countTested("Docker", fail("docker", `docker ps failed: ${ran.value.stderr.trim()}`));
+		if (ran.value.exitCode !== 0) return countTested("Docker", vendorFail("docker",`docker ps failed: ${ran.value.stderr.trim()}`));
 		const names = ran.value.stdout.split("\n").map((line) => line.trim());
 		return countTested("Docker", ok({ count: names.filter((name) => NAME.test(name)).length }));
 	}
@@ -980,7 +992,7 @@ export class DockerProvider implements ComputerProvider {
 		for (const [key, value] of Object.entries(labels)) args.push("--filter", `label=${key}=${value}`);
 		const ran = await this.#run([...args, "--format", "{{.ID}}"], signal);
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0) return fail("docker", `docker ps failed: ${ran.value.stderr.trim()}`);
+		if (ran.value.exitCode !== 0) return vendorFail("docker",`docker ps failed: ${ran.value.stderr.trim()}`);
 		const ids = ran.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 		const infos: ComputerInfo[] = [];
 		const local = this.#hostLocal();
@@ -1017,7 +1029,7 @@ export class DockerProvider implements ComputerProvider {
 		const lines = (stdout: string) => stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 		const alive = await this.#run(["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`, "--format", "{{.Names}}"], signal);
 		if (!alive.ok) return alive;
-		if (alive.value.exitCode !== 0) return fail("docker", `docker ps failed: ${alive.value.stderr.trim()}`);
+		if (alive.value.exitCode !== 0) return vendorFail("docker",`docker ps failed: ${alive.value.stderr.trim()}`);
 		const computers = new Set(lines(alive.value.stdout).filter((name) => NAME.test(name)));
 		const at = now.getTime();
 		const grace = this.#leftoverGraceMs();
@@ -1033,7 +1045,7 @@ export class DockerProvider implements ComputerProvider {
 		const removed: string[] = [];
 		const ps = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], signal);
 		if (!ps.ok) return ps;
-		if (ps.value.exitCode !== 0) return fail("docker", `docker ps for egress proxies failed: ${ps.value.stderr.trim()}`);
+		if (ps.value.exitCode !== 0) return vendorFail("docker",`docker ps for egress proxies failed: ${ps.value.stderr.trim()}`);
 		const ids = lines(ps.value.stdout);
 		for (let from = 0; from < ids.length; from += INSPECT_BATCH) {
 			const found = await this.#inspect(ids.slice(from, from + INSPECT_BATCH), signal);
@@ -1042,13 +1054,13 @@ export class DockerProvider implements ComputerProvider {
 				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
 				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
 				if (!ran.ok) return ran;
-				if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return fail("docker", `docker rm of the egress proxy ${nameOf(proxy)} failed: ${ran.value.stderr.trim()}`);
+				if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return vendorFail("docker",`docker rm of the egress proxy ${nameOf(proxy)} failed: ${ran.value.stderr.trim()}`);
 				removed.push(nameOf(proxy));
 			}
 		}
 		const ls = await this.#run(["volume", "ls", ...filters, "--format", "{{.Name}}"], signal);
 		if (!ls.ok) return ls;
-		if (ls.value.exitCode !== 0) return fail("docker", `docker volume ls for egress volumes failed: ${ls.value.stderr.trim()}`);
+		if (ls.value.exitCode !== 0) return vendorFail("docker",`docker volume ls for egress volumes failed: ${ls.value.stderr.trim()}`);
 		const names = lines(ls.value.stdout);
 		for (let from = 0; from < names.length; from += INSPECT_BATCH) {
 			const read = await this.#run(["volume", "inspect", "--format", "{{json .}}", ...names.slice(from, from + INSPECT_BATCH)], signal);
@@ -1058,12 +1070,12 @@ export class DockerProvider implements ComputerProvider {
 				try {
 					volume = JSON.parse(line);
 				} catch {
-					return fail("docker", `docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
+					return vendorFail("docker",`docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
 				}
 				if (typeof volume.Name !== "string" || !leftover(volume.Labels, volume.CreatedAt)) continue;
 				const ran = await this.#run(["volume", "rm", "--force", volume.Name], signal);
 				if (!ran.ok) return ran;
-				if (ran.value.exitCode !== 0) return fail("docker", `docker volume rm ${volume.Name} failed: ${ran.value.stderr.trim()}`);
+				if (ran.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume.Name} failed: ${ran.value.stderr.trim()}`);
 				removed.push(`${volume.Name} (volume)`);
 			}
 		}
@@ -1103,30 +1115,30 @@ export class DockerProvider implements ComputerProvider {
 	 * egress volume, found the same way: a container or volume of the proxy's name without that label is never touched.
 	 * Each is ok when already gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
 		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
 		const ran = await this.#run(args);
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return fail("docker", `docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
+		if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return vendorFail("docker",`docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
 		const label = `label=${EGRESS_LABEL}=${ref.name}`;
 		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
 		if (!proxies.ok) return proxies;
-		if (proxies.value.exitCode !== 0) return fail("docker", `docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`);
+		if (proxies.value.exitCode !== 0) return vendorFail("docker",`docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`);
 		for (const id of proxies.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
 			const ended = await this.#run(how === "stop" ? ["stop", id] : ["rm", "--force", id]);
 			if (!ended.ok) return ended;
-			if (ended.value.exitCode !== 0 && !noSuchContainer(ended.value.stderr)) return fail("docker", `docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy failed: ${ended.value.stderr.trim()}`);
+			if (ended.value.exitCode !== 0 && !noSuchContainer(ended.value.stderr)) return vendorFail("docker",`docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy failed: ${ended.value.stderr.trim()}`);
 		}
 		if (how === "stop") return ok(undefined);
 		const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
 		if (!volumes.ok) return volumes;
-		if (volumes.value.exitCode !== 0) return fail("docker", `docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`);
+		if (volumes.value.exitCode !== 0) return vendorFail("docker",`docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`);
 		for (const volume of volumes.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
 			const removed = await this.#run(["volume", "rm", "--force", volume]);
 			if (!removed.ok) return removed;
-			if (removed.value.exitCode !== 0) return fail("docker", `docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
+			if (removed.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
 		}
 		return ok(undefined);
 	}
@@ -1137,13 +1149,13 @@ export class DockerProvider implements ComputerProvider {
 		if (!ran.ok) return ran;
 		const { exitCode, stdout, stderr } = ran.value;
 		const errors = stderr.split("\n").filter((line) => line.trim() !== "" && !noSuchContainer(line));
-		if (exitCode !== 0 && errors.length > 0) return fail("docker", `docker inspect failed: ${errors.join("; ")}`);
+		if (exitCode !== 0 && errors.length > 0) return vendorFail("docker",`docker inspect failed: ${errors.join("; ")}`);
 		const found: DockerInspect[] = [];
 		for (const line of stdout.split("\n").filter((line) => line.trim() !== "")) {
 			try {
 				found.push(JSON.parse(line) as DockerInspect);
 			} catch {
-				return fail("docker", `docker inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
+				return vendorFail("docker",`docker inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
 			}
 		}
 		return ok(found);
@@ -1155,8 +1167,8 @@ export class DockerProvider implements ComputerProvider {
 				if (error === null) return done(ok({ exitCode: 0, stdout, stderr }));
 				if (error.name === "AbortError") return done(fail("aborted", `docker ${args[0]} was aborted`));
 				if (typeof error.code === "number") return done(ok({ exitCode: error.code, stdout, stderr }));
-				if (error.code === "ENOENT") return done(fail("docker", `the docker CLI (${this.#docker}) was not found`));
-				done(fail("docker", `docker ${args[0]} failed: ${error.message}`));
+				if (error.code === "ENOENT") return done(vendorFail("docker",`the docker CLI (${this.#docker}) was not found`));
+				done(vendorFail("docker",`docker ${args[0]} failed: ${error.message}`));
 			});
 		});
 	}

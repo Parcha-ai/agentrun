@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.33",
+  "version": "0.1.0-beta.35",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
     "pi-durable",
@@ -12,7 +12,7 @@
   "license": "Apache-2.0",
   "author": "Parcha Labs, Inc.",
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "exports": {
     ".": {

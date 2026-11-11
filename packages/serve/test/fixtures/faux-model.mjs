@@ -176,6 +176,12 @@ function replyTo(context, faux) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
   }
+  // Answers in words, then the given JSON as its last fenced json block: an agent's structured answer
+  // (agent-output-schema.test.mjs). Read off the message's first line; what a trigger appends after it is quoted back
+  // first, as "Handed: ...", so a test reads what the run was handed.
+  const [line, ...rest] = first.split("\n");
+  const structured = /^Answer with this json: (.+)$/.exec(line ?? "");
+  if (structured) return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}\n\n\`\`\`json\n${structured[1]}\n\`\`\``);
   // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
   const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
   if (linked) {
@@ -276,6 +282,14 @@ function replyTo(context, faux) {
     if (users.length === 1) return faux.message("Report written.");
     if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
     return faux.message("");
+  }
+  // Holds its first answer until the first file exists, and the answer to the person's first message until the second
+  // does: a later message lands while that second turn works.
+  const twice = /Hold twice, until (\S+) and then (\S+)\./.exec(first);
+  if (twice) {
+    if (users.length === 1) return untilExists(twice[1]).then(() => faux.message("Answer 1."));
+    if (users.length === 2) return untilExists(twice[2]).then(() => faux.message("Answer 2."));
+    return faux.message("Answer 3.");
   }
   // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
   // answered in a run of its own.

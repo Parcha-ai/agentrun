@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, whenFree, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const json = { "content-type": "application/json" };
@@ -88,8 +88,9 @@ async function setup(t, harness) {
   const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const run = async (id) => {
-    assert.equal((await server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra }))).status, 201);
-    const started = await server.api("POST", `/agents/${id}/runs`, { input: { content } });
+    const made = await whenFree(() => server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra })));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const started = await whenFree(() => server.api("POST", `/agents/${id}/runs`, { input: { content } }));
     assert.equal(started.status, 202, JSON.stringify(started.body));
     return started.body.run_id;
   };
