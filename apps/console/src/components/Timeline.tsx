@@ -1,4 +1,4 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Workflow, Wrench } from "lucide-react";
 import { useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
@@ -8,7 +8,7 @@ import { clock } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
-import type { TimelineRow } from "@/lib/v2";
+import type { LearnedNode, TimelineRow } from "@/lib/v2";
 
 const ICON: Record<string, typeof Brain> = {
   user_message: User, thinking: Brain, tool_use: Wrench, tool_result: Wrench, waiting: MessageCircleQuestion,
@@ -115,8 +115,40 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
         </button>
         {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
+        {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
       </div>
     </li>
+  );
+}
+
+/** How a learned workflow's node ended, in its chip's tone: ok, failed, escalated; any other word (a skipped node) muted. */
+const NODE_TONE: Record<string, "success" | "error" | "warning"> = { ok: "success", failed: "error", escalated: "warning" };
+/** A learned workflow call's nodes (its result row's `learned_nodes`): closed, a line that says how many ran and how many
+ *  did not end ok; open, each node in the order it ended, its status, its label, its kind and how long it took. Never why
+ *  a node failed: the server keeps none of that text. */
+function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
+  const [open, setOpen] = useState(false);
+  const counts = Object.entries(nodes.reduce<Record<string, number>>((n, x) => ({ ...n, [x.status]: (n[x.status] ?? 0) + 1 }), {})).filter(([status]) => status !== "ok");
+  const said = [`${nodes.length} ${nodes.length === 1 ? "node" : "nodes"}`, ...counts.map(([status, n]) => `${n} ${status}`)].join(" · ");
+  return (
+    <div className="mt-2">
+      <button type="button" className="caps flex items-center gap-1 text-label text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} the workflow's ${nodes.length === 1 ? "node" : "nodes"}`}>
+        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden /><Workflow className="size-3" aria-hidden />{said}
+      </button>
+      {open && (
+        <ol aria-label="The workflow's nodes" className="mt-2 divide-y border bg-card">
+          {nodes.map((n, i) => (
+            <li key={i} className="flex items-center gap-3 px-3 py-1.5">
+              <span data-status={n.status} className="contents"><Chip tone={NODE_TONE[n.status] ?? "muted"} className="w-[5.5rem] justify-center">{n.status}</Chip></span>
+              <span className="min-w-0 flex-1 truncate text-body" title={n.label}>{n.label}</span>
+              <span className="font-mono text-label text-muted-foreground">{n.kind}</span>
+              <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(n.duration_ms)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
   );
 }
 
