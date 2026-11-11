@@ -545,13 +545,16 @@ export class HarnessInstall {
     if (this.stopping.signal.aborted) return Promise.reject(new Error("the server is stopping"));
     this.running ??= (async () => {
       // One installer at a time on this data: while another process holds the install, wait for it to settle, then look
-      // again (installed: done; failed: so is this; let go with nothing in: take the hold).
+      // again (installed: done; failed while this waited on it: so is this; let go with nothing in: take the hold). A
+      // failure read at once, with no wait, is the last install's: its holder may be retrying it and not yet have written
+      // its own mark, so this looks again rather than failing in that old install's words.
       let token: string | undefined;
       while (!(token = await takeHold(this.dir))) {
         if (this.stopping.signal.aborted) throw new Error("the server is stopping");
-        const settled = await installSettled(this.entry, this.dir, await this.pins(), { signal: this.stopping.signal });
+        let waited = false;
+        const settled = await installSettled(this.entry, this.dir, await this.pins(), { signal: this.stopping.signal, onWait: () => (waited = true) });
         if (settled === "installed") return void (this.done = true);
-        if (typeof settled === "object") throw new Error(settled.failed);
+        if (typeof settled === "object" && waited) throw new Error(settled.failed);
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
       try {
