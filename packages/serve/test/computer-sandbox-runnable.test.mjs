@@ -144,6 +144,20 @@ test("Mode 1: where Docker answers, GET /v2/computers shows Docker ready for a s
   }
 });
 
+test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words, until a restart", async (t) => {
+  // The start made no Docker box, so its checks of Docker (a daemon elsewhere, this server's paths, host addresses, the
+  // box network) never ran; a daemon that answers now can't stand in for them.
+  const api = await server(t, { archil: false, docker: false });
+  const bin = process.env.PATH.split(":")[0];
+  await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
+  const view = await api("GET", "/computers");
+  for (const kind of ["sandbox", "desktop"]) {
+    const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
+    assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
+    assert.match(docker.why, /^Docker isn't running on this machine.*then restart AgentRun$/, `${kind}: ${JSON.stringify(docker)}`);
+  }
+});
+
 test("an agent with only an old place {mode: sandbox, box: docker} keeps the box check; one with a computer setting is asked the readiness instead", async () => {
   // A revision saved before the computer setting keeps its place alone: the API saves both now (computer-setting.ts), so it
   // is reached here, at runnable.ts, with the server's own options shape. No box is set up (boxes: none), so the box

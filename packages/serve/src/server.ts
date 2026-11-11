@@ -1091,15 +1091,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
    *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
    *  box, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
-   *  daemon that comes up after the start is seen); once it answers, the box's own reason stands where the start's probe
-   *  found the daemon too (Docker elsewhere, no host addresses, its image). Else the box's start-time answer (boxOffers),
-   *  with its reason, which says how to fix it. */
+   *  daemon that stops after the start is seen, and one that is gone says so in noDockerWords); once it answers, the
+   *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
+   *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
+   *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
+   *  reason, which says how to fix it. */
   const dockerDaemon = dockerDaemonCheck({ env });
   const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
     if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
       const daemon = await dockerDaemon();
-      if (!daemon.up || box?.available || !boxes.provider("docker")) return daemon;
+      if (!daemon.up || box?.available) return daemon;
     } else if (box?.available) return { up: true };
     return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
   };
