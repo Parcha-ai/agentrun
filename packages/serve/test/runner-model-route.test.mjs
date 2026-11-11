@@ -7,6 +7,7 @@
 // - its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past gpt-6-sol's 272k tier is
 //   priced at the tier), and its cost is that catalog entry, for the cap.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
@@ -99,6 +100,28 @@ test("a request the route's model fails answers an error event whose data is the
   assert.equal(events.length, 1, "one error event");
   const data = events[0].split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
   assert.equal(data, '500 {"message":"the upstream broke"}', "the error event's data is the model's own words");
+});
+
+test("the route sends the model's thinking in Messages shape, its text cut by the run's redactor before it goes", async () => {
+  // A held key the model quotes in its thinking is cut at write (the route's redactor), so it never reaches pi's session
+  // to be journaled, not only cut by the renderer at read. The route's fetch is where a bridged model's blocks become
+  // Messages.
+  const SECRET = `not-a-secret-thinking-${randomBytes(6).toString("hex")}`;
+  const redact = (text) => text.replaceAll(SECRET, "[redacted]");
+  const route = await routeOf(undefined, { AGENTRUN_SERVE_FAUX: FAUX }, undefined, undefined, undefined, redact);
+  const response = await route.fetch(`${route.provider.origin}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: route.model, max_tokens: 256, stream: true, messages: [{ role: "user", content: `think of ${SECRET}` }] }),
+  });
+  let thinking = "";
+  for (const line of (await response.text()).split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const event = JSON.parse(line.slice(6));
+    if (event.type === "content_block_delta" && event.delta?.type === "thinking_delta") thinking += event.delta.thinking;
+  }
+  assert.ok(thinking.length > 0, "the route sent the thinking block as Messages thinking");
+  for (let i = 0; i + 8 <= SECRET.length; i++) assert.ok(!thinking.includes(SECRET.slice(i, i + 8)), `the sent thinking holds part of the key: ${thinking}`);
 });
 
 test("a pi run through the adapter on the faux route goes through the kernel's model proxy and ends with the faux model's answers, its tool call run", async (t) => {
