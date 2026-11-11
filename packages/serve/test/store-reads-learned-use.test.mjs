@@ -150,6 +150,67 @@ test("a skill loaded with claude-agent's own Skill tool reads as read: by its pl
   assert.deepEqual(learning.used.skills, [{ name: "check-units", read: true }, { name: "find-policies", read: true }, { name: "keep-dates", read: false }, { name: "weekly-report", read: false }], JSON.stringify(learning.used));
 });
 
+// Review on #2337: a reopened run has more than one end-of-run turn. A load in the job between them (the follow-up's) is
+// the job's; only loads inside an end-of-run turn (its prompt to its answer) are left out.
+test("a skill loaded with claude-agent's Skill tool after a reopened run's first end-of-run turn reads as read; one inside either turn does not", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  const step = (call, skill) => [
+    { kind: "kernel.start", data: { key: `tool:${call}`, stepId: `tool:${call}#0`, name: "tool.Skill", replay: "safe", input: { skill } } },
+    { kind: "kernel.end", data: { stepId: `tool:${call}#0`, status: "completed" } },
+  ];
+  const turn = (role) => ({ kind: "agentrun.end-of-run.turn", data: { role, text: role === "person" ? "The task is done." : "Nothing to keep." } });
+  await run(store, clock, {
+    id: "r1", start: T0, learning: start({ skills: ["check-units", "find-policies", "keep-dates", "weekly-report"] }), kept: lookedBack(T0, 5),
+    extra: [laid(["check-units", "find-policies", "keep-dates", "weekly-report"]), ...step("a", "agentrun:check-units"), turn("person"), ...step("b", "agentrun:find-policies"), turn("model"),
+      { kind: "agentrun.message", data: { role: "person", text: "One more thing." } }, ...step("c", "agentrun:keep-dates"), turn("person"), ...step("d", "agentrun:weekly-report"), turn("model")],
+  });
+  const learning = await reads.runLearningOverStore(store, "r1", secretsShown([]), []);
+  assert.deepEqual(learning.used.skills, [{ name: "check-units", read: true }, { name: "find-policies", read: false }, { name: "keep-dates", read: true }, { name: "weekly-report", read: false }], JSON.stringify(learning.used));
+});
+
+// Review on #2337: a read credits a learned skill only at the path the claim laid it, `.agents/skills/<name>/SKILL.md` in
+// the run's work (relative, or absolute under it), never another file whose path merely ends the same way.
+test("a read of a learned skill's SKILL.md is credited at its laid path only, never at another path ending in skills/<name>/SKILL.md", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  const names = ["in-notes", "in-learning", "relative", "absolute", "dotted"];
+  await run(store, clock, {
+    id: "r1", start: T0, learning: start({ skills: names }), kept: lookedBack(T0, 5), extra: [laid(names)],
+    calls: [
+      ["read", { path: "notes/skills/in-notes/SKILL.md" }, true],
+      ["read", { path: ".learning/skills/in-learning/SKILL.md" }, true],
+      ["read", { path: ".agents/skills/relative/SKILL.md" }, true],
+      ["read", { path: "/srv/runs/r1/work/.agents/skills/absolute/SKILL.md" }, true],
+      ["read", { path: "./.agents/skills/dotted/SKILL.md" }, true],
+    ],
+  });
+  const learning = await reads.runLearningOverStore(store, "r1", secretsShown([]), []);
+  assert.deepEqual(learning.used.skills, [{ name: "in-notes", read: false }, { name: "in-learning", read: false }, { name: "relative", read: true }, { name: "absolute", read: true }, { name: "dotted", read: true }], JSON.stringify(learning.used));
+});
+
+// Review on #2337 (perf): the agent's learning page reads a settled run's journal once per claim, not on every request:
+// what it reads there (the notes its job opened, what its claims laid) is kept by run id and epoch, and read again only
+// once a new claim moves the epoch.
+test("an agent's learning view reads a settled run's journal once, not on every request", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, { id: "r1", start: T0, seconds: 10 });
+  await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20 });
+  for (const [id, at] of [["r3", T0 + 1_000_000], ["r4", T0 + 2_000_000]]) await run(store, clock, { id, start: at, seconds: 40, learning: start({ skills: ["weekly-report"], given: [{ file: "a.md", name: "A" }] }), extra: [laid(["weekly-report"])], kept: lookedBack(at, 30) });
+  const opened = [];
+  const readJournal = store.readJournal.bind(store);
+  store.readJournal = (id, ...rest) => { opened.push(id); return readJournal(id, ...rest); };
+  const first = await reads.agentLearningOverStore(store, "agent-1");
+  assert.ok(first.impact, JSON.stringify(first.impact));
+  const once = opened.filter((id) => id === "r3").length;
+  assert.ok(once > 0, "the first read opens r3's journal");
+  opened.length = 0;
+  const second = await reads.agentLearningOverStore(store, "agent-1");
+  assert.deepEqual(second.impact, first.impact);
+  assert.deepEqual(opened.filter((id) => id === "r3" || id === "r4"), [], "a second read opens neither settled run's journal");
+});
+
 test("a run's use of learned skills and workflows sits apart from what it learned: a run that learned a skill keeps its learned list", async () => {
   const { runLearningBody } = await import("../dist/learning-routes.js");
   const learning = { state: "merged", reason: null, at: iso(T0), skills: [{ file: "skills/new-skill/SKILL.md", name: "new-skill" }], workflows: [{ file: "workflows/new-flow/workflow.json", name: "new-flow" }] };
