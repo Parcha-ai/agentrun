@@ -293,7 +293,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const callEnv = callEnvOf(claimedEnv, claimed);
     const installed: Extension[] = [];
     const nodeHost: ToolHost = {
-      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } },
       env: callEnv,
       install: (extension) => void installed.push(extension),
       onConversation: () => {},
