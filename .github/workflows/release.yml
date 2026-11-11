@@ -55,6 +55,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
+      - name: Fold the fragments the tag carries into this version
+        # A pull request that merged after the release pull request's fold, and before the tag, left its changes/ fragment at the tag;
+        # its code is in this release. The fold puts those into this version's sections, uncommitted, before anything is built or
+        # packed, so the published changelogs list everything the archives ship. release-preflight checks the tree is the tag plus
+        # this fold. The next release pull request's fold moves them into this version's section on main (docs/releasing.md).
+        run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"
       - run: npm ci --ignore-scripts
       - run: npm run build
       # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
