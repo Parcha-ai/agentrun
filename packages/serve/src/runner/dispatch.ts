@@ -144,7 +144,8 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
         tried += 1;
         if (!(await delivers(failed[0]!))) break;
         failed.shift();
-        tried = 0;
+        // Every row left was tried once in the first pass.
+        tried = 1;
       }
     }
   }
