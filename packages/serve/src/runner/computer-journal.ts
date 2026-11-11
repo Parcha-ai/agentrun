@@ -113,7 +113,8 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
     apply(command: Command): CommandOutcome {
       const body = (command.body ?? {}) as Record<string, unknown>;
       if (command.kind === COMPUTER_TAKE_OVER) {
-        return hold.take({ by: command.id }) ? { taken: true } : { refused: `The ${kind} is already taken over, or not up now.` };
+        if (hold.take({ by: command.id })) return { taken: true };
+        return { refused: hold.finishing() ? `The agent is done and the run is ending, so its ${kind} can't be taken over now.` : `The ${kind} is already taken over, or not up now.` };
       }
       if (typeof body.ask === "string") {
         const outcome = body.outcome === "cancelled" ? "cancelled" : "done";
@@ -123,10 +124,12 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
       if (typeof body.take !== "string" || body.take !== hold.current()) return { refused: takeEndedWords(kind, "given") };
       return hold.give("given", { by: command.id }) ? { taken: true } : { refused: takeEndedWords(kind, "given") };
     },
-    /** The run's end while a person holds the computer (#2134): the Timeline says the run waits for the hand-back, and
-     *  this resolves once the agent drives again (a hand-back, the hold's idle bound, the viewer gone) or `cut` settles
-     *  first (a stop, a lost claim). With the agent driving, it resolves at once and writes nothing. */
+    /** The run's end (#2134). From here nothing new is taken (hold.finish), so no take begins after this wait and is cut
+     *  by the release. While a person holds the computer, the Timeline says the run waits for the hand-back, and this
+     *  resolves once the agent drives again (a hand-back, the hold's idle bound, the viewer gone) or `cut` settles first
+     *  (a stop, a lost claim). With the agent driving, it resolves at once and writes nothing. */
     async heldAtEnd(cut: Promise<unknown>): Promise<void> {
+      hold.finish();
       let off: () => void = () => {};
       const back = new Promise<void>((resolve) => {
         off = hold.on(() => void (hold.state() === "agent" && resolve()));

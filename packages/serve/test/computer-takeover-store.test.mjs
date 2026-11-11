@@ -106,7 +106,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
    *  `letGo`, so the person's take meets it, and the agent's answer comes while the person holds the desktop. The spec's
    *  release (the run's end lets its computer go there) records who drove at that moment and closes the hold, as
    *  computerForClaim's release does. `idleMs`: the hold's idle bound. */
-  const startEnding = async ({ idleMs } = {}) => {
+  const startEnding = async ({ idleMs, endStep } = {}) => {
     const hold = computerHold(idleMs === undefined ? {} : { idleMs });
     const ends = [];
     hold.on((event) => event.type === "state" && event.ended && ends.push(event.ended));
@@ -122,6 +122,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
       const base = await spec(claim, run);
       return {
         ...base, agentId: "agent-1", computer: { kind: "desktop", hold },
+        // The end-of-run step, the test's own: it runs after the wait for the hand-back, before the end and the release.
+        ...(endStep ? { endOfRun: endStep } : {}),
         release: async () => {
           releases.push({ state: hold.state(), ends: [...ends] });
           hold.close();
@@ -407,4 +409,47 @@ test("a stop while the run waits for the hand-back ends it stopped at once, and 
   assert.equal(row.state, "stopped", JSON.stringify({ state: row.state, summary: row.summary }));
   assert.deepEqual(run.releases, [{ state: "person", ends: [] }], "the stop lets the desktop go with the person's take in force");
   assert.deepEqual(run.ends, ["released"], "the release ends the take released");
+});
+
+test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", async (t) => {
+  const world = await setup(t);
+  const run = await world.startEnding();
+  await heldWhileAnswering(world, run);
+  const words = holdWords("desktop");
+  const seen = await world.runningUntil(async () => (await world.rows()).includes(words.ending), "the run says it waits for the hand-back");
+  assert.ok(seen.running, `the run waits for the hand-back: ${seen.over?.state}`);
+  // Rows are handed to the run in order: the message meets the wait, then the hand-back ends it.
+  const message = await world.server().command("run-1", { kind: "steer", body: { text: "one more thing" } });
+  await world.route("handBackRunComputer");
+  const row = await world.ended();
+  assert.equal(row.state, "ended");
+  const left = (await world.server().commands("run-1", 0)).find((command) => command.id === message.id);
+  assert.equal(left.refused, "the run ended before this command was taken", "the message was left for the end, no turn placed for it");
+  assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }]);
+});
+
+test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", async (t) => {
+  const world = await setup(t);
+  let stepStarted;
+  const inStep = new Promise((resolve) => (stepStarted = resolve));
+  let finishStep;
+  const stepDone = new Promise((resolve) => (finishStep = resolve));
+  const run = await world.startEnding({ endStep: async () => { stepStarted(); await stepDone; return { also: [] }; } });
+  t.after(() => finishStep());
+  await heldWhileAnswering(world, run);
+  const words = holdWords("desktop");
+  const seen = await world.runningUntil(async () => (await world.rows()).includes(words.ending), "the run says it waits for the hand-back");
+  assert.ok(seen.running, `the run waits for the hand-back: ${seen.over?.state}`);
+  await world.route("handBackRunComputer");
+  await inStep;
+  // The desktop is the agent's again and the run looks back before its end: a take now would be cut by the release.
+  await world.until(async () => (await world.hold()) === "agent", "the server reads the hand-back");
+  await world.route("takeOverRunComputer");
+  const take = (await world.server().commands("run-1", 0)).filter((command) => command.kind === "computer_take_over").at(-1);
+  const refused = await world.until(async () => (await world.server().commands("run-1", 0)).find((command) => command.id === take.id)?.refused, "the runner refuses the take-over row");
+  assert.equal(refused, "The agent is done and the run is ending, so its desktop can't be taken over now.");
+  assert.equal(run.hold.state(), "agent", "nothing was taken");
+  finishStep();
+  await world.ended();
+  assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }], "released once, with the agent driving: no take was cut");
 });
