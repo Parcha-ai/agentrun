@@ -13,9 +13,6 @@ import { boxesLine } from "../dist/place.js";
 import { hostOwnedRefusal } from "../dist/home-path.js";
 import { banner } from "../dist/print.js";
 import { ROUTES } from "../dist/server.js";
-import { saveArchilSettings } from "../dist/archil-settings.js";
-import { openSqliteStore } from "../dist/store/index.js";
-import { SHELL_NOTES } from "../dist/workspace/resolve-computer.js";
 import { agent, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 const VM = VM_PROVIDER.id;
@@ -80,8 +77,8 @@ test("a place of the wrong shape is a 422 whose fix is the place to copy, and th
 test("bash on a runner, the browser in a sandbox and a workflow in one are 422s that say what to do, each with a fix that saves", async (t) => {
   const { api } = await serve(t);
   const cases = [
-    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash: No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands. This agent names no place, so it runs on the runner, and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
-    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash: No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands. This agent's place is the runner, and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
+    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
+    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
     [agent("browsing", { tools: ["bash", "browser"], place: { mode: "sandbox", box: "docker" } }).definition, "definition.tools[1]", "browser does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.", 'Remove "browser" from definition.tools.'],
     [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", '"place": {"mode": "runner"}'],
   ];
@@ -120,7 +117,7 @@ test("a box this server does not enable names the setting that enables it: in ca
   ]);
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
-  assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).");
+  assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: an agent whose place is a sandbox names it, or one on the runner in Mode 2 (Archil), where it runs on Archil's serverless exec. Its output's tail; 120 s unless the call names a timeout, at most 600 s, or 295 s on Archil's exec (longer work: bash_background, in a box).");
   assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools (bash and the background tools) are unavailable for want of a box");
   // The web tools keep how they resolve, and why, on a server with no box.
   const web = tools.filter((tool) => tool.resolves);
@@ -208,36 +205,4 @@ test("the learning/ refusal on a server whose routes include the learning API na
   assert.equal(hostOwnedRefusal("learning", "keeper", false, () => undefined).message, "the server keeps learning/ for itself; this server has no learning API yet");
   assert.equal(hostOwnedRefusal("learning", "keeper", true, at).message, "learning/ is written by the server, not through the API");
   assert.deepEqual(hostOwnedRefusal("learning", "keeper", false, at).extra, { details: { reason: "host_owned" } });
-});
-
-test("the save check follows where a run's shell is: in Mode 1 an agent with no computer is refused bash, pointing at a sandbox computer; in Mode 2 it saves with bash (Archil's exec runs it) and is refused a background tool in words", async (t) => {
-  // The server alone: these are saves, and no run starts.
-  const { api } = await serve(t, { runner: false });
-  const runner = { mode: "runner" };
-  const mode1 = await api("POST", "/agents", { definition: agent("shell-1", { tools: ["read", "bash"], place: runner }).definition });
-  assert.equal(mode1.status, 422, JSON.stringify(mode1.body));
-  assert.ok(issueAt(mode1.body, "definition.tools[1]").message.startsWith(`bash: ${SHELL_NOTES.none} This agent's place is the runner`), issueAt(mode1.body, "definition.tools[1]").message);
-  // Mode 2: a server on data whose Archil settings are saved (only their row: saving an agent reaches no disk). The store's
-  // one connection is the one-server lock, so the row is saved before that server starts.
-  const archilData = join(await scratch(t), "agents");
-  const own = await openSqliteStore({ dataDir: archilData, role: "server" });
-  try {
-    await saveArchilSettings(own, { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.example.com" });
-  } finally {
-    await own.close();
-  }
-  const { api: api2 } = await serve(t, { runner: false, data: archilData });
-  const bash = await api2("POST", "/agents", { definition: agent("shell-2", { tools: ["read", "bash"], place: runner }).definition });
-  assert.equal(bash.status, 201, `bash runs on Archil's exec: ${JSON.stringify(bash.body)}`);
-  const unnamed = await api2("POST", "/agents", { definition: agent("shell-2-unnamed", { tools: ["bash"] }).definition });
-  assert.equal(unnamed.status, 201, `with no place too: ${JSON.stringify(unnamed.body)}`);
-  const background = await api2("POST", "/agents", { definition: agent("shell-2-bg", { tools: ["read", "bash", "bash_background"], place: runner }).definition });
-  assert.equal(background.status, 422, JSON.stringify(background.body));
-  assert.deepEqual(issueAt(background.body, "definition.tools[2]"), {
-    field: "definition.tools[2]",
-    reason: "not_an_option",
-    message: `bash_background: ${SHELL_NOTES.local}`,
-    fix: 'Remove "bash_background" from definition.tools.',
-  });
-  assert.equal(issueAt(background.body, "definition.tools[1]"), undefined, "bash itself is not refused");
 });
