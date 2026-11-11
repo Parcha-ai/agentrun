@@ -132,8 +132,7 @@ function documentedIn(section) {
   return { values: new Set(firstCells), types: new Set([...firstCells, ...types]) };
 }
 
-// SKIP (follow-up #2080): PAGE_CHANGED_ROW, exported from @parcha/pi-durable-agent/timeline, is not documented in the README's Library section.
-test.skip("every name each entry point exports is documented in that entry point's Library section: a value in a table row, a type in its types list", () => {
+test("every name each entry point exports is documented in that entry point's Library section: a value in a table row, a type in its types list", () => {
   const entries = [
     { title: "`@parcha/pi-durable-agent`", declaration: "index.d.ts" },
     { title: "`@parcha/pi-durable-agent/export`", declaration: "export.d.ts" },

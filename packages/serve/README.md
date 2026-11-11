@@ -9,7 +9,7 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 ## Quick start (no key, no network)
 
-Node 24.11 or later. In a checkout of this repository:
+Node 24.22.3 or later. In a checkout of this repository:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -2763,6 +2763,19 @@ $X, enough for little work: answer as soon as you can." On pi the words go into 
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
 the model's answer. Once per cap, across restarts; a raise re-arms it.
+
+A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
+steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
+reaches 75% of its cap, the run's tool gate
+refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
+is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
+would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
+working gets the same refusal on its next call and answers, a call a running tool makes is that tool's and runs, and
+model requests are judged by the cap as before, so the run's final answer still lands. The cap stays the last line: a
+request that does not fit what is left is refused as above. The figure is read from the run's booking records at each
+call, never kept in memory, so a restart or a claim moved to another runner holds the same line, and a raise moves it.
+Several requests out at once hold far more than they cost, which is why a fan-out of children used to end a small cap
+with no answer at all; the quarter left above the line is the room for each of them, and the parent, to answer.
 
 Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
