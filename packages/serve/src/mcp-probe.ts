@@ -129,6 +129,16 @@ export const CREDENTIAL_QUERY_NAMES: readonly string[] = [
 ];
 const credentialQueryName = (name: string) => CREDENTIAL_QUERY_NAMES.includes(name.toLowerCase().replace(/[-_]/g, ""));
 
+/** The first query parameter of `url` whose name looks like a credential, if any: a saved row's URL is held to it at each
+ *  use (the server's preview, refresh and sign-in, the runner's claim) as a new one is at its save. */
+export function credentialInQuery(url: string | URL): string | undefined {
+  const parsed = typeof url === "string" ? URL.parse(url) : url;
+  return parsed ? [...parsed.searchParams.keys()].find(credentialQueryName) : undefined;
+}
+
+/** What a URL with a credential in its query says, wherever it is refused. */
+export const credentialInQueryWords = (name: string) => `${name} in the URL's query looks like a credential; send it as a header instead (Headers).`;
+
 export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   if (typeof value !== "string" || value === "") return void issues.push({ field: "url", reason: value === undefined ? "missing" : "wrong_type", message: "url is the MCP server's Streamable HTTP endpoint, as text." });
   let url: URL;
@@ -139,10 +149,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   }
   if (value.length > MAX_URL) issues.push({ field: "url", reason: "too_long", message: `url is at most ${MAX_URL} characters.` });
   else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds a user or password: send a credential as auth instead." });
-  else if ([...url.searchParams.keys()].some(credentialQueryName)) {
-    const name = [...url.searchParams.keys()].find(credentialQueryName)!;
-    issues.push({ field: "url", reason: "invalid", message: `${name} in the URL's query looks like a credential; send it as a header instead (Headers).` });
-  }
+  else if (credentialInQuery(url)) issues.push({ field: "url", reason: "invalid", message: credentialInQueryWords(credentialInQuery(url)!) });
   else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: `url is http://${url.host}, which is not this machine's loopback: use https, or http only on loopback.` });
   else if (url.protocol !== "https:" && url.protocol !== "http:") issues.push({ field: "url", reason: "invalid", message: "url is https, or http on loopback." });
   url.hash = "";

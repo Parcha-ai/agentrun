@@ -74,6 +74,22 @@ export async function savePrivateOAuthHosts(store: { settings: Pick<Settings, "p
   await store.settings.put(MCP_PRIVATE_HOSTS_KEY, { hosts: [...hosts] });
 }
 
+/** Whether the deployment on this store is a local install (one server listening on loopback and reached there alone), the
+ *  one kind an MCP server's URL may be on loopback for: written by the server at each start (server.ts), read by the
+ *  runner at each request, so a store moved to a hosted server stops reaching loopback at that server's first start. */
+export const MCP_LOCAL_INSTALL_KEY = "mcp.local_install";
+
+/** Whether this store's deployment is a local install; a row that is not that shape, or none, reads as not (fail closed). */
+export async function mcpLocalInstall(store: { settings: Pick<Settings, "get"> }): Promise<boolean> {
+  const value = await store.settings.get(MCP_LOCAL_INSTALL_KEY);
+  return typeof value === "object" && value !== null && (value as { local?: unknown }).local === true;
+}
+
+/** This deployment's kind, as the server starting on the store finds it. */
+export async function saveMcpLocalInstall(store: { settings: Pick<Settings, "put"> }, local: boolean): Promise<void> {
+  await store.settings.put(MCP_LOCAL_INSTALL_KEY, { local });
+}
+
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 /** For an entry's words only: the literals listing could never help (this network, loopback, link-local, multicast,
  *  reserved and broadcast; the IPv6 unspecified, loopback, link-local and multicast). The address check refuses every

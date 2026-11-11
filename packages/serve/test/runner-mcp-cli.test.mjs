@@ -28,6 +28,7 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
 const { noCallId } = await import("../dist/mcp-gateway.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { STOPPED_WHILE_WAITING } = await import("../dist/refusal-words.js");
@@ -119,6 +120,8 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // A local install, as a server on loopback writes at its start: the fake MCP server is on loopback.
+  await saveMcpLocalInstall(server, true);
   const fake = await startFakeMcp({ token: TOKEN });
   let runner;
   t.after(async () => {

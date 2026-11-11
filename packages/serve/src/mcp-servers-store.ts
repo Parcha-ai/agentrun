@@ -9,7 +9,7 @@
 // a run's launch calls.
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
-  type Auth, authOf, canonical, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
+  type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
 import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
@@ -369,6 +369,9 @@ export class McpServersOverStore {
    *  owner allows read now, loopback only for a local install. The fetch it answers dials the address checked. A name
    *  that does not resolve is the unreachable server it always was (424). */
   private async reached(type: string, url: URL, stop?: AbortSignal): Promise<typeof fetch> {
+    // A saved row's URL is held to the save's rule too: one with a credential in its query is refused, nothing sent.
+    const inQuery = credentialInQuery(url);
+    if (inQuery) throw invalid([{ field: "url", reason: "invalid", message: credentialInQueryWords(inQuery) }]);
     if (type === "github_app") {
       if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
       return fetch;

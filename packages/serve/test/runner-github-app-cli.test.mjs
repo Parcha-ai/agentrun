@@ -19,6 +19,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
 const { githubAppAccess } = await import("../dist/runner/github-app.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
@@ -93,6 +94,8 @@ test("a CLI harness's own MCP client meets the per-call App check too: an App di
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-github-app-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // A local install, as a server on loopback writes at its start: the fake MCP server is on loopback.
+  await saveMcpLocalInstall(server, true);
   const github = await fakeGitHub(t);
   const fake = await startFakeMcp({ token: (authorization) => authorization === `Bearer ${GH_TOKEN}` });
   let runner;

@@ -23,7 +23,7 @@ import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
-import { privateOAuthHosts } from "../mcp-private-hosts.js";
+import { mcpLocalInstall, privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
@@ -139,10 +139,11 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     credentials: step.credentials,
     // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
     // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
-    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback as written is dialled as written:
-    // only a local install's server admits one (McpServersOverStore), and the server is the one writer of these rows.
+    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only while the store's
+    // deployment is a local install (its server writes which at each start: mcpLocalInstall), so a row saved on a local
+    // install never reaches this machine's own services once a hosted server runs on the store.
     reach: async (url, signal) => {
-      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: true });
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: await mcpLocalInstall(options.store) });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
     beforeCall: step.beforeCall,

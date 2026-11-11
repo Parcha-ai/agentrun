@@ -39,3 +39,23 @@ test("a URL whose query holds a credential-like parameter is refused at the prev
   assert.equal(routed.status, 200, JSON.stringify(routed.body));
   assert.equal(routed.body.url, `${fake.url}?key=docs&session=eu-1&sessionid=7`);
 });
+
+test("a row saved before the save refused a credential in its URL's query is refused at its tools refresh and its sign-in, in the same words, and nothing is sent", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api, store } = await serve(t, { runner: false });
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const url = `${fake.url}?api_key=${SECRET}`;
+  // As an earlier server kept it: the row is in the store as it was saved then.
+  await store.mcp.put({ name: "old", url, auth: "none", tools: [{ name: "add", input_schema: { type: "object" } }], sealed: null });
+  const words = "api_key in the URL's query looks like a credential; send it as a header instead (Headers).";
+  for (const [door, answer] of [
+    ["tools refresh", await api("POST", "/settings/mcp-servers/old/refresh")],
+    ["sign-in start", await api("POST", "/settings/mcp-servers/old/oauth/start", {})],
+  ]) {
+    assert.deepEqual([answer.status, answer.body.error?.code], [422, "input_invalid"], `${door}: ${JSON.stringify(answer.body)}`);
+    assert.deepEqual(answer.body.error.fields.map((field) => [field.field, field.message]), [["url", words]], door);
+    assert.ok(!JSON.stringify(answer.body).includes(SECRET), `${door}: the value is not said back`);
+  }
+  assert.equal(fake.log.length, 0, "nothing sent to the server");
+});

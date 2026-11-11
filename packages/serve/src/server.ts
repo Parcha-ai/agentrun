@@ -102,7 +102,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
-import { privateHostsRoute } from "./mcp-private-hosts.js";
+import { privateHostsRoute, saveMcpLocalInstall } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { OUTBOUND_WEBHOOK, type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
@@ -3395,7 +3395,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A local install (listening on loopback, reached at no address off it) is the one server an MCP server's URL may be on
   // loopback for: anywhere else, loopback is this machine's other services (mcp-oauth.ts mcpServerAt).
   const publicHost = options.publicUrl === undefined ? null : (URL.parse(options.publicUrl)?.hostname.replace(/^\[|\]$/g, "") ?? "");
-  mcpServers.attach(options.publicUrl ?? url, url, isLoopback(host) && (publicHost === null || isLoopback(publicHost)));
+  const localInstall = isLoopback(host) && (publicHost === null || isLoopback(publicHost));
+  mcpServers.attach(options.publicUrl ?? url, url, localInstall);
+  // And for the runners on this store, which reach an MCP server's URL by the same rule (runner/mcp-run.ts).
+  await saveMcpLocalInstall(store, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
   // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the

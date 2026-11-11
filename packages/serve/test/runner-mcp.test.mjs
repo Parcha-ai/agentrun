@@ -28,6 +28,7 @@ const { META_REASON } = await import("../dist/mcp-meta.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
@@ -62,6 +63,8 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   // the runner's handle keeps the wall clock.
   const server = await openSqliteStore({ dataDir: dir, role: "server", ...(serverNow ? { now: serverNow } : {}) });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // A local install, as a server on loopback writes at its start: the fake MCP server is on loopback.
+  await saveMcpLocalInstall(server, true);
   const fake = await startFakeMcp({ token: fakeToken, ...(inspect ? { inspect } : {}) });
   let runner;
   t.after(async () => {

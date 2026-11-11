@@ -44,7 +44,7 @@ import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
-import { boundTool, type McpTool } from "../mcp-probe.js";
+import { boundTool, credentialInQuery, credentialInQueryWords, type McpTool } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
@@ -373,7 +373,10 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const changed = !was || gone.has(name) || was.url !== stamp.url || was.auth !== stamp.auth || was.changedAt !== stamp.credentialChangedAt;
     // The token's end by the store's clock (tokenLeftMs), else as this claim opened it.
     const left = stamp.tokenLeftMs ?? (was?.end !== undefined ? was.end - now() : null);
-    const due = stamp.auth === "oauth" && left !== null && left <= REFRESH_MARGIN_MS;
+    // And the token this claim holds, by its own end: another claim's refresh moves the row's end (not its credential's
+    // change time), so the row may have a fresh token while this claim still holds the one about to expire.
+    const heldLeft = was?.end !== undefined ? was.end - now() : null;
+    const due = stamp.auth === "oauth" && ((left !== null && left <= REFRESH_MARGIN_MS) || (heldLeft !== null && heldLeft <= REFRESH_MARGIN_MS));
     if (!changed && !due) return;
     let going = reopening.get(name);
     if (!going) {
@@ -401,6 +404,10 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
   // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
   const offGithub = (server: string, url: string, auth: string | undefined) => {
+    // A URL with a credential in its query (a row saved before the save refused one) ends the run before it is pinned or
+    // anything sent; the URL is never named, its credential with it.
+    const inQuery = credentialInQuery(url);
+    if (inQuery) throw new McpClaimRefused(`The MCP server ${server} can't be used: ${credentialInQueryWords(inQuery)} Nothing was sent.`);
     if (auth === "github_app" && !githubMcpUrl(url, githubMcpOrigin)) throw new McpClaimRefused(`The MCP server ${server} (${url}) can't be used: ${GITHUB_MCP_ONLY}. Nothing was sent.`);
   };
   const stored = await store.mcp.pin(claim.runId);

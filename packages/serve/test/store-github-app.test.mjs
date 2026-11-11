@@ -18,6 +18,7 @@ const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { githubTokens, GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -237,6 +238,8 @@ async function claimedGitHub(t, { failSame } = {}) {
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const access = await githubAppAccess(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { api: github.api });
   const failing = { ...access, same: async () => (failSame?.() ? Promise.reject(new Error("the store did not answer")) : access.same()) };
+  // A local install, as a server on loopback writes at its start: the fake MCP server is on loopback.
+  await saveMcpLocalInstall(store, true);
   const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: { commit: async () => { throw new Error("no record here"); } }, work: () => work, launchInput: {}, githubAppAccess: async () => failing, githubMcpOrigin: new URL(fake.url).origin });
   t.after(() => mcp.release());
   const host = mcp.tools.find((tool) => tool.name === "mcp__gh__add");

@@ -15,7 +15,7 @@ import { asOwner, serve, withEnv } from "./support.mjs";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
-const { savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
+const { savePrivateOAuthHosts, saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 
 const KEY = randomBytes(32);
@@ -190,4 +190,46 @@ test("on the runner, a pinned server whose name resolves to a private address at
   // Metadata is never allowed, listed or not.
   answer = ["169.254.169.254"]; // key-gate: denylist a refused test target
   assert.deepEqual(await call("call-4"), { text: `The MCP server corp's address is refused here: the MCP server at mcp.example.test is a private address; refused. Nothing was sent.`, isError: true });
+});
+
+test("on the runner, a server whose saved URL carries a credential in its query ends the claim before it is pinned or anything sent, its URL never named", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const { store, dir } = await storeOn(t);
+  await saveMcpLocalInstall(store, true);
+  const secret = `not-a-secret-${"pinned-query"}`;
+  await store.mcp.put({ name: "old", url: `${fake.url}?api_key=${secret}`, auth: "none", tools: [{ name: "add", input_schema: { type: "object" } }], sealed: null });
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  await assert.rejects(mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
+    assert.equal(error.message, "The MCP server old can't be used: api_key in the URL's query looks like a credential; send it as a header instead (Headers). Nothing was sent.");
+    return true;
+  });
+  assert.ok(!(await store.mcp.pin("run-1")), "nothing pinned");
+  assert.equal(fake.log.length, 0, "nothing sent");
+});
+
+test("on the runner, a server saved on loopback is reached only while the store's deployment is a local install, as its server wrote at its start: a hosted one's runs send it nothing", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const { store, dir } = await storeOn(t);
+  await store.mcp.put({ name: "local", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }], sealed: null });
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir });
+  t.after(() => mcp.release());
+  const add = mcp.tools.find((tool) => tool.name === "mcp__local__add");
+  const call = (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
+  // No server has said this is a local install (a hosted server writes false; none written reads the same): refused unsent.
+  for (const local of [undefined, false]) {
+    if (local !== undefined) await saveMcpLocalInstall(store, local);
+    const sent = fake.log.length;
+    const refused = await call(`call-${local}`);
+    assert.equal(refused.isError, true, JSON.stringify(refused));
+    assert.match(refused.text, /^The MCP server local's address is refused here: .*Nothing was sent\.$/);
+    assert.equal(fake.log.length, sent, "the server heard nothing");
+  }
+  // A local install's server wrote so at its start: the same row is called.
+  await saveMcpLocalInstall(store, true);
+  assert.deepEqual(await call("call-local"), { text: "5" });
 });

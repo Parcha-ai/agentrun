@@ -13,6 +13,7 @@ import { queued, storeOn } from "./store-helpers.mjs";
 
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const KEY = randomBytes(32);
@@ -34,6 +35,8 @@ async function registryOn(t) {
  *  every credential value with. */
 async function claimed(t, { store, dir }, server, redact) {
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
+  // A local install, as a server on loopback writes at its start: the fake MCP server is on loopback.
+  await saveMcpLocalInstall(store, true);
   const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, ...(redact ? { redact } : {}) });
   t.after(() => mcp.release());
   const add = mcp.tools.find((tool) => tool.name === `mcp__${server}__add`);
@@ -128,6 +131,38 @@ test("an OAuth access token near its end, its authorization server hanging: the 
   // A second call while that refresh hangs starts none of its own.
   assert.deepEqual(await call("call-3"), { text: "5" });
   assert.equal(oauth.log.filter((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token").length, 1, "one refresh");
+});
+
+test("another run's refresh moves the row's token on: this run's next call, its own token near its end, goes on the refreshed one, with no refresh of its own", async (t) => {
+  const on = await registryOn(t);
+  await queued(on.store, "run-2");
+  const oauth = await startFakeOAuth();
+  const seen = [];
+  const mcp = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer, inspect: (headers) => seen.push(headers.authorization) });
+  t.after(() => Promise.all([mcp.close(), oauth.close()]));
+  await signedIn(on.registry, "docs", mcp);
+  const callA = await claimed(t, on, "docs");
+  assert.deepEqual(await callA("a-1"), { text: "5" });
+  const first = seen.at(-1);
+  // run-2's claim on the same server: a minute left by the store's clock, it refreshes behind its call.
+  const claimB = await on.store.claim("run-2", "runner-b", { leaseMs: 10 * HOUR });
+  const mcpB = await mcpForClaim({ claim: claimB, store: on.store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => on.dir });
+  t.after(() => mcpB.release());
+  const addB = mcpB.tools.find((tool) => tool.name === "mcp__docs__add");
+  on.clock.now += HOUR - 60_000;
+  assert.deepEqual(await addB.call({ a: 2, b: 3 }, { callId: "b-1", signal: new AbortController().signal }), { text: "5" });
+  const refreshes = () => oauth.log.filter((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token").length;
+  for (let i = 0; ((await on.store.mcp.stamp("docs"))?.tokenLeftMs ?? 0) < HOUR / 2; i++) {
+    assert.ok(i < 200, "run-2's refresh is kept in the row");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(refreshes(), 1);
+  // run-1 still holds the first token, a minute from its end: its next call reads the row's refreshed one.
+  const from = seen.length;
+  assert.deepEqual(await callA("a-2"), { text: "5" });
+  const sent = seen.slice(from);
+  assert.ok(sent.length > 0 && sent.every((authorization) => authorization !== first && oauth.accepts(authorization)), `run-1's call carried the refreshed token: ${sent.length} requests`);
+  assert.equal(refreshes(), 1, "no refresh of run-1's own");
 });
 
 test("every credential value the claim hands over is held by the run's redactor as it is handed over: a header's and a bearer's token alone, and a github_app token at its mint and at its mint again", async (t) => {
