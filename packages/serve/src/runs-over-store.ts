@@ -322,6 +322,9 @@ export interface StartDeps {
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
   /** The learning budget in bytes (learning.ts LEARNING_BUDGET), for which notes fit a run's # Learned section. */
   readonly learningBudget?: number;
+  /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
+   *  the agent's own grades it. */
+  readonly gradeModel?: string;
   /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
   shown?(): Shown;
 }
@@ -345,13 +348,14 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; seedFailed?: SeedFailed } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
+  const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable" };
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...grade };
   try {
     const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown };
     // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
@@ -361,9 +365,9 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // held by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them;
     // the end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
-    return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}) };
+    return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...grade };
   } catch {
-    return { given: [], seed: null, section: "", seedFailed: "not_copied" };
+    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
   }
 }
 

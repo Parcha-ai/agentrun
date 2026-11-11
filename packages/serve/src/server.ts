@@ -37,7 +37,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -94,8 +94,7 @@ import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secre
 import { bootSealKey, withSealKey } from "./seal-key.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore } from "./store-reads/learning.js";
-import { outcomes } from "./usage.js";
+import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -123,7 +122,7 @@ import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -334,8 +333,6 @@ export type ServeOptions = {
   /** With `faux` only: the door nonce each run's process is handed in place of its launch's own, so its door answers the
    *  launch's proof wrongly (a test of a door that fails its proof). */
   fauxHandedNonce?: string;
-  /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
-  reflectTimeoutMs?: number;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -1229,6 +1226,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // endOfRun (cutover-learning-end 283008bb05, E2r3's one-line spec-builder hookup); land this in that same round.
     learning,
     learningBudget,
+    // The model the server names to grade what a run proposes (capabilities' learning.grade_model), carried on each learning
+    // start for the runner's learning run to grade on: none, the agent's own.
+    ...(gradeModelOf(env, options.gradeModel) ? { gradeModel: gradeModelOf(env, options.gradeModel) } : {}),
     seedFor: async (agentId: string) => {
       // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
       // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
@@ -1254,7 +1254,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) });
+  // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
+  const statuses = (agentId: string) => statusesOf(data, agentId);
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1280,7 +1282,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)) }, forStore, runId, context),
+    timelineRows: (forStore, runId, context) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses }, forStore, runId, context),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -2148,8 +2150,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (usd === null) total.unpriced++;
       total.usd += usd ?? soFar;
     }
-    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
-    for (const entry of (await outcomes(data)).values()) {
+    // What learning spent on this server, outside any run (store-reads/learning.ts learningSpendOverStore): each run's grade, on
+    // the day its learning ended.
+    for (const entry of await learningSpendOverStore(store, { from, to })) {
       const at = Date.parse(entry.at);
       if (at >= from && at < to) add(lineKey(entry.agent, entry.at, "learning"), entry.cost);
     }
@@ -2981,9 +2984,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRunLearning": {
         const run = await needRun(id);
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
-        // from its launch, what it holds for the owner's OK as the store's run view reads it (no folder), byte-identical to main.
+        // from its launch, what it holds for the owner's OK as the store's run view reads it (on its folder's main), as main.
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
-        return send(res, 200, await servedRunLearning({ serverSecrets, signIns }, store, run.id));
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, statuses }, store, run.id));
       }
       case "getRunLearningDiff": {
         const run = await needRun(id);

@@ -33,10 +33,6 @@ export function fakeClock(start) {
 export const RUN_EXEC = "waits on running a fired run on the runner (dispatch and command delivery)";
 /** A case whose trigger target is a message_run: the message is delivered to an existing run over the store. */
 export const MESSAGE_RUN = "waits on delivering a message_run target over the store";
-/** A case that starts the server as its CLI does (a child process): until the server opens its own store at the cutover, a
- *  server started so has none, and its triggers routes answer unavailable. */
-export const CLI_STORE = "the server opens its own store at the cutover (a CLI-started server has none until then)";
-
 /** What a server that went down between a firing's run (or message) and its settle leaves: the firing `key` of trigger `id`
  *  due again in the store with no run named, while what it started stays under the firing's key (its run's origin row, or
  *  its message's command row). The engine starts a run (or queues a message) and settles its firing in two transactions,
