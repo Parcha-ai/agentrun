@@ -123,6 +123,8 @@ test("a gateway base that could send a key somewhere else than it reads is refus
   assert.equal(providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://localhost:5000" }, anthropic, "claude-agent").origin, "http://localhost:5000");
 });
 
+/** The host's check of the CLI (verifyClaudeAgentCliAsync) passing the test's CLI, which no adapter here runs. */
+const cliPassed = async (path) => ({ path });
 /** An installed SDK as claudeOf loads it (harness-install.ts loadSdk): a test's, which no adapter here runs. */
 const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version, cliPath: "/nowhere/claude", mcp: { server: {}, types: {} } });
 
@@ -142,22 +144,22 @@ test("claude-agent with Claude Code not installed in the data, and no key: the r
   });
   // With the SDK in place, a missing key is still said.
   const real = await import("@parcha/agentrun-harness-claude");
-  const load = async () => ({ ...real, claudeAgentAdapter: () => ({ id: "claude-agent" }) });
+  const load = async () => ({ ...real, verifyClaudeAgentCliAsync: cliPassed, claudeAgentAdapter: () => ({ id: "claude-agent" }) });
   await assert.rejects(claudeOf({}, needs, load, loadedSdk), refused(/claude-agent needs ANTHROPIC_API_KEY/));
 });
 
 test("claude-agent's adapter is handed the SDK, its CLI and the MCP library as the install loaded them, and the adapter's own install line is the data's", async () => {
   const real = await import("@parcha/agentrun-harness-claude");
   const given = [];
-  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const load = async () => ({ ...real, verifyClaudeAgentCliAsync: cliPassed, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
   const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
   const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}`, AGENTRUN_SERVE_DATA: "/d" };
   const sdk = await loadedSdk("0.3.286");
   await claudeOf(env, needs, load, async () => sdk);
   assert.deepEqual([given[0].sdk, given[0].sdkVersion, given[0].cliPath, given[0].mcp], [sdk.sdk, "0.3.286", "/nowhere/claude", sdk.mcp]);
   // The adapter's refusal names a project's install line; serve's names the data's harnesses directory instead.
-  const unpinned = async () => ({ ...real, claudeAgentAdapter: () => { throw new real.ClaudeAgentPinMismatch("cli_version", real.CLAUDE_AGENT_CLI_VERSION, "0.0.1", "/nowhere/claude"); } });
-  const pinned = async () => ({ ...real, claudeAgentAdapter: () => { throw new real.ClaudeAgentNotInstalled("no CLI here", real.CLAUDE_AGENT_SDK_INSTALL); } });
+  const unpinned = async () => ({ ...real, verifyClaudeAgentCliAsync: cliPassed, claudeAgentAdapter: () => { throw new real.ClaudeAgentPinMismatch("cli_version", real.CLAUDE_AGENT_CLI_VERSION, "0.0.1", "/nowhere/claude"); } });
+  const pinned = async () => ({ ...real, verifyClaudeAgentCliAsync: cliPassed, claudeAgentAdapter: () => { throw new real.ClaudeAgentNotInstalled("no CLI here", real.CLAUDE_AGENT_SDK_INSTALL); } });
   for (const broken of [unpinned, pinned]) {
     await assert.rejects(claudeOf(env, needs, broken, async () => sdk), (error) => {
       assert.ok(error instanceof HarnessUnavailable, String(error));
@@ -168,10 +170,32 @@ test("claude-agent's adapter is handed the SDK, its CLI and the MCP library as t
   }
 });
 
+test("claude-agent's CLI is checked with the event loop free before its adapter is made: a CLI the check refuses is the data's install line, and no adapter is made", async () => {
+  // The adapter's own check of its CLI is synchronous (a 240 MiB hash and its --version): in a server it held every
+  // request and open store transaction while it ran, and a save of a claude-agent agent answered 409 home_busy or 500.
+  const real = await import("@parcha/agentrun-harness-claude");
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}`, AGENTRUN_SERVE_DATA: "/d" };
+  const sdk = await loadedSdk("0.3.286");
+  const checked = [];
+  const made = [];
+  const passing = async () => ({ ...real, verifyClaudeAgentCliAsync: async (path) => (checked.push(path), { path }), claudeAgentAdapter: (options) => (made.push(checked.length), { id: "claude-agent" }) });
+  await claudeOf(env, needs, passing, async () => sdk);
+  assert.deepEqual([checked, made], [["/nowhere/claude"], [1]], "the CLI the install loaded, checked before the adapter was made");
+  for (const refusal of [new real.ClaudeAgentPinMismatch("cli_sha256", "f".repeat(64), "0".repeat(64), "/nowhere/claude"), new real.ClaudeAgentNotInstalled("no CLI at /nowhere/claude", real.CLAUDE_AGENT_SDK_INSTALL)]) {
+    const refusing = async () => ({ ...real, verifyClaudeAgentCliAsync: async () => refusal, claudeAgentAdapter: () => assert.fail("no adapter is made for a CLI the check refused") });
+    await assert.rejects(claudeOf(env, needs, refusing, async () => sdk), (error) => {
+      assert.ok(error instanceof HarnessUnavailable, String(error));
+      assert.ok(error.message.includes(installLine("/d/harnesses/claude-agent", CLAUDE_LOCK)), error.message);
+      return true;
+    });
+  }
+});
+
 test("claude-agent's native skills reach the adapter as serve gives them, and an adapter with none is given no skills option", async () => {
   const real = await import("@parcha/agentrun-harness-claude");
   const given = [];
-  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const load = async () => ({ ...real, verifyClaudeAgentCliAsync: cliPassed, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
   const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
   const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
   const skills = [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite sources.\n---\nCite.\n", "reference/sources.md": "Primary first.\n" } }];
@@ -216,7 +240,7 @@ test("codex with Codex not installed in the data, or not its pinned build: the r
   assert.doesNotMatch(missing, /npx -p|npm install /);
   // Installed, but not the pinned build: the adapter's own words, with the line that installs it into the data.
   await linkHarnesses(data);
-  const unpinned = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); } });
+  const unpinned = async () => ({ ...codex, verifyCodexAsync: async () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); }, verifyCodex: () => assert.fail("the synchronous check is never the host's") });
   const off = await reason(unpinned);
   assert.match(off, /is not the pinned build/);
   assert.ok(off.includes(line) && !off.includes(codex.CODEX_INSTALL), off);
@@ -226,7 +250,7 @@ test("codex with Codex not installed in the data, or not its pinned build: the r
 
 test("demo: run from npx, a missing OpenCode says the npx line that starts this same AgentRun with it, on this server's store, keeping the other harnesses here", async () => {
   const opencode = await import("../dist/harness-opencode/index.js");
-  const absent = async () => ({ ...opencode, verifyOpenCode: () => { throw new opencode.OpenCodeNotInstalled("no binary for this platform"); } });
+  const absent = async () => ({ ...opencode, verifyOpenCodeAsync: async () => { throw new opencode.OpenCodeNotInstalled("no binary for this platform"); }, verifyOpenCode: () => assert.fail("the synchronous check is never the host's") });
   const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
   const store = `${HOME_DIR}/store`;
   const reason = await adapters.opencodeOf({ AGENTRUN_SERVE_DATA: store }, needs, absent, true).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));

@@ -7,7 +7,7 @@ import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-harness-claude';
+import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli, verifyClaudeAgentCliAsync } from '@parcha/agentrun-harness-claude';
 import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 import { sandboxSpawn } from '../dist/spawn.js';
 
@@ -92,6 +92,24 @@ test('a CLI is checked once per identity in a process: the same file answers aga
   assert.ok(mismatch('cli_version', '2.1.999', '2.1.286')(verifyClaudeAgentCli(path, { ...pins, version: '2.1.999' })), 'other pins: checked against them');
   assert.ok(mismatch('cli_version', '2.1.999', '2.1.286')(verifyClaudeAgentCli(path, { ...pins, version: '2.1.999' })), 'a refusal is never kept');
   assert.equal(checks(), 4);
+});
+
+test("the host's check hands its event loop back while the CLI answers --version, and the adapter's own check then answers from it", async () => {
+  // The CLI answers only once this process has run a callback it queued after starting the check: a check that held the
+  // event loop (a synchronous --version) never lets that callback run, and the CLI gives up after 5 s with an unpinned
+  // version. A server ran that check in its event loop, so every request and open store transaction waited on it.
+  const go = join(ROOT, 'go');
+  const asked = join(ROOT, 'asked-free');
+  const path = join(ROOT, 'waits');
+  writeFileSync(path, `#!/bin/sh\necho x >> "${asked}"\ni=0\nwhile [ ! -e "${go}" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done\nif [ -e "${go}" ]; then echo "2.1.286 (stand-in)"; else echo "2.1.0 (held)"; fi\n`);
+  chmodSync(path, 0o755);
+  const pins = { sha256: createHash('sha256').update(readFileSync(path)).digest('hex'), version: '2.1.286' };
+  const checked = verifyClaudeAgentCliAsync(path, pins);
+  setImmediate(() => writeFileSync(go, ''));
+  assert.deepEqual(await checked, { path });
+  assert.deepEqual(verifyClaudeAgentCli(path, pins), { path }, "the adapter's check: answered from the host's");
+  assert.equal(readFileSync(asked, 'utf8').split('\n').filter(Boolean).length, 1, 'the CLI was asked its version once');
+  assert.ok(mismatch('cli_version', '2.1.999', '2.1.286')(await verifyClaudeAgentCliAsync(path, { ...pins, version: '2.1.999' })), 'a refusal, the same as the synchronous check gives');
 });
 
 test("a CLI that is not the pinned version is refused, typed; the pinned one passes", () => {

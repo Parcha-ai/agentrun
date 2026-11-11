@@ -88,7 +88,7 @@ async function setup(t, harness) {
   const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const run = async (id) => {
-    assert.equal((await server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra }))).status, 201);
+    { const made = await server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra })); assert.equal(made.status, 201, JSON.stringify(made.body)); }
     const started = await server.api("POST", `/agents/${id}/runs`, { input: { content } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     return started.body.run_id;
