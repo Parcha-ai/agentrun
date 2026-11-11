@@ -1504,6 +1504,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
         if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason?.kind === "command" ? stopReason.cancel : undefined) }, [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
+        // The end-of-run turn is one more paid answer: one that passed the cap ends the run in the cap's words (overCap,
+        // read again once its booking settled), as a job's answer that passed it does, never completed. An end already
+        // failed keeps its own words.
+        if (data.state !== "failed") {
+          await bookingsSettled();
+          const overAtEnd = await overCap();
+          if (overAtEnd) data = { state: "failed", summary: overAtEnd };
+        }
         return await writeEnd(harness, root, gate, data, [], step.also, failedWith);
       }
     } catch (error) {

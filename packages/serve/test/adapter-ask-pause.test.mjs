@@ -76,6 +76,25 @@ test("an answer that passed the cap, then an ask refused at it: the run ends spe
   assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap, never parked: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
 });
 
+test("an end-of-run answer that passes the cap ends the run spend_cap_reached in the cap's words, never completed", async (t) => {
+  // The job's answer is free and fits; the end-of-run turn's answer, asked after it, is booked at $0.02 (its model's hold
+  // was $0, so it was sent), past the $0.01 cap. The run's end reads its spend again after that turn.
+  const script = [{ say: "the job's answer" }, { say: "a note" }];
+  let answers = 0;
+  const price = () => (++answers === 1 ? 0 : 0.02);
+  const specOf = (sent) => piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent), price });
+  const asked = [];
+  const endOfRun = async (input) => {
+    asked.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 }));
+    return undefined;
+  };
+  let capUsd = CAP;
+  const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  const { row } = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE }, endOfRun });
+  assert.deepEqual(asked, [{ ended: true, answer: "a note" }], "the end-of-run turn was asked once and answered");
+  assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+});
+
 test("a person's take-over refused at the cap never pauses the run: the agent goes on and the run ends", async (t) => {
   const { row, answered } = await askRun(t, false);
   assert.match(answered[0] ?? "", /could cost up to \$0\.03/, `the take-over was refused in the cap's words: ${JSON.stringify(answered)}`);
