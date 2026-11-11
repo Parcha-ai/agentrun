@@ -1005,20 +1005,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             others += spent;
           }
           const own = await sessions.read(spec.session.key);
+          const read = sessionSpendOf(own);
+          if (read.spentUsd === null) return undefined;
+          // One pass over its answers in order: the spend after each, and the bound of those since the spend last fit.
+          let running = others;
           let bound = 0;
-          own.forEach((record, at) => {
-            if (record.kind !== RUNNER_RECORDS.turn) return;
-            const read = sessionSpendOf(own.slice(0, at + 1));
-            if (read.spentUsd === null) return;
-            const turn = (record.data as { turn?: unknown } | null)?.turn;
-            bound = others + read.spentUsd <= cap ? 0 : bound + (typeof turn === "number" ? (read.bounds.get(turn) ?? 0) : 0);
-          });
-          const spent = sessionSpendOf(own).spentUsd;
-          return spent === null ? undefined : overCapEnd(others + spent, cap, bound);
+          for (const record of own) {
+            if (record.kind !== RUNNER_RECORDS.turn) continue;
+            const data = (record.data ?? {}) as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
+            const figure = typeof data.bookedUsd === "number" ? data.bookedUsd : typeof data.usd === "number" ? data.usd : 0;
+            running += figure;
+            bound = running <= cap ? 0 : bound + (typeof data.turn === "number" ? (read.bounds.get(data.turn) ?? 0) : 0);
+          }
+          return overCapEnd(others + read.spentUsd, cap, bound);
         };
         const beforeRequest: BeforeRequest = async (request) => {
-          // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused.
-          const over = pendingPause ? undefined : await overCap();
+          // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
+          // whatever else would pause it (a paid call's refusal, pendingPause).
+          const over = await overCap();
           const answer = over ? { refuse: over, forGood: true } : (pendingPause ?? (await theCap().before(request)));
           if (answer && "refuse" in answer) {
             refused = answer;
@@ -1372,7 +1376,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await harness.waitForIdle(context);
           const settledEntries = await entriesOf(gate.journal, root.id, context);
           const cutOff = restartLimited(settledEntries);
+          // A turn whose booked spend passed the run's cap ends the run failed in the cap's words (overCap), its crossing
+          // answer booked: main's end of a run over its cap, before any pause (a question to the person, a cap refusal).
+          await bookingsSettled();
+          const over = cutOff ? undefined : await overCap();
           if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
+          else if (over) data = { state: "failed", summary: over };
           else if (outcome.status !== "completed" && refused) {
             // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
             // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
@@ -1413,12 +1422,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           else {
             // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended (loop.ts cutLast,
             // the direct loop's rule: the words are loop-contract's cutAtLimit).
-            // A turn whose answer passed the run's cap ends the run failed in the cap's words (overCap), the answer booked:
-            // main's end of a run over its cap, before any other.
-            await bookingsSettled();
-            const over = await overCap();
-            const cut = over ? undefined : cutLast(settledEntries);
-            data = over ? { state: "failed", summary: over } : cut ? { state: "failed", summary: cut } : { state: "ended" };
+            const cut = cutLast(settledEntries);
+            data = cut ? { state: "failed", summary: cut } : { state: "ended" };
           }
           break;
         }

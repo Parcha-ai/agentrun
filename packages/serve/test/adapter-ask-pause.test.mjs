@@ -19,7 +19,7 @@ const FREE = { id: "claude-sonnet-4-5", api: "anthropic-messages", price: { inpu
 const PRICE = { usdPerHour: 0.12, minimumS: 60 };
 
 /** A run whose one tool asks a person for fifteen minutes in the browser (`pauses`: the agent's ask, or a take-over). */
-async function askRun(t, pauses) {
+async function askRun(t, pauses, { price } = {}) {
   const answered = [];
   const script = [{ call: "ask_person" }, { say: "done" }];
   const specOf = (sent) => async (claim, run) => {
@@ -33,7 +33,7 @@ async function askRun(t, pauses) {
         return "refused" in hold ? hold.refused : "a person has the browser";
       },
     };
-    return piAdapterSpec({ script, tools: { ask_person: askPerson }, hooks: quiet }, { fetch: scriptedOrigin(script, sent) })(claim, run);
+    return piAdapterSpec({ script, tools: { ask_person: askPerson }, hooks: quiet }, { fetch: scriptedOrigin(script, sent), ...(price ? { price } : {}) })(claim, run);
   };
   // The cap as E2 hands it to the loop, kept by the server across a raise (adapter-pi-cap-raise.test.mjs's closure).
   let capUsd = CAP;
@@ -66,6 +66,14 @@ test("an agent's ask refused at the cap parks the run at its next request with t
     now = await server.runs.get("run-1");
   }
   assert.equal(now.state, "ended", `the raise resumed the run, and it ended: ${JSON.stringify({ state: now.state, summary: now.summary })}`);
+});
+
+test("an answer that passed the cap, then an ask refused at it: the run ends spend_cap_reached in the cap's words, never parked for a raise", async (t) => {
+  // Each answer is booked at $0.02 (its model's hold was $0: free to the cap before it left), past the $0.01 cap; its ask
+  // is then refused, which would pause the run at its next request. Passing the cap ends it first.
+  const { row, answered } = await askRun(t, true, { price: () => 0.02 });
+  assert.match(answered[0] ?? "", /could cost up to \$0\.03/, `the ask was refused in the cap's words: ${JSON.stringify(answered)}`);
+  assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap, never parked: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
 });
 
 test("a person's take-over refused at the cap never pauses the run: the agent goes on and the run ends", async (t) => {
