@@ -66,11 +66,11 @@ const ALLOWED = [
   "git status; git log -1",
   "git diff --stat && git log -1",
   "ls;",
-  "grep -rn foo --include=*.ts .",
+  "grep -rn foo --include='*.ts' .",
   "grep -rn foo --include='*.ts' --exclude-dir=node_modules .",
-  "grep -rn foo --exclude=*.md .",
-  "rg foo --include=*.ts .",
-  "find . -name *.ts",
+  "grep -rn foo --exclude='*.md' .",
+  "rg foo --include=\\*.ts .",
+  "find . -name \\*.ts",
   "find packages -iname '*readme*'",
   "cat 'a;b'",
   "grep -n \"x; rm -rf .\" README.md",
@@ -346,6 +346,20 @@ test("command substitution, redirection, unquoted globs and code runners are ref
   refuses("sed -n '/x/p' README.md", /sed's script must be one N,Mp range/);
   refuses("sed '1,40p' README.md", /sed needs -n/);
   refuses("find . -name x -exec rm {} ;", /not allowed/);
+});
+
+test("an unquoted glob is refused everywhere, as the shell would expand it into the folder's file names (a file named -delete after find -name *delete)", () => {
+  for (const command of ["find . -name *delete", "find . -iname *.ts", "grep -rn foo --include=*.ts .", "grep -rn foo --exclude=*.md .", "grep -rn foo --exclude-dir=node* .", "rg foo --include=*.ts ."]) refuses(command, /the glob .* is not allowed here \(quote it/);
+  allows("find . -name '*delete'");
+  allows("find . -name \"*delete\"");
+  allows("grep -rn foo --include=\\*.ts .");
+});
+
+test("a file an option reads is held to the path rule in every spelling: --file=, --exclude-from=, rg --ignore-file", () => {
+  for (const command of ["grep --file=credentials.json README.md", "grep --file=id_rsa README.md", "rg --file=.env x .", "grep --exclude-from=credentials.json x .", "grep --exclude-from credentials.json x .", "rg --ignore-file=id_rsa x .", "rg --ignore-file id_rsa x .", "grep --file=../../x README.md"]) refuses(command);
+  allows("grep --file=patterns.txt README.md");
+  allows("grep --exclude-from=ignore.txt -rn x .");
+  allows("rg --ignore-file ignore.txt x .");
 });
 
 test("a refused long option is refused with every prefix GNU getopt takes: sort --out=f is sort --output=f", () => {

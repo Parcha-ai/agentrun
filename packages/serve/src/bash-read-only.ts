@@ -20,9 +20,10 @@
 //   .netrc, .git-credentials, credentials). A short option with an attached path (`-f/x`) is refused. The policy reads
 //   the command, never the folder: a symbolic link in the folder is followed by the program that opens it, so what a
 //   link can reach is the computer's to contain (a run's computer holds no key of the server's).
-// - Globs: a word holding `*`, `?`, `[` or `]` is refused, unless it is a grep/rg pattern whose glob characters are all
-//   quoted (the shell never expands it), a `--include=`/`--exclude=`/`--exclude-dir=` value (grep, egrep, fgrep, rg)
-//   or find's `-name`/`-iname` value, and that value holds no `/`.
+// - Globs: a word holding `*`, `?`, `[` or `]` is refused unless all of them are quoted or escaped (the shell never
+//   expands it: an expanded glob is the folder's file names, any of which may read as an option), and it is a grep/rg
+//   pattern, a `--include=`/`--exclude=`/`--exclude-dir=` value (grep, egrep, fgrep, rg) or find's `-name`/`-iname`
+//   value, that value holding no `/`.
 // - git: `--no-pager` and `-C <dir>` (a directory inside the folder; later paths are read from it, as git reads them)
 //   may precede a read subcommand (GIT_READS); options that read or write a file, run a program, page, or point git at
 //   another repository are refused, their abbreviations too (git takes those).
@@ -281,8 +282,8 @@ function checkOption(folder: Folder, here: string, a: string) {
 }
 
 // Options that take their value as the next word, so that word is not taken for the pattern.
-const GREP_VALUE_OPTS = new Set(["-m", "-A", "-B", "-C", "-d", "-D", "--max-count", "--context", "--after-context", "--before-context", "--binary-files", "--devices", "--directories", "--label", "--group-separator"]);
-const RG_VALUE_OPTS = new Set(["-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not", "--type-add", "-m", "--max-count", "-A", "-B", "-C", "--context", "--after-context", "--before-context", "-M", "--max-columns", "-j", "--threads", "-E", "--encoding", "-r", "--replace", "-d", "--max-depth", "--sort", "--sortr", "--colors", "--path-separator", "--max-filesize", "--context-separator", "--field-match-separator", "--engine"]);
+const GREP_VALUE_OPTS = new Set(["-m", "-A", "-B", "-C", "-d", "-D", "--max-count", "--context", "--after-context", "--before-context", "--binary-files", "--devices", "--directories", "--label", "--group-separator", "--exclude-from"]);
+const RG_VALUE_OPTS = new Set(["-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not", "--type-add", "-m", "--max-count", "-A", "-B", "-C", "--context", "--after-context", "--before-context", "-M", "--max-columns", "-j", "--threads", "-E", "--encoding", "-r", "--replace", "-d", "--max-depth", "--sort", "--sortr", "--colors", "--path-separator", "--max-filesize", "--context-separator", "--field-match-separator", "--engine", "--ignore-file"]);
 // Short options that take a value, per program (attached, `-e.`, or the next word, `-e .`).
 const GREP_VALUE_LETTERS = "efmABCdD";
 const RG_VALUE_LETTERS = "efgtTmABCMjErd";
@@ -457,7 +458,9 @@ function checkSegment(folder: Folder, start: string, words: string[]) {
         if (a === "--regexp") { patterns.add(k + 1); explicit = true; k++; }
         else if (a.startsWith("--regexp=")) { patterns.add(k); explicit = true; }
         else if (a === "--file") { explicit = true; k++; }
-        else if (a.startsWith("--file=")) explicit = true;
+        else if (a.startsWith("--file=")) { explicit = true; checkPath(folder, here, a.slice("--file=".length), "pattern file"); }
+        // A file an option reads, named in the option's own word: the whole path rule, never-open list included.
+        if (a.startsWith("--exclude-from=") || (program === "rg" && a.startsWith("--ignore-file="))) checkPath(folder, here, a.slice(a.indexOf("=") + 1), "file");
         else if (nextIsValue(k)) k++;
       }
       if (!explicit) {
@@ -498,16 +501,19 @@ function checkSegment(folder: Folder, start: string, words: string[]) {
       break;
     }
   }
-  // Globs: only in a quoted grep/rg pattern, --include=/--exclude=/--exclude-dir= values (grep family, rg) and find
+  // Globs: quoted, and only in a grep/rg pattern, --include=/--exclude=/--exclude-dir= values (grep family, rg) and find
   // -name/-iname, without '/'.
   for (let idx = 0; idx < rest.length; idx++) {
     const a = rest[idx]!;
     if (!/[*?[\]]/.test(a)) continue;
     const m = isOption(idx) ? /^--(include|exclude|exclude-dir)=(.*)$/.exec(a) : null;
-    const okGrep = GREP_LIKE.includes(program) && m !== null && !m[2]!.includes("/");
-    const okFind = program === "find" && idx > 0 && (rest[idx - 1] === "-name" || rest[idx - 1] === "-iname") && !a.includes("/");
-    const okPattern = patterns.has(idx) && !restUnquotedGlob[idx];
-    if (!okGrep && !okFind && !okPattern) throw new Error(`the glob ${a} is not allowed here (only in a quoted grep/rg pattern, an --include=, --exclude= or --exclude-dir= value, or find -name/-iname, without '/')`);
+    // Every glob must be quoted or escaped: one the shell expands becomes the folder's file names, any of which may read
+    // as an option (a file named -delete after find -name *delete).
+    const quotedGlob = !restUnquotedGlob[idx];
+    const okGrep = GREP_LIKE.includes(program) && m !== null && !m[2]!.includes("/") && quotedGlob;
+    const okFind = program === "find" && idx > 0 && (rest[idx - 1] === "-name" || rest[idx - 1] === "-iname") && !a.includes("/") && quotedGlob;
+    const okPattern = patterns.has(idx) && quotedGlob;
+    if (!okGrep && !okFind && !okPattern) throw new Error(`the glob ${a} is not allowed here (quote it: only in a quoted grep/rg pattern, an --include=, --exclude= or --exclude-dir= value, or find -name/-iname, without '/')`);
   }
   for (let idx = 0; idx < rest.length; idx++) {
     const a = rest[idx]!;
