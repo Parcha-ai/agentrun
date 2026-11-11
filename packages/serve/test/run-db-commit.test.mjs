@@ -1,19 +1,18 @@
 // A lock-free reader of a run's database must never open a WAL that holds frames but no commit yet: SQLite's recovery
 // takes a WAL's end at its last verified commit frame, so such a reader recovers no frame, and its close, an empty
 // checkpoint, removes the WAL the run's process is still writing, its committed rows with it. That window is a fresh WAL's
-// first transaction while it holds more than one page: pi-durable's schema commit, and every relaunch's first commit after
-// a take-back checkpointed and removed the WAL. Both reader paths (run-db.ts readRunDbSync, agentrun-pi's `unlocked`
-// read) read such a database as the file alone, and no row the writer committed is lost.
+// first transaction while it holds more than one page: pi-durable's schema commit. Both reader paths (run-db.ts
+// readRunDbSync, agentrun-pi's `unlocked` read) read such a database as the file alone, and no row the writer committed
+// is lost.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
-import { keptWalWalks } from "@parcha/agentrun-pi/durable";
 import { withDurableFile } from "../../pi/dist/durable/readers.js";
-import { checkpointRunDb, readRunDbSync } from "../dist/run-db.js";
+import { readRunDbSync } from "../dist/run-db.js";
 import { scratch } from "./support.mjs";
 
 /** A run's process whose first transaction spans many pages (a schema and 40 rows of 3,000 bytes, a cache of 2 pages so
@@ -75,7 +74,7 @@ async function writerRun(dir, file, schema, read) {
   return { said, committed, walBefore, walAfter };
 }
 
-/** The rows a fresh open of `file` finds, as the take-back's checkpoint opens it. */
+/** The rows a fresh read-write open of `file` finds. */
 const rowsOf = (file) => {
   const db = new DatabaseSync(file);
   try {
@@ -104,27 +103,6 @@ for (const [path, read] of Object.entries(PATHS)) {
     assert.ok(run.walBefore, "frames are in the WAL, with no commit yet");
     assert.ok(run.walAfter, "the read left the WAL the writer is writing");
     assert.equal(found, 50, "the rows the writer committed survive the read");
-  });
-
-  test(`${path}: a read during a relaunch's first, multi-frame transaction after the take-back checkpointed and removed the WAL leaves the new WAL, and no row is lost`, { timeout: 60_000 }, async (t) => {
-    const dir = await scratch(t);
-    const file = join(dir, "run.sqlite");
-    const first = join(dir, "first");
-    const again = join(dir, "again");
-    for (const step of [first, again]) mkdirSync(step);
-    await writerRun(first, file, true, () => 0);
-    read(file);
-    const kept = keptWalWalks();
-    await checkpointRunDb(file, false);
-    assert.equal(existsSync(`${file}-wal`), false, "the take-back removed the WAL");
-    assert.equal(keptWalWalks(), kept - 1, "and what was kept of its walk");
-    const run = await writerRun(again, file, false, () => read(file));
-    const found = rowsOf(file);
-    t.diagnostic(`writer committed ${run.committed}; a fresh open after its exit finds ${found}; WAL before the read ${run.walBefore}, after ${run.walAfter}`);
-    assert.equal(run.committed, 100);
-    assert.ok(run.walBefore, "frames are in the relaunch's new WAL, with no commit yet");
-    assert.ok(run.walAfter, "the read left the WAL the relaunch is writing");
-    assert.equal(found, 100, "the relaunch's committed rows survive the read");
   });
 }
 

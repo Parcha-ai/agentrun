@@ -11,7 +11,7 @@
 // in characters (the bound; the Claude Agent CLI's estimate, a quarter of a token a character) and as Codex counts it,
 // four bytes of UTF-8 a token, against the adapter's tool_output_token_limit. A tool added to the host tools with no
 // largest result here fails the test. So does one the Claude Agent adapter would list to its CLI without the bound as its
-// `anthropic/maxResultSizeChars`.
+// `anthropic/maxResultSizeChars`, and one pi's harness would cut (its output limits, HOST_TOOL_OUTPUT).
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +26,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as pages from "../dist/web-fetch-direct.js";
 import * as hosts from "../dist/host-tools.js";
 import { CLIP, monidRegistration, monidText } from "../dist/monid.js";
+import { HOST_TOOL_OUTPUT } from "../dist/runner/adapters/pi.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
 import { hostToolsOf } from "./host-tools-of.mjs";
@@ -121,6 +122,11 @@ test("every host tool's largest result is within the host's result bound, which 
   for (const [tool, tokens] of Object.entries(codexTokens)) assert.ok(tokens <= codex.CODEX_TOOL_OUTPUT_TOKENS, `${tool}'s largest result is ${tokens} tokens as Codex counts them, past its tool_output_token_limit ${codex.CODEX_TOOL_OUTPUT_TOKENS}`);
   for (const [tool, size] of Object.entries(largest)) assert.ok(Math.round(size / 4) + 2 * 1_600 <= claude.MCP_OUTPUT_TOKENS / 2, `${tool}'s largest result, with two images, is past half the Claude Agent CLI's MAX_MCP_OUTPUT_TOKENS ${claude.MCP_OUTPUT_TOKENS}, where it counts exactly`);
   assert.ok(search.SEARCH_MAX_CHARS < bound, "web_search's own budget is under the bound");
+  // pi's harness is told the bound too (runner/adapters/pi.ts HOST_TOOL_OUTPUT), so each largest result reaches the model
+  // whole; pi's own default (50 KB or 2,000 lines, its head kept) would cut a read at its limit before its last line,
+  // the one that says how to go on.
+  for (const [tool, texts] of Object.entries(results)) for (const text of texts) assert.ok(Buffer.byteLength(text, "utf8") <= HOST_TOOL_OUTPUT.maxBytes && text.split("\n").length <= HOST_TOOL_OUTPUT.maxLines, `${tool}'s largest result passes pi's harness whole`);
+  assert.ok(Math.max(...results.read.map((text) => Buffer.byteLength(text, "utf8"))) > 50 * 1024, "a read at pi's limit, with its note, is past pi's own default");
 
   // Every host tool, as the Claude Agent adapter lists it to its CLI (its tool server's tools/list, read by an MCP
   // client), carries the bound as its result size; the CLI takes one up to 500,000.

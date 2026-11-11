@@ -65,12 +65,12 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once that capabilities report (`limits.max_concurrent_runs`), beside the memory each run's harness reserves ([capacity](#capacity-and-health)). It does not stop a start: a run waits `queued` until a runner has a free loop. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs the runner beside the server holds at once ([capacity](#capacity-and-health)); a run past that waits `queued` until one ends. Capabilities report the same number (`limits.max_concurrent_runs`), capped by each harness's memory. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
-| `--drain-timeout D` | `30s` (the image: `6s`) | Checked as a duration (`8s`, `500ms`, `1m`) and kept, but a runner does not wait on it yet: when the server stops, the runner beside it stops every run where it can resume, and the next claim carries on from the run's journal (a model request the stop cut is sent again). |
+| `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped where it can resume, and the next claim carries on from its journal (that turn's model request sent again). The stop says how long it waits and for how many runs. A runner of its own (`agentrun-serve runner`) takes `--drain-timeout` too, default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
@@ -256,11 +256,14 @@ runner you start yourself).
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
-it, needs a 1 GB instance for one and 2 GB for two. A harness whose one run needs more than all the memory for runs
-(claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses`
-entry. pi always has one place, however small the host.
+it, needs a 1 GB instance for one and 2 GB for two. The runner beside the server holds at most `--max-runs` runs at
+once (below); a run past that waits `queued` until one ends, and is never refused for a place. A harness whose one run
+needs more than all the memory for runs (claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable:
+capabilities say why in its `harnesses` entry. pi always has one place, however small the host.
 
-`--max-runs N` or `AGENTRUN_MAX_RUNS` sets the count capabilities report (by default, as many as pi runs fit): pi's in
+`--max-runs N` or `AGENTRUN_MAX_RUNS` sets that count (by default, as many as pi runs fit): the runner beside the
+server claims at most that many runs at once, of any harness, and the rest wait queued. A runner of its own
+(`agentrun-serve runner`) holds `--loops N`, else the same default. Capabilities report it: pi's in
 `limits.max_concurrent_runs`, and each harness's own, the lower of that and what its memory holds, in its `harnesses`
 entry (`max_concurrent_runs`, beside `run_memory_mib`).
 
@@ -724,6 +727,21 @@ the provider with them and starts nothing. A key set in the server's environment
 `KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
+
+**GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
+"count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
+most one computer gets, and where a GPU computer differs from its others. A provider whose GPU computers cannot hold
+this server's run folder says why there. The save checks the shape, and only a sandbox takes one. The run's start (409)
+and the claim refuse a type or a count the provider does not give, in the computer package's `checkGpu` words, and the
+computer is made with the GPUs asked.
+
+- **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
+  in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
+  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
+  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
+  its network allowlist, are not yet proven live.
+- **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
+  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
@@ -1490,8 +1508,13 @@ asked by default.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
-  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
-  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model reads the text blocks and embedded text resources joined (GitHub's `get_file_contents` answers a file as one);
+  past 60,000 characters it reads the answer's first lines, whole, and the rest is filed under the run's
+  `evidence/mcp/<server>/` as lines (JSON laid out a value a line, its indent capped at 32 levels, and filed as
+  written when the layout would pass twice its size and 64 KiB; a line past 10,000 characters broken), the text
+  naming the file and the `read` offset that goes on, so a run with `read` and no shell pages through it. With blocks
+  that are neither (an image, a blob), the whole answer is filed there as JSON and the text says where. On pi, every
+  host tool's answer reaches the model whole within the host's result bound, as each CLI harness is told. A tool's own error (`isError`) reaches the
   model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
   expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
   there"; another failure names the server and the HTTP status, never a header. A stop, or a
@@ -1620,7 +1643,7 @@ a restart drives again finds its run. A firing's key stays bound to that run: wh
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
-takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+takes](#webhook-triggers) starts its own run); a firing over the run limit starts its run `queued`, and one the server can't take now (busy or unavailable) stays due and is tried again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1716,15 +1739,15 @@ conditions holding. A verified delivery no rule takes (GitHub's `ping` among the
 `accept`, every verified request fires, as before. A trigger holds at most 20 rules, each at most 20 conditions and 20
 actions; an `in` lists at most 20 values of at most 1024 characters of JSON each, a pointer is at most 512 characters,
 and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
-run active or not, since the events it takes are each their own work (a review per pull request); the server's run
-limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
-delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
-included. Runs start in the order their events came while the server has room; while one firing waits to be tried
-again after a `429`, a later one can start first.
+run active or not, since the events it takes are each their own work (a review per pull request); the run limit still
+holds on the runner: a run past it waits `queued`. A start the server can't take now keeps the firing due and tries it
+again, and past 20 firings due a new delivery answers `429`. This holds for every firing of such a trigger, a run now
+(`POST /v2/triggers/{id}/fire`) included. Runs start in the order their events came; while one firing waits to be
+tried again, a later one can start first.
 
-Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
-`max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
-again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
+Such a trigger can fill the runner's places and the queue behind them, starving other triggers and the runs people
+start. Give it `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and
+is tried again, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
 opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
 webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
@@ -1878,7 +1901,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" | "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
@@ -2699,6 +2722,9 @@ session (spent before any process could hold it). A session whose release is nev
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
 last charges booked before its process exits.
 
+A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
+AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
+
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:
 
@@ -3000,7 +3026,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Test
 
 ```sh
-npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-disk -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
+npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
 npm test -w @parcha/agentrun-serve
 ```
 
