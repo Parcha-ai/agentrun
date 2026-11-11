@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { route } from "@/App";
@@ -49,7 +49,8 @@ async function open(name?: string, fake: Fake = {}) {
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => { root!.render(createElement(TemplatesPage, { v2: v2 as never, name, go: (h: string) => went.push(h) })); });
+  // Under StrictMode, as the console renders every page (main.tsx): effects run setup, cleanup, then setup again.
+  await act(async () => { root!.render(createElement(StrictMode, null, createElement(TemplatesPage, { v2: v2 as never, name, go: (h: string) => went.push(h) }))); });
   const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()));

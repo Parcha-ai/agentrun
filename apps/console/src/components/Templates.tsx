@@ -107,7 +107,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const keys = useRef(keeper()).current;
   // Whether this page is still the one shown: an Apply that answers after the owner left never takes them anywhere.
   const shown = useRef(true);
-  useEffect(() => () => { shown.current = false; }, []);
+  // Set on every setup, not only the first: StrictMode runs setup, cleanup, then setup again.
+  useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
   // The MCP servers saved here (GET /v2/settings/mcp-servers): which of the template's servers are set up.
   useEffect(() => {
     let live = true;
