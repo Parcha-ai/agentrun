@@ -74,7 +74,7 @@ const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENT_MODEL"
 const ENV = { PATH: process.env.PATH, ...Object.fromEntries(MODEL_VARS.flatMap((name) => (process.env[name] ? [[name, process.env[name]]] : []))) };
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const mod = (path) => import(pathToFileURL(join(root, path)).href);
-const [{ GRADE_MAX_TOKENS, GRADE_TIMEOUT_MS }, { runModels, thinkingOf }, { modelOn, providerFor }, { authContextOf }, learn, { builtinModels }] = await Promise.all([
+const [{ GRADE_MAX_TOKENS, GRADE_TIMEOUT_MS }, { runModels }, { modelOn, providerFor }, { authContextOf }, learn, { builtinModels }] = await Promise.all([
   mod("packages/serve/dist/runner/learning-loop.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/provider.js"), mod("packages/serve/dist/secrets.js"),
   mod("packages/serve/dist/learn/index.js"), mod("node_modules/@earendil-works/pi-ai/dist/providers/all.js"),
 ]);
@@ -144,7 +144,7 @@ async function reflect(c, profile) {
   let usd = 0;
   for (let step = 0; step < 6; step++) {
     mayAsk();
-    const message = await models.completeSimple(model, { systemPrompt: systemOf(c), messages, tools: TOOLS }, { reasoning: thinkingOf(ENV, undefined), maxTokens: 8000, signal: AbortSignal.timeout(180_000) });
+    const message = await models.completeSimple(model, { systemPrompt: systemOf(c), messages, tools: TOOLS }, { reasoning: "medium", maxTokens: 8000, signal: AbortSignal.timeout(180_000) });
     usd += spent(message, unpriced);
     if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(`the turn: ${message.errorMessage ?? message.stopReason}`);
     messages.push(message);

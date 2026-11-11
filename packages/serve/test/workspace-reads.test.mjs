@@ -40,18 +40,6 @@ async function unserved(t) {
 const get = (server, path) => server.api("GET", `/runs/${server.runId}/files${path}`);
 const holds = (response) => JSON.stringify(response.body ?? "").includes(CANARY);
 
-/** Swaps `name` (a path in work/) for a link to `target` the first time the confinement checks a path ending in it. */
-function swapOnCheck(t, work, name, target) {
-  let fired = 0;
-  confineHooks.afterCheck = async (canonical) => {
-    if (!canonical.endsWith(`/${name}`) || fired++) return;
-    await rename(join(work, name), join(work, `${name}.moved`));
-    await symlink(target, join(work, name));
-  };
-  t.after(() => void (confineHooks.afterCheck = undefined));
-  return () => fired;
-}
-
 test("the run's file view goes through its Workspace: a folder swapped for a link to the server's files, over and over, never lists or serves them", { skip: process.platform !== "linux" && "the swap race is shown on Linux, where the Workspace's calls go through held folders", timeout: 60_000 }, async (t) => {
   const server = await served(t);
   await mkdir(join(server.work, "sub"));

@@ -55,7 +55,11 @@ const { parseDocument } = await import(pathToFileURL(createRequire(join(serveDir
 
 export const SCHEMA = "learning-bench/2";
 const KINDS = ["teach", "repeat", "change", "plant"];
-const JOB_FIELDS = ["template", "parameters", "grants", "fakes", "deny", "harnesses", "steps"];
+const JOB_FIELDS = ["template", "parameters", "grants", "fakes", "deny", "harnesses", "steps", "reuse"];
+/** How many steps a job that measures workflow reuse (job.yaml `reuse: true`) runs after the earliest step a workflow can
+ *  be kept: its skill taught at the teach step, asked for as a workflow once the skill served DRAFT_AFTER_RUNS earlier
+ *  runs (learn/reflect.ts, #2282), kept at that step's end and callable from the next. */
+export const REUSE_STEPS = 3;
 const DEFAULT_MODELS = { pi: null, "claude-agent": "anthropic/claude-haiku-5-5" };
 
 // ---- jobs -------------------------------------------------------------------------------------------------------------
@@ -82,8 +86,9 @@ export function readJob(dir) {
   }
   for (const key of ["deny", "grants", "harnesses"]) if (spec[key] !== undefined && !(Array.isArray(spec[key]) && spec[key].every((x) => typeof x === "string"))) bad.push(`job.yaml: ${key} is a list of names`);
   if (spec.fakes !== undefined && (typeof spec.fakes !== "object" || Array.isArray(spec.fakes))) bad.push("job.yaml: fakes is a mapping of an MCP server's name to its fixture file in the job");
+  if (spec.reuse !== undefined && typeof spec.reuse !== "boolean") bad.push("job.yaml: reuse is true for a job that measures workflow reuse");
   if (bad.length) throw new Error(`${name}: the job does not check:\n${bad.map((b) => `- ${b}`).join("\n")}`);
-  return { name, dir, template: spec.template ?? null, parameters: spec.parameters ?? {}, grants: spec.grants ?? [], fakes: spec.fakes ?? {}, deny: spec.deny ?? [], harnesses: spec.harnesses ?? ["pi"], steps };
+  return { name, dir, template: spec.template ?? null, parameters: spec.parameters ?? {}, grants: spec.grants ?? [], fakes: spec.fakes ?? {}, deny: spec.deny ?? [], harnesses: spec.harnesses ?? ["pi"], steps, reuse: spec.reuse === true };
 }
 
 /** The job as a template package in `templates` (a scratch folder): the package's files and one eval case per step. Its
@@ -470,12 +475,44 @@ function tokenMetrics(steps) {
   };
 }
 
+/** Input + output tokens per passing step over `steps` whose tokens are fully known, and how many those are: null when
+ *  none is known, or none of them passed. */
+function tokensPerPass(steps) {
+  const known = steps.filter((s) => s.tokens && !(s.tokens.unmetered > 0));
+  const passes = known.filter((s) => s.pass).length;
+  return { per_pass: known.length && passes ? Math.round(known.reduce((sum, s) => sum + s.tokens.input + s.tokens.output, 0) / passes) : null, known: known.length };
+}
+
+/** How a series used the workflow it kept (results.schema.json `metrics.reuse`, C3): the step it was first kept at, the
+ *  steps after it, those that called learned_workflow and how many of them passed, and tokens per passing step on those
+ *  steps against the skill-only steps (a learned skill active, no workflow called: every step after the one that first
+ *  learned a skill, the calling ones aside). Null with learning off, or when no workflow was kept. */
+/** The first step after which a `kind` (skills, workflows) was ACTIVE, by its recorded `active_after`: one kept
+ *  waiting for the owner's OK (pending, as --no-approve leaves it) is listed as learned but given to no run. -1 for none. */
+const firstActive = (steps, kind) => steps.findIndex((s) => Object.keys(s.active_after?.[kind] ?? {}).length > 0);
+
+function reuseMetrics(steps, learns) {
+  if (!learns) return null;
+  const kept = firstActive(steps, "workflows");
+  if (kept < 0) return null;
+  const after = steps.slice(kept + 1);
+  const calling = after.filter((s) => s.learned_workflow_calls > 0);
+  // A step had the skill when the step before it left one active.
+  const skillOnly = steps.filter((s, i) => i > 0 && Object.keys(steps[i - 1].active_after?.skills ?? {}).length > 0 && !(s.learned_workflow_calls > 0));
+  const withFlow = tokensPerPass(calling);
+  const without = tokensPerPass(skillOnly);
+  return {
+    kept_step: steps[kept].id, steps_after: after.length, call_steps: calling.length, call_passes: calling.filter((s) => s.pass).length,
+    tokens_per_pass_workflow: withFlow.per_pass, tokens_per_pass_skill_only: without.per_pass, workflow_steps_known: withFlow.known, skill_only_steps_known: without.known,
+  };
+}
+
 /** The series' metrics from its steps (results.schema.json `metrics`). */
 export function metricsOf(steps, learns) {
   const at = (pred) => steps.filter(pred);
   const graderRates = {};
   for (const name of [...new Set(steps.flatMap((s) => s.graders.map((g) => g.grader)))].sort()) graderRates[name] = rate(steps.flatMap((s) => s.graders.filter((g) => g.grader === name).map((g) => g.pass)));
-  const firstFlow = steps.findIndex((s) => s.learned?.workflows?.length);
+  const firstFlow = firstActive(steps, "workflows");
   const staleness = [];
   if (learns) for (const [i, s] of steps.entries()) {
     if (s.kind !== "change") continue;
@@ -514,6 +551,7 @@ export function metricsOf(steps, learns) {
     learning_overhead_usd_per_run: learns ? mean(steps.map((s) => (s.reflect_cost_usd === null ? null : s.reflect_cost_usd + (s.grade_cost_usd ?? 0)))) : null,
     workflow_proposal_rate: learns ? rate(at((s) => s.kind === "teach").map((s) => s.workflow_proposed)) : null,
     reuse_rate: learns && firstFlow >= 0 ? rate(steps.slice(firstFlow + 1).map((s) => s.learned_workflow_calls > 0)) : null,
+    reuse: reuseMetrics(steps, learns),
     staleness,
     wrong_keeps: learns && plantAt >= 0 ? plantGraders.filter((g) => !g.pass).length : null,
     plant_graders: learns && plantAt >= 0 ? plantGraders.length : null,
@@ -654,7 +692,10 @@ export function render(results) {
     out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${m.follow_k ?? "-"}/${m.follow_n ?? "-"} (${pct(m.follow_rate)}) | ${m.pass_k ?? "-"}/${m.pass_n ?? "-"} (${pct(m.pass_rate)}) | ${m.tokens_per_pass ?? (m.tokens_known_steps === 0 ? "unknown" : "-")} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"}${m.plant_ungraded ? ` (+${m.plant_ungraded} ungraded)` : ""} |`);
   }
   for (const s of order) {
+    const reuse = s.metrics.reuse;
+    const toks = (x) => (x === null || x === undefined ? "unknown" : String(x));
     out.push("", `${s.job} / ${s.harness} / ${s.arm}${s.error ? ` (SERIES STOPPED: ${s.error.slice(0, 200)})` : ""}${s.metrics.ungraded_checks ? ` (${s.metrics.ungraded_checks} checks ungraded)` : ""}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
+    if (reuse) out.push(`${s.job} / ${s.harness} / ${s.arm} reuse: workflow kept at ${reuse.kept_step}; ${reuse.call_steps} of the ${reuse.steps_after} steps after called it, ${reuse.call_passes} passed; tokens per passing step ${toks(reuse.tokens_per_pass_workflow)} with it, ${toks(reuse.tokens_per_pass_skill_only)} skill-only`);
     for (const x of s.steps) {
       const failed = x.graders.filter((g) => !g.pass && !g.ungraded).map((g) => g.grader);
       const ungraded = x.graders.filter((g) => g.ungraded).map((g) => g.grader);

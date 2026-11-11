@@ -84,6 +84,10 @@ with client.runs.read_file(done["run_id"], "notes.md", stream=True) as response:
         ...
 ```
 
+A `StreamedResponse` reads with `read`, `read1` or `iter_bytes`. A read that fails (the server stalls past the
+call's `timeout`, or the body is cut before its length) raises `AgentRunUnreachable` with the failure's code, never an
+`http.client` error, and closes the connection. Nothing is tried again: what was read is yours.
+
 `runs.follow` reads the route's event stream and resumes a dropped connection with `Last-Event-ID`, so no page comes
 twice. It waits at least the server's `retry` before it reconnects, and a gateway's `Retry-After`. Only the server's
 silence counts as a dropped connection (`idle_timeout=`, default 45 seconds), never the time your loop spends on a page.

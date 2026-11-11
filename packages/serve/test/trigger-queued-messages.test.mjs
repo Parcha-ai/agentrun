@@ -12,7 +12,6 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
 
 const START = new Date(T0).toISOString();
-const settle = () => new Promise((resolve) => setImmediate(resolve));
 /** Until `check()` holds, letting the engine's promises and the store's worker run: at most 10 s. */
 async function until(check, what) {
   for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 5))) if (await check()) return;
