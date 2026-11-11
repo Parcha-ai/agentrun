@@ -8,7 +8,6 @@ import { blurbOf } from "./tool-blurbs.js";
 import { LEARNED_MCP_TOOL } from "./learn/skills.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";
@@ -19,6 +18,7 @@ import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
+import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
@@ -250,6 +250,30 @@ export const evidenceIn = (work: Workspace) => {
   };
 };
 
+/** What browser_upload may choose: a file of the run's Workspace, the one its read opens, by a path relative to it. The
+ *  Workspace refuses a path that would leave it (absolute, "..", a link anywhere on the way), so nothing outside the run's
+ *  folder is ever read; a file must be a regular one of at most `maxBytes`. `mime` names its media type by its name. */
+export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: string) => string) => ({
+  async resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }> {
+    if (typeof rel !== "string" || !rel.trim()) return { refused: "path must name a file in the workspace" };
+    const refusal = (error: unknown) => (isWorkspaceError(error, "ESCAPE") ? `${rel} resolves outside the workspace` : isWorkspaceError(error, "NOT_FOUND") ? `no file at ${rel} in the workspace` : `${rel} cannot be opened`);
+    try {
+      const info = await work.stat(rel);
+      if (!info) return { refused: `no file at ${rel} in the workspace` };
+      if (info.kind !== "file") return { refused: `${rel} is not a regular file` };
+      if (info.size > maxBytes) return { refused: `${rel} is ${info.size} bytes, over the ${maxBytes}-byte limit` };
+      // The file as its stat sized it, and nothing past that: one that shrank, or grew before or while it was read, is
+      // refused, never chosen in part.
+      const bytes = await work.read(rel, { length: info.size });
+      if (bytes.byteLength !== info.size || (await work.read(rel, { offset: info.size, length: 1 })).byteLength > 0) return { refused: `${rel} changed while it was read; try again` };
+      const name = rel.split("/").at(-1) ?? rel;
+      return { bytes, name, mime: mime(name) };
+    } catch (error) {
+      return { refused: refusal(error) };
+    }
+  },
+});
+
 /** The Browserbase contexts a run's browser may open: its agent's saved sign-in's alone, by its profile name, never one
  *  made here (nothing a run makes is kept for its agent). */
 export const keptContexts = (ref: string | undefined) => ({
@@ -337,10 +361,10 @@ const browserTool: ToolEntry = {
   // (its reconcile, its release and drain, its live view hang off that run's lifecycle). A node naming it is refused when
   // its definition is saved (runnable.ts), never accepted and then failed at its run.
   nodes: false,
-  // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
+  // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -449,10 +473,15 @@ const browserTool: ToolEntry = {
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
     // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
     const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause, flush: host.ledger?.flush });
-    // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
-    // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
-    const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
-    const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
+    // The run's own Workspace, the one its read opens (on the runner: Mode 1's local folder, Mode 2's folder on the run's
+    // disk): the browser files its evidence there, and browser_upload chooses from it.
+    const work = host.workspace ?? localWorkspace(host.where.work);
+    // browser_downloads copies into a folder by its local path (pi-browser fetchDownloads), so it is listed only where the
+    // run's Workspace is a folder of this machine (never on Mode 2's disk, where the run's read would not find what it
+    // copied), and only for a provider that keeps a session's downloads (Browserbase's; Kernel's keeps none).
+    const folder = localFolderOf(work);
+    const keepsDownloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
+    const files = { files: uploadsFrom(work, MAX_UPLOAD_BYTES, uploadMime), ...(folder !== undefined && keepsDownloads ? { workspace: () => folder } : {}) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
     const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
@@ -472,7 +501,7 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));

@@ -138,10 +138,6 @@ const STORE_URLS = new WeakMap<ConformanceSubject, string>();
 const POSTGRES_PENDING: Readonly<Record<string, string>> = {};
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
- *  the run over. */
-const TAKEOVER: Partial<typeof TIMING> = {};
-
 /** The stores' clock skew a runner process reads (child.ts): the file holds the milliseconds the clock moved, so the
  *  process's store moves with the case's (runOut). */
 export const storeClockOf = (file: string | undefined): (() => number) => {
@@ -805,10 +801,13 @@ const CASES: readonly Case[] = [
       await sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId, note: "not on a Friday" } });
       await w.ended("ended");
       assert.equal(ran.asked, 0, "denied, it never ran");
-      const { answers, messages } = await w.read();
+      const { answers, messages, calls } = await w.read();
       // The fields this case is about; its time is the loop's clock's (adapter-pi-approval-entries pins it).
       assert.deepEqual(answers.map(({ callId: id, approved, decision, note }) => ({ callId: id, approved, decision, note })), [{ callId, approved: false, decision: "deny", note: "not on a Friday" }], "the answer is a deny that keeps the note");
-      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      // What the model said after the asked call: its answer to the refusal. What it said with the call, before the gate
+      // asked (a CLI's "Calling asked."), is on the record before the call's row, as pi keeps a call's text in its message.
+      const asked = calls.find((call) => call.callId === callId);
+      const said = messages.filter((message) => message.role === "model" && message.entry > (asked?.startEntry ?? -1)).map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
       // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
       // refusal its own way (pi: a blocked call's error) around them.

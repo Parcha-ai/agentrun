@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -67,6 +67,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     learningLog: async (_id: string, cursor: string) => { calls.push(`log after ${cursor}`); return (fake.log ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
+    promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -891,7 +892,7 @@ describe("the Learning tab's skills and workflows", () => {
     it("one the server lists retired has no Retire and no Approve, is not counted, and says who retired it and when", async () => {
       const v = learned({ skill: "retired", workflow: "retired" });
       v.skills = [...v.skills!, { name: "read-receipts", file: "skills/read-receipts/SKILL.md", description: "Read a receipt", status: "pending", run: "run-b", bytes: 40, etag: '"rr-v1"' }];
-      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "person" as const } } : x));
+      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "person" as const, from: "active" as const } } : x));
       const t = await open(agent(true), { learning: async () => v, read: reads, caps: { learning: { pending: true, approve: true } } });
       const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
       expect(skills.textContent).toContain("1 skill: how to do a job it does again");
@@ -1024,7 +1025,7 @@ describe("text in angle brackets in what it learned", () => {
 // who retired it when. Nothing to edit or retire on it: no later run reads it.
 describe("the Learning tab's retired notes and skills, opened", () => {
   const retiredView = () => view({
-    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: "2026-11-04T09:10:00Z", by: "person" } })], total: 2, next_cursor: null },
+    notes: { items: [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: "2026-11-04T09:10:00Z", by: "person", from: "active" } })], total: 2, next_cursor: null },
     log: { items: [
       { by: { user: true }, commit: "c4", at: "2026-11-04T09:10:00Z", reason: "retired by a person", files: [MINE, "MEMORY.md"] },
       { by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "Short answers read better.", files: [MINE, FIRST, "MEMORY.md"] },
@@ -1133,7 +1134,7 @@ describe("the Learning tab's words for the newest change", () => {
   });
   it("names who retired one from the served retired field: you, or a run", async () => {
     const v = view();
-    v.notes.items = [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: AT, by: "person" } }), note(OLD, "Shopify refund policy path", { status: "retired", retired: { at: AT, by: "run" } })];
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first"), note(MINE, "Keep it to three lines", { status: "retired", retired: { at: AT, by: "person", from: "active" } }), note(OLD, "Shopify refund policy path", { status: "retired", retired: { at: AT, by: "run", from: "active" } })];
     const t = await open(agent(true), { learning: async () => v });
     await t.click(/^Earlier notes/);
     const earlier = t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent ?? "";
@@ -1145,9 +1146,9 @@ describe("the Learning tab's words for the newest change", () => {
 // A retired note, skill or draft can be restored: after a confirm, on the version its card shows (If-Match), then the tab
 // reads it again. A refusal says why in plain words, and it stays retired.
 describe("restoring a retired note, skill or draft", () => {
-  const retiredView = () => {
+  const retiredView = (from: "active" | "pending" = "active") => {
     const v = view();
-    v.notes.items = [note(FIRST, "Try /policies/refund-policy first", { etag: '"v-first"' }), note(MINE, "Keep it to three lines", { status: "retired", etag: '"v-mine"' })];
+    v.notes.items = [note(FIRST, "Try /policies/refund-policy first", { etag: '"v-first"' }), note(MINE, "Keep it to three lines", { status: "retired", etag: '"v-mine"', retired: { at: "2026-11-04T09:10:00Z", by: "person", from } })];
     return v;
   };
   const restoreOf = async (t: Awaited<ReturnType<typeof open>>) => {
@@ -1166,6 +1167,14 @@ describe("restoring a retired note, skill or draft", () => {
     await t.click(/^Yes, restore$/);
     expect(t.calls).toContain(`restore ${MINE} "v-mine"`);
     expect(reads).toBeGreaterThan(before);
+  });
+
+  it("a note that waited for your OK before its retire says it goes back to waiting, never that it becomes active", async () => {
+    const t = await open(agent(true), { learning: async () => retiredView("pending") });
+    await restoreOf(t);
+    const ask = t.host.querySelector('[role="alertdialog"]')?.textContent ?? "";
+    expect(ask).toContain("It goes back to waiting for your OK: no run uses it until you approve it.");
+    expect(ask).not.toContain("active again");
   });
 
   it("a version changed since says so and reads the tab again", async () => {
@@ -1293,6 +1302,182 @@ describe("the Learning tab's per-note run counts", () => {
     expect(first).toContain("Given to 0 runs");
     expect(first).not.toContain("Read in");
     expect(first).not.toContain("Used in");
+  });
+});
+
+describe("the Learning tab's Make this an agent", () => {
+  const README = "workflows/check-refunds/README.md";
+  const OWNER = { learning: { pending: true, approve: true } };
+  const flows = (status: "active" | "pending" | "retired") => view({
+    skills: [{ name: "find-policies", file: "skills/find-policies/SKILL.md", description: "Find a store's policies", status: "active", run: "run-b", bytes: 92, etag: '"skill-v1"' }],
+    workflows: [{ name: "check-refunds", file: "workflows/check-refunds/workflow.json", readme: README, description: "Checks a store's refund window", status, run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+  } as Partial<AgentLearning>);
+  const WORDS = "Make it an agent? It makes a new agent that runs the steps of check-refunds on their own, with no agent loop, under this agent's tool settings, approvals and cap. check-refunds stays here, unchanged.";
+
+  it("shows only on an active workflow, to the owner signed in: never on one that waits or was retired, on a skill, to a token, or on an archived agent", async () => {
+    const active = await open(agent(true), { learning: async () => flows("active"), caps: OWNER });
+    expect(active.calls).toContain("capabilities");
+    expect(active.button(/^Make check-refunds an agent$/)?.textContent).toBe("Make this an agent");
+    expect(active.button(/^Make find-policies an agent$/)).toBeUndefined();
+    act(() => root?.unmount());
+    for (const status of ["pending", "retired"] as const) {
+      const t = await open(agent(true), { learning: async () => flows(status), caps: OWNER });
+      expect(t.button(/^Make check-refunds an agent$/), status).toBeUndefined();
+      act(() => root?.unmount());
+    }
+    const token = await open(agent(true), { learning: async () => flows("active"), caps: { learning: { pending: true, approve_needs: "password" } } });
+    expect(token.button(/^Make check-refunds an agent$/)).toBeUndefined();
+    act(() => root?.unmount());
+    const archived = await open({ ...agent(true), archived_at: "2026-11-05T00:00:00Z" }, { learning: async () => flows("active"), caps: OWNER });
+    expect(archived.button(/^Make check-refunds an agent$/)).toBeUndefined();
+  });
+
+  it("asks first, saying what it makes; yes makes it and links to the new agent, cancel makes nothing", async () => {
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER });
+    await t.click(/^Make check-refunds an agent$/);
+    const ask = t.host.querySelector('[role="alertdialog"][aria-label="Make check-refunds an agent?"]') as HTMLElement;
+    expect(ask?.querySelector("p")?.textContent).toBe(WORDS);
+    expect(document.activeElement?.textContent).toBe("Yes, make the agent");
+    await t.click(/^Cancel$/);
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.calls.some((c) => c.startsWith("promote"))).toBe(false);
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    expect(t.calls).toContain("promote check-refunds");
+    const link = t.card("check-refunds")!.querySelector('a[href="#/agents/check-refunds"]');
+    expect(link?.textContent).toBe("check-refunds");
+    expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+
+  it("a refusal says why and makes nothing: a token is told it takes the password sign-in, the checks' problems are listed", async () => {
+    const token = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { throw new ClientError(403, "forbidden", "token"); } });
+    await token.click(/^Make check-refunds an agent$/);
+    await token.click(/^Yes, make the agent$/);
+    expect(token.text()).toContain("Making an agent from it takes your password sign-in in the console.");
+    act(() => root?.unmount());
+    const refused = new ClientError(400, "bad_request", "The workflow does not pass the checks: secret_value.");
+    refused.problems = [{ rule: "secret_value", path: "workflows/check-refunds/workflow.json", detail: "it holds a value the server keeps secret" }];
+    const checked = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { throw refused; } });
+    await checked.click(/^Make check-refunds an agent$/);
+    await checked.click(/^Yes, make the agent$/);
+    const said = checked.text();
+    expect(said).toContain("No agent was made: The workflow does not pass the checks: secret_value.");
+    expect(said).toContain("it holds a value the server keeps secret");
+    expect(checked.host.querySelector('a[href^="#/agents/"]')).toBeNull();
+  });
+
+  it("Esc, from the focused Yes, cancels as Cancel does: no agent is made and the card's buttons come back", async () => {
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER });
+    await t.click(/^Make check-refunds an agent$/);
+    expect(t.button(/^Retire check-refunds$/)).toBeUndefined();
+    await t.key(document.activeElement!, "Escape");
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.calls.some((c) => c.startsWith("promote"))).toBe(false);
+    expect(t.button(/^Make check-refunds an agent$/)).toBeTruthy();
+    expect(t.button(/^Retire check-refunds$/)).toBeTruthy();
+  });
+
+  it("the success link opens the agent the server made, by its id, named by its name: not the workflow's folder name", async () => {
+    const made = (n: string) => ({ ...agent(true), agent_id: "check refunds/2", kind: "workflow", definition: { version: 1, name: `${n} (2)`, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent);
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async (n) => made(n) });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    const status = t.card("check-refunds")!.querySelector('[role="status"]')!;
+    const link = status.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe("#/agents/check%20refunds%2F2");
+    expect(link.textContent).toBe("check-refunds (2)");
+    expect(status.textContent).toBe("Made the agent check-refunds (2). Open it to run it.");
+    // Asked again, the earlier line goes while the confirm is open.
+    await t.click(/^Make check-refunds an agent$/);
+    expect(t.card("check-refunds")!.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("a 400 keeps the confirm open with each problem listed and Yes ready again; Cancel then closes it, nothing made", async () => {
+    const refused = new ClientError(400, "bad_request", "The workflow does not pass the checks.");
+    refused.problems = [
+      { rule: "secret_value", path: "workflows/check-refunds/workflow.json", detail: "it holds a value the server keeps secret" },
+      { rule: "unknown_tool", path: "workflows/check-refunds/workflow.json", detail: "a call node runs a tool this agent does not grant" },
+    ];
+    let tries = 0;
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { tries++; throw refused; } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    const ask = t.host.querySelector('[role="alertdialog"][aria-label="Make check-refunds an agent?"]')!;
+    expect(ask).not.toBeNull();
+    const alert = ask.querySelector('[role="alert"]')!;
+    expect(alert.querySelector("p")!.textContent).toBe("No agent was made: The workflow does not pass the checks.");
+    expect([...alert.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["it holds a value the server keeps secret", "a call node runs a tool this agent does not grant"]);
+    expect((t.button(/^Yes, make the agent$/) as HTMLButtonElement).disabled).toBe(false);
+    await t.click(/^Yes, make the agent$/);
+    expect(tries).toBe(2);
+    await t.click(/^Cancel$/);
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.card("check-refunds")!.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("a retry after a lost answer is the same request: the second Yes sends the first one's Idempotency-Key, so the server answers with the agent it made", async () => {
+    const keys: string[] = [];
+    const made = (n: string) => ({ ...agent(true), agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent);
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async (n, key) => { keys.push(key); if (keys.length === 1) throw new TypeError("Failed to fetch"); return made(n); } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    expect(t.host.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await t.click(/^Yes, make the agent$/);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
+  });
+
+  it("a promotion whose answer was lost keeps its key past Cancel: a new confirm sends it again under the same key, and once an agent is made the next promotion gets a new one; a refusal lets the key go", async () => {
+    const keys: string[] = [];
+    let fail: "lost" | "refused" | null = "lost";
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async (n, key) => {
+      keys.push(key);
+      if (fail === "lost") throw new ClientError(500, "internal", "the answer was lost");
+      if (fail === "refused") throw new ClientError(409, "learned_not_active", "check-refunds is not active.");
+      return { ...agent(true), agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent;
+    } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    await t.click(/^Cancel$/);
+    await t.click(/^Make check-refunds an agent$/);
+    fail = null;
+    await t.click(/^Yes, make the agent$/);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+    // Made: the next promotion is a new request.
+    fail = "refused";
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    expect(keys[2]).not.toBe(keys[0]);
+    // Refused: an answer, so the next Yes is a new request too.
+    fail = null;
+    await t.click(/^Yes, make the agent$/);
+    expect(keys[3]).not.toBe(keys[2]);
+  });
+
+  it("Esc while it makes the agent keeps the confirm up: no second promotion can start until the first answers", async () => {
+    let answer!: (made: Agent) => void;
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: () => new Promise<Agent>((resolve) => (answer = resolve)) });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    await t.key(t.host.querySelector('[role="alertdialog"]')!, "Escape");
+    expect(t.host.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(t.button(/^Make check-refunds an agent$/)).toBeUndefined();
+    await act(async () => answer({ ...agent(true), agent_id: "check-refunds", kind: "workflow", definition: { version: 1, name: "check-refunds", workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent));
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
+  });
+
+  it("a refusal with no problems (no longer active) says so in the problem card's words, nothing made", async () => {
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { throw new ClientError(409, "learned_not_active", "check-refunds is not active."); } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    const ask = t.host.querySelector('[role="alertdialog"]')!;
+    expect(ask.textContent).toContain("No agent was made.");
+    expect(t.host.querySelector('a[href^="#/agents/"]')).toBeNull();
   });
 });
 
