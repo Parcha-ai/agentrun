@@ -42,11 +42,23 @@ async function addFake(t, api, prices) {
   return fake;
 }
 
+/** `send`'s answer, sent again while the store answers 409 home_busy (retryable, another write holds it: a runner's
+ *  commit of the run before, a CLI's first-use install), after the retry_after_ms it names, as a client of the API does;
+ *  at most 20 tries. A test that gave up at the first busy read the store's contention as its own red (any-6 on #2342). */
+async function whenFree(send) {
+  for (let tries = 1; ; tries++) {
+    const answer = await send();
+    const error = answer.body?.error;
+    if (answer.status !== 409 || error?.code !== "home_busy" || error.retryable !== true || tries >= 20) return answer;
+    await new Promise((resolve) => setTimeout(resolve, error.retry_after_ms ?? 500));
+  }
+}
+
 /** Agent `id` granted `tools` (and `extra`), and one run of it asking `content` (with `run`'s fields). */
 async function started(api, id, tools, content, { extra = {}, run = {} } = {}) {
-  const made = await api("POST", "/agents", agent(id, { tools, ...extra }));
+  const made = await whenFree(() => api("POST", "/agents", agent(id, { tools, ...extra })));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const started = await api("POST", `/agents/${id}/runs`, { input: { content }, ...run });
+  const started = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content }, ...run }));
   assert.equal(started.status, 202, JSON.stringify(started.body));
   return started.body.run_id;
 }
