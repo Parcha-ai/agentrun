@@ -12,7 +12,7 @@ import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
-  type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
@@ -183,8 +183,10 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  triggers, tool keys and trigger secrets (all in the store now), and the per-run door's token (the per-run door is
  *  gone). This version's own top-level files are not among them, so a directory holding them opens: .token and
  *  .server.json beside the store and its lock, a leftover box-image.json, and the files this version still keeps beside
- *  the store in the same format an earlier version did (the webhook config and its outbox, the kept idempotency answers,
- *  and the learning usage ledger), which an earlier version's copy of reads the same. */
+ *  the store in the same format an earlier version did (the kept idempotency answers and the learning usage ledger),
+ *  which an earlier version's copy of reads the same. A webhook config and outbox an earlier build kept beside the store
+ *  (webhook.json, webhook-outbox.json) do not refuse the directory either: nothing reads them, and the webhook, now in
+ *  the store, is set again. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
@@ -820,6 +822,11 @@ class SqliteStore implements Store {
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${claimable.sql} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, ...claimable.params, ...(bounded ? [limit] : []));
         return rows.map((row) => row.id);
+      },
+      heldAt: async (runId) => {
+        const n = clock();
+        const row = await db.get<{ epoch: number | string }>(`SELECT epoch FROM runs WHERE id = ? AND runner IS NOT NULL AND claimed_until >= ${n.sql}`, runId, ...n.params);
+        return row === undefined ? undefined : Number(row.epoch);
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
       update: async (claim, patch, rows = {}) => {

@@ -5,9 +5,9 @@
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
+import { LEARNED_MCP_TOOL } from "./learn/skills.js";
 import type { TSchema } from "typebox";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";
@@ -24,6 +24,7 @@ import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
 import type { Refusal } from "@parcha/agentrun-kernel";
+import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
@@ -32,10 +33,11 @@ import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickab
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
-import { handedSignIn, hostSecrets } from "./secrets.js";
+import { handedSignIn } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
-import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
+import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
+import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
@@ -102,16 +104,12 @@ export type ToolHost = {
    *  takes (adapter-loop AdapterRun.rowSummaryOn): a hand-over's wait sets the row's waiting summary in its waiting
    *  entry's commit, and its answer's commit clears it, so the server tells run.needs_input for a run held in its claim. */
   rowSummaryOn?(kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void;
-  /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
-   *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
-   *  (browser-person.ts personHands `answered`). */
-  handoverInJournal?: boolean;
   /** The run is on the runner: its live viewers are handed over through the store, not through files in its directory
    *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
    *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
    *  three fields below are what builds these (the one store, the claim the row is written under, the seal key); a tool's
-   *  binding reads `liveViewers`, never them directly. Absent on the server path, where the viewer lives in the run's
-   *  directory (browser-live.ts sessionHandovers: writeHandover/dropHandover). */
+   *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
+   *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
    *  and the sign-in verify the runner saves. */
@@ -386,13 +384,25 @@ const browserTool: ToolEntry = {
     const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
     const gates = fauxModelWaits(createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs }), Boolean(host.env[FAUX_ENV]));
     let opened: Harness | undefined;
+    // Every hand-over entry of the run's root conversation, in order: the asks' waiting entries (each ask's one record, in
+    // no file the run's agent reaches) and their answers.
+    const handovers = async () => (await opened?.commit(async (tx) => {
+      const found: Array<{ kind: string; data?: unknown }> = [];
+      for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+        const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+        for (const entry of page.items) if (entry.kind === "agent.handover") found.push({ kind: entry.kind, data: entry.data });
+        if (page.next === undefined) return found;
+        cursor = page.next;
+      }
+    }, context)) ?? [];
     const hands = person.personHands({
-      root: host.where.root,
       gates,
       personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
       carry: (tag, seconds) => spend.carry(tag, seconds),
-      // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
-      redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound:
+      // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
+      // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
+      redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
@@ -404,48 +414,23 @@ const browserTool: ToolEntry = {
         await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
       },
       holdMs: windows.holdMs,
-      // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
-      waiting: async (tag) => (await opened?.commit(async (tx) => {
-        let count = 0;
-        for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
-          const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
-          for (const entry of page.items) {
-            const data = entry.data as { state?: unknown; session?: unknown } | undefined;
-            if (entry.kind === "agent.handover" && data?.state === "waiting" && data.session === tag) count += 1;
-          }
-          if (page.next === undefined) return count;
-          cursor = page.next;
-        }
-      }, context)) ?? 0,
-      // On the runner: an ask's answer is the root's first answered hand-over entry for it (runner/hand-back.ts).
-      ...(host.handoverInJournal ? {
-        answered: async (id: string) => (await opened?.commit(async (tx) => {
-          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
-            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
-            const found = answerIn(page.items, id);
-            if (found) return { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) };
-            if (page.next === undefined) return undefined;
-            cursor = page.next;
-          }
-        }, context)) ?? undefined,
-        // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
-        answer: async (id: string, data: Record<string, string>) => {
-          if (!opened) throw new Error("the run's journal is not open");
-          const on = opened;
-          const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
-            const found = answerIn(entries, id);
-            return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
-          });
-          return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
-        },
-      } : {}),
-      // Tests only (--faux): the process dies once between an ask's record and its row.
-      afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
-        const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
-        if (existsSync(mark)) return;
-        writeFileSync(mark, "");
-        process.kill(process.pid, "SIGKILL");
-      } : undefined,
+      // The asks: the root's waiting hand-over entries.
+      asks: async () => (await handovers()).flatMap((entry) => waitingAsk(entry.data) ?? []),
+      // An ask's answer: the root's first answered hand-over entry for it (runner/hand-back.ts).
+      answered: async (id: string) => {
+        const found = answerIn(await handovers(), id);
+        return found ? { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) } : undefined;
+      },
+      // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
+      answer: async (id: string, data: Record<string, string>) => {
+        if (!opened) throw new Error("the run's journal is not open");
+        const on = opened;
+        const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
+          const found = answerIn(entries, id);
+          return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
+        });
+        return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
+      },
     });
     const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
@@ -453,9 +438,9 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return watched as never;
     };
-    // Each session's viewer reaches the server as it launches, and goes as it ends: on the runner through the store, under
-    // the run's claim (host.liveViewers); on the old per-run process, in the run's directory, never work/.
-    const viewers = live.sessionHandovers(host.where.root, host.liveViewers);
+    // Each session's viewer reaches the server as it launches, and goes as it ends: through the store, under the run's claim
+    // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
+    const viewers = live.sessionHandovers(host.liveViewers);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
@@ -472,13 +457,10 @@ const browserTool: ToolEntry = {
     const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
-    const saved = kept?.save
-      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => {
-          if (verify) await verify(row, change);
-          else if (savedOnRelease(row, change)) writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 });
-        }
+    const saved = verify
+      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => void (await verify(row, change))
       : undefined;
-    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
+    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
@@ -569,11 +551,10 @@ const browserTool: ToolEntry = {
         await spend.ledgerIdle();
       } finally {
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
-        // holds go, and the asks with them.
+        // holds go. The asks are the journal's, and stay there with their answers.
         await view.close();
         hands.close();
         await viewers.released();
-        person.dropAsks(host.where.root);
       }
     });
     return { tools, extensions: [extension] };
@@ -584,7 +565,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("Read a file in the run's work/; in a sandbox, an image anywhere in the run's box too (a render in /tmp)."),
   write: fileTool("Write a file in the run's work/."),
   edit: fileTool("Edit a file in the run's work/."),
-  bash: fileTool("Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).", true),
+  bash: fileTool("Run a bash command in the run's box, from its work/, never on this server itself: an agent whose place is a sandbox names it, or one on the runner in Mode 2 (Archil), where it runs on Archil's serverless exec. Its output's tail; 120 s unless the call names a timeout, at most 600 s, or 295 s on Archil's exec (longer work: bash_background, in a box).", true),
   // The background tools (background.ts): each call a short command in the run's box, on bash's environment.
   bash_background: fileTool(`Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
   bash_output: fileTool(`Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
@@ -631,28 +612,57 @@ export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) =>
 export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(name);
 
 /** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
- *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
+ *  skills.ts LEARNED_MCP_TOOL: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
-export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
-  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable])))];
+export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
+  [...new Set(granted.filter((name) => (options.mcp === true && LEARNED_MCP_TOOL.test(name)) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
+
+/** `mcp: true` at learn time (the end-of-run step's draft tools, a person's write): an MCP tool the revision grants by its
+ *  own name may be named. Without it (the runtime's read at a call, learned-workflow.ts), none is: the run's MCP tools are
+ *  its pin's, which the runtime reads apart and holds to the gate itself (#2424). `approvers`: whether anyone can answer
+ *  an ask here (server-approvers.ts). Only then is an MCP tool set to ask offered: with no one, #2424 refuses the
+ *  learned call's ask at once, so offering it would only teach a workflow that never runs. Not said: no one. */
+export type LearnedMcp = { readonly mcp?: boolean; readonly approvers?: boolean };
+
+/** `granted` with each MCP server's wildcard (`mcp:<server>/*`) read as the tools its server lists now (`listed`, by the
+ *  server's name: none for a server not saved), each `mcp:<server>/<tool>`, in place; every other name as it is, each
+ *  once. What a revision grants under a wildcard is every tool of its server, so a learned draft may name each one
+ *  (learnedWorkflowTools), its gate holding it as any tool (learnedDraftTools: the wildcard's setting, or the tool's own).
+ *  At proposal time there is no run and no pin: whether the run's pin has the tool is the runtime's to check at the call,
+ *  in the gate's words (learned-workflow.ts). */
+export function mcpGrantsListed(granted: readonly string[], listed: (server: string) => readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const name of granted) {
+    const wildcard = /^mcp:([^/]+)\/\*$/.exec(name);
+    if (!wildcard) out.add(name);
+    else for (const tool of listed(wildcard[1]!)) out.add(`mcp:${wildcard[1]}/${tool}`);
+  }
+  return [...out];
+}
 
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom, options: LearnedMcp = {}): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom>; asked: string[] } => {
   const gated: Record<string, string> = {};
+  // The MCP tools offered because they ask: the ones a learned call's approval card names (#2424).
+  const asked: string[] = [];
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
   const deniedBy: Record<string, DenyFrom> = {};
-  const tools = learnedWorkflowTools(granted, plane).filter((name) => {
+  const tools = learnedWorkflowTools(granted, plane, options).filter((name) => {
     const setting = permission(name);
+    // An MCP tool set to ask is offered where someone can answer: its learned_workflow call asks once, naming its MCP
+    // tools, before any node runs (#2424). A table tool set to ask is not: its call node can't wait for an approval.
     if (setting === "allow") return true;
+    if (setting === "ask" && options.approvers === true && LEARNED_MCP_TOOL.test(name)) return (asked.push(name), true);
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
     return false;
   });
-  return { tools, gated, deniedBy };
+  return { tools, gated, deniedBy, asked };
 };
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
@@ -678,6 +688,11 @@ export async function grantedTools(revision: { kind: string; tools?: readonly st
 
 /** The table's entry for `name`, or undefined for a name it does not hold. */
 export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined);
+
+/** The sandbox-only tools a run whose shell is `shell` has (resolve-computer.ts shellPlaceOf): every one in a computer
+ *  that mounts its folder, bash alone on Mode 2's Archil exec ("local"), none with no shell. The kernel registry's
+ *  hostToolDefs says which, the one list the run's tools are bound from. The save check asks it for "local" alone. */
+export const shellTools = (shell: ShellPlace): ReadonlySet<string> => new Set(hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name).filter((name) => toolOf(name)?.sandboxOnly));
 
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
 export async function toolingOf(revision: Revision): Promise<Tooling> {
@@ -710,18 +725,19 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
  *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
- *  unavailable with that reason; undefined, a box can. `refused`: the variables of the keys this server was started with
+ *  unavailable with that reason; undefined, a box can. `runnerShell`: the sandbox-only tools a run on the runner has a
+ *  shell for here (shellTools: bash on Archil's exec in Mode 2), which need no box. `refused`: the variables of the keys this server was started with
  *  that their provider refused at the start (tool-keys-store.ts refused), each with why: a tool that needs one is unavailable,
  *  saying that. Each tool also gives its permission under the server's settings (tool-gate.ts), the owner's default
  *  and the permissions it may be set to. */
-export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}) => {
+export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}, runnerShell: ReadonlySet<string> = new Set()) => {
   const views = explainsView(env, settings);
   const picked = withDefaults(settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
     const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
     const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
-    const boxless = entry.sandboxOnly ? noBox : undefined;
+    const boxless = entry.sandboxOnly && !runnerShell.has(name) ? noBox : undefined;
     // The browser needs the keys of the vendor it resolves to: one refused at the start leaves it unavailable, never on the
     // other vendor, as a refused Parallel key never moves web_search elsewhere.
     const needs = name === "browser" ? [...new Set(Object.values(plane ?? {}).flatMap(browserNeeds))] : entry.needs;

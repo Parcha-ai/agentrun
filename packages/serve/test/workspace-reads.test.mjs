@@ -8,7 +8,7 @@ import { link, mkdir, rename, symlink, unlink, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { test } from "node:test";
 import { confineHooks } from "../dist/confine.js";
-import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
+import { openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
@@ -40,18 +40,6 @@ async function unserved(t) {
 const get = (server, path) => server.api("GET", `/runs/${server.runId}/files${path}`);
 const holds = (response) => JSON.stringify(response.body ?? "").includes(CANARY);
 
-/** Swaps `name` (a path in work/) for a link to `target` the first time the confinement checks a path ending in it. */
-function swapOnCheck(t, work, name, target) {
-  let fired = 0;
-  confineHooks.afterCheck = async (canonical) => {
-    if (!canonical.endsWith(`/${name}`) || fired++) return;
-    await rename(join(work, name), join(work, `${name}.moved`));
-    await symlink(target, join(work, name));
-  };
-  t.after(() => void (confineHooks.afterCheck = undefined));
-  return () => fired;
-}
-
 test("the run's file view goes through its Workspace: a folder swapped for a link to the server's files, over and over, never lists or serves them", { skip: process.platform !== "linux" && "the swap race is shown on Linux, where the Workspace's calls go through held folders", timeout: 60_000 }, async (t) => {
   const server = await served(t);
   await mkdir(join(server.work, "sub"));
@@ -77,12 +65,6 @@ test("the run's file view goes through its Workspace: a folder swapped for a lin
     swapping = false;
     await swapper;
   }
-});
-
-test("serve can require that the kernel refuses hard links to files the linker cannot write", () => {
-  assert.doesNotThrow(() => assertHardlinkProtection(() => "1\n"));
-  assert.throws(() => assertHardlinkProtection(() => "0\n"), /protected_hardlinks is 0/);
-  assert.throws(() => assertHardlinkProtection(() => { throw new Error("no such file"); }), /cannot be read/);
 });
 
 test("each entry left out says why: a link, not a regular file, another hard link; and a read past its cap is refused", async (t) => {

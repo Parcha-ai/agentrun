@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { SKILL_NAME } from "./skills.js";
+import { LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -20,8 +20,10 @@ export const WORKFLOW_BLOCK = "workflow";
 /** How many earlier runs of an agent a learned skill has been given to before the host asks for its job as a workflow
  *  draft (`draftFor`): a run proposes one only when it thinks to, and few do. */
 export const DRAFT_AFTER_RUNS = 3;
-/** A tool's name as the prompt may print it. */
+/** A tool's name as the prompt may print it: a table tool's, or an MCP tool's a learned workflow may run (skills.ts
+ *  LEARNED_MCP_TOOL). */
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP_TOOL.test(tool);
 
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
@@ -36,7 +38,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
   const { dir, active, tools = [], draftFor = [], described = [] } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
-  if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !TOOL_NAME.test(tool))) throw new Error("each tool must be a tool's name");
+  if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
   if (!Array.isArray(draftFor) || draftFor.some((name) => typeof name !== "string" || !SKILL_NAME.test(name))) throw new Error("each skill a draft is asked for must be a skill's name");
   const left = Math.max(0, INDEX_LINES - active);
   return [
@@ -172,6 +174,11 @@ export function reflectDryRun(file: string, detail: string): string {
     "Give the whole answer again in the format asked for above, every note, skill and workflow block in it, with that draft fixed or left out, and nothing else.",
   ].join("\n");
 }
+
+/** Whether `text` is the end-of-run turn asked again for a draft whose dry run failed (reflectDryRun): its opening, the
+ *  host's own words, is how a timeline row knows it, and says it in a person's words instead (reflect-range.ts). */
+export const askedForDryRun = (text: unknown): boolean => typeof text === "string" && DRY_RUN_ASK.test(text);
+const DRY_RUN_ASK = /^(?:Your workflow draft workflows\/[a-z0-9][a-z0-9_-]{0,63}\/workflow\.json|One of your workflow drafts) did not pass its dry run\. What the check said is below, as data/;
 
 /** A draft's workflow.json path as a run may write it (skills.ts WORKFLOW_NAME): the only file name the retry says. */
 const DRAFT_PATH = /^workflows\/[a-z0-9][a-z0-9_-]{0,63}\/workflow\.json$/;

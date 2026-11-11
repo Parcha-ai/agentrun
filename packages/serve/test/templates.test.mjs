@@ -67,7 +67,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], [PULL_REQUESTS], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "null-name", "off-by-one", "re-review", "repo-rule"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS, pin: { pull_request_review_write: { method: ["create", "submit_pending", "delete_pending"], event: [null, "COMMENT"] } } }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -199,7 +199,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   }
   assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
@@ -418,6 +418,19 @@ test("a parameter with a documented default takes it when apply leaves it out: k
   assert.equal(lead.status, 201, JSON.stringify(lead.body));
 });
 
+test("a string parameter can say what its value is: market-monitor's schedule is a cron line and a time zone, shown in the list; a bad format is refused", async (t) => {
+  const { api } = await serve(t);
+  const monitor = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters;
+  assert.deepEqual([monitor.cron.format, monitor.timezone.format, monitor.competitors.format], ["cron", "timezone", undefined]);
+  for (const [to, said] of [
+    ["focus: { type: string, format: date, description: x }", /parameters\.focus\.format is one of cron, timezone, on a string parameter/],
+    ["focus: { type: integer, format: cron, description: x }", /parameters\.focus\.format is one of cron, timezone, on a string parameter/],
+  ]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, to));
+    assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
+  }
+});
+
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server; what it lacks is a warning, and no tool it grants needs a key", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);
@@ -543,6 +556,9 @@ test("market-monitor's schedule comes from its parameters: Monday 08:00 UTC by d
   const plain = await apply({});
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.deepEqual(await sourceOf(plain), { kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" });
+  // Its digest schema is the agent's output schema (#2145): each completed run's checked digest is its result.output.
+  const monitor = readPackages().find((p) => p.name === "market-monitor");
+  assert.deepEqual((await api("GET", `/agents/${plain.body.agent_id}`)).body.definition.output_schema, monitor.outputSchema);
   const own = await apply({ cron: "30 9 * * 2", timezone: "Europe/Madrid" });
   assert.equal(own.status, 201, JSON.stringify(own.body));
   assert.deepEqual(await sourceOf(own), { kind: "schedule", cron: "30 9 * * 2", timezone: "Europe/Madrid" });

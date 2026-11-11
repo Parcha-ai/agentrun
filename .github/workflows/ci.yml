@@ -114,10 +114,22 @@ jobs:
         # agentrun-serve's pdf_pages draws pages with poppler, and its tests make their PDFs with Ghostscript and a wide
         # PNG with ffmpeg: serve's suite runs in the any pool's shards.
         if: startsWith(matrix.shard, 'any-')
+        # The mirror is sometimes unreachable for a moment ("Network is unreachable"): apt retries each download three
+        # times, and the update and install are tried three times in all, 10 s then 30 s apart, failing after the third.
         run: |
           printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          for try in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils ghostscript ffmpeg; then
+              break
+            fi
+            if [ "$try" = 3 ]; then
+              echo "apt-get failed three times" >&2
+              exit 1
+            fi
+            pause=$([ "$try" = 1 ] && echo 10 || echo 30)
+            echo "apt-get failed (try $try of 3); trying again in ${pause} s" >&2
+            sleep "$pause"
+          done
           pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
@@ -509,6 +521,14 @@ jobs:
         # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
         working-directory: packages/serve
         run: node --test --test-timeout=240000 test/decision-key.test.mjs
+      - name: A run's folder swapped for a link reaches no host file
+        # The path-resolving branch every Mac takes (serve's local.ts), on the Mac's own kernel: its opens refuse a link
+        # anywhere on the way with O_NOFOLLOW_ANY (beneath.ts), which Linux CI stands in for by a walk through /proc. The
+        # flag test checks node's O_NOFOLLOW on the Mac is the value beneathFlags keeps apart from O_NOFOLLOW_ANY.
+        working-directory: packages/serve
+        run: |
+          node --test --test-timeout=240000 --test-name-pattern="^local, resolving paths" test/workspace-local.test.mjs
+          node --test test/beneath-flags.test.mjs
       - name: The stranger's no-key quickstart
         # The README's quickstart, then the keyless examples against the registry's latest (#557). On a Mac the walk installs
         # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).

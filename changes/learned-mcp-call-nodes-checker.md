@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A learned workflow draft may run an MCP tool in a call node (`"via": "tool"`, `"tool": "mcp:<server>/<tool>"`) when the agent's revision grants it, by its own name or under its server's wildcard `mcp:<server>/*` (read against the tools the server lists), and its gate does not deny it (one set to ask is offered where someone can answer an ask, the server's accounts on: its learned_workflow call asks once, naming its MCP tools; with no one, it is not, since that call would be refused at once); a draft naming any other is refused, and one the gate denies is refused in the gate's words. The end-of-run turn's draft ask says what each such tool takes and gives, from its server's listing. The grader is told, under each draft, the MCP tools its call nodes run, by server and tool, and holds the draft for its owner's OK when one writes or sends: the learned workflow runs it unattended at every call. A draft's dry run synthesizes an MCP node's output from its `out`, as any call's, and sends nothing.
+A draft whose MCP tools set to ask would not all fit on its learned call's approval card is refused when it is proposed, in the gate's words, by the gate's own rule. A draft with a step calling an MCP tool that has no declared per-call price waits for its owner's OK whatever the grade says, since such a tool runs outside the run's cost and cap; the reason names the step, the tool and its server, and the grader is told it.
+Upgrading: nothing to do.

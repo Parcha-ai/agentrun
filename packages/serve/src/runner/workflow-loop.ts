@@ -24,7 +24,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
-import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, endedBy, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 
@@ -86,6 +86,12 @@ export interface WorkflowRunSpec {
    *  once, however the run ended (ended, stopped, failed, parked or interrupted), so a parked or resumed run starts fresh
    *  proxies on its next claim. Never throws out. Absent: nothing to let go. */
   readonly release?: () => Promise<void>;
+  /** Resolves once every model request the spec admitted has been booked, or a bound has passed (then a request left
+   *  unbooked reads at its hold and bound). A request its node let go of (a stop) is booked only once the provider's side
+   *  ends, which can be after the node ended: once the workflow's task is over, the loop waits for this before it closes
+   *  the Harness the bookings are written through. Not on a park or a lost claim: the next claim books a request left
+   *  open there as cut. Absent: nothing to wait for. */
+  readonly settle?: () => Promise<void>;
 }
 
 /** What the interpreter's host may ask of the loop while it runs. */
@@ -345,8 +351,10 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
       return { state: "interrupted" };
     }
 
-    // The task is terminal. Close the Harness, then read the run's view from its journal and write the end, both on a
-    // fresh journal of the same claim (the Harness closed its own).
+    // The task is terminal. Its model requests booked (a stopped one books once its provider's side ends, after the node
+    // let go of it), close the Harness, then read the run's view from its journal and write the end, both on a fresh
+    // journal of the same claim (the Harness closed its own).
+    await spec.settle?.().catch(() => undefined);
     await closeHarness();
     const endJournal = deps.journal(claim);
     // A person stopped or cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have
@@ -359,6 +367,12 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     if (carry.state === "completed") {
       const { output } = await readWorkflowRun({ runId: claim.runId, storage: endJournal, revision }, { context });
       return await writeEnd(endJournal, context, { ...carry, output: output ?? null });
+    }
+    // An escalated run's review, as main's server kept it (runs.ts): the escalation's kind, the escalate node's label (else
+    // the node it escalated at), and its summary (else the run's), kept on its end for the run's `review`.
+    if (carry.state === "escalated") {
+      const { escalation, escalatedAt } = await readWorkflowRun({ runId: claim.runId, storage: endJournal, revision }, { context });
+      return await writeEnd(endJournal, context, { ...carry, review: { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? carry.summary } });
     }
     return await writeEnd(endJournal, context, carry);
     } finally {
@@ -380,10 +394,10 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     return { state: "parked" };
   }
 
-  async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown }): Promise<LoopEnd> {
+  async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown; review?: EndReview }): Promise<LoopEnd> {
     const state: EndData["state"] = carry.state === "failed" ? "failed" : carry.state === "stopped" ? "stopped" : "ended";
     const outcome: RunOutcome | undefined = carry.state === "escalated" ? "escalated" : undefined;
-    const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}) };
+    const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}), ...(carry.review ? { review: carry.review } : {}) };
     const patch = await endPatchOf(spec!, base);
     const data: EndData = { ...base, ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const runPatch: RunPatch = {

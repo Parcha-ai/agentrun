@@ -5,6 +5,7 @@
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { runnableDeadline } from "../deadline.js";
 import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
@@ -14,7 +15,6 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
-
 /** A value SQLite takes or gives back (Chord's SqliteValue). */
 export type SqliteValue = null | number | bigint | string | Uint8Array;
 /** Chord's SqliteExecutor: what a database and a transaction handle both do. */
@@ -297,10 +297,16 @@ export class Connection implements SqliteDatabase, StoreConnection {
         throw error;
       }
       let live = true;
-      let timer: NodeJS.Timeout | undefined;
-      const left = until !== undefined ? Math.max(0, until - Date.now()) : deadlineMs;
+      let clear = () => {};
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new StoreDeadline(deadlineMs)), left);
+        const expire = () => reject(new StoreDeadline(deadlineMs));
+        // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
+        // it. Counted from its begin, it is the time this process could run (store/deadline.ts runnableDeadline): while other work held
+        // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
+        if (until !== undefined) {
+          const timer = setTimeout(expire, Math.max(0, until - Date.now()));
+          clear = () => clearTimeout(timer);
+        } else clear = runnableDeadline(deadlineMs, expire).clear;
       });
       let value: T;
       try {
@@ -312,7 +318,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
         value = await Promise.race([running, deadline]);
       } catch (error) {
         live = false;
-        clearTimeout(timer);
+        clear();
         try {
           await this.#send({ op: "rollback" });
         } catch (rollback) {
@@ -323,7 +329,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
         throw error;
       }
       live = false;
-      clearTimeout(timer);
+      clear();
       // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
       if (until !== undefined && Date.now() >= until) {
         await this.#send({ op: "rollback" });
