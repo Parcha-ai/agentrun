@@ -80,10 +80,16 @@ test("a loop a stop row stops, still going at the end of the close's window, has
 test("a close whose read of the stop rows never answers is bounded by the stop margin: the run is stopped for a shutdown and released, its cancel left for the next claim", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
-  // The store answers every read but the close's one (the command poll never ticks here): that one never answers.
+  // The store answers every read but the close's one (the command poll never ticks here): that one never answers. The
+  // claim's own first delivery (its read of the run's rows, store.commands) is told as it returns: the cancel is sent
+  // only after it, so that read can never find the cancel and stop the run itself. On a loaded machine it could, and the
+  // run ended stopped before the close read anything.
+  let delivered = () => {};
+  const firstDelivery = new Promise((resolve) => (delivered = resolve));
   const stalled = new Proxy(store, {
     get(target, prop) {
       if (prop === "commandsOf") return () => new Promise(() => {});
+      if (prop === "commands") return (...args) => target.commands(...args).finally(() => delivered());
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -93,6 +99,9 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   t.after(() => runner.close());
   await queue(server, "run-1");
   await until(() => faux.loops.length === 1, "the run claimed");
+  await firstDelivery;
+  // One turn more: the runner's own continuation of that read (its cursor moved past what it found) has run.
+  await new Promise((resolve) => setImmediate(resolve));
   const row = await sendCommand(server, "run-1", { kind: "cancel" });
   const startedAt = Date.now();
   await runner.close();

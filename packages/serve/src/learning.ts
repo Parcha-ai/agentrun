@@ -35,7 +35,7 @@ import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
 import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
-import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
+import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
@@ -202,10 +202,6 @@ export const learningView = (learning: Learning, shown: Shown, settled: boolean)
 /** A learning's `reason` as it is served: one of its words as the server writes them, read back from a kept row, which is
  *  untrusted, so cut of the host's secrets as every text is. */
 export const reasonShown = (reason: Learning["reason"] | undefined, shown: Shown): Learning["reason"] => (typeof reason === "string" ? (shown.text(reason) as Learning["reason"]) : (reason ?? null));
-/** A run's learning as a list shows it: its state and reason, its detail cut of the host's secrets and then short (at
- *  most LIST_DETAIL characters, so a secret is never cut in half and shown), and the notes it read and learned
- *  (notesView); never its time. */
-export const shortLearning = (learning: Learning | null, shown: Shown, settled: boolean) => (learning ? shortOf(learningView(learning, shown, settled)) : null);
 /** A run's learning as its view shows it, in short for a list: all of it but its time, its detail cut short. */
 export function shortOf<T extends { state: LearningState; reason: LearningReason | null; detail: string | null; at: string }>({ state, reason, detail, at: _, ...notes }: T) {
   return { state, reason, detail: detail === null ? null : short(detail, LIST_DETAIL), ...notes };
@@ -887,13 +883,3 @@ export async function withLearned(runDir: string, given: Workspace | string, ins
   };
 }
 
-/** The learned workflows a run's pin names, as its directory keeps them (LEARNED_WORKFLOWS_FILE): none when the pin
- *  names none. A file that is not the list the pin names throws. */
-export async function pinnedWorkflows(runDir: string, pin: Pin | undefined): Promise<LearnedWorkflow[]> {
-  const names = pin?.workflows ?? [];
-  if (!names.length) return [];
-  const kept = JSON.parse(await readFile(join(runDir, LEARNED_WORKFLOWS_FILE), "utf8")) as unknown;
-  const ok = (entry: unknown): entry is LearnedWorkflow => isObject(entry) && typeof entry.name === "string" && typeof entry.description === "string" && typeof entry.workflow === "string";
-  if (!Array.isArray(kept) || !kept.every(ok) || kept.map(({ name }) => name).join("\n") !== names.join("\n")) throw new Error(`the run's ${LEARNED_WORKFLOWS_FILE} is not the workflows its pin names`);
-  return kept;
-}
