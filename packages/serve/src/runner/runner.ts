@@ -715,8 +715,15 @@ export function startRunner(options: RunnerOptions): Runner {
       const mib = weighed.get(runId) ?? 0;
       if (holding > 0 && heldMib + mib > budget.budgetMib) break;
       if (closed || killed) break;
-      // Another runner may have taken it since the read: then it is not this one's, and the next is tried.
-      const claim = await store.claim(runId, name, { leaseMs });
+      // Another runner may have taken it since the read: then it is not this one's, and the next is tried. A claim that
+      // throws ends this poll's claims, keeping those that landed: they are held below, never left claimed and unstarted.
+      let claim: Claim | null;
+      try {
+        claim = await store.claim(runId, name, { leaseMs });
+      } catch (error) {
+        emit({ type: "error", runId, step: "claim", message: message(error) });
+        break;
+      }
       if (!claim) continue;
       claims.push(claim);
       weights.set(runId, mib);
