@@ -234,7 +234,8 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
       const onMain = blobOf(snapshot, path);
       if (onMain !== undefined && !replaced.has(path)) {
         const theirs = parseNoteFile(path, await body(path, onMain));
-        left.push({ path, reason: !Array.isArray(theirs) && ruleOf(theirs.body) === rule ? "same" : "taken" });
+        // The same rule only when main's note keeps it active: a retired or superseded one is a name main holds.
+        left.push({ path, reason: !Array.isArray(theirs) && theirs.status === "active" && ruleOf(theirs.body) === rule ? "same" : "taken" });
         continue;
       }
       const holder = rules.get(rule);
@@ -310,7 +311,7 @@ export async function readMain(ws: Workspace, proposal: { readonly notes: readon
     for (const note of added as LearnedNote[]) {
       if (!oids.has(note.file)) continue;
       const theirs = parseNoteFile(note.file, await body(note.file, oids.get(note.file)!));
-      taken.push({ path: note.file, reason: !Array.isArray(theirs) && ruleOf(theirs.body) === ruleOf(note.body) ? "same" : "taken" });
+      taken.push({ path: note.file, reason: !Array.isArray(theirs) && theirs.status === "active" && ruleOf(theirs.body) === ruleOf(note.body) ? "same" : "taken" });
     }
     const notes = (added as LearnedNote[]).filter((note) => !oids.has(note.file));
     const problems = mergeProblems({ files: topOf(snapshot), active: main.filter((note) => note.status === "active") }, notes);

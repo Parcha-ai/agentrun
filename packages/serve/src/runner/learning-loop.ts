@@ -172,9 +172,12 @@ export function takenOnMain(proposal: Pick<KeptProposal, "notes">, verdict: Verd
       graded[note.file] = blobOid(held);
       return item;
     }
-    // Else the same rule (whatever its front matter, case or spacing) is no change, dropped unsaid; any other is a name
-    // main holds with another rule.
-    const same = identical || sameRule(note.file, held, note.text);
+    // Else the same rule an active note of main keeps (whatever its front matter, case or spacing) is no change, dropped
+    // unsaid, and a skill re-filed as it retired (mergeChangeOf); a retired or superseded note of that rule keeps it out
+    // of every run, so it is a name main holds, and nothing is retired: the rule never vanishes. Any other is a name main
+    // holds with another rule.
+    const theirs = parseNoteFile(note.file, held);
+    const same = !Array.isArray(theirs) && theirs.status === "active" && (identical || sameRule(note.file, held, note.text));
     return { file: item.file, keep: false, question: "Duplicate", why: same ? SAME_NOTE : NOTE_NAME_TAKEN(note.file.replace(/\.md$/, "")), ...(item.note ? { note: item.note } : {}) };
   });
   return { verdict: { ...verdict, items, merge: verdict.merge && items.some((item) => item.keep) }, replace, graded };
