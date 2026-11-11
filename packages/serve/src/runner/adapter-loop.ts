@@ -725,7 +725,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+    // A person's answer to the question the last turn ended on (a parked ask's, its run claimed again by it): the row's
+    // waiting summary goes in its commit, as an in-claim wait's answer clears it. Left until the end commit, the answer's
+    // turn reads running, held and "Waiting for your reply", and the server tells run.needs_input for that ask again.
+    const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(askedLast ? { run: { summary: null } } : {}) });
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
