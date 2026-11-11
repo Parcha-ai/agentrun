@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection, classifyBrowserError, createRedactor, redactDeep } from "@parcha/pi-browser";
+import { BROWSER_TOOLS, browserSection, classifyBrowserError, createRedactor, redactDeep } from "@parcha/pi-browser";
 import { FakeBackend, fakeDriver, sentinelPages } from "@parcha/pi-browser/testing";
 import { kernelProvider } from "@parcha/pi-browser/providers/kernel";
 import { fakeKernel } from "../fixtures/fake-kernel.mjs";
@@ -58,7 +58,7 @@ test("every failure of the provider, driver and broker, echoing every secret, re
 test("the static model surface carries no sentinel", () => {
   const sentinels = makeSentinels();
   const scan = new Scan(sentinels, { allow: ALLOW });
-  scan.json("contract", [...BROWSER_TOOLS, ...WEB_TOOLS]);
+  scan.json("contract", BROWSER_TOOLS);
   scan.text("section", "browser", browserSection({ idleReleaseS: 180 }));
   assert.equal(scan.report(), "no sentinel found");
   assert.ok(scan.coverageOf("contract").records === 1);
