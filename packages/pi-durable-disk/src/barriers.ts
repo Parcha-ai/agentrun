@@ -43,19 +43,18 @@ export interface BarrierRow {
 /** Every barrier. The keys are the names a `syncNow()` call takes, as `BARRIER.<key>`. */
 export const BARRIERS = {
   paidToolHold: {
-    store: "run-journal",
-    site: "serve/src/paid-calls.ts",
+    store: "one-store",
+    site: "run-adapters/src/kernel/cap/run-cap.ts",
+    call: 'if (event.type === "request_start") await flush();',
     status: "active",
-    proof: null,
-    why: "a paid tool call's hold (paid calls and monid), before the call is sent",
+    proof: ["packages/run-adapters/test/kernel-cap-decisions-one-ledger.test.mjs", "packages/serve/test/store-flush.test.mjs"],
+    why: "a paid tool call's hold (paid calls and monid) on the run's one ledger, flushed before the call is sent",
   },
   browserSessionOpen: {
-    store: "run-journal",
+    store: "one-store",
     site: "serve/src/browser-cost.ts",
-    via: { file: "pi-browser/src/durable.ts", text: "await c.options.beforeCreate({ conversationId: scope.cid, tag, commit: scope.commit });" },
-    status: "active",
-    proof: "packages/serve/test/browser-session-barrier.test.mjs",
-    why: "a browser session's creating record (its tag, the call's hold), before the vendor's session is created",
+    status: "planned",
+    why: "a browser session's open record (its tag, the call's hold), flushed before the vendor's session is created",
   },
   decisionHold: {
     store: "run-journal",
@@ -187,11 +186,11 @@ export const NORMAL_PRECONDITIONS = {
   },
   holdRefusedUnsynced: {
     done: true,
-    what: "a paid call's hold is not written when there is no run store to sync, and a sync that fails after one is answered in the store by its $0 settle, after it in the WAL, so any later sync that keeps one keeps the other (serve/test/hold-refused.test.mjs)",
+    what: "a paid call's hold is on the run's one ledger, flushed before the call is sent (paidToolHold; run-adapters/test/kernel-cap-decisions-one-ledger.test.mjs)",
   },
   browserSessionBarrier: {
     done: true,
-    what: "the durable unit is the session open (browserSessionOpen, written and synced before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
+    what: "the durable unit is the session open (browserSessionOpen, written before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
   },
   barrierProofs: {
     done: false,

@@ -80,6 +80,16 @@ test("a decision sent and its box lost before any later write still counts after
   near(admitted.heldUsd, 0.25, "its hold");
 });
 
+test("a paid tool call sent and its box lost before any later write still counts after the next claim: its hold is flushed before it leaves", async () => {
+  const box = machine();
+  const toolsOn = async () => cap.runCap({ sessions: box, capUsd: () => 1, mode: "expected", now: () => T0, modelOf: () => undefined }).tools(await box.open(cap.TOOL_SESSION), { flush: () => box.flush() });
+  const admitted = await (await toolsOn()).admit({ id: "call-1#1", name: "Parallel's search", holdUsd: 0.25, basis: "Parallel's list price" });
+  // Its request is sent, and the box is lost before anything else is written.
+  box.lose();
+  near((await toolsOn()).spentUsd(), admitted.heldUsd, "the lost call, at its hold");
+  near(admitted.heldUsd, 0.25, "its hold");
+});
+
 test("a paid tool call on the run's one cap is held at its price beside the run's spend (main's paidCall), and a later claim counts what it charged", async () => {
   const store = memorySessionStore();
   await modelSpent(store, 0.6);

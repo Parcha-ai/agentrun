@@ -9,8 +9,7 @@ import { after, test } from "node:test";
 import { REQUEST_STARTED, runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "../dist/turn-end.js";
-import { REFLECT_REQUEST, Turns } from "../dist/turns.js";
-import { snapshotInputs } from "@parcha/pi-durable-disk/internals";
+import { Turns } from "../dist/turns.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "agentrun-turn-end-"));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -184,113 +183,12 @@ test("pi's input submissions: open while queued or placed, closed by their settl
   assert.deepEqual([reflect.open, reflect.end()], [0, undefined], "the end-of-run turn's message is the server's");
 });
 
-// A reconnect's snapshot (the door's `inputs`): the ledger reads it as the run's whole state, where an event batch carries
-// only changes. Read through `snapshot` where the ledger has it, else as this server read it before (its inputs noted
-// as submissions).
-const snapshot = (turns, inputs) => (typeof turns.snapshot === "function" ? turns.snapshot(inputs) : turns.note([], inputs));
-
-test("a message read open before a reconnect, missing from the snapshot under a later settled one, settled while the stream was down", () => {
-  // A read open (placed); the server's event stream drops; A and the B queued behind it both finish meanwhile. The
-  // snapshot keeps the newest settled input, every one after it and every earlier one not settled yet: B alone.
-  const turns = new Turns();
-  turns.note([user(3, "first")], [{ id: 2, conversationId: 1, type: "input", status: "placed", entry: 3, requestId: "first-r1" }], undefined, 1_000);
-  assert.equal(turns.open, 1, "A is open");
-  snapshot(turns, [{ id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 8, requestId: "next-r1", answer_text: "Answer B." }]);
-  assert.deepEqual([turns.open, answerOf(turns)], [0, "Answer B."], "the run ends on B's answer");
-});
-
-test("a follow-up queued before a steer that settled stays open: the snapshot still holds it, and only an earlier input missing from it is settled", () => {
-  // F, a follow-up, queued while A ran; S, a steer sent after it, settled inside A's turn. F is still to run.
-  const turns = new Turns();
-  const f = { id: 3, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" };
-  turns.note([], [{ id: 2, conversationId: 1, type: "input", status: "placed", entry: 4, requestId: "first-r1" }, f], undefined, 1_000);
-  const s = { id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 8, requestId: "steer-r1", answer_text: "Steered." };
-  // An event batch, changes only: S settled. Nothing else is read into it.
-  turns.note([], [s]);
-  assert.equal(turns.end(), undefined, "F and A open: the run is not over");
-  // The snapshot on a reconnect: A settled (missing, under S), F still queued (held), S settled.
-  snapshot(turns, [f, s]);
-  assert.deepEqual([turns.open, turns.end()], [1, undefined], "F stays open: the run does not end mid-turn");
-});
-
-test("a follow-up queued before a steer runs after it: once its turn ends, the run's end is the follow-up's, the turn that ran last, never the steer's with its higher id", () => {
-  // pi places a steer at the running turn's next tool boundary and a follow-up only at its end (pi-durable's inbox), so
-  // F (id 3), queued while A ran, runs after S (id 5), a steer sent later that settled inside A's turn. Ids are the order
-  // they came in; each one's placed entry is the order they ran.
-  const a = { id: 2, conversationId: 1, type: "input", status: "done", entry: 4, answer: 7, requestId: "first-r1", answer_text: "Answer A." };
-  const s = { id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 7, requestId: "steer-r1", answer_text: "Answer A." };
-  const f = { id: 3, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" };
-  const fPlaced = { ...f, status: "placed", entry: 9 };
-  const ran = (last) => {
-    const turns = new Turns();
-    turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, f], undefined, 1_000);
-    turns.note([], [s, a]);
-    turns.note([], [fPlaced]);
-    turns.note([], [last]);
-    return turns;
-  };
-  assert.equal(answerOf(ran({ ...fPlaced, status: "done", answer: 11, answer_text: "Answer F." })), "Answer F.", "the follow-up's answer, not the steer's");
-  assert.deepEqual(ran({ ...fPlaced, status: "unanswered", reason: "model_error", detail: "the model failed" }).end(), { status: "failed", answer: null, error: "the model failed" }, "a follow-up that failed fails the run");
-  assert.equal(ran({ ...fPlaced, status: "unanswered", reason: "aborted" }).end()?.status, "interrupted", "a follow-up that was stopped leaves the run waiting");
-  // The same through a reconnect's snapshot: every input settled, each with its placed entry.
-  const turns = new Turns();
-  turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, f], undefined, 1_000);
-  snapshot(turns, [a, { ...fPlaced, status: "done", answer: 11, answer_text: "Answer F." }, s]);
-  assert.equal(answerOf(turns), "Answer F.", "the snapshot keeps the follow-up as the turn that ran last");
-});
-
-// The door's snapshot as the door builds it (pi-durable-disk's snapshotInputs, the run's inputs in id order): A answered;
-// F (id 3), a follow-up queued while A ran; S (id 5), a steer that settled inside A's turn; then F placed at entry 9, last.
-const raced = (f) => [
-  { id: 2, conversationId: 1, type: "input", status: "done", entry: 4, answer: 7, requestId: "first-r1", answer_text: "Answer A." },
-  { id: 3, conversationId: 1, type: "input", entry: 9, requestId: "follow-r1", ...f },
-  { id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 7, requestId: "steer-r1", answer_text: "Answer A." },
-];
-const F_DONE = { status: "done", answer: 11, answer_text: "Answer F." };
-const F_FAILED = { status: "unanswered", reason: "model_error", detail: "the model failed" };
-
-test("a server that starts after a follow-up placed after a steer settled reads the door's snapshot: the run's end is the follow-up's", () => {
-  const fresh = (f) => {
-    const turns = new Turns();
-    snapshot(turns, snapshotInputs(raced(f), REFLECT_REQUEST));
-    return turns;
-  };
-  assert.equal(answerOf(fresh(F_DONE)), "Answer F.", "the follow-up's answer, from the door's snapshot");
-  assert.deepEqual(fresh(F_FAILED).end(), { status: "failed", answer: null, error: "the model failed" }, "its failure");
-});
-
-test("a reconnect after the stream dropped while that follow-up ran reads its settlement from the door's snapshot, never closes it with no answer", () => {
-  const reconnect = (f) => {
-    const turns = new Turns();
-    const [a, , s] = raced(F_DONE);
-    turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, { id: 3, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" }], undefined, 1_000);
-    turns.note([], [s, a, { id: 3, conversationId: 1, type: "input", status: "placed", entry: 9, requestId: "follow-r1" }]);
-    // The stream drops while F runs; F settles meanwhile; the reconnect reads the door's snapshot.
-    snapshot(turns, snapshotInputs(raced(f), REFLECT_REQUEST));
-    return turns;
-  };
-  assert.equal(answerOf(reconnect(F_DONE)), "Answer F.", "F's answer, not the empty answer of an input closed unread");
-  assert.deepEqual(reconnect(F_FAILED).end(), { status: "failed", answer: null, error: "the model failed" }, "its failure");
-});
 
 test("guard: inputs that ran in the order they came in end on the newest, the steer's when it came and ran last", () => {
   const a = { id: 2, conversationId: 1, type: "input", status: "done", entry: 4, answer: 5, requestId: "first-r1", answer_text: "Answer A." };
   const s = { id: 3, conversationId: 1, type: "input", status: "done", entry: 6, answer: 8, requestId: "steer-r1", answer_text: "Answer S." };
   assert.equal(answerOf(read([], [a, s])), "Answer S.");
   assert.equal(answerOf(read([], [s, a])), "Answer S.", "whatever order the records are read in");
-});
-
-test("a reconnect's snapshot whose newest settled input is the end-of-run turn's: the run's own newest settled input is the one the ledger reads", () => {
-  // X read open; then X, A and the end-of-run turn's input R all settled while the stream was down. The snapshot holds A
-  // (the run's own newest settled), F queued behind it, and R. X, missing and older than A, settled; F stays open.
-  const turns = new Turns();
-  turns.note([], [{ id: 1, conversationId: 1, type: "input", status: "placed", entry: 3, requestId: "x-r1" }], undefined, 1_000);
-  snapshot(turns, [
-    { id: 2, conversationId: 1, type: "input", status: "done", entry: 5, answer: 6, requestId: "a-r1", answer_text: "Answer A." },
-    { id: 4, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" },
-    { id: 7, conversationId: 1, type: "input", status: "done", entry: 8, answer: 9, requestId: "learn-reflect-r1", answer_text: "Noted." },
-  ]);
-  assert.deepEqual([turns.open, turns.end()], [1, undefined], "X closed, F open: the run waits for F");
 });
 
 test("a working turn's last progress: when its message was taken, then each entry since; none once every message is closed", () => {

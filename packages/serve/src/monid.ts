@@ -23,7 +23,7 @@ import { registerLabel, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";
-import { holdRefusal, paidLedger, paidStep, settleOnRoot, writeHold } from "./paid-calls.js";
+import { holdRefusal, paidLedger, paidStep, writeHold } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -249,9 +249,8 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
         // Settled at what it charged: $0 only when monid charged nothing, null (unknown) when it may have and did not say.
         // Paid for, it answers even when this cannot be written, never a failure the model would retry.
         const usd = chargeOf(answer);
-        // Written to the run's root when it is set (paid-calls.ts settleIn): a stopped turn's call can no longer commit.
         const settle = { ...label, usd: usd === undefined ? 0 : usd };
-        await (settleOnRoot(TOOL_COST, settle) ?? record(api, TOOL_COST, settle, context)).catch(() => undefined);
+        await record(api, TOOL_COST, settle, context).catch(() => undefined);
         return answer;
       };
       // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at the same figure and settled at the same charge
