@@ -124,6 +124,30 @@ const closed = (value) => {
   return out;
 };
 for (const name of strictNames) merged.set(name, closed(merged.get(name)));
+// A param's number is a whole number, as the daemon decodes it (Go ints, and the desktop's whole()); the exceptions
+// take fractions there: a scroll's dx and dy in pixels (whole in clicks, which the daemon checks) and a pinch's scale.
+// An exception that no longer names a field fails the generator, so the list can't go stale.
+const FRACTIONAL = { InputAction: ['dx', 'dy', 'scale'] };
+const fractionalSeen = new Set();
+const whole = (value, name) => {
+  if (Array.isArray(value)) return value.map((item) => whole(item, name));
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'properties' && item && typeof item === 'object') {
+      out[key] = Object.fromEntries(Object.entries(item).map(([field, schema]) => {
+        if (!(FRACTIONAL[name] ?? []).includes(field)) return [field, whole(schema, name)];
+        fractionalSeen.add(`${name}.${field}`);
+        return [field, schema];
+      }));
+    } else out[key] = whole(item, name);
+  }
+  if (out.type === 'number') out.type = 'integer';
+  return out;
+};
+for (const name of strictNames) merged.set(name, whole(merged.get(name), name));
+const staleFractional = Object.entries(FRACTIONAL).flatMap(([name, fields]) => fields.map((field) => `${name}.${field}`)).filter((one) => !fractionalSeen.has(one));
+if (staleFractional.length > 0) throw new Error(`FRACTIONAL names fields no param has: ${staleFractional.join(', ')}`);
 
 const definitions = Object.fromEntries([...merged].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 const methods = definitions.DaemonMethods;

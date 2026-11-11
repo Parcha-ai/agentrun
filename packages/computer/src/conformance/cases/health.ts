@@ -126,14 +126,18 @@ export const healthCases: Case[] = [
 				} catch (error) {
 					answer = { threw: error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error) };
 				}
-				const words = JSON.stringify(answer, (_key, value: unknown) => (value instanceof Error ? `${value.name}: ${value.message}` : value)) ?? String(answer);
-				for (const secret of secrets) {
-					for (const piece of [secret, secret.slice(-12)]) t.assert(!words.includes(piece), `${name}: what the provider answered holds none of a planted secret`);
+				// A connection made anyway (a vendor whose connect reads no key) is closed whatever the checks find: the runner
+				// never saw it, so its cleanup can't close it.
+				const opened = answer as { ok?: unknown; value?: { close?: () => Promise<unknown> } } | undefined;
+				try {
+					const words = JSON.stringify(answer, (_key, value: unknown) => (value instanceof Error ? `${value.name}: ${value.message}` : value)) ?? String(answer);
+					for (const secret of secrets) {
+						for (const piece of [secret, secret.slice(-12)]) t.assert(!words.includes(piece), `${name}: what the provider answered holds none of a planted secret`);
+					}
+					if (name === "create") t.assert(opened?.ok !== true, "create with a planted secret made no computer");
+				} finally {
+					if (name === "connect" && opened?.ok === true) await opened.value?.close?.().catch(() => undefined);
 				}
-				// A connection made anyway (a vendor whose connect reads no key) is closed, never left open.
-				const opened = (answer as { ok?: unknown; value?: { close?: () => Promise<unknown> } } | undefined);
-				if (name === "connect" && opened?.ok === true) await opened.value?.close?.().catch(() => undefined);
-				if (name === "create") t.assert((answer as { ok?: unknown } | undefined)?.ok !== true, "create with a planted secret made no computer");
 			}
 			// A release the vendor refused for its key let nothing go: the computer is still the provider's.
 			const still = await t.provider.attach({ id: ref.id }, { signal: t.signal });

@@ -46,7 +46,8 @@ A method a computer does not have is an error of kind `unsupported`, in words; t
 
 - Requests run at once. Replies may come in any order: a caller matches each by its `id`.
 - A caller sends only the params the schema gives: each method's params object is closed
-  (`additionalProperties: false`), and a map such as `exec.run`'s `env` holds strings only.
+  (`additionalProperties: false`), a map such as `exec.run`'s `env` holds strings only, and a number is a whole number
+  (`integer`) except a scroll's `dx` and `dy` in pixels and a pinch's `scale`.
 - `computerd` refuses anything else: an unknown field, or a value of the wrong type, is an error of kind `invalid`. A
   provider that answers the methods in its own process (daemon `none`: a phone, a browser) may ignore an unknown field
   instead, so a caller never relies on that refusal.

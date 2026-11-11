@@ -50,7 +50,7 @@ These hold in every mode where init runs, and the conformance suite checks them 
   whole process tree when the program ends, times out or is cancelled. A program started by `process.start` lives until
   it ends, it is signalled, or the computer shuts down.
 - On shutdown (a signal, or the computer's deadline), init stops taking new programs, sends every program SIGTERM, then
-  SIGKILL 5 s later, and exits.
+  SIGKILL 2 s later, and exits.
 - In `child` mode, where the vendor's own agent runs beside the programs, init moves itself into a network namespace of
   its own, so no program reaches that agent's ports on any address.
 

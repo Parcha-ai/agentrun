@@ -100,6 +100,12 @@ test("health.no-key-in-errors: every refusal path is asked, and a planted key in
 	// A release with the planted secret that let the computer go fails the case.
 	const gone = context({ hello: HELLO, capabilities: ANDROID, kept: false, planted: { provider: wordy(() => "refused"), secrets: [secret] } });
 	await assert.rejects(noKey.run(gone.t), /the computer is still there after a release with a planted secret: not_found/);
+	// A connect that succeeds with the planted secret and echoes it fails the case, and its connection is still closed.
+	let closes = 0;
+	const echoing = { ...wordy(() => "refused"), connect: async () => ({ ok: true, value: { hello: { leaked: secret }, close: async () => void (closes += 1) } }) };
+	const leaked = context({ hello: HELLO, capabilities: ANDROID, planted: { provider: echoing, secrets: [secret] } });
+	await assert.rejects(noKey.run(leaked.t), /connect: what the provider answered holds none of a planted secret/);
+	assert.equal(closes, 1, "the connection the failed check found is closed");
 
 	for (const [leak, words] of [
 		[(call) => `${call}: the key ${secret} was refused`, "whole"],
@@ -167,6 +173,12 @@ test("the published schema refuses the params computerd refuses: a map's non-str
 	// The exceptions: hello and ping read no params, so a newer client's hello is never refused.
 	assert.equal(valid("hello", "params", { client: "test", newer: true }), true);
 	assert.equal(valid("ping", "params", { anything: 1 }), true);
+	// A param's number is whole, as the daemon decodes it; a pixel scroll and a pinch's scale take fractions.
+	assert.equal(valid("exec.run", "params", { argv: ["true"], timeoutMs: 1000.5 }), false, "a fractional timeoutMs");
+	assert.equal(valid("files.read", "params", { path: "/workspace/notes.txt", offset: 1.5 }), false, "a fractional offset");
+	assert.equal(valid("input.actions", "params", { actions: [{ type: "move", at: [1.5, 2] }] }), false, "a fractional point");
+	assert.equal(valid("input.actions", "params", { actions: [{ type: "scroll", dx: 0.5, unit: "px" }] }), true, "a pixel scroll's fraction");
+	assert.equal(valid("input.actions", "params", { actions: [{ type: "pinch", at: [1, 2], scale: 1.5 }] }), true, "a pinch's scale");
 	// A result may carry a field a later minor version adds.
 	assert.equal(valid("hello", "result", { protocol: PROTOCOL_VERSION, version: "1", os: "linux", kind: "linux", arch: "amd64", groups: ["exec"], later: 1 }), true);
 });

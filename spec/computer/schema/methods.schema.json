@@ -839,12 +839,12 @@
           "title": "user"
         },
         "timeoutMs": {
-          "type": "number",
+          "type": "integer",
           "title": "timeoutMs"
         },
         "maxOutput": {
           "description": "Bytes kept of each stream; default and most MAX_OUTPUT_BYTES.",
-          "type": "number",
+          "type": "integer",
           "title": "maxOutput"
         }
       },
@@ -1012,12 +1012,12 @@
         },
         "depth": {
           "description": "Default 1, most MAX_LIST_DEPTH.",
-          "type": "number",
+          "type": "integer",
           "title": "depth"
         },
         "offset": {
           "description": "Skip this many entries: pass the count already read to get the next page.",
-          "type": "number",
+          "type": "integer",
           "title": "offset"
         }
       },
@@ -1064,7 +1064,7 @@
         },
         "mode": {
           "description": "Default 0o755.",
-          "type": "number",
+          "type": "integer",
           "title": "mode"
         }
       },
@@ -1107,12 +1107,12 @@
           "title": "path"
         },
         "offset": {
-          "type": "number",
+          "type": "integer",
           "title": "offset"
         },
         "length": {
           "description": "Default and most MAX_CHUNK_BYTES; more is refused as `limit`.",
-          "type": "number",
+          "type": "integer",
           "title": "length"
         }
       },
@@ -1199,7 +1199,7 @@
         },
         "offset": {
           "description": "Write here without truncating. With neither offset nor append, the file is replaced.",
-          "type": "number",
+          "type": "integer",
           "title": "offset"
         },
         "append": {
@@ -1208,7 +1208,7 @@
         },
         "mode": {
           "description": "Set when given (0o7777 bits), else 0o644 for a new file.",
-          "type": "number",
+          "type": "integer",
           "title": "mode"
         },
         "parents": {
@@ -1335,11 +1335,11 @@
               "type": "array",
               "items": [
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "x"
                 },
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "y"
                 }
               ],
@@ -1393,11 +1393,11 @@
               "type": "array",
               "items": [
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "x"
                 },
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "y"
                 }
               ],
@@ -1420,7 +1420,7 @@
                 2,
                 3
               ],
-              "type": "number",
+              "type": "integer",
               "title": "count"
             },
             "keys": {
@@ -1451,11 +1451,11 @@
                 "type": "array",
                 "items": [
                   {
-                    "type": "number",
+                    "type": "integer",
                     "title": "x"
                   },
                   {
-                    "type": "number",
+                    "type": "integer",
                     "title": "y"
                   }
                 ],
@@ -1500,11 +1500,11 @@
               "type": "array",
               "items": [
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "x"
                 },
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "y"
                 }
               ],
@@ -1558,7 +1558,7 @@
               "title": "keys"
             },
             "repeat": {
-              "type": "number",
+              "type": "integer",
               "title": "repeat"
             }
           },
@@ -1584,7 +1584,7 @@
               "title": "keys"
             },
             "ms": {
-              "type": "number",
+              "type": "integer",
               "title": "ms"
             }
           },
@@ -1627,11 +1627,11 @@
               "type": "array",
               "items": [
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "x"
                 },
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "y"
                 }
               ],
@@ -1644,7 +1644,7 @@
                 1,
                 2
               ],
-              "type": "number",
+              "type": "integer",
               "title": "count"
             }
           },
@@ -1667,11 +1667,11 @@
               "type": "array",
               "items": [
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "x"
                 },
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "y"
                 }
               ],
@@ -1680,7 +1680,7 @@
               "title": "at"
             },
             "ms": {
-              "type": "number",
+              "type": "integer",
               "title": "ms"
             }
           },
@@ -1705,11 +1705,11 @@
                 "type": "array",
                 "items": [
                   {
-                    "type": "number",
+                    "type": "integer",
                     "title": "x"
                   },
                   {
-                    "type": "number",
+                    "type": "integer",
                     "title": "y"
                   }
                 ],
@@ -1719,7 +1719,7 @@
               "title": "path"
             },
             "ms": {
-              "type": "number",
+              "type": "integer",
               "title": "ms"
             }
           },
@@ -1742,11 +1742,11 @@
               "type": "array",
               "items": [
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "x"
                 },
                 {
-                  "type": "number",
+                  "type": "integer",
                   "title": "y"
                 }
               ],
@@ -1759,7 +1759,7 @@
               "title": "scale"
             },
             "ms": {
-              "type": "number",
+              "type": "integer",
               "title": "ms"
             }
           },
@@ -1803,7 +1803,7 @@
               "title": "type"
             },
             "ms": {
-              "type": "number",
+              "type": "integer",
               "title": "ms"
             }
           },
@@ -2003,7 +2003,7 @@
       "properties": {
         "from": {
           "description": "Where the page starts: the page before's next, or 0 (the default) for the first page.",
-          "type": "number",
+          "type": "integer",
           "title": "from"
         }
       },
@@ -2053,17 +2053,17 @@
         },
         "offset": {
           "description": "Bytes since the process started. Pass the last read's nextOffset.",
-          "type": "number",
+          "type": "integer",
           "title": "offset"
         },
         "maxBytes": {
           "description": "Default and most MAX_CHUNK_BYTES; more is refused as `limit`.",
-          "type": "number",
+          "type": "integer",
           "title": "maxBytes"
         },
         "waitMs": {
           "description": "When nothing past offset is there yet, wait up to this long (most MAX_READ_WAIT_MS) for bytes or the end.",
-          "type": "number",
+          "type": "integer",
           "title": "waitMs"
         }
       },
@@ -2130,11 +2130,11 @@
           "title": "id"
         },
         "cols": {
-          "type": "number",
+          "type": "integer",
           "title": "cols"
         },
         "rows": {
-          "type": "number",
+          "type": "integer",
           "title": "rows"
         }
       },
@@ -2283,7 +2283,7 @@
         },
         "timeoutMs": {
           "description": "How long to wait for the end, up to a day; 0 asks without waiting. On timeout, running is true.",
-          "type": "number",
+          "type": "integer",
           "title": "timeoutMs"
         }
       },
@@ -2323,11 +2323,11 @@
       "type": "object",
       "properties": {
         "cols": {
-          "type": "number",
+          "type": "integer",
           "title": "cols"
         },
         "rows": {
-          "type": "number",
+          "type": "integer",
           "title": "rows"
         }
       },
@@ -2347,7 +2347,7 @@
           "title": "id"
         },
         "offset": {
-          "type": "number",
+          "type": "integer",
           "title": "offset"
         }
       },
@@ -2385,19 +2385,19 @@
           "type": "array",
           "items": [
             {
-              "type": "number",
+              "type": "integer",
               "title": "x"
             },
             {
-              "type": "number",
+              "type": "integer",
               "title": "y"
             },
             {
-              "type": "number",
+              "type": "integer",
               "title": "w"
             },
             {
-              "type": "number",
+              "type": "integer",
               "title": "h"
             }
           ],
@@ -2479,22 +2479,22 @@
       "type": "object",
       "properties": {
         "after": {
-          "type": "number",
+          "type": "integer",
           "title": "after"
         },
         "waitMs": {
           "description": "The longest wait for a change, in ms, 0 to 10000; default 2000.",
-          "type": "number",
+          "type": "integer",
           "title": "waitMs"
         },
         "maxWidth": {
           "description": "The frame's width at most (scaled down, never up); default 1280.",
-          "type": "number",
+          "type": "integer",
           "title": "maxWidth"
         },
         "quality": {
           "description": "JPEG quality, 1 to 100; default 60.",
-          "type": "number",
+          "type": "integer",
           "title": "quality"
         }
       },
@@ -2650,7 +2650,7 @@
         },
         "maxBytes": {
           "description": "Default and most MAX_CHUNK_BYTES; more is refused as `limit`.",
-          "type": "number",
+          "type": "integer",
           "title": "maxBytes"
         }
       },
