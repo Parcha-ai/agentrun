@@ -886,7 +886,7 @@ test("a loopback MCP server's authorization server may use only the MCP server's
       const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
       t.after(() => mcp.close());
       const store = await registry(t, key, net.network);
-      store.attach(own.origin, own.origin);
+      store.attach(own.origin, own.origin, true);
       await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} at ${at.origin}`);
     }
     assert.deepEqual(at.hits, [], `${at.origin} heard nothing`);
@@ -896,7 +896,7 @@ test("a loopback MCP server's authorization server may use only the MCP server's
   // The MCP server's own loopback host, on another port (its authorization server's), still signs in: the repo's fake.
   const { mcp } = await fakes(t);
   const store = await registry(t, key, net.network);
-  store.attach(own.origin, own.origin);
+  store.attach(own.origin, own.origin, true);
   assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
 });
 
@@ -934,7 +934,7 @@ test("with a LOOPBACK public address (a local https proxy in front of the listen
     const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
     t.after(() => mcp.close());
     const store = await registry(t, key, net.network);
-    store.attach(proxy.origin, listener.origin);
+    store.attach(proxy.origin, listener.origin, true);
     await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
   }
   assert.deepEqual(proxy.hits, [], "the public (proxy) port heard nothing");
