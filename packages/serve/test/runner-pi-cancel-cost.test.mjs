@@ -30,13 +30,24 @@ function holdingOrigin() {
     const body = JSON.parse(String(init.body ?? "{}"));
     const encoder = new TextEncoder();
     const event = (data) => encoder.encode(`event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`);
+    // The answer's start goes out when the session's proxy first reads the body, and the cancel waits until it has: a
+    // cancel before the proxy read anything would be a request with nothing streamed (never answered), a different case.
+    let pulls = 0;
     const stream = new ReadableStream({
       start(controller) {
-        controller.enqueue(event({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: 2_000, output_tokens: 1 } } }));
-        controller.enqueue(event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
-        controller.enqueue(event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Working on it, " } }));
-        started();
         init.signal?.addEventListener("abort", () => controller.error(init.signal.reason ?? new Error("aborted")), { once: true });
+      },
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          controller.enqueue(event({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: 2_000, output_tokens: 1 } } }));
+          controller.enqueue(event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+          controller.enqueue(event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Working on it, " } }));
+          return undefined;
+        }
+        // The proxy came back for more: it has read the answer's start. Then the answer holds until the request is aborted.
+        started();
+        return new Promise(() => {});
       },
     });
     return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
