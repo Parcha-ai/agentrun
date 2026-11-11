@@ -199,8 +199,10 @@ The journal is the run's rows of the store's `pi_entries` table.
    At `10` the follow-up completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
    can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
    mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
-   `adapter-pi-cap-raise-crash` covers a runner lost
-   with a request out, and run-adapters' `held-worst-case.test.mjs` a request cut short.
+   run-adapters' `held-worst-case.test.mjs` covers a request cut short, and `adapter-cli-record` a tool call a crash cut
+   (ended interrupted when the session opens again), on a scripted CLI adapter, not the real binaries. A runner lost
+   with a request out is covered on pi only, by `adapter-pi-cap-raise-crash`; no test crashes claude-agent or codex
+   through the runner.
 4. **Cancel ends the run and nothing more is sent.** `POST /v2/runs/{id}/cancel` on a working run answers `202` with
    `cancel_requested: true`; the run ends `cancelled`, a second cancel says `already_terminal: true`, and a message is
    `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runner-stop-withdraw`,
