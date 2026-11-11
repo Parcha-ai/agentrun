@@ -299,7 +299,11 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       // A node that requires evidence gets a placeholder, as a provider that gives evidence would answer it.
       runJudge: async ({ questions, evidence }) => {
         await step();
-        return { answers: synthesizeAnswers(questions), model: "synthetic", usage: null, cost_usd: null, request_sha256: "",
+        // Its answers are synthetic values like any step's: each charged its serialized size against the run's budget (a
+        // choice's first option may be a long string, and a map collects one per item).
+        const answers = synthesizeAnswers(questions);
+        synthesized(() => charge(spend, Object.keys(answers).length, literalChars(answers)));
+        return { answers, model: "synthetic", usage: null, cost_usd: null, request_sha256: "",
           ...(evidence === "required" ? { evidence: [{ url: "https://example.invalid/dry-run", title: null, excerpts: [], scope: "dry_run" }] } : {}) };
       },
       syntheticEffects: true,

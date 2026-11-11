@@ -141,3 +141,22 @@ test('a schema synthesis cannot read is a one-character "x", charged as one', ()
   assert.equal(synthesizeInstance({ type: 'mystery' }, {}, 0, { chars: 1 }), 'x');
   assert.throws(() => synthesizeInstance({ type: 'object', properties: { a: { type: 'mystery' }, b: { type: 'mystery' } } }, {}, 0, { chars: 3 }), { name: 'SynthesisTooLarge' });
 });
+
+test('a judge\'s synthetic answers are charged to the shared budget: a map of 6,000 judges whose first choice is 100,000 characters ends not run, fast', async () => {
+  const long = 'c'.repeat(100_000);
+  const Items = { type: 'object', properties: { items: { type: 'array', minItems: 6_000, items: { type: 'string' } } }, required: ['items'] };
+  const Pick = { type: 'object', required: ['kind'], properties: { kind: { type: 'string', enum: [long, 'other'], description: 'Which kind is it?' } } };
+  const Out = { type: 'object', properties: { seen: { type: 'array' } } };
+  const flow = {
+    v: 2, name: 'judges', schemas: { Items, Pick, Out },
+    input: { schemaId: 'Items' }, output: { schemaId: 'Out', path: 'all' },
+    root: { node: 'chain', steps: [
+      { node: 'map', label: 'each', itemsPath: 'items', as: 'seen', body: { node: 'judge', label: 'judge', state: { item: '{item}' }, out: 'Pick', as: 'pick' } },
+      { node: 'code', label: 'all', code: 's => ({ all: { seen: s.seen } })' },
+    ] },
+  };
+  const started = Date.now();
+  const result = await dryRunWorkflow(flow, { maxSteps: 100_000, maxVisits: 1_000_000, runCode: async (_node, state) => ({ all: { seen: state.seen } }) });
+  assert.ok(Date.now() - started < 10_000, `stopped in ${Date.now() - started} ms`);
+  notRunTooLarge(result);
+});
