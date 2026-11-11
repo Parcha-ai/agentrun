@@ -21,6 +21,14 @@ import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 export const RUNNER_LOOPS = 300;
+/** How long a claim lasts unless renewed, unless told (RunnerOptions.leaseMs). */
+export const RUNNER_LEASE_MS = 30_000;
+/** A claim not renewed by its until less this is lost here, unless told (RunnerOptions.stopMarginMs). */
+export const RUNNER_STOP_MARGIN_MS = 5_000;
+/** The longest close() takes with the default lease (Runner.close): the drain, then the loops' stop, which waits for a
+ *  loop that does not stop until its claim would run out (the lease less its margin, 25 s). A stop deadline that cuts the
+ *  process sooner cuts a run's end short, and the run waits out its lease before another runner resumes it. */
+export const runnerCloseBoundMs = (drainMs: number): number => drainMs + RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
 /** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
 export const RUNNER_RENEW_EVERY_MS = 10_000;
 /** A runner's name when none is given: its host, its process and a part of a random id. */
@@ -154,9 +162,9 @@ export function startRunner(options: RunnerOptions): Runner {
     createLoop,
     name = runnerName(),
     loops = RUNNER_LOOPS,
-    leaseMs = 30_000,
+    leaseMs = RUNNER_LEASE_MS,
     renewEveryMs = RUNNER_RENEW_EVERY_MS,
-    stopMarginMs = 5_000,
+    stopMarginMs = RUNNER_STOP_MARGIN_MS,
     pollMs = 1_000,
     commandPollMs = 500,
     resumeTries = 3,
