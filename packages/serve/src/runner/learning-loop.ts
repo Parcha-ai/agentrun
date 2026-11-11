@@ -149,13 +149,7 @@ export function takenOnMain(proposal: Pick<KeptProposal, "notes">, verdict: Verd
   const texts = new Map(proposal.notes.map(({ file, text }) => [file, text]));
   const replace: string[] = [];
   const graded: Record<string, string> = {};
-  // The files the run's own kept notes are, then each re-filed skill's as it is kept.
-  const claimed = new Set(verdict.items.filter((item) => item.keep && !item.note && texts.has(item.file)).map((item) => item.file));
-  const items = verdict.items.map((item) => {
-    if (item.keep && item.note) {
-      if (claimed.has(item.note.file)) return { file: item.file, keep: false, question: "Duplicate", why: NOTE_NAME_IN_RUN(item.note.file.replace(/\.md$/, "")) };
-      claimed.add(item.note.file);
-    }
+  const items = oneItemAFile(proposal, verdict).items.map((item) => {
     const note = item.note ?? (texts.has(item.file) ? { file: item.file, text: texts.get(item.file)! } : undefined);
     const held = item.keep && note ? onMain[note.file] : undefined;
     if (!note || held === undefined) return item;
@@ -169,6 +163,21 @@ export function takenOnMain(proposal: Pick<KeptProposal, "notes">, verdict: Verd
     return { file: item.file, keep: false, question: "Duplicate", why: same ? SAME_NOTE : NOTE_NAME_TAKEN(note.file.replace(/\.md$/, "")), ...(item.note ? { note: item.note } : {}) };
   });
   return { verdict: { ...verdict, items, merge: verdict.merge && items.some((item) => item.keep) }, replace, graded };
+}
+
+/** `verdict` with one item per file a kept note is written as, within the run: the files the run's own kept notes are,
+ *  then each re-filed skill's as it is kept; a re-filed skill whose note file one of those takes is left out, saying so
+ *  (NOTE_NAME_IN_RUN). The merge (takenOnMain) and its resume (resumedOf, from the saved grade) settle it the one way. */
+export function oneItemAFile(proposal: Pick<KeptProposal, "notes">, verdict: Verdict): Verdict {
+  const own = new Set(proposal.notes.map(({ file }) => file));
+  const claimed = new Set(verdict.items.filter((item) => item.keep && !item.note && own.has(item.file)).map((item) => item.file));
+  const items = verdict.items.map((item) => {
+    if (!item.keep || !item.note) return item;
+    if (claimed.has(item.note.file)) return { file: item.file, keep: false, question: "Duplicate", why: NOTE_NAME_IN_RUN(item.note.file.replace(/\.md$/, "")) };
+    claimed.add(item.note.file);
+    return item;
+  });
+  return { ...verdict, items, merge: verdict.merge && items.some((item) => item.keep) };
 }
 
 /** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds; a skill its
@@ -259,7 +268,10 @@ export function resumedOf(proposal: KeptProposal, graded: Verdict, taken: Verdic
   const written = new Set(result.files);
   const said = new Map((result.left ?? []).map(({ path, reason }) => [path, reason]));
   const notes = new Set(proposal.notes.map(({ file }) => file));
-  const items = graded.items.map((item, i) => {
+  // One item per file, as the first attempt's takenOnMain settled it: the saved grade keeps both a run's note and a skill
+  // re-filed as a note of its file, and only one of them was written.
+  const settled = oneItemAFile(proposal, graded);
+  const items = settled.items.map((item, i) => {
     const file = item.note?.file ?? item.file;
     if (!item.keep || !(item.note || notes.has(file)) || written.has(file)) return item;
     const before = taken.items[i];
@@ -267,7 +279,7 @@ export function resumedOf(proposal: KeptProposal, graded: Verdict, taken: Verdic
     const why = said.get(file) === "taken" ? NOTE_NAME_TAKEN(file.replace(/\.md$/, "")) : SAME_NOTE;
     return { file: item.file, keep: false, question: "Duplicate", why, ...(item.note ? { note: item.note } : {}) };
   });
-  const verdict = { ...graded, items };
+  const verdict = { ...settled, items };
   return { merging: keptOf(proposal, verdict), verdict };
 }
 
@@ -430,7 +442,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
             return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
           }
-          const taken = already ? { verdict: graded.verdict, replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
+          const taken = already ? { verdict: oneItemAFile(proposal, graded.verdict), replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
           const verdict = taken.verdict;
           if (!verdict.merge) {
             await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");

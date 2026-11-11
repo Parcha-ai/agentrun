@@ -201,8 +201,8 @@ never a refusal of the whole merge: the same text is no change, dropped unsaid; 
 the note of its own name is a modification, written over it (the merge's `replace`, main's blob checked as graded);
 any other is dropped, saying a note of that name was added since or was there already. The rest merges. A run whose
 own merge is on main already (the learning run stopped after its commit and before it recorded it) is not settled
-against main again: its notes there are its merge's, and that merge's files settle each item, so what it wrote is
-learned. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
+against main again: its notes there are its merge's, and that merge's files settle each item, one item a file as the first attempt
+settled it (a re-filed skill whose note file the run's own note takes is left out), so what it wrote is learned. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
 each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts `ruleOf`), is
 exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the seed's active
 notes, and of two new notes the same, the second), and the merge's own computation leaves it out unsaid, against the
