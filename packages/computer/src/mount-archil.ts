@@ -134,7 +134,13 @@ const PREFLIGHT = [
 	'echo "archil $(/usr/bin/archil --version 2>/dev/null | head -n 1)"',
 	`echo "tool $(id -u ${ARCHIL_TOOL_USER} 2>/dev/null):$(id -g ${ARCHIL_TOOL_USER} 2>/dev/null)"`,
 	'echo "sudo $(command -v sudo 2>/dev/null || echo none)"',
+	// The FUSE device, which the archil client mounts through: the runtime gives it, not the image (Daytona's GPU host
+	// gives none, live 11-11).
+	'echo "fuse $([ -c /dev/fuse ] && echo present || echo absent)"',
 ].join("\n");
+
+/** Why a computer's preflight says the Archil folder cannot be mounted at all, before anything else is checked. */
+const NO_FUSE = "this computer has no /dev/fuse, so the Archil folder can't be mounted";
 
 /** How the preflight's words differ from the image the package ships, one line each; none when they do not. */
 function preflightDrift(output: string, expectedSha: string): string[] {
@@ -152,6 +158,7 @@ function preflightDrift(output: string, expectedSha: string): string[] {
 	if (!(lines.get("archil") ?? "").includes(`v${ARCHIL_VERSION}`)) found.push(`the archil client is not ${ARCHIL_VERSION} (${show(lines.get("archil"))})`);
 	if (lines.get("tool") !== `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`) found.push(`the tool user ${ARCHIL_TOOL_USER} is not ${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID} (${show(lines.get("tool"))})`);
 	if (lines.get("sudo") !== "none") found.push(`the image has sudo (${show(lines.get("sudo"))}), which gives the tool user a way to root`);
+	if (lines.get("fuse") !== "present") found.push(`the preflight did not find /dev/fuse (${show(lines.get("fuse"))})`);
 	return found;
 }
 
@@ -202,6 +209,8 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 
 	const pre = await step(["sh", "-c", PREFLIGHT, "sh", ARCHIL_HELPER], "preflight");
 	if (!pre.ok) return pre;
+	// No FUSE device: the mount cannot happen whatever else holds, so that is the one reason given.
+	if (/^fuse absent$/m.test(pre.value.output)) return fail("refused", NO_FUSE);
 	const drift = preflightDrift(pre.value.output, helperSha256());
 	if (pre.value.exitCode !== 0 || drift.length > 0) {
 		return fail("refused", `the computer is not as the Archil image makes it: ${drift.length > 0 ? drift.join("; ") : `the preflight exited ${pre.value.exitCode}`}`);

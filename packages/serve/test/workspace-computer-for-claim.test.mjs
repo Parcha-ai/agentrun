@@ -257,7 +257,7 @@ test("a sandbox's GPUs go into the spec its provider makes the computer with; GP
   assert.deepEqual(record.created[0].gpu, { type: "H100", count: 1 });
   assert.equal(record.created[0].mount?.kind !== undefined, true, "with the run's folder mounted beside them");
   await answer.release();
-  // daytona-gpu itself takes no mount: in Mode 2 its GPU computer is refused before anything is made.
-  assert.match(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), /^A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount/);
+  // A Daytona GPU computer takes no mount: in Mode 2 it is refused before anything is made, saying why and what to use.
+  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.");
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
 });

@@ -6,12 +6,13 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
-import { checkGpu, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
+import { type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
+import { gpuRefused } from "./gpu-words.js";
 import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
@@ -147,21 +148,24 @@ const sandboxGpu = (kinds: Pick<KindRegistry, "servingRefusals">, provider: Prov
 /** The mount a sandbox takes in `mode`: the run's folder, a bind of this machine or the owner's Archil disk. */
 const folderMount = (mode: FolderMode): { kind: string } => ({ kind: mode === "local" ? "bind" : "archil" });
 
-/** A sandbox provider's GPUs as Settings shows them, with why a run here cannot have them (checkGpu's words for its
- *  smallest ask, one of its first type, with this mode's mount). */
-function gpuView(gpu: GpuCapability, mode: FolderMode): GpuView {
-  const [refusal] = gpu.types.length ? checkGpu({ type: gpu.types[0], count: 1 }, { gpu }, folderMount(mode)) : [];
-  return { ...structuredClone(gpu), ...(refusal ? { why: refusal.message } : {}) };
+/** A sandbox provider's GPUs as Settings shows them, with why a run here cannot have them (gpuRefused's words for its
+ *  smallest ask, one of its first type, with this mode's mount). Its reason for taking no mount is in `why`, not a
+ *  field of its own. */
+function gpuView(gpu: GpuCapability, label: string, mode: FolderMode): GpuView {
+  const refused = gpu.types.length ? gpuRefused({ type: gpu.types[0], count: 1 }, gpu, folderMount(mode), label) : undefined;
+  const shown = structuredClone(gpu);
+  delete shown.unmounted;
+  return { ...shown, ...(refused ? { why: refused.words } : {}) };
 }
 
-/** Why `computer`'s GPUs cannot be had on `provider` in `mode`, in checkGpu's words; undefined when they can, or it asks
- *  for none (only a sandbox does). */
+/** Why `computer`'s GPUs cannot be had on `provider` in `mode`, in gpuRefused's words; undefined when they can, or it
+ *  asks for none (only a sandbox does). */
 function gpuRefusal(kinds: Pick<KindRegistry, "servingRefusals">, computer: ComputerSetting, provider: ProviderEntry, mode: FolderMode): string | undefined {
   const asked = gpuOf(computer);
   if (!asked) return undefined;
-  const gpu = sandboxGpu(kinds, provider);
-  const [refusal] = checkGpu(asked, gpu ? { gpu } : {}, folderMount(mode));
-  return refusal ? `${provider.label} can't give this agent's computer its GPUs: ${refusal.message} (Settings → Computers)` : undefined;
+  const refused = gpuRefused(asked, sandboxGpu(kinds, provider), folderMount(mode), provider.label);
+  if (!refused) return undefined;
+  return refused.folder ? `${refused.words} (Settings → Computers)` : `${provider.label} can't give this agent's computer its GPUs: ${refused.words} (Settings → Computers)`;
 }
 
 /** The required keys `provider` has no saved value for, by name. */
@@ -211,7 +215,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           const network = networkWords(provider.network);
           // A sandbox's GPUs: only a sandbox takes them (computer-setting.ts computerIssues).
           const gpu = kind === "sandbox" ? sandboxGpu(kinds, provider) : undefined;
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(gpu ? { gpu: gpuView(gpu, mode) } : {}) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(gpu ? { gpu: gpuView(gpu, provider.label, mode) } : {}) };
         });
         const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
         const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;

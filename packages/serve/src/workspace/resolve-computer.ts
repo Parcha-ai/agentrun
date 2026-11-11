@@ -19,8 +19,9 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { checkGpu, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
+import { type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
+import { gpuRefused } from "../gpu-words.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -277,12 +278,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in ${SETTINGS}.` };
   }
 
-  // Its GPUs, a sandbox's alone: in checkGpu's words, against what the configuration the setting selected declares, with
-  // the mode's folder as the mount it takes (a sandbox here always mounts it).
+  // Its GPUs, a sandbox's alone: in gpuRefused's words, against what the configuration the setting selected declares,
+  // with the mode's folder as the mount it takes (a sandbox here always mounts it). A GPU computer that can't mount the
+  // folder is told so, and what to use instead.
   const gpu = kind === "sandbox" && setting.gpu ? setting.gpu : undefined;
   if (gpu) {
-    const [refusal] = checkGpu(gpu, configuration, { kind: mode === 1 ? "bind" : "archil" });
-    if (refusal) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refusal.message}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
+    const refused = gpuRefused(gpu, configuration.gpu, { kind: mode === 1 ? "bind" : "archil" }, entry.label);
+    if (refused?.folder) return { refused: refused.words };
+    if (refused) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refused.words}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
   }
 
   // Its keys: every required one saved, before anything starts; only declared names go to the provider.
