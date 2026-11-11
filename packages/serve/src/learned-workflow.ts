@@ -15,7 +15,7 @@
 //   - a decision node (judge, pick, sift, a route by question, an ask predicate, a verify: LS-07), on a run handed its
 //     decisions (`run.decisions`: its decision providers on its own keys, and the adapter loop's ledger.decisions on
 //     the run's one cap), asked of the provider it names, else the run's default, held to the run's gate under that
-//     provider's id as a call node's tool is by its name; each admitted on the run's cap before it is sent, priced as a
+//     provider's bare id (tool-plane.ts DECISION_PROVIDER_KEYS: allow or deny), refused only on deny; each admitted on the run's cap before it is sent, priced as a
 //     workflow agent's decision is (runner/workflow-spec.ts decisionJudge), settled at what it charged, and one the cap
 //     has no room for never sent, the run paused on the cap's refusal (ledger.pause). A run handed none runs no
 //     decision node: the check refuses it before any node runs.
@@ -29,7 +29,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
 import { sideRequests } from "./cap.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
-import { decisionsAsked, gatedDecisionWords } from "./learn/skills.js";
+import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
@@ -297,8 +297,8 @@ function decisionsOf(run: LearnedWorkflowRun, dsl: Parameters<typeof decisionsAs
 }
 
 /** A learned workflow's judge (the DSL's runJudge) for `run`: its providers' judge (judgeFromProviders), each decision
- *  first held to the run's gate as it is asked (a provider set to ask or deny since the call began is refused, never
- *  sent, as a call node's tool is at its effect), then admitted on the run's one cap and settled at what it charged
+ *  first held to the run's gate as it is asked (a provider set to deny since the call began is refused, never sent, as
+ *  a call node's tool is at its effect; deny alone refuses, the rule the runner hands a claim its keys by), then admitted on the run's one cap and settled at what it charged
  *  (decisionJudge, as a workflow agent's decision is). A refusal of the cap pauses the run (`decisions.pause`): the
  *  decision node fails with the cap's words, and nothing is sent. */
 async function learnedJudge(run: LearnedWorkflowRun, decisions: NonNullable<LearnedWorkflowRun["decisions"]>) {
@@ -315,8 +315,7 @@ async function learnedJudge(run: LearnedWorkflowRun, decisions: NonNullable<Lear
   return (async (params: Parameters<Judge>[0]) => {
     const provider = params.provider ?? decisions.providers.default;
     await run.refresh?.();
-    const setting = run.policy(provider);
-    if (setting !== "allow") throw new Error(gatedDecisionWords(provider, setting, setting === "deny" ? (run.denyFrom(provider) as "agent" | "server" | "default") : undefined, "decision", params.label));
+    if (run.policy(provider) === "deny") throw new Error(deniedDecisionWords(provider, run.denyFrom(provider) as "agent" | "server" | "default", "decision", params.label));
     return capped(params);
   }) as Judge;
 }

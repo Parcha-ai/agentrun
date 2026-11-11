@@ -29,7 +29,7 @@ import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { SHELL_TOOLS } from "./background.js";
-import { SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { DECISION_PROVIDER_KEYS, SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 
@@ -95,7 +95,7 @@ const HOST_TOOLS_SERVER = "hands";
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
   // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
-  if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name)) return name;
   // An adapter's own read of a skill's file (codex's and OpenCode's read_skill_file, from the session's copy of the run's
   // skills) is a read: held to read's key, so a server's read deny refuses it and the default allows it, on every harness.
   // Unless the name is an agent's MCP tool on this harness (OpenCode's <server>_<tool>: a configured server `read` with a

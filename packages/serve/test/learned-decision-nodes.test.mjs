@@ -73,13 +73,11 @@ test("a learned draft with a judge node passes the learn-time check when the run
   assert.match(draftProblems(dsl, text, []).map((p) => p.detail).join("; "), /judge node "check" requires runJudge/, "no decision providers: refused as before");
 });
 
-test("a learned draft whose decision node's provider the run's gate holds to deny or ask is refused at learn time, in the gate's words; one it has no key for too", async (t) => {
+test("a learned draft whose decision node's provider the run's gate holds to deny is refused at learn time, in the gate's words; one it has no key for too", async (t) => {
   const { registry } = await providers(t);
   const decisions = { providers: registry.providers, default: registry.default };
   const denied = draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, { ...decisions, gated: { jev: "deny" }, deniedBy: { jev: "agent" } });
   assert.match(denied.map((p) => p.detail).join("; "), /This workflow's decision node asks jev, which is set to deny for this agent\. \(the judge node at \/root\/steps\/0\)/);
-  const asks = draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, { ...decisions, gated: { jev: "ask" } });
-  assert.match(asks.map((p) => p.detail).join("; "), /This workflow's decision node asks jev, which is set to ask, and a decision node can't wait for an approval/);
   const keyless = draftProblems(dsl, JSON.stringify(judgeFlow("parallel")), [], {}, {}, decisions);
   assert.match(keyless.map((p) => p.detail).join("; "), /names the decision provider parallel, which this host does not have/);
 });
@@ -129,4 +127,34 @@ test("a learned workflow with a decision node, on a run handed no decisions, is 
   const out = await runLearned(runOf(flow), flow, { claim: "x" });
   assert.equal(out.isError, true);
   assert.match(out.text, /judge node "check" requires runJudge/);
+});
+
+test("a decision provider is a settings key of its own (jev, parallel, openrouter), allow by default and allow or deny: a run's gate answers allow for it until an owner sets deny", async () => {
+  const { RunGate, settingsKeyOf, defaultPermission } = await import("../dist/tool-gate.js");
+  const { settingsIssues, permissionsOf, DECISION_PROVIDER_KEYS } = await import("../dist/tool-plane.js");
+  assert.deepEqual([...DECISION_PROVIDER_KEYS], ["jev", "parallel", "openrouter"]);
+  for (const id of DECISION_PROVIDER_KEYS) {
+    for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, id), id, `${harness} ${id}`);
+    assert.equal(defaultPermission(id), "allow", id);
+    assert.deepEqual([...permissionsOf(id)], ["allow", "deny"], id);
+    for (const permission of ["allow", "deny"]) assert.deepEqual(settingsIssues({ [id]: { permission } }), [], `${id} ${permission}`);
+    assert.notDeepEqual(settingsIssues({ [id]: { permission: "ask" } }), [], `${id}: ask is no setting of a provider`);
+  }
+  const where = { root: "/nonexistent", work: "/nonexistent", runId: "run-1" };
+  const read = (settings) => () => ({ settings, problems: [], unreadable: false });
+  const open = new RunGate(where, read({}));
+  assert.equal(open.policy("jev"), "allow", "no setting: allow, never ask");
+  const denied = new RunGate(where, read({}), { jev: { permission: "deny" } });
+  assert.deepEqual([denied.policy("jev"), denied.denyFrom("jev"), denied.policy("parallel")], ["deny", "agent", "allow"]);
+});
+
+test("a decision node's provider is refused only on deny: one the gate answers ask for runs, as the runtime hands its keys (policy !== deny)", async (t) => {
+  const { registry, sent } = await providers(t);
+  const decisions = { providers: registry.providers, default: registry.default };
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(judgeFlow()), [], {}, {}, { ...decisions, gated: { jev: "ask" } }), [], "ask is no refusal");
+  const book = booking();
+  const flow = learned(judgeFlow());
+  const out = await runLearned(runOf(flow, { providers: registry, book }, (name) => (name === "jev" ? "ask" : "allow")), flow, { claim: "Six times seven is 42." });
+  assert.equal(out.isError, false, out.text);
+  assert.equal(sent(), 1);
 });

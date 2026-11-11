@@ -210,8 +210,8 @@ export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes,
 
 /** A learned draft's decisions as its check reads them (LS-07): the decision providers the run has (by id, the DSL's
  *  DecisionProvider each, decisions.ts decisionProvidersIn over its keys) and the one a node that names none is asked
- *  of; `gated`, the provider ids the run's gate holds to ask or deny (by its setting, the provider's id as its settings
- *  key, as a call node's tool is held by its name), and `deniedBy`, where each deny was set. With none, a decision node
+ *  of; `gated`, the provider ids the run's gate does not allow (by its setting, the provider's bare id as its settings
+ *  key: tool-plane.ts DECISION_PROVIDER_KEYS), of which deny alone refuses, and `deniedBy`, where each deny was set. With none, a decision node
  *  is refused (LEARNED_NODES). */
 export type DraftDecisions = {
   readonly providers: Readonly<Record<string, unknown>>;
@@ -241,19 +241,19 @@ export function decisionsAsked(dsl: Pick<DraftReader, "inspectWorkflow">, doc: u
   });
 }
 
-/** What a decision node asking `provider` is refused with when the run's gate holds it to `setting` (ask or deny), worded
- *  as a call node's tool is (gatedNodes), with the node's place. */
-export const gatedDecisionWords = (provider: string, setting: string, from: SettingFrom | undefined, kind: string, path: string): string =>
-  `${setting === "deny"
-    ? `This workflow's decision node asks ${provider}, which is set to deny ${denyPlace(from)}.`
-    : `This workflow's decision node asks ${provider}, which is set to ask, and a decision node can't wait for an approval: set it to allow for this agent.`} (the ${kind} node at ${path})`;
+/** What a decision node asking `provider` is refused with when the run's gate denies it, worded as a call node's tool is
+ *  (gatedNodes), with the node's place. */
+export const deniedDecisionWords = (provider: string, from: SettingFrom | undefined, kind: string, path: string): string =>
+  `This workflow's decision node asks ${provider}, which is set to deny ${denyPlace(from)}. (the ${kind} node at ${path})`;
 
-/** A draft's decision nodes whose provider the run's gate holds to ask or deny (`decisions.gated`). */
+/** A draft's decision nodes whose provider the run's gate denies (`decisions.gated`): deny alone refuses, as the runner
+ *  hands a claim a provider's keys while its gate's policy is not deny (a provider is a settings key that is allow or
+ *  deny; a gate that reads no setting of it answers ask, which refuses nothing here). */
 const gatedDecisions = (dsl: DraftReader, doc: unknown, decisions: DraftDecisions | undefined): DraftProblem[] => {
   if (!decisions?.gated) return [];
   return decisionsAsked(dsl, doc, decisions.default).flatMap(({ kind, path, provider }) => {
     const setting = Object.hasOwn(decisions.gated!, provider) ? decisions.gated![provider] : undefined;
-    return setting ? [{ rule: "workflow" as const, detail: gatedDecisionWords(provider, setting, decisions.deniedBy?.[provider], kind, path) }] : [];
+    return setting === "deny" ? [{ rule: "workflow" as const, detail: deniedDecisionWords(provider, decisions.deniedBy?.[provider], kind, path) }] : [];
   });
 };
 
