@@ -137,7 +137,7 @@ test("a hold from another pid namespace on the same hostname (another container 
   mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
   writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, identity: "boot-1:100", startedAt: Date.now(), token: "theirs" }));
   // Here pid 4242 is gone (or another process): read in this namespace, it would look dead.
-  const here = { host: "this-host", pidns: "pid:[2]", isAlive: () => assert.fail("another namespace's pid is never asked here"), identity: () => assert.fail("never read here") };
+  const here = { host: "this-host", pidns: "pid:[2]", isAlive: () => assert.fail("another namespace's pid is never asked here"), identity: (pid) => (pid === process.pid ? undefined : assert.fail("another namespace's pid is never read here")) };
   assert.equal(await takeHold(dir, here), undefined, "young: held, as another host's");
   assert.equal(JSON.parse(readFileSync(installHoldOf(dir), "utf8")).token, "theirs");
   writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, identity: "boot-1:100", startedAt: Date.now() - 60 * 60_000, token: "theirs" }));
