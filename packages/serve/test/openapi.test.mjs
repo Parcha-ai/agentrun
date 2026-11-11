@@ -644,7 +644,7 @@ test("a tool key's save documents every status it answers, 503 unavailable among
 test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
   const { doc } = await served(t);
   // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
-  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("@parcha/pi-durable-agent/timeline")), "utf8");
+  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("../dist/timeline/index.js")), "utf8");
   const union = /export type TimelineKind =([^;]+);/.exec(declaration.replace(/\/\*[\s\S]*?\*\//g, ""))?.[1] ?? "";
   const declared = [...union.matchAll(/"([a-z_]+)"/g)].map(([, kind]) => kind);
   assert.ok(declared.includes("decision") && declared.includes("usage"), `the timeline's kinds are read: ${declared}`);
