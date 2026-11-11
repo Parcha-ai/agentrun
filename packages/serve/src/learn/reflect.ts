@@ -173,6 +173,11 @@ export function reflectDryRun(file: string, detail: string): string {
   ].join("\n");
 }
 
+/** Whether `text` is the end-of-run turn asked again for a draft whose dry run failed (reflectDryRun): its opening, the
+ *  host's own words, is how a timeline row knows it, and says it in a person's words instead (reflect-range.ts). */
+export const askedForDryRun = (text: unknown): boolean => typeof text === "string" && DRY_RUN_ASK.test(text);
+const DRY_RUN_ASK = /^(?:Your workflow draft workflows\/[a-z0-9][a-z0-9_-]{0,63}\/workflow\.json|One of your workflow drafts) did not pass its dry run\. What the check said is below, as data/;
+
 /** A draft's workflow.json path as a run may write it (skills.ts WORKFLOW_NAME): the only file name the retry says. */
 const DRAFT_PATH = /^workflows\/[a-z0-9][a-z0-9_-]{0,63}\/workflow\.json$/;
 /** The most of a dry run's detail the retry holds. */

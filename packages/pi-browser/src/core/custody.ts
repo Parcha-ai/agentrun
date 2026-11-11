@@ -131,7 +131,14 @@ export function fenced<D extends BrowserDriver>(driver: D, fence: number, mark: 
   });
 }
 
+/** The wait between tries of a call that failed (a provider's release, a lookup, an answer that could not be read):
+ *  doubling from 500 ms up to 30 s. */
 export const backoffMs = (attempt: number) => Math.min(30_000, 500 * 2 ** attempt);
+
+/** How often a hand-over's wait asks for the person's answer while it is pending: a short fixed interval, as the host
+ *  settles an answer (serve's browser-person poll is 500 ms), so a hand-back resumes the agent within one poll however
+ *  long the person took. An answer is a cheap read on the host's side; only a read that fails backs off (backoffMs). */
+export const HANDOFF_POLL_MS = 500;
 
 export const notices = {
   kept: (url: string | null) => `Your browser session survived an interruption and is still open${url ? ` on ${url}` : ""}. Take a snapshot before acting again.`,
