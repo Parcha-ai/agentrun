@@ -4,7 +4,7 @@
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TimelineEvent } from "./timeline/index.js";
+import { CAPS, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
@@ -398,7 +398,19 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;
   const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
-  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : null;
+  // A run its cap ended once its cost passed it (spend_cap_reached) keeps the answer it paid for, as main kept it: the
+  // response that crossed the cap was answered and billed, so its text is the run's answer, cut as it came.
+  // Its answer is the newest answer row, else (a response cut at its length) the newest text it said; never the row's
+  // summary, which holds the cap's words.
+  const overCap = status === "failed" && overCapMessage(row.summary ?? null) !== undefined;
+  // A text the timeline cut at its cap is read whole from the journal and served as an answer row is (wholeAnswerFor).
+  const capRow = overCap && !unshown ? (run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL) ?? run.rows.findLast((r) => r.kind === "text_block" && r.agent_label !== LEARNING_LABEL)) : undefined;
+  let capAnswer = capRow?.text ?? null;
+  if (capRow?.kind === "text_block" && capAnswer !== null && (capAnswer.length >= CAPS.text || capAnswer.endsWith("...") || capAnswer === "[redacted]")) {
+    const whole = (await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })).find((r) => r.id === capRow.id)?.text;
+    if (typeof whole === "string") capAnswer = wholeAnswerFor(values).serve(whole);
+  }
+  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : overCap ? { output: null, final_answer: servedAnswer(capAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
   // It reads as the run's Timeline error row does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain

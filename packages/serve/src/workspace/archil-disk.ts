@@ -68,14 +68,20 @@ export function pinnedImage(image: unknown): ArchilImage {
   return { imageId, digest };
 }
 
+/** An exec's network: its egress denied, so the container reaches nothing but the disk's own mounts. */
+export type ArchilExecNetwork = { readonly egress: { readonly default: "deny" } };
+/** The one network an exec is given: no egress. */
+export const DENY_EGRESS: ArchilExecNetwork = Object.freeze({ egress: Object.freeze({ default: "deny" as const }) });
+
 /** One exec: `command` runs with each folder of `mounts` (mount name → folder of the disk), and nothing else of the
  *  disk, at /mnt/archil/<name>, each held for the line (waiting up to queueMs for another client's hold), in `image` or
- *  Archil's default. */
+ *  Archil's default, with `network` (absent: Archil's default, egress open). */
 export type ArchilExecRequest = {
   readonly mounts: Readonly<Record<string, string>>;
   readonly queueMs: number;
   readonly command: string;
   readonly image?: ArchilImage;
+  readonly network?: ArchilExecNetwork;
 };
 export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
@@ -337,6 +343,8 @@ class SdkArchilDisk implements ArchilDisk {
     }
     const answer = await client.exec({
       ...(image === undefined ? {} : "baseImage" in image ? { baseImage: image.baseImage } : { imageId: image.imageId }),
+      // The network's one field, picked by name, as the image's are.
+      ...(request.network === undefined ? {} : { network: { egress: { default: request.network.egress.default } } }),
       command: request.command,
       disks: Object.fromEntries(Object.entries(request.mounts).map(([name, subdirectory]) => [name, { disk: this.id, subdirectory, queueMs: request.queueMs }])),
     });
