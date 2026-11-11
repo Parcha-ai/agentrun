@@ -7,7 +7,7 @@ import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/server.js";
-import { FAUX, client, follow, scratch, serve, startRun } from "./support.mjs";
+import { FAUX, client, scratch, serve } from "./support.mjs";
 
 /** The error startServe refused with, or null after closing the server it should not have started. */
 const refusal = (options) => startServe(options).then(async (server) => (await server.close(), null), (error) => error);
