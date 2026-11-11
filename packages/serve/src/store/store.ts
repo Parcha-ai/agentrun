@@ -575,6 +575,10 @@ export interface Runs {
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
   claimable(options?: { limit?: number }): Promise<string[]>;
+  /** The epoch a runner's claim holds run `runId` at now, judged by the store's own clock (the one claims are stamped
+   *  and fenced by), never a reader's; undefined when no claim holds it (none, released, or run out) or there is no
+   *  such run. */
+  heldAt(runId: string): Promise<number | undefined>;
   /** Claims up to `k` claimable runs for `runner`, oldest first, in one transaction: each at its own epoch + 1, with its
    *  `from`. A runner fills its free loops with one call. */
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
