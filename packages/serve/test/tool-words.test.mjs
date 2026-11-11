@@ -39,9 +39,11 @@ test("the browser's prompt section names the agent's saved profile, before the t
   assert.equal(lines[0], "You control one remote browser:");
   assert.equal(lines[1], SIGNED_IN_LINE, "said once, before the tools");
   assert.match(SIGNED_IN_LINE, /use the browser \(run, snapshot, browser_read\), not web_fetch: web_fetch reads every page signed out/);
-  // A profile on an agent's first run is new and holds no sign-in: the line says what a sign-in page then means, and
-  // never claims the browser "opens signed in" outright.
-  assert.match(SIGNED_IN_LINE, /If the browser shows a sign-in page, the profile holds no sign-in for that site/);
+  // A profile on an agent's first run is new and holds no sign-in, and a restore that failed starts a session signed out
+  // while the saved sign-in stays: the line says a sign-in page means this session has none, never that none is saved,
+  // and never claims the browser "opens signed in" outright.
+  assert.match(SIGNED_IN_LINE, /If the browser shows a sign-in page, this session has no sign-in for that site/);
+  assert.doesNotMatch(SIGNED_IN_LINE, /holds no sign-in|none is saved/);
   assert.doesNotMatch(SIGNED_IN_LINE, /it opens signed in\b/);
   // It names no profile id, pointer or account.
   assert.doesNotMatch(SIGNED_IN_LINE, /default|pointer|context|@/);

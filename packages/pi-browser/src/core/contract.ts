@@ -49,9 +49,10 @@ export const BROWSER_KEEPS = Object.freeze({
 /** The prompt section's line for a browser that opens with its agent's saved profile: said once, before the tools, so the
  *  model knows of it when it picks between the browser and web_fetch (a description alone was not enough). It promises no
  *  sign-in: on an agent's first run the profile is new and holds none (sign-ins-store.ts makes it), so the claim is
- *  conditional, and the steer away from web_fetch holds either way. */
+ *  conditional, and the steer away from web_fetch holds either way. A sign-in page means this session has none, never
+ *  that none is saved: a vault restore that fails starts the session signed out and leaves the saved sign-in as it was. */
 export const SIGNED_IN_LINE =
-  "This browser opens with this agent's saved browser profile, so a site the agent was signed in to there opens signed in here. For a page that needs you signed in, use the browser (run, snapshot, browser_read), not web_fetch: web_fetch reads every page signed out. If the browser shows a sign-in page, the profile holds no sign-in for that site.";
+  "This browser opens with this agent's saved browser profile, so a site the agent was signed in to there opens signed in here. For a page that needs you signed in, use the browser (run, snapshot, browser_read), not web_fetch: web_fetch reads every page signed out. If the browser shows a sign-in page, this session has no sign-in for that site.";
 
 const runDescription = (signIns: boolean): string =>
   `Browse and automate websites in the persistent browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
