@@ -112,6 +112,56 @@ describe("the editor's tool cards", () => {
   });
 });
 
+// Manuel's #20: a card's hover title repeated what the card already showed (the reason over the whole card, a short
+// description over itself). A title now says only what is cut or hidden, and an open card, which shows all of it, has none.
+describe("the tool cards' hover titles", () => {
+  const titled = (el: Element) => [el, ...el.querySelectorAll("[title]")].filter((e) => e.hasAttribute("title"));
+
+  it("the card itself has none, and a short name, a blurb and a fully shown description have none", async () => {
+    const { card } = await open();
+    for (const name of ["web_fetch", "bash", "browser", LONG_NAME, MCP_NAME]) expect(card(name).hasAttribute("title"), name).toBe(false);
+    // web_fetch: a short name, a blurb, no tag: nothing on it is cut, so nothing has a title.
+    expect(titled(card("web_fetch"))).toEqual([]);
+  });
+
+  it("a title says only what is cut or hidden: a long name, a reason a short tag stands for, a description past three lines", async () => {
+    const { card } = await open();
+    const nameOf = (n: string) => [...card(n).querySelectorAll("span")].find((s) => s.textContent === n && !s.querySelector("span"))!;
+    expect(nameOf(LONG_NAME).getAttribute("title")).toBe(LONG_NAME);
+    expect(nameOf("bash").hasAttribute("title")).toBe(false);
+    // "Sandbox-only" stands for a longer reason: that reason is its title, never the tag's own word.
+    const tag = card("bash").querySelector("[data-tag]")!;
+    expect(tag.getAttribute("title")).toMatch(/^Sandbox-only: /);
+    expect(tag.getAttribute("title")).not.toBe(tag.textContent);
+    expect(card(LONG_NAME).querySelector("[data-line]")!.getAttribute("title")).toBe(LONG_SUMMARY);
+    // No title anywhere is just the text it sits on, unless that text is long enough to be cut on its one line.
+    for (const name of ["web_fetch", "bash", "browser", LONG_NAME, MCP_NAME]) {
+      for (const el of titled(card(name))) {
+        if (el.getAttribute("title") === el.textContent) expect((el.textContent ?? "").length, `${name}: "${el.textContent}"`).toBeGreaterThan(32);
+      }
+    }
+  });
+
+  it("an open card shows everything, so it has no hover titles", async () => {
+    const { card } = await open();
+    await act(async () => { button(card("bash"), "More")!.click(); });
+    expect(titled(card("bash"))).toEqual([]);
+    await act(async () => { button(card(MCP_NAME), "More")!.click(); });
+    expect(titled(card(MCP_NAME))).toEqual([]);
+  });
+
+  it("an MCP tool's short description has no title; a long one, clamped, has the whole of it", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const LONG = "Save comment: Create or update a comment on a Linear issue, project, initiative, document or milestone. If id is provided, updates the existing comment; otherwise creates a new one.";
+    const server = { name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, tools: [{ name: "get_team", description: "Get a team by id." }, { name: "save_comment", description: LONG }] } as McpServer;
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} })));
+    const line = (tool: string) => host.querySelector(`[data-tool-card="mcp:linear/${tool}"] [data-line]`)!;
+    expect(line("get_team").hasAttribute("title")).toBe(false);
+    expect(line("save_comment").getAttribute("title")).toBe(LONG);
+  });
+});
+
 // Manuel's beta.33 report: an MCP server's tools (Linear's create_attachment, list_comments) printed their whole
 // description, some cards 60 lines tall, and only built-in tools had More. The MCP picker's cards are the same ToolCard.
 describe("an MCP server's tool cards", () => {
