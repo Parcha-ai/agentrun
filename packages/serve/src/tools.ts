@@ -6,7 +6,7 @@
 // (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
@@ -33,7 +33,7 @@ import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
-import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
+import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
 import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
@@ -443,13 +443,10 @@ const browserTool: ToolEntry = {
     const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
-    const saved = kept?.save
-      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => {
-          if (verify) await verify(row, change);
-          else if (savedOnRelease(row, change)) writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 });
-        }
+    const saved = verify
+      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => void (await verify(row, change))
       : undefined;
-    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
+    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
