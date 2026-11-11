@@ -18,7 +18,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { adapterRunSpecFromLaunch, capModelOf, oneRoutePerModel, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
+const { adapterRunSpecFromLaunch, capModelOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { providerFromRoute } = await import("../dist/runner/workflow-spec.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
@@ -208,19 +208,4 @@ test("a tier's model the gateway has no price for routes unpriced, and the cap r
   assert.equal(capModelOf(route).price, null, "the cap never takes the placeholder zeros as a price");
   const priced = await routeOf("acme/mystery-1", { ...env, AGENT_MODEL_STRONG_PRICE: "3,4" }, "strong", PI_WIRES);
   assert.ok(!priced.unpriced && capModelOf(priced).price?.output === 4, "the tier's price, once set, is the cap's");
-});
-
-test("a tier on the run's own model takes the run's route and price, so the cap and the booking read one price per model", async () => {
-  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL: "team-default", AGENT_MODEL_PRICE: "1,2", AGENT_MODEL_STRONG: "team-default", AGENT_MODEL_STRONG_PRICE: "5,10", AGENT_MODEL_FAST: "team-fast", AGENT_MODEL_FAST_PRICE: "3,4" };
-  const own = await routeOf(undefined, env, "default", PI_WIRES);
-  const strong = await routeOf(undefined, env, "strong", PI_WIRES);
-  assert.equal(strong.model, own.model);
-  assert.notEqual(capModelOf(strong).price.output, capModelOf(own).price.output, "resolved alone, the tier's price differs");
-  assert.equal(oneRoutePerModel(strong, [own]), own, "the tier takes the run's route");
-  const fast = await routeOf(undefined, env, "fast", PI_WIRES);
-  assert.equal(oneRoutePerModel(fast, [own]), fast, "a tier on a model of its own keeps its route and price");
-  assert.equal(oneRoutePerModel({ ...fast }, [own, fast]), fast, "a second tier on that model takes the first's");
-  // The same id on another provider is no route of the run's: the cap, which prices by id, could not tell them apart.
-  const elsewhere = oneRoutePerModel({ ...strong, named: `another/${strong.model}` }, [own]);
-  assert.match(elsewhere.why ?? "", /has the id of this run's .* on another provider, and the run's cap prices a request by its model's id alone/, JSON.stringify(elsewhere));
 });
