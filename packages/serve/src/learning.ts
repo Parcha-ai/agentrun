@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { type DraftDryRun, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -218,7 +218,9 @@ export const LEARNING_LABEL = "learning";
  *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
+/** A run's proposal: its notes, skill and drafts, each draft's dry run by its workflow.json's path (learn/skills.ts
+ *  draftDryRun: passed, or not run and why), and what was said in the run. */
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; asked?: string[]; triggered?: Triggered[] };
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */
 export type Triggered = { source: string; text: string };
@@ -252,27 +254,29 @@ export const LEARNED_WORKFLOWS_FILE = "learned-workflows.json";
 /** The most bytes the `learned_workflow` tool's description gives its workflows, each one's line (workflowLine)
  *  together: every harness sends the description with each request, so it never grows with what an agent learned. */
 export const LEARNED_WORKFLOWS_BUDGET = 8 * 1024;
-/** A learned workflow's line in the `learned_workflow` tool's description: its name, and what its README says it does. */
-export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string =>
-  [`- ${name}: ${description || "(no description)"}`, ...inputLine(workflow)].join("\n");
+/** A learned workflow's line in the `learned_workflow` tool's description: its name, its input's fields (inputFields;
+ *  none for a workflow whose input names no schema) and what its README says it does. One line: the tool's own line says
+ *  once that `*` marks a required field. */
+export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string => {
+  const fields = inputFields(workflow);
+  return `- ${name}${fields ? ` ${fields}` : ""}: ${description || "(no description)"}`;
+};
 
 /** The most of a field's description a workflow's input line carries. */
 const FIELD_DESCRIPTION = 60;
 
-/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (inputSchema), on
- *  a line of its own, so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
-function inputLine(workflow: string | undefined): string[] {
+/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (compactSchema),
+ *  so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
+function inputFields(workflow: string | undefined): string | undefined {
   let doc: { schemas?: Record<string, unknown>; input?: { schemaId?: unknown } } | undefined;
   try {
     doc = workflow ? JSON.parse(workflow) : undefined;
   } catch {
-    return [];
+    return undefined;
   }
   const id = doc?.input?.schemaId;
   const schema = typeof id === "string" ? doc?.schemas?.[id] : undefined;
-  if (!schema) return [];
-  const shown = compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema));
-  return [`  input: ${shown}${shown.includes("*") ? " (* required)" : ""}`];
+  return schema ? compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema)) : undefined;
 }
 
 /** A schema's own inline definitions (`definitions`, `$defs`), which its `#/definitions/` references read first. */
@@ -323,7 +327,7 @@ const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_
  *  inside the skill, read only when the skill could fit a run's budget at all. */
 export type LearnedSkill = { name: string; bytes: number; files?: Record<string, string> };
 /** The agent's learning folder: `learning/` in its folder on the disk, which only the host writes. The folder is files.ts
- *  agentFolderOf (pi-durable-agent agentDiskDir), so two ids that differ only in case never share one. */
+ *  agentFolderOf (server-fs.ts agentDiskDir), so two ids that differ only in case never share one. */
 export const learningRepo = (data: string, agentId: string): string => join(agentFolderOf(data, agentId), "learning");
 
 const queues = new Map<string, Promise<unknown>>();
