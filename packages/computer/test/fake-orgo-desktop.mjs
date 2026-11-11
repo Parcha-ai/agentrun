@@ -176,6 +176,12 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			}
 			const read = /^\$p = '([^']+)'; if \(Test-Path/.exec(command);
 			if (read) return box.files.has(read[1]) ? ran(0, box.files.get(read[1]).toString("utf8")) : ran(3);
+			// A removal of one file the provider made (a write's uploaded copy), quietly done when it is gone already.
+			const removal = /^Remove-Item -LiteralPath '((?:[^']|'')+)' -Force -ErrorAction SilentlyContinue$/.exec(command);
+			if (removal) {
+				box.files.delete(removal[1].replaceAll("''", "'"));
+				return ran(0);
+			}
 			if (command.includes("WindowsIdentity")) return ran(0, user ?? "1001:1001");
 			const lines = command.split("\n");
 			const call = lines.find((line) => line.startsWith("& "));
@@ -227,7 +233,15 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 		const norm = winPath;
 		const parent = (path) => path.slice(0, path.lastIndexOf("\\"));
 		const say = (o) => ran(0, JSON.stringify(o));
-		const no = (kind, words) => ran(2, JSON.stringify({ error: kind, message: words }));
+		// A refusal, as the script's Refuse says it: the script whose Refuse removes a write's uploaded copy removes it.
+		const no = (kind, words) => {
+			if (p.staged && /function Refuse\(\$kind, \$words\) \{ if \(\$p\.staged\) \{ Remove-Item/.test(script)) box.files.delete(p.staged);
+			return ran(2, JSON.stringify({ error: kind, message: words }));
+		};
+		// A .NET method's error, as it reaches the script's catch: wrapped in PowerShell's MethodInvocationException, whose
+		// own name says nothing of a missing file. The script that unwraps it says the error inside.
+		const unwraps = script.includes("$e.InnerException");
+		const dotnet = (kind, method, words) => (unwraps ? no(kind, words) : no("invalid", `Exception calling "${method}" with "4" argument(s): "${words}"`));
 		const statOf = (path) =>
 			box.dirs.has(path) ? { type: "dir", size: 0, mode: 493, mtimeMs: 1, uid: 0, gid: 0 } : { type: "file", size: box.files.get(path).length, mode: 420, mtimeMs: 1, uid: 0, gid: 0 };
 		const mkdirs = (path) => {
@@ -252,7 +266,8 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			case "read": {
 				const path = norm(p.path);
 				if (box.dirs.has(path)) return no("is_dir", `${path} is a folder`);
-				if (!box.files.has(path)) return no("not_found", `Could not find file '${path}'.`);
+				// [IO.File]::Open of a file that is not there: a FileNotFoundException, inside the method's wrapper.
+				if (!box.files.has(path)) return dotnet("not_found", "Open", `Could not find file '${path}'.`);
 				const bytes = box.files.get(path);
 				return say({ data: bytes.subarray(p.offset, p.offset + p.length).toString("base64"), size: bytes.length });
 			}

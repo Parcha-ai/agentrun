@@ -387,7 +387,15 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.deepEqual((await call("files.write", { path: `${dir}\\big.bin`, data: big.toString("base64") })).value, { size: big.length });
 	assert.ok(fake.api.requests.some(({ path, form }) => path === "/files/upload" && form?.get("destPath") === "C:\\ProgramData\\agentrun\\staging"), "a large write goes through the upload");
 	assert.deepEqual(fake.boxOf(ref.id).files.get(`${dir}\\big.bin`), big);
-	assert.ok(![...fake.boxOf(ref.id).files.keys()].some((path) => path.startsWith("C:\\ProgramData\\agentrun\\staging\\")), "the staged copy is gone");
+	const staged = () => [...fake.boxOf(ref.id).files.keys()].filter((path) => path.startsWith("C:\\ProgramData\\agentrun\\staging\\"));
+	assert.deepEqual(staged(), [], "the staged copy is gone");
+	// A large write that fails leaves no uploaded copy: one the script refuses (onto a folder, under a missing folder), and
+	// one whose script call never answers (Orgo's 503), which the provider removes itself.
+	assert.equal((await call("files.write", { path: dir, data: big.toString("base64") })).error.code, "is_dir");
+	assert.equal((await call("files.write", { path: `${dir}\\none\\big.bin`, data: big.toString("base64") })).error.code, "not_found");
+	fake.boxOf(ref.id).notReady = 1;
+	assert.equal((await call("files.write", { path: `${dir}\\lost.bin`, data: big.toString("base64") })).ok, false);
+	assert.deepEqual(staged(), [], "no failed write leaves its uploaded copy");
 	assert.equal((await call("files.stat", { path: `${dir}\\a.txt` })).value.type, "file");
 	assert.equal((await call("files.stat", { path: dir })).value.type, "dir");
 	assert.equal((await call("files.stat", { path: `${dir}\\none` })).error.code, "not_found");

@@ -274,7 +274,8 @@ const FILES_SCRIPT = [
 	"$ErrorActionPreference = 'Stop'",
 	"$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('@@REQUEST@@')) | ConvertFrom-Json",
 	"function Say($o) { [Console]::Out.Write(($o | ConvertTo-Json -Compress -Depth 6)) }",
-	"function Refuse($kind, $words) { Say @{ error = $kind; message = $words }; exit 2 }",
+	"# A refusal leaves nothing of the request behind: a write's uploaded copy goes with it.",
+	"function Refuse($kind, $words) { if ($p.staged) { Remove-Item -LiteralPath $p.staged -Force -ErrorAction SilentlyContinue }; Say @{ error = $kind; message = $words }; exit 2 }",
 	"function IsLink($i) { $i.LinkType -eq 'SymbolicLink' -or $i.LinkType -eq 'Junction' }",
 	"function StatOf($i) {",
 	"  $t = if (IsLink $i) { 'symlink' } elseif ($i.PSIsContainer) { 'dir' } else { 'file' }",
@@ -403,6 +404,9 @@ const FILES_SCRIPT = [
 	"  }",
 	"} catch {",
 	"  $e = $_.Exception",
+	"  # A .NET method's error (a file Open, WriteAllBytes) reaches here wrapped in PowerShell's MethodInvocationException:",
+	"  # its code is the error inside.",
+	"  while ($e.InnerException -and $e.GetType().Name -match 'MethodInvocation|TargetInvocation') { $e = $e.InnerException }",
 	"  $kind = switch -regex ($e.GetType().Name) { 'NotFound' { 'not_found' } 'UnauthorizedAccess|Security' { 'denied' } 'PathTooLong' { 'limit' } default { 'invalid' } }",
 	"  Refuse $kind $e.Message",
 	"}",
@@ -1533,7 +1537,12 @@ export class OrgoDesktopClient implements ComputerClient {
 		}
 		const script = FILES_SCRIPT.replace("@@REQUEST@@", Buffer.from(JSON.stringify(request), "utf8").toString("base64"));
 		const ran = await bashCall(this.rest, this.computer, script, 120_000, signal);
-		if (!ran.ok) return signal.aborted ? refuse("aborted", `files.${op} was aborted`) : ran;
+		if (!ran.ok) {
+			// The script that removes an uploaded copy did not run (or was cut off): it is removed here, once, unbounded by the
+			// call's own signal, which may be the abort itself.
+			if (typeof request.staged === "string") await bashCall(this.rest, this.computer, `Remove-Item -LiteralPath ${psQuote(request.staged)} -Force -ErrorAction SilentlyContinue`, 30_000).catch(() => undefined);
+			return signal.aborted ? refuse("aborted", `files.${op} was aborted`) : ran;
+		}
 		let answer: Record<string, unknown>;
 		try {
 			answer = JSON.parse(ran.value.stdout.trim() || "null") as Record<string, unknown>;
