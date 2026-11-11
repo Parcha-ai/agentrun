@@ -7,10 +7,17 @@ npm install @parcha/agentrun-computer@latest
 ```
 
 ```ts
-import { DockerProvider, providerModule } from "@parcha/agentrun-computer";
+import { providerFor, providerModule } from "@parcha/agentrun-computer";
+// One provider's class, from its own subpath: the package root loads no provider.
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 // The mount rule alone: loads no provider, no vendor SDK and no conformance code.
 import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agentrun-computer/mount";
 ```
+
+The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
+id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`). A provider's
+option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
 vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
@@ -427,7 +434,7 @@ in the kernel's tool registry, keyed by these groups.
   | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
-  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
@@ -653,7 +660,7 @@ fixtures of every evasion it catches.
 ## Docker
 
 ```ts
-import { DockerProvider } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
@@ -840,7 +847,8 @@ computer has the folder at one path, `/workspace` (`WORKSPACE`). `HOME` stays wh
 Docker): `/workspace` is only the mount.
 
 ```ts
-import { DockerProvider, WORKSPACE } from "@parcha/agentrun-computer";
+import { WORKSPACE } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
@@ -951,7 +959,7 @@ The provider owns the image its computers start from and makes it ready in its o
 no other process to wait on: Docker's own tag is the shared state.
 
 ```ts
-import { DockerProvider } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
@@ -1096,7 +1104,8 @@ in a long-lived service), with Docker's CLI on its PATH. A computer stops at its
 its stopped container may stay up to one interval longer.
 
 ```ts
-import { DockerProvider, sweep } from "@parcha/agentrun-computer";
+import { sweep } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }));
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
@@ -1130,7 +1139,8 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
   the computer through the provider's own exec, and a deleted computer holds no mount.
 
 ```ts
-import { DockerProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
@@ -1155,7 +1165,7 @@ sandbox, and the Daytona sweep wait through it too.
 
 ```ts
 import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
-import { ModalProvider } from "@parcha/agentrun-computer";
+import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
 	sdk: new ModalClient(),
@@ -1446,7 +1456,7 @@ named by any call.
 ## Daytona
 
 ```ts
-import { DaytonaProvider } from "@parcha/agentrun-computer";
+import { DaytonaProvider } from "@parcha/agentrun-computer/daytona";
 
 const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
 const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" });
@@ -2020,6 +2030,57 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Orgo: Windows and macOS desktops (parked)
+
+Orgo offers its Linux desktop alone, which runs computerd (`src/orgo.ts`). Its Windows and macOS desktops are parked:
+the descriptor lists them in `parked` (`ORGO_PARKED`), so `PROVIDERS` offers no configuration of either, Settings →
+Computers lists no Windows or macOS image, and an agent whose computer names `windows` or `macos` is refused at its
+run's start in words naming the image Orgo offers, `linux`. They do not run computerd either: computerd for Windows and
+macOS is CP-8, deferred. `create({ os: "windows" | "macos", apiKey, workspaceId })` still builds an
+`OrgoDesktopProvider` (`src/orgo-desktop.ts`) with daemon `none`, for the conformance suite and the tests. It answers
+the protocol's methods in process over Orgo's REST API, as the phone harness and Browserbase do. Its spec's image is
+`"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
+built for.
+
+- **What each offers.** The protocol groups, by Orgo's calls:
+  - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
+    polls it about once a second, scaled by Orgo past `maxWidth`.
+  - `input.pointer` and `input.keys`: Orgo's click, mouse-move, drag, scroll, type and key calls.
+  - `exec`: Orgo's bash call. On Windows that is PowerShell: argv becomes a call operator over single-quoted words,
+    and the exit code is `$LASTEXITCODE`. On macOS it is the shell, every word quoted. argv is never a shell string.
+  - `files`, Windows only: one PowerShell script whose request is base64 JSON. A write over 96 KiB is uploaded first
+    (Orgo's `/files/upload` with `destPath`).
+  - No `processes`: Orgo runs a command and waits for it. No `tar`, and no mount.
+  - Network `open`, never read back from inside: Orgo has no egress control, and no daemon runs in the computer to
+    hold its programs to loopback, so the provider cannot prove `none`.
+- **What Orgo's API cannot do is refused in words, and a refused batch runs nothing:**
+  - on Windows, a triple click, keys held during a click, a drag of more than two points, a sideways or pixel
+    scroll, and `hold`;
+  - on macOS, a right-button double click or drag;
+  - `+` as a key, since it joins Orgo's combinations.
+- **down and up.** Orgo has no separate press and release. A `down` is held in the client, across batches as the
+  protocol says. Its `up` becomes one click (the pointer did not move) or one drag (from where it went down). A batch
+  that fails releases a press it holds.
+- **The cursor.** The live view's frames carry the place the client last moved the pointer to (`cursor`), and a move is
+  a new frame even when Orgo's screenshot leaves the cursor out.
+- **Lifetime.** The name carries the run, the epoch and the deadline, as the Linux desktop's does (`src/orgo-names.ts`),
+  and the janitor ends a computer by it. On Windows, Orgo's `ends_in_hours` is the backstop. A Mac has no Orgo end.
+  The other labels are a file the provider writes in the computer (`C:\ProgramData\agentrun\labels.json`,
+  `/Users/Shared/agentrun/labels.json`). A program in the computer can change that file, so list, the janitor and
+  the takeover trust the name, which only the key can change.
+- **attach** reports who the programs run as. On Windows that is `0:0` for a member of the Administrators group,
+  since it can do what a root can, and is said as it is.
+- **Idle suspension.** Nothing runs in a computer Orgo does not read `running`: any action wakes a suspended one.
+  `list` reads the labels file of a running computer alone, and attach, connect and extend refuse the others in words.
+- **Release** deletes. A Mac Orgo manages answers 409 to a delete. That is refused in Orgo's words, and the Mac is
+  left.
+- **Conformance.** `COMPUTER_ORGO_OS=windows` (or `macos`) with `--kind desktop` runs the desktop's cases:
+  - The Windows fixture is a PowerShell script this package carries (`src/conformance/windows-fixture.ts`): the same
+    window as `computerd-fixture`, started with `Start-Process` through exec and files.
+  - The cases written for Linux (exec's and files' POSIX programs and paths) are skipped in words (`caseOs`).
+  - The live run needs Orgo's Scale plan or a Windows computer bought on the plan; the macOS run needs Orgo's Mac
+    access.
+
 ## Browsers: Browserbase and Kernel
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
@@ -2077,11 +2138,11 @@ AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
 
 ## A local browser: this machine's Chrome, no keys
 
-The `local` provider (`local.ts`) is a computer of kind `browser` that is the Chrome or Chromium on the machine
-AgentRun runs on. No vendor, no key, nothing billed.
+The `local-chrome` provider (Local Chrome, `local-chrome.ts`) is a computer of kind `browser` that is the Chrome or Chromium
+on the machine AgentRun runs on. No vendor, no key, nothing billed.
 
 ```ts
-import { LocalBrowserProvider } from "@parcha/agentrun-computer";
+import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 
 const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
 const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });
@@ -2147,8 +2208,8 @@ process (a cross-origin iframe). The snapshot names each frame it left out, so a
 The conformance module starts a real Chrome, so it waits for its switch:
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_LOCAL=1 [COMPUTER_LOCAL_CHROME=/usr/bin/chromium] \
-  npm run conformance -w @parcha/agentrun-computer -- --provider local --kind browser
+AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1 [COMPUTER_LOCAL_CHROME_PATH=/usr/bin/chromium] \
+  npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome --kind browser
 ```
 
 ## Phone harness (the phone kind)
@@ -2323,6 +2384,10 @@ capabilities), no case of the run failed (a declared optional group that fails w
 every required group has at least one passing case and no Core case skipped but for an optional group the computer does
 not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
 words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip.
+A case is written for the systems its `os` names (`caseOs`). Without one, a case that needs exec or processes runs
+POSIX programs (`sh`, `id`, `/proc`) and is Linux's alone, and one that needs files names POSIX paths and is no Windows
+computer's. A computer of another os skips it in words ("the case is written for linux, and this computer runs
+windows"), after the check of what it declares.
 `none` is no computer, and `--kind` refuses it in words. Given no cases, a run takes `casesFor(machineKind)`: a
 browser's own cases (`browserCases`), every other kind the suite's (`conformanceCases`), in the library as in the CLI;
 `kindCases` draws from the same by kind. `kindCases`, `kindVerdict` and `casesFor` are exported, so the serve side reads
@@ -2450,24 +2515,77 @@ computer's `HOME`, which the provider sets, is a directory its user can write, a
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
 
+## Persistent computers: an agent's own
+
+A run's computer belongs to its run: it has a deadline (`lifetimeMs`, required), and the janitor or the vendor ends it
+once the deadline passes. A persistent computer belongs to an agent instead. It outlives the agent's runs, which take
+it one at a time, and it keeps its files between them. The contract, in `src/provider.ts` and `src/labels.ts`:
+
+- **Declared.** A provider that keeps computers for agents declares `capabilities().persistence`:
+  `{ keepsState: true, resume }`. `keepsState`: a detached computer keeps its files. `resume`: `true` when it comes back
+  as it was, its processes still running; `false` when it boots again from its kept disk. A provider that declares none
+  refuses `spec.owner` in `check()`, in words, before any vendor call, and refuses `release(ref, "detach")`, the
+  computer left as it was.
+- **Owned.** `spec.owner: { agent, idleTtlMs? }` makes the computer the agent's. It has no run deadline: the rule that
+  refuses a computer with no deadline is a run's computers' alone, and an owned spec that names `lifetimeMs` is refused
+  (`checkTenure(spec, capabilities)` holds both rules, for every provider's `check()`). The computer carries the owner
+  label, `agentrun.owner=agent:<id>` (`OWNER_LABEL`), and `agentrun.idle-ttl-ms` (`IDLE_TTL_LABEL`) when the owner set
+  an idle TTL; `ownerLabels(owner)` gives both and `ownerOf(labels)` reads them back.
+- **Detach.** `release(ref, "detach")` stops the computer with its state kept. It stays the agent's, listed `stopped`,
+  with `detachedAt`, when it was detached. Only an owned computer detaches: a run's computer refuses it in words and
+  runs on. `"delete"` deletes an owned computer, and only the agent or its owner asks for that: the caller's rule, not
+  the provider's.
+- **Attached under a new claim.** A run takes the computer with `attach({ id }, { claim: { run, epoch } })`. The
+  provider brings it back (starts it, when detached) and records the claim, so the computer carries the run's
+  `agentrun.run` and `agentrun.epoch` and `releaseOlder` of that run finds it. A claim of the same run below the epoch
+  the computer carries is refused as fenced, with nothing changed. A claim on a computer with no owner is refused: a
+  run's computer belongs to its run.
+- **The janitor.** A computer is owned when it carries the owner label or its provider's `list()` marks it `owned: true`
+  (with `owner` when the listing knows it: a vendor whose stopped computer shows no labels). `sweep` never deletes an
+  owned computer by a deadline. It deletes one only when its owner agent is
+  gone (`ownerGone(agent)`, the caller's answer, in `SweepOptions`), or when it has been detached for longer than its
+  owner's idle TTL. An owner label it cannot read keeps the computer: the janitor never deletes an agent's state on a
+  rule it cannot read. On a provider that declares persistence it sweeps owned computers under lifetime `"vendor"`
+  too, since no vendor ends them. `releaseOlder` detaches an owned computer of a lower epoch and never deletes it: the
+  new claim attaches it.
+- **Conformance.** `provider.owner` and `provider.detach` are Core for every provider: `check()` refuses an owner
+  without persistence, and a lifetime with one; a run's computer refuses detach and runs on. `provider.persistence` is
+  Full, run where persistence is declared: create with an owner, write a file, detach, attach by id under a new claim,
+  read the file back (with `resume`, find the process still running), refuse a fenced claim, then delete.
+
+`test/fake-computer.mjs`'s `persistence` option is a provider that declares it and passes the cases. Orgo's provider
+is the first vendor to wire it.
+
 ## Adding a computer
 
-A new computer is one provider file and one registry line. The conformance CLI (and serve, once wired) resolves
-providers through the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
+A new computer is one provider file and one descriptor, `src/descriptors/<id>.ts`, declared once and listed in
+`DESCRIPTORS` (`src/descriptors/index.ts`). Everything else is derived from the descriptors: the registry
+(`src/providers.ts`, id to `load()`), the kind registry's `PROVIDERS` (Settings' rows), and the ids. The conformance
+CLI (and serve) resolve providers through them, so neither needs an edit:
 
 ```ts
-export const providers = {
-	docker: () => import("./docker.js"),
-	modal: () => import("./modal.js"),
-	daytona: () => import("./daytona.js"),
-	e2b: () => import("./e2b.js"),
-	fly: () => import("./fly.js"), // a new computer's line
-} satisfies Record<string, () => Promise<ProviderModule>>;
+export const FLY = defineProvider({
+	id: "fly",
+	label: "Fly",
+	keys: [{ name: "FLY_API_TOKEN", option: "apiToken", required: true }], // each key and the create() option it fills
+	metered: true,
+	mounts: [],
+	network: ["none", "open"], // the network forms its computers make: none, open, allow
+	capabilities: [{ kind: "linux", groups: ["exec", "files", "processes"] }], // one per configuration
+	load: () => import("../fly.js"),
+});
 ```
 
-Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFor(id, options)` builds a
-provider by id from its options and refuses an id it does not hold, naming the ones it does. The provider file,
-`src/<vendor>.ts`, exports what a `ProviderModule` is:
+A descriptor is data and a lazy `load()`: it imports `../descriptor.js` and other descriptors alone, so loading the
+registry, the kind registry or the package root loads no provider and no vendor SDK. `defineProvider` checks it when
+it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `keys` (each key's name, the option it
+fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
+`metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
+`capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
+`prepareImage` (a provider that builds or pulls its image before a run), `local` (a computer on this host), and
+`ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
+refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
+`ProviderModule` is:
 
 - the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
 - `MOUNT`, the mount kinds its computers take;

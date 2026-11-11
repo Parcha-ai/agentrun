@@ -1,17 +1,17 @@
-// The local browser for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider local`. It
-// starts a real Chrome on this machine (nothing billed, no key), so it runs only with AGENTRUN_COMPUTER_LIVE_LOCAL=1. The
-// provider reads no environment: this module reads its own COMPUTER_LOCAL_* names, and PATH to find a Chrome, and passes
-// each to create() as its option.
-import { BROWSER_IMAGE } from "../browser.js";
-import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local.js";
+// Local Chrome for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome`.
+// It starts a real Chrome on this machine (nothing billed, no key), so it runs only with
+// AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1. The provider reads no environment: this module reads its own
+// COMPUTER_LOCAL_CHROME_* names, and PATH to find a Chrome, and passes each to create() as its option.
+import { BROWSER_IMAGE } from "../descriptors/shared.js";
+import { create, type LocalBrowserOptions, type LocalBrowserProvider } from "../local-chrome.js";
 
 /** The environment this module reads, by name, each for the option its comment names, and the live switch. */
 export const LOCAL_ENV = {
-	live: "AGENTRUN_COMPUTER_LIVE_LOCAL",
+	live: "AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME",
 	/** executablePath: the Chrome or Chromium to run; default the first on PATH, then the usual install places. */
-	chrome: "COMPUTER_LOCAL_CHROME",
+	chrome: "COMPUTER_LOCAL_CHROME_PATH",
 	/** headed: "1" shows the window. */
-	headed: "COMPUTER_LOCAL_HEADED",
+	headed: "COMPUTER_LOCAL_CHROME_HEADED",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -28,7 +28,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"local: this machine's Chrome, one browser for the whole run, deleted by its last case and again at the run's end. Its supervisor ends it at its deadline, which list reads.",
+	"local-chrome: this machine's Chrome, one browser for the whole run, deleted by its last case and again at the run's end. Its supervisor ends it at its deadline, which list reads.",
 ];
 
 export interface LocalModuleOptions {
@@ -43,6 +43,6 @@ export function conformanceImage(): string {
 
 /** The provider the CLI runs; throws in words without the live switch. */
 export async function createProvider({ env = process.env }: LocalModuleOptions = {}): Promise<LocalBrowserProvider> {
-	if (env[LOCAL_ENV.live] !== "1") throw new Error(`the local conformance module starts a real Chrome on this machine: set ${LOCAL_ENV.live}=1 to run it`);
+	if (env[LOCAL_ENV.live] !== "1") throw new Error(`the Local Chrome conformance module starts a real Chrome on this machine: set ${LOCAL_ENV.live}=1 to run it`);
 	return create(settingsFromEnv(env));
 }

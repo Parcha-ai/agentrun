@@ -17,7 +17,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
-import { DEADLINE_LABEL, type DockerInspect } from "../drift.js";
+import { DEADLINE_LABEL } from "../drift.js";
+import type { DockerInspect } from "./inspect.js";
 import type { NetworkPolicy } from "../provider.js";
 import { LISTED_PORTS, parseAllow } from "./egress-proxy.js";
 import { checkAddress } from "./egress-table.js";
