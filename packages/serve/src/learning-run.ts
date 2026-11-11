@@ -76,8 +76,7 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
 export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 /** Each note's count of runs that were given it and that read it, by its file, over runs' note files (usage.ts
- *  notesOf, lineNotesOf): a held run's from its learning, an ended one's from its ledger line. A run counts a note
- *  once each way. */
+ *  notesOf). A run counts a note once each way. */
 export function noteRuns(runs: readonly (NoteFiles | null | undefined)[]): NoteRuns {
   const out: NoteRuns = new Map();
   for (const files of runs) {

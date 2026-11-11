@@ -12,8 +12,8 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
-import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import type { HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
 import type { installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";

@@ -105,10 +105,6 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined, boun
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
-/** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
- *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
-export const BUDGET_WAITING = "Waiting for you to raise the cap";
-
 /** A text clipped to `max` characters, with an ellipsis where it is cut (runs.ts' clip). */
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const ASKED = "Asked you: ";
@@ -252,11 +248,6 @@ function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined
   return mark;
 }
 
-/** Whether the run stands parked at its cap now (an active agentrun.budget park, no raise since): the store-backed fact the
- *  status table reads (RunFacts.budgetWaiting), as the file-backed view read a workflow's pause file and an agentic run's
- *  turn refusal. */
-export const budgetWaitingOf = (entries: readonly JournalEntry[]): boolean => activeBudget(entries) !== undefined;
-
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
  *  the park's), what the cap counted as taken and the least the refused step needs, the raise offered (recomputed from
@@ -321,7 +312,7 @@ export interface RunView {
 export interface RunFacts {
   /** A workflow run paused at its cap, as its process wrote it (budgetWaiting). */
   budgetWaiting(): boolean;
-  /** A workflow run paused in its process (pausedIn(run.dir)). */
+  /** A workflow run paused (the store-backed view reads it from the run's journal). */
   paused(): boolean;
   /** The ask its agent made for the person in its browser the run waits on (browser-commands.ts browserAsk, over its journal). */
   browserAsk(): PendingAsk | undefined;
@@ -425,24 +416,6 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
   return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
-};
-/** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
- *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
- *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded.
- *  What was taken is the store's spend once its process is gone (`spentNow`), when that is lower: the refusal counted
- *  requests still answering at what it held for them, and they have settled. */
-export const budgetPending = (run: RunView, spentNow?: number): Pending | undefined => {
-  const said = pausedAt(run);
-  const cap = run.meta.max_cost_usd;
-  if (said === undefined || cap === undefined) return undefined;
-  const r = run.capRefusal;
-  const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
-  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them. The least cap
-  // that sends the refused request is the one its words name (`said`), carried from the refusal that wrote them, never
-  // worked out again here from figures that may have moved since. With them, the most a cache miss could make the refused
-  // request cost beyond what it needs (cap.ts), 0 for none.
-  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), least_cap_usd: r.leastCapUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd), overshoot_bound_usd: microUp(r.boundUsd ?? 0) } : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
