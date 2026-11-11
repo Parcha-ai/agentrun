@@ -29,7 +29,8 @@ export const BASELINE = {
 	// S6, CP-4: the browser tool and sign-in profiles on pi-browser, beside the computer package's browser kind.
 	"tool-plane.ts": { ids: { browserbase: 11, kernel: 14 }, why: "CP-4 (S6): the browser tool's providers on pi-browser" },
 	"tools.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool on pi-browser" },
-	"sign-ins.ts": { ids: { browserbase: 4, kernel: 5 }, why: "CP-4 (S6): sign-in profiles over the browser vendors' REST" },
+	"sign-ins.ts": { ids: { kernel: 3 }, why: "CP-4 (S6): sign-in profiles over the browser vendors' REST" },
+	"handed-values.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser vendors that keep a sign-in, for a learning read's cut" },
 	"sign-ins-store.ts": { ids: { browserbase: 4, kernel: 3 }, why: "CP-4 (S6): sign-in profiles over the browser vendors' REST" },
 	"key-words.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool's keys on pi-browser" },
 	"key-check.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool's key checks on pi-browser" },
