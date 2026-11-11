@@ -228,6 +228,16 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
       events.push({ type: "message_start", message, ...tag(entry) }, { type: "message_end", entry: synthetic, ...tag(entry) });
       continue;
     }
+    if (entry.kind === KINDS.endOfRunTurn && dataOf<{ role?: unknown }>(entry).role === "person") {
+      // A CLI run's end-of-run turn asked (adapter-loop.ts answering): its prompt, in a commit of its own, is the turn's
+      // message, as a pi run's placed input is, so a stream already open shows the turn at once.
+      const text = dataOf<{ text?: unknown }>(entry).text;
+      const message = { role: "user", content: typeof text === "string" ? text : "" };
+      const synthetic = { ...entry, model: [message] } as unknown as EntryRecord;
+      state.entries.push(synthetic);
+      events.push({ type: "message_start", message, ...tag(entry) }, { type: "message_end", entry: synthetic, ...tag(entry) });
+      continue;
+    }
     if (entry.kind === KINDS.end) {
       // A person's stop (the only stop a loop ends a run on: a lost claim or a shutdown writes no end): one phase row,
       // worded the same on every harness, from the loop's own end entry.
