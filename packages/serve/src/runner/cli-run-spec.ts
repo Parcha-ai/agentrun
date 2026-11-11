@@ -25,6 +25,7 @@ import { installDirOf, installForClaim, installingWords, installSettled } from "
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
+import { wireName } from "../catalog.js";
 import { environmentLine } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
@@ -126,6 +127,21 @@ function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: No
   return out;
 }
 
+/** `tools` in the order the agent grants them (`granted`, catalog names; a tool is listed by its catalog name's wire
+ *  name), as main listed a CLI run's tools to its harness: each granted tool where its grant is, and a tool the grant
+ *  does not name (one a granted tool or the run's computer brings beside it) right after the tool listed before it. Ties
+ *  keep the order given. */
+export function inGrantOrder<T extends { readonly name: string }>(tools: readonly T[], granted: readonly string[]): T[] {
+  const at = new Map(granted.map((name, index) => [wireName(name), index]));
+  let last = -1;
+  const keyed = tools.map((tool, given) => {
+    const index = at.get(tool.name);
+    if (index !== undefined) last = index;
+    return { tool, key: index ?? last + 0.5, given };
+  });
+  return keyed.sort((a, b) => a.key - b.key || a.given - b.given).map(({ tool }) => tool);
+}
+
 /**
  * One claimed CLI run's AdapterRunSpec, built from its launch record and its revision.
  *
@@ -191,7 +207,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (settled !== "installed") {
       await say();
       const lock = deps.harnessLocks?.[name];
-      await installForClaim(installs, dir, pins, { ...(lock ? { lock } : {}), ...(waitOn ? { signal: waitOn } : {}) }).catch((error: unknown) => {
+      await (deps.installForClaim ?? installForClaim)(installs, dir, pins, { ...(lock ? { lock } : {}), ...(waitOn ? { signal: waitOn } : {}) }).catch((error: unknown) => {
         if (waitOn?.aborted) throw error;
         throw new HarnessUnavailable((error as Error).message, "install");
       });
@@ -381,8 +397,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     label: runRow.agentId,
     system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
-    // redactor, as pi's do.
-    tools: [...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
+    // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
   };

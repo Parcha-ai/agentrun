@@ -15,7 +15,7 @@ import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecuti
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
-import type { installSettled } from "../harness-install.js";
+import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import type { PinnedModel, Tier } from "../model.js";
@@ -141,6 +141,9 @@ export interface AdapterSpecDeps {
   /** How a CLI run's claim waits for its harness's first-use install (harness-install.ts installSettled); a test wraps it
    *  to see the claim reach the wait. Absent, installSettled itself. */
   readonly installSettled?: typeof installSettled;
+  /** How a CLI run's claim installs its harness when nothing installs it (harness-install.ts installForClaim); a test gives
+   *  its own, so none reaches npm. Absent, installForClaim itself. */
+  readonly installForClaim?: typeof installForClaim;
   /** For tests only: the lock a claim's first-use install of each harness installs by (harness-install.ts installForClaim),
    *  by harness, as the server's own option of that name gives its installs. The CLI's runner never sets it, and no
    *  environment variable, flag or setting maps onto it; absent, the lock AgentRun ships. */
