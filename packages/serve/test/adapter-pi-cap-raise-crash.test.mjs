@@ -190,8 +190,14 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   await out;
   runners[0].kill();
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
-  const row = await settled("ended");
+  // The first runner is gone but alive in-process (kill stops nothing): its request answers only once the second runner
+  // holds the run, so whatever it books then is a stale claim's, which the store's fence refuses (the claim's epoch, in the
+  // booking's own transaction). The lost request is booked once, by the claim that holds the run.
+  for (const from = Date.now(); (await server.runs.get("run-1")).runner !== "runner-b"; await sleep(20)) {
+    if (Date.now() - from > 20_000) throw new Error("the second runner did not take the run within 20 s");
+  }
   release();
+  const row = await settled("ended");
   assert.equal(row.summary, null, `ended with no words: ${JSON.stringify(row)}`);
   const followUps = sent.filter((body) => followUpsIn(body) > 0);
   assert.equal(followUps.length, 2, `the lost request and the next claim's, no more: ${JSON.stringify(sent.map((body) => body.messages))}`);
