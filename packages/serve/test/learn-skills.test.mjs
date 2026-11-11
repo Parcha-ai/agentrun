@@ -77,6 +77,29 @@ test("an MCP tool is on a draft's list when the agent's revision grants it, by i
   assert.deepEqual([table.tools, table.gated], [[], { web_fetch: "ask" }]);
 });
 
+// Who can answer an ask is server-wide (server-approvers.ts, the store's approvers row: accounts on); an agent whose
+// approvals are "never" turns an ask into an allow, a deny behind it still standing. The learn-time offer follows both.
+test("accounts off, an ask-set MCP tool is not offered and a draft using it is refused in the gate's words; accounts on, it is offered; approvals never, it is offered as allow", async () => {
+  const { permissionOf } = await import("../dist/tool-gate.js");
+  const granted = ["mcp:linear/create_issue"];
+  const ask = (approvals) => (name) => permissionOf(name, {}, {}, approvals);
+  const off = tools.learnedDraftTools(granted, ask("ask"), undefined, undefined, { mcp: true, approvers: false });
+  assert.deepEqual([off.tools, off.gated], [[], { "mcp:linear/create_issue": "ask" }]);
+  const refused = check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: off.tools, gated: off.gated });
+  assert.match(refused.problems.map((p) => p.detail).join(" | "), /calls mcp:linear\/create_issue, which is set to ask/);
+  const on = tools.learnedDraftTools(granted, ask("ask"), undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual([on.tools, on.gated], [["mcp:linear/create_issue"], {}]);
+  assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: on.tools, gated: on.gated }).ok, true);
+  // Approvals never: the ask reads allow, with no one to answer or with someone.
+  for (const approvers of [false, true]) {
+    const never = tools.learnedDraftTools(granted, ask("never"), undefined, undefined, { mcp: true, approvers });
+    assert.deepEqual([never.tools, never.gated], [["mcp:linear/create_issue"], {}], `approvers ${approvers}`);
+  }
+  // A deny behind it stands, approvals never or not.
+  const denied = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, { "mcp:linear/create_issue": { permission: "deny" } }, "never"), undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual([denied.tools, denied.gated], [[], { "mcp:linear/create_issue": "deny" }]);
+});
+
 test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate denies is refused in the gate's words", () => {
   const offered = ["web_fetch", "mcp:linear/create_issue"];
   assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: offered }), { ok: true, problems: [], notes: [] });
