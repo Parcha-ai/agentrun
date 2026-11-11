@@ -4,7 +4,7 @@
 // it with any of that spec's libraries: `webhook-id` (the same on every try: the receiver's idempotency key),
 // `webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">`
 // under the secret `whsec_<base64 of 32 bytes>`, which this server makes at the first PUT, shows once, and keeps in
-// DIR/webhook.json only sealed under the tool keys' seal key (tool-keys.ts). A message not answered 2xx is tried again
+// DIR/webhook.json only sealed under the server's seal key (seal-key.ts). A message not answered 2xx is tried again
 // on the spec's schedule, cut at about a day; a 410 turns the webhook off. Messages and the last attempts live in
 // DIR/webhook-outbox.json, so a restart goes on with those pending. Never in store.sqlite, which runs open.
 // With them, in the same write, the ledger: the end and the wait each run's notices were queued for. A run's moment is
@@ -59,8 +59,8 @@ type Message = { id: string; type: MessageType; body: string; created_at: string
  *  past it: a new wait replaces it, and it goes with the end that came after it, once that end is no longer due. */
 type Noticed = { ended?: string; wait?: string };
 export type Attempt = { webhook_id: string; type: MessageType; at: string; status_code: number | null; latency_ms: number; error: string | null; retry_at: string | null; redelivery: boolean };
-/** Whether the secret signs here: sealed, or not, for no seal key now or one it does not open under. */
-type Signing = "sealed" | "seal_key_missing" | "unreadable";
+/** Whether the secret signs here: sealed, or not, for a seal key it does not open under (or damaged). */
+type Signing = "sealed" | "unreadable";
 
 const aad = `${FORMAT}|secret`;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -77,8 +77,7 @@ function configIn(file: string): Config | undefined {
 }
 
 /** Its secret, opened under `key`, or why it is not. */
-function opened(key: Buffer | undefined, config: Config): { secret: string } | { signing: Exclude<Signing, "sealed"> } {
-  if (!key) return { signing: "seal_key_missing" };
+function opened(key: Buffer, config: Config): { secret: string } | { signing: Exclude<Signing, "sealed"> } {
   try {
     return { secret: unseal(key, Buffer.from(config.secret, "base64"), aad).toString("utf8") };
   } catch {
@@ -86,18 +85,21 @@ function opened(key: Buffer | undefined, config: Config): { secret: string } | {
   }
 }
 
-/** The signing secret of the webhook data directory `data` keeps, opened with the seal key of `env`, or why it does not
- *  open (no seal key, or one it was not sealed under); undefined when it keeps none. Read for an import, which cuts it
- *  out of what it keeps. */
-export function webhookSecretIn(data: string, env: NodeJS.ProcessEnv): ReturnType<typeof opened> | undefined {
+/** Whether data directory `data` keeps a webhook (and so its sealed signing secret). */
+export const webhookKeptIn = (data: string): boolean => configIn(join(data, WEBHOOK_FILE)) !== undefined;
+
+/** The signing secret of the webhook data directory `data` keeps, opened with the seal key `key`, or why it does not open
+ *  (sealed under another key, or damaged); undefined when it keeps none. Read for the list of the server's own secrets
+ *  (server-secrets.ts besideTheStore), which a run's text and an import are cut of. */
+export function webhookSecretIn(data: string, key: Buffer): ReturnType<typeof opened> | undefined {
   const config = configIn(join(data, WEBHOOK_FILE));
-  return config && opened(sealKeyOf(env[SEAL_KEY_ENV]), config);
+  return config && opened(key, config);
 }
 
 export class Webhooks {
   private readonly file: string;
   private readonly outbox: string;
-  private readonly key: Buffer | undefined;
+  private readonly key: Buffer;
   private messages: Message[];
   private attempts: Attempt[];
   /** The ledger, by run: written with the messages, in the same write. */
@@ -125,7 +127,10 @@ export class Webhooks {
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string | number>) => void, private readonly retryMs: readonly number[] = RETRY_MS) {
     this.file = join(data, WEBHOOK_FILE);
     this.outbox = join(data, OUTBOX_FILE);
-    this.key = sealKeyOf(env[SEAL_KEY_ENV]);
+    // There is always a seal key (seal-key.ts bootSealKey): the secret is never kept in the clear.
+    const key = sealKeyOf(env[SEAL_KEY_ENV]);
+    if (!key) throw new Error(`the webhook's secret is kept under the server's seal key (${SEAL_KEY_ENV}), and none was handed over: the server does not start without one`);
+    this.key = key;
     ({ messages: this.messages, attempts: this.attempts, notices: this.notices } = this.readOutbox());
     // A restart goes on with the messages an earlier server left pending, each at its next try's time; a test send is
     // tried once, so one left in flight failed.
@@ -180,11 +185,10 @@ export class Webhooks {
     else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds no user or password: the receiver checks the signature" });
     if (issues.length) throw invalid(issues);
     const was = this.config();
-    if (!was && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no webhook secret: it never keeps one in the clear.`);
     const secret = was ? undefined : mintSecret();
     const now = new Date().toISOString();
     const secretAt = was ? was.secret_at : now;
-    this.write({ url: url!.href, secret: was?.secret ?? seal(this.key!, Buffer.from(secret!, "utf8"), aad).toString("base64"), ...(secretAt ? { secret_at: secretAt } : {}), updated_at: now });
+    this.write({ url: url!.href, secret: was?.secret ?? seal(this.key, Buffer.from(secret!, "utf8"), aad).toString("base64"), ...(secretAt ? { secret_at: secretAt } : {}), updated_at: now });
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
 

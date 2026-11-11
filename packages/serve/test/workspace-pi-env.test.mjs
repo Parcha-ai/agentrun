@@ -1,6 +1,5 @@
-// pi's read, write and edit on a Workspace (serve/src/workspace/pi-env.ts) answer a model exactly as today's file tools
-// in a box do (pi's tools on the box's bound folder, coding-tools.ts and bound-files.ts): the same text, the same
-// error, the same files after, case by case. And bash on the Workspace: its output streams, a long one is spilled whole
+// pi's read, write and edit on a Workspace (serve/src/workspace/pi-env.ts), as a model reads them: a path named by the
+// folder's own path, a link refused, an image opened anywhere in a computer. And bash on the Workspace: its output streams, a long one is spilled whole
 // to .agentrun/output/ in the run's folder (read can open it), a signal is 128 + n, the environment is only what it is
 // given, and a timeout, an abort and a cwd outside are said as pi's own environment says them.
 import assert from "node:assert/strict";
@@ -9,8 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { codingSource } from "../dist/coding-tools.js";
-import { hostTools } from "../dist/host-tools.js";
+import { hostToolsOf } from "./host-tools-of.mjs";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "../dist/workspace/pi-env.js";
 import { readBackOf } from "@parcha/agentrun-computer";
@@ -46,16 +44,10 @@ function files(root, at = "") {
 }
 
 const NAMES = ["read", "write", "edit"];
-/** Today's file tools in a Docker box: pi's, on this machine's bind source, the box naming it /workspace. */
-function today(root) {
-  const source = codingSource({ mode: "sandbox", box: "docker" }, { hostWork: root, bound: async () => true, leftEnded: async () => undefined, env: async () => { throw new Error("no box: the file tools run here"); } });
-  // The run's environment is the box's, which names its folder /workspace: answers name a path relative to it.
-  return hostTools({ env: async () => ({ cwd: "/workspace" }) }, NAMES, ctx, new Map(), source.tools.filter((tool) => NAMES.includes(tool.name)));
-}
 /** The same tools on the Workspace. */
 function onWorkspace(root, cwd = "/workspace") {
   const env = piEnv(localWorkspace(root), { cwd, env: {}, defaultTimeoutS: 120 });
-  return hostTools({ env: async () => env }, NAMES, ctx, new Map(), fileTools());
+  return hostToolsOf({ env: async () => env }, NAMES, ctx, new Map(), fileTools());
 }
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
 
@@ -84,19 +76,6 @@ const CASES = [
   ["edit", { path: "nope.md", edits: [{ oldText: "a", newText: "b" }] }],
   ["edit", { path: "../../x", edits: [{ oldText: "a", newText: "b" }] }],
 ];
-
-test("pi's read, write and edit on the Workspace answer as today's box file tools do: the same text, the same error, the same files after", async () => {
-  const [left, right] = [scratch(), scratch()];
-  seed(left);
-  seed(right);
-  const [was, now] = [today(left), onWorkspace(right)];
-  for (const [name, args] of CASES) {
-    const [expected, actual] = [await call(was, name, args), await call(now, name, args)];
-    assert.deepEqual(actual, expected, `${name} ${JSON.stringify(args)}`);
-  }
-  assert.deepEqual(files(right), files(left), "the same files after");
-  assert.ok(!readdirSync(join(right, "..")).includes("escape.txt"));
-});
 
 test("on the runner the folder is named by its own path: an absolute path under it is the same file, and answers name it relative", async () => {
   const root = scratch();
@@ -133,7 +112,7 @@ test("in a computer read opens an image at any path there (a render in /tmp), re
   const names = ["/workspace"];
   const env = piEnv(attached, { cwd: "/workspace", env: {}, defaultTimeoutS: 120 });
   const read = readAnywhereInComputer(fileTools().find((tool) => tool.name === "read"), attached, names, { PATH: "/usr/bin:/bin" });
-  const [tool] = hostTools({ env: async () => env }, ["read"], ctx, new Map(), [read]);
+  const [tool] = hostToolsOf({ env: async () => env }, ["read"], ctx, new Map(), [read]);
   const image = await call([tool], "read", { path: join(elsewhere, "render.png") });
   assert.deepEqual([image.text, image.isError, image.images], [`${join(elsewhere, "render.png")}: image/png, ${PNG.length} bytes`, false, [{ mimeType: "image/png", data: PNG.toString("base64") }]]);
   assert.ok(computer.methods().includes("process.start"), "read through the computer");
@@ -147,7 +126,7 @@ test("in a computer read opens an image at any path there (a render in /tmp), re
 /** pi's bash on the Workspace, through a host tool: the answer a model reads. */
 function bashOn(root, options = {}) {
   const env = piEnv(localWorkspace(root), { cwd: options.cwd ?? "/workspace", env: options.env ?? { PATH: "/usr/local/bin:/usr/bin:/bin" }, defaultTimeoutS: 120 });
-  return { env, tool: hostTools({ env: async () => env }, ["bash"], ctx, new Map(), [bashTool()])[0] };
+  return { env, tool: hostToolsOf({ env: async () => env }, ["bash"], ctx, new Map(), [bashTool()])[0] };
 }
 
 test("bash on the Workspace: runs in the run's folder, with only the environment it is given; an exit and a signal are said as pi says them", async () => {
@@ -171,7 +150,7 @@ test("bash on the Workspace: a long output keeps its tail, and is spilled whole 
   assert.ok(full?.startsWith(`/workspace/${OUTPUT_DIR}/`), answer.text.slice(-200));
   const rel = full.slice("/workspace/".length);
   assert.equal(readFileSync(join(root, rel), "utf8"), Array.from({ length: 5000 }, (_, i) => `${i + 1}\n`).join(""), "the whole output");
-  const [read] = hostTools({ env: async () => env }, ["read"], ctx, new Map(), fileTools());
+  const [read] = hostToolsOf({ env: async () => env }, ["read"], ctx, new Map(), fileTools());
   assert.match((await call([read], "read", { path: full, offset: 5000 })).text, /^5000\n/);
 });
 

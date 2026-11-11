@@ -13,10 +13,10 @@ import type { AgentLearning, LearningNote } from "@/lib/learning";
 
 const agentWith = (learning?: { pending: number }): Agent => ({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
 const TRUST = "trust-acme.md";
-const waiting: LearningNote = { file: TRUST, name: "Trust acme.com", description: "d", type: "feedback", status: "pending", superseded_by: null, runs: { given: 0, read: 0 }, text: "---\nname: Trust acme.com\ndescription: d\ntype: feedback\n---\nTrust it.\n", etag: '"card-trust"' } as LearningNote;
+const waiting: LearningNote = { file: TRUST, name: "Trust acme.com", description: "d", type: "feedback", status: "pending", superseded_by: null, runs: { given: 0, read: 0 }, text: "---\nname: Trust acme.com\ndescription: d\ntype: feedback\n---\nTrust it.\n", etag: '"card-trust"', origin: "run" };
 const view = (notes: LearningNote[]): AgentLearning => ({
-  agent: "qa-learn", main: "c1", index: "", notes: { items: notes, total: notes.length, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 },
-} as AgentLearning);
+  agent: "qa-learn", main: "c1", index: "", notes: { items: notes, total: notes.length, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null,
+});
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
