@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
@@ -362,5 +362,51 @@ describe("applying a template", () => {
     expect(t.host.textContent).toContain("The server denies mcp:github/create_review, so it stays denied.");
     const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
     expect(link?.getAttribute("href")).toBe("#/agents/pr-reviewer-1");
+  });
+
+  // market-monitor (#2234): its cron and timezone are parameters of its schedule trigger. The Apply form reads them as a
+  // schedule, not as two raw text boxes: the cron line in words under it, the zone a list of zones, starting at the browser's.
+  describe("a template whose schedule trigger takes its cron and timezone from parameters", () => {
+    const MONITOR: TemplateView = {
+      ...REVIEWER, name: "market-monitor", display_name: "Market monitor", mcp: [], secrets: [],
+      parameters: {
+        competitors: { type: "string", required: true, description: "the companies to watch" },
+        cron: { type: "string", default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week)" },
+        timezone: { type: "string", default: "UTC", description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York)" },
+      },
+      triggers: [{ name: "weekly-digest", source: { kind: "schedule", cron: "${parameters.cron}", timezone: "${parameters.timezone}" }, target: { kind: "start_run", input: { content: "Scheduled weekly run." } } }],
+    };
+    const inZone = (zone: string) => vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({ timeZone: zone } as Intl.ResolvedDateTimeFormatOptions);
+    afterEach(() => vi.restoreAllMocks());
+
+    it("says the cron line in words under it, and the words follow what is typed", async () => {
+      inZone("Europe/Madrid");
+      const t = await open("market-monitor", { templates: [MONITOR] });
+      const field = () => t.host.querySelector('[data-field="parameters.cron"]')!;
+      expect(field().querySelector("input")!.value).toBe("0 8 * * 1");
+      expect(field().textContent).toContain("At 08:00, only on Monday");
+      await t.type(field().querySelector("input"), "30 17 * * 5");
+      expect(field().textContent).toContain("At 17:30, only on Friday");
+    });
+
+    it("starts the time zone at the browser's, from a list of zones, and Apply sends it with the cron line", async () => {
+      inZone("Europe/Madrid");
+      const t = await open("market-monitor", { templates: [MONITOR] });
+      const zone = t.host.querySelector<HTMLInputElement>('[data-field="parameters.timezone"] input')!;
+      expect(zone.value).toBe("Europe/Madrid");
+      const list = zone.getAttribute("list");
+      expect(list).toBeTruthy();
+      expect(t.host.querySelector(`datalist#${list}`)).not.toBeNull();
+      await t.type(t.host.querySelector('[data-field="parameters.competitors"] input'), "Acme (acme.com)");
+      await t.click(t.button(/^Apply/));
+      expect(t.sent[0].body.parameters).toEqual({ competitors: "Acme (acme.com)", cron: "0 8 * * 1", timezone: "Europe/Madrid" });
+    });
+
+    it("leaves a template's other text parameters as plain fields, and one whose cron comes from no parameter alone", async () => {
+      const t = await open("market-monitor", { templates: [MONITOR] });
+      const competitors = t.host.querySelector('[data-field="parameters.competitors"]')!;
+      expect(competitors.querySelector("datalist")).toBeNull();
+      expect(competitors.textContent).not.toContain("At ");
+    });
   });
 });
