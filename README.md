@@ -142,7 +142,7 @@ grants nothing until you tick each MCP tool yourself.
 
 | Template | What it does |
 | --- | --- |
-| `code-review` | Reviews a pull request on its own read-only checkout in a Docker box (or a pasted diff), quotes the line behind each finding, and returns the findings as JSON. It sets up its own GitHub trigger |
+| `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
 | `inbound-lead` | Researches each lead a webhook sends and scores it 0 to 100 against your ideal customer profile |
