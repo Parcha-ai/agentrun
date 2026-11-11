@@ -17,6 +17,8 @@ import type { TriggerSettings } from "./store/index.js";
  *  in the list of the server's secrets, so no run's text is cut of it, and of any length. `format: "pem"`: a PEM private
  *  key, whose lines each are listed as secrets. */
 export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number; public?: true; format?: "pem" }> };
+/** The scope of a server-scoped adapter's settings. */
+export const SERVER_SCOPE = "server";
 
 /** The store's documented AAD for a trigger setting (store schema `trigger_settings`): the composite row key is in the
  *  AAD, not store/seal.ts's single-row aadOf, which refuses a key holding the separator. */

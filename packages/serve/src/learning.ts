@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { type DraftDryRun, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -386,22 +386,25 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
   seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...got.held, ...(skills.size ? [SKILLS_DIR] : [])])];
   seed.skills = [...skills.keys()].sort(by(skillAt)).map((name) => {
     const files = skills.get(name)!;
-    const bytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0);
+    // What the run is given, counted as given: a SKILL.md as servedSkill writes it (its name and description alone, each
+    // quoted where YAML needs it), which can be a few bytes more than the blob, every other file as it is.
+    const bytes = Object.entries(files).reduce((sum, [path, text]) => sum + Buffer.byteLength(path === "SKILL.md" ? servedSkill(text) : text, "utf8"), 0);
     return bytes > LEARNED_SKILLS_BUDGET ? { name, bytes } : { name, bytes, files };
   });
   // The active learned workflows, by name, each with its workflow.json whole. The read gives an active one's README.md
-  // and workflow.json; its front matter is read again here: one that does not read one way (readmeFront) could hold a
-  // status another reader sees, so it is never read as active, and is named in `skipped`.
+  // and workflow.json; its front matter is read again here, by the one reader of a learned item's status
+  // (learn/skills.ts frontMatter): one that does not read one way could hold a status another reader sees, so it is
+  // never read as active, and is named in `skipped`.
   seed.workflows = [];
   for (const name of [...flows.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
     const { "README.md": readme, "workflow.json": workflow } = flows.get(name)!;
     if (readme === undefined || workflow === undefined) continue;
-    const front = readmeFront(readme);
+    const front = frontMatter(readme);
     if (!front) {
       seed.skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
       continue;
     }
-    if ((front.get("status") ?? "active") !== "active") continue;
+    if (learnedStatus(readme) !== "active") continue;
     seed.workflows.push({ name, description: front.get("description") ?? "", workflow });
   }
   return seed;
@@ -416,35 +419,6 @@ export const readerOf = (ws: Workspace): SeedReader => async (commit) => {
 /** The places a seed can't read from its files alone, from the folder's snapshot: each note's and each skill's. */
 const orderOf = (snapshot: Snapshot | undefined): SeedOrder | undefined =>
   snapshot ? { notes: snapshot.notes.map(({ file, order }) => ({ file, order })), skills: snapshot.skills.map(({ name, order }) => ({ name, order })) } : undefined;
-
-/** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
- *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
- *  own, the last line or not), a line that is neither a key at its left edge, a comment, blank, nor a line of a `>` or
- *  `|` value, or a key set twice. */
-export function readmeFront(text: string): Map<string, string> | undefined {
-  const lf = text.replace(/\r\n/g, "\n");
-  if (!lf.startsWith("---\n")) return undefined;
-  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
-  if (!close) return undefined;
-  const front = new Map<string, string>();
-  let block: string | undefined;
-  for (const line of lf.slice(4, 3 + close.index).split("\n")) {
-    if (block !== undefined && (/^\s+\S/.test(line) || line.trim() === "")) {
-      if (line.trim()) front.set(block, `${front.get(block)} ${line.trim()}`.trim());
-      continue;
-    }
-    block = undefined;
-    if (line.trim() === "" || line.startsWith("#")) continue;
-    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
-    if (!pair || front.has(pair[1]!)) return undefined;
-    const value = (pair[2] ?? "").trim();
-    if (/^[>|][-+]?$/.test(value)) {
-      block = pair[1]!;
-      front.set(block, "");
-    } else front.set(pair[1]!, value.replace(/^(["'])(.*)\1$/, "$2"));
-  }
-  return front;
-}
 
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
  *  learning script's init), and what main holds for a run (seedFrom over the folder's read): its index, its active
@@ -721,29 +695,39 @@ export async function takeSkills(work: Workspace, names: Iterable<string>): Prom
 const namesIn = (files: readonly string[] | undefined): string[] => [...new Set((files ?? []).map((path) => path.split("/")[0]!))];
 
 /** Which of `seed`'s learned skills a run gets, in `work`, in the seed's order: each whole while they fit their budget,
- *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
- *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
- *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`), is left out. */
+ *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files leave of SKILL_BYTES, sized in each form a
+ *  harness is handed them, the larger: as they are in `work` (claude-agent, codex) and as servedSkills writes them
+ *  (OpenCode, whose check reads that form). One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
+ *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`) as stored or as laid, is
+ *  left out. */
 export async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
-  let ownBytes = 0;
+  let stored = 0;
   const folders = new Map<string, Promise<Entry[]>>();
+  // Each skill's SKILL.md as stored, the one file servedSkills changes; every other file is served as it is.
+  const skillMds: { name: string; files: Record<string, string> }[] = [];
   for (const path of own) {
     const at = `${SKILLS_PATH}/${path}`;
     const dir = posix.dirname(at);
     if (!folders.has(dir)) folders.set(dir, work.list(dir));
     const entry = (await folders.get(dir)!).find((one) => one.name === posix.basename(at) && one.kind === "file");
     if (!entry) throw new WorkspaceError("NOT_FOUND", `the revision's skill file ${at} is not in the run's work`, { path: at });
-    ownBytes += entry.size;
+    stored += entry.size;
+    const [name, ...rest] = path.split("/");
+    if (rest.join("/") === "SKILL.md") skillMds.push({ name: name!, files: { "SKILL.md": Buffer.from(await work.read(at)).toString("utf8") } });
   }
-  let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - ownBytes));
+  const mdBytes = (skills: readonly { files: Record<string, string> }[]): number => skills.reduce((sum, skill) => sum + Buffer.byteLength(skill.files["SKILL.md"]!, "utf8"), 0);
+  const served = stored - mdBytes(skillMds) + mdBytes(servedSkills(skillMds));
+  let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - Math.max(stored, served)));
   const owned = new Set(namesIn(own));
   const there = await runSkillNames(work);
   const taken: LearnedSkill[] = [];
   const left: string[] = [];
   for (const skill of seed.skills) {
     if (owned.has(skill.name) || there.has(skill.name)) continue;
-    const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text));
+    // Each file as stored and as laid: a SKILL.md is laid as servedSkill writes it, its front matter's values decoded
+    // (a held secret spelled in escapes reads as the secret there), so that text is what is checked too.
+    const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text) || (path === "SKILL.md" && shown.holds(servedSkill(text))));
     if (!skill.files || secret || skill.bytes > room) {
       left.push(shown.name(skill.name));
       continue;

@@ -44,6 +44,7 @@ import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
+import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
@@ -380,6 +381,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         paidTools = await run.tools(await sessions.open(TOOL_SESSION), { flush: () => deps.store.flush() });
         hooks.setPort(booking.models as never);
       },
+      settle: async () => {
+        const left = await hooks.bookingsSettled();
+        // Past the bound: the end is written, and each request still unbooked counts at its hold and bound (never less).
+        if (left > 0) console.warn(`[runner] ${claim.runId}: ${left} model request(s) still unbooked ${CLOSE_MS} ms after the workflow ended; each counts at its hold and bound`);
+      },
       release: async () => {
         for (const proxy of proxies) await proxy.close().catch(() => undefined);
       },
@@ -448,18 +454,42 @@ export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, 
 
 /** The proxies start before the booking is wired; their hooks forward to the booking set at harnessReady. A request before
  *  then would be a bug (no model request runs before the workflow does), so it refuses loudly. `park` is the loop's hook,
- *  set at build, which a cap refusal calls. */
+ *  set at build, which a cap refusal calls. Each request admitted is counted until it is booked: a request a person's
+ *  stop cut short is booked only once its proxy sees the provider's side end, which can be after its node ended, and the
+ *  run's end waits for it (bookingsSettled), as the pi adapter's loop does. */
 function deferredHooks() {
   let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined } | undefined;
   let loop: WorkflowHostHooks | undefined;
+  let unbooked = 0;
+  const bookedAll: (() => void)[] = [];
   return {
     port: {
-      beforeRequest: (request: never) => (port ?? missing()).beforeRequest(request),
-      afterRequest: (usage: never, ticket?: never, ended?: never) => (port ?? missing()).afterRequest(usage, ticket, ended),
+      beforeRequest: async (request: never) => {
+        const ticket = await (port ?? missing()).beforeRequest(request);
+        unbooked += 1;
+        return ticket;
+      },
+      afterRequest: async (usage: never, ticket?: never, ended?: never) => {
+        try {
+          await (port ?? missing()).afterRequest(usage, ticket, ended);
+        } finally {
+          unbooked = Math.max(0, unbooked - 1);
+          if (unbooked === 0) for (const wake of bookedAll.splice(0)) wake();
+        }
+      },
       responded: (ids: never, ticket?: never) => (port ?? missing()).responded?.(ids, ticket) ?? Promise.resolve(),
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
     },
     setPort: (p: typeof port) => { port = p; },
+    /** Waits, at most CLOSE_MS, until every request admitted is booked, and says how many are still not. Past the bound
+     *  the run's end is written anyway, and a request left unbooked reads at its hold and bound, the worst it can have cost. */
+    bookingsSettled: async (): Promise<number> => {
+      if (unbooked === 0) return 0;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+      clearTimeout(timer);
+      return unbooked;
+    },
     park: (refusal: CapRefusal) => loop?.park(refusal),
     // A person's pause, asked where the cap is (the loop's hooks): none before the loop hands its hooks over.
     paused: (): boolean => loop?.paused() ?? false,
@@ -626,7 +656,7 @@ function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Cl
   // Nothing read yet: unread, so a policy asked before the first read fails closed too.
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
   // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, undefined, true);
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, true);
   return async (tool) => {
     current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };
