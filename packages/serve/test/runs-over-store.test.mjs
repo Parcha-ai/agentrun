@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, RunFinal } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
@@ -121,6 +121,41 @@ test("a message to an idle completed-and-reopenable run is a follow-up turn", as
   await queuedRun(store);
   const answer = await message(store, moment({ working: false, awaitingAnswer: false }), "again");
   assert.equal(answer.mode, "follow_up");
+});
+
+/** `id` (queued first) claimed and ended with `patch`. */
+async function endedRun(store, id, patch) {
+  await queuedRun(store, id);
+  await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 30_000 }), patch);
+}
+
+test("a message to an agentic run a person stopped reopens it with the message as its next turn", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "stopped", summary: "stopped by a person", outcome: "stopped" });
+  const answer = await message(store, moment({ working: false }), "Go on, then.");
+  assert.equal(answer.mode, "follow_up");
+  const row = await store.runs.get("run-1");
+  assert.deepEqual([row.state, row.runner, row.endedAt, row.outcome], ["running", null, null, null], "opened again, for a runner to claim");
+  assert.deepEqual((await commandsOf(store, "run-1")).map((one) => [one.kind, one.body.text, one.takenAt]), [["steer", "Go on, then.", null]]);
+});
+
+test("a message to a cancelled run answers 409 finished in today's words, nothing written", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "stopped", summary: "cancelled", outcome: "cancelled" });
+  await assert.rejects(
+    () => message(store, moment({ cancelled: true, terminal: true, terminalKind: "cancelled", working: false }), "Go on."),
+    (e) => e.code === "not_continuable" && e.status === 409 && e.message === "This run was cancelled. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, "run-1")).length, 0);
+  assert.equal((await store.runs.get("run-1")).state, "stopped");
+});
+
+test("a message racing a cancel's end (the moment read before it) is refused by the store's reopen: the run stays cancelled, nothing written", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "stopped", summary: "cancelled", outcome: "cancelled" });
+  await assert.rejects(() => message(store, moment({ working: false }), "Go on."), RunFinal);
+  assert.equal((await commandsOf(store, "run-1")).length, 0);
+  assert.equal((await store.runs.get("run-1")).state, "stopped");
 });
 
 test("a message to a run whose harness takes no mid-turn steer follows the turn", async () => {
