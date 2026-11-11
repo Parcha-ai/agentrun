@@ -60,6 +60,20 @@ logged() {
   done
 }
 
+# The claims of run <run> the runners recorded, one `Runner <name> claimed <run> (epoch <n>)` line each, waiting at most
+# 60 s for the first. A runner writes the line as it claims, so it is there however soon the run ended after: a run of
+# 0 ms steps can end before any poll of the run sees it held, and an ended run's claim reads null.
+claims_of() {
+  tries=0
+  pattern="^Runner runner-[0-9]+ claimed $1 \\(epoch [0-9]+\\)\$"
+  while ! dc logs --no-log-prefix --no-color runner-1 runner-2 2>/dev/null | grep -Eq "$pattern"; do
+    tries=$((tries + 1))
+    [ "$tries" -le 240 ] || return 1
+    sleep 0.25
+  done
+  dc logs --no-log-prefix --no-color runner-1 runner-2 2>/dev/null | grep -E "$pattern"
+}
+
 # Builds the image when none was given, starts the stack, and checks the server is healthy and each runner said it is
 # ready in its one line.
 walk_up() {
