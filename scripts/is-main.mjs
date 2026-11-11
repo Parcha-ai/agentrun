@@ -16,13 +16,18 @@ function pinned() {
   try { return ` (.nvmrc pins ${readFileSync(new URL('../.nvmrc', import.meta.url), 'utf8').trim()}; with nvm: nvm install && nvm use)`; } catch { return ''; }
 }
 
+// The engines floor of the root package.json, as scripts/check-node.mjs reads it.
+function floor() {
+  try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).engines.node.replace(/^>=/, ''); } catch { return 'the version in package.json engines'; }
+}
+
 /** Whether the module whose `import.meta` this is runs as the command. */
 export function isMain(meta) {
   if (meta.main !== undefined) return meta.main;
   // Node resolves the module's URL through symlinks and leaves argv[1] as given, so both sides go through realpath.
   const entry = process.argv[1];
   if (!entry || real(entry) !== real(fileURLToPath(meta.url))) return false;
-  console.error(`${relative(process.cwd(), entry)}: refused on Node ${process.version}, which has no import.meta.main to tell this script it is the command (it would exit 0 having done nothing). AgentRun needs Node.js 24.11 or newer${pinned()}.`);
+  console.error(`${relative(process.cwd(), entry)}: refused on Node ${process.version}, which has no import.meta.main to tell this script it is the command (it would exit 0 having done nothing). AgentRun needs Node.js ${floor()} or newer${pinned()}.`);
   process.exitCode = 1;
   return false;
 }

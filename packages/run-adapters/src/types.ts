@@ -135,6 +135,8 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** Its `inputTokensMax` is its provider's count, not its bytes (ProxyRequest.inputTokensCounted). */
+  inputTokensCounted?: true;
   /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its

@@ -1,6 +1,6 @@
 # agent.run() + Pi
 
-Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.5.0 exactly (CI tests 1.5.0). Pin the peers you install to `@1.5.0` (the install lines below do): `@earendil-works/pi-durable` and `@earendil-works/chord` are peers at `1.5.0` exactly.
+Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 24.22.3+ and Pi 1.5.0 exactly (CI tests 1.5.0). Pin the peers you install to `@1.5.0` (the install lines below do): `@earendil-works/pi-durable` and `@earendil-works/chord` are peers at `1.5.0` exactly.
 
 ## Install
 

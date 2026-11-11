@@ -202,7 +202,7 @@ test("a least-privilege deployment (a host's three roles): the server as the sch
   const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // The runner as the runtime role: it claims, journals and ends the run on its grants alone.
-  const runner = cli(t, ["runner", "--data", data], { ...storeEnv(root, runtime.url, schema), AGENTRUN_RUNNER_NAME: "runner-runtime", AGENTRUN_SERVE_FAUX: FAUX });
+  const runner = cli(t, ["runner", "--data", data, "--faux", FAUX], { ...storeEnv(root, runtime.url, schema), AGENTRUN_RUNNER_NAME: "runner-runtime" });
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
   const runnerExit = new Promise((resolve) => runner.once("exit", (code) => (err.push(`exited ${code}`), resolve(code))));
@@ -290,7 +290,7 @@ test("a server started on AGENTRUN_STORE_URL opens that Postgres store under its
   const run = await api("POST", "/agents/plain/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // The runner apart: the faux model by the variable a run's process reads it from (server.ts fauxEnvOf).
-  const runner = cli(t, ["runner", "--data", data], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart", AGENTRUN_SERVE_FAUX: FAUX });
+  const runner = cli(t, ["runner", "--data", data, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart" });
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
   const ready = await new Promise((resolve, reject) => {

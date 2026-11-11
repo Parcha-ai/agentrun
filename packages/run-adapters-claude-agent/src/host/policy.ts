@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { messagesImagesIn, providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, providerInputOverhead, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -393,6 +393,30 @@ export function anthropicAnswers(body: Record<string, unknown>, options: Pick<An
  *  tokens). None
  *  can be said for a body with the web search tool: the provider bills the pages it finds as input, on each of its
  *  searches, so its input is unmeasured (undefined), never bounded by its bytes. */
+/** The fields of a Messages body the token-count endpoint takes (the rest, such as max_tokens and stream, it refuses). */
+const COUNTED_FIELDS = ["model", "messages", "system", "tools", "tool_choice", "thinking"] as const;
+/** The request headers the count is sent with: the credential's and the API's version and betas, nothing else. */
+const COUNT_HEADERS = new Set(["x-api-key", "authorization", "anthropic-version", "anthropic-beta"]);
+
+/**
+ * Anthropic's own count of a Messages request's input tokens: POST /v1/messages/count_tokens, free, on api.anthropic.com
+ * only ("Token counting", https://platform.claude.com/docs/en/build-with-claude/token-counting). The proxy asks it before
+ * each answer request on that origin (never through a gateway). Its `input_tokens` covers the request's
+ * system, messages, tools and images; the tool-use system prompt is added beside it (`margin`), in case the count leaves
+ * it out, so the bound never falls under what the request is billed.
+ */
+export const ANTHROPIC_INPUT_COUNTER: InputCounter = Object.freeze({
+  origin: "https://api.anthropic.com",
+  path: "/v1/messages/count_tokens",
+  body: (body: Record<string, unknown>) => Object.fromEntries(COUNTED_FIELDS.filter((field) => body[field] !== undefined).map((field) => [field, body[field]])),
+  headers: (sent: Record<string, string>) => Object.fromEntries(Object.entries(sent).filter(([name]) => COUNT_HEADERS.has(name.toLowerCase()))),
+  tokensOf: (answer: unknown) => (isPlain(answer) && typeof answer.input_tokens === "number" ? answer.input_tokens : undefined),
+  margin: (body: Record<string, unknown>) => {
+    const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
+    return providerInputOverhead("anthropic-messages", { tools: Array.isArray(body.tools) && body.tools.length > 0, ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}), images: [] }) as number;
+  },
+});
+
 export function anthropicServerInputOverhead(body: Record<string, unknown>, searchAllowance?: number): number | undefined {
   const searches = offersWebSearch(body);
   if (searches && searchAllowance === undefined) return undefined;
@@ -449,6 +473,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     outputAsked: anthropicOutputAsked,
+    countInput: ANTHROPIC_INPUT_COUNTER,
     outputLeast: anthropicOutputLeast,
     reasoningHidden: anthropicReasoningHidden,
     reasoningBytesOf: anthropicReasoningBytes,
