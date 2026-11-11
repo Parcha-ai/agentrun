@@ -11,16 +11,12 @@ export { openJournal, type JournalBackend, type JournalRecord } from "./journal.
 export { RecoveryError, asRecoveryError, isRecoveryError, runStopOf, runStoppedError } from "./errors.js";
 export { bindingDigests, bindingMismatch, LEDGER_FORMAT } from "./binding.js";
 export { canonicalHash, canonicalSha256 } from "./canonical-hash.js";
-export { callKey, heldCallKey, CALL_KEY_BYTES } from "./call-key.js";
+export { callKey, CALL_KEY_BYTES } from "./call-key.js";
 export {
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, DECISION_REQUEST, validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot, emptyPathFrame, stateDelta, applyStateDelta, itemState, partialResults, canonicalJson,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta, type Sha256, type PartialSlot, type PathFrame, type RouteDecision, type DecisionRequest, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow, type FrozenShape,
 } from "./frozen-snapshot.js";
 export { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, pathSegments, topLevelCompletion } from "./execution-path.js";
-export { TypedEffectFailure, EffectEnvelopeFailure, classifyEffectFailure } from "./effect-failure.js";
 export { effectRetryClass, transportFactOf, type TransportFact } from "./transport-facts.js";
-export { buildHandoff, handoffFirstTurn, type Handoff, type HandoffOptions } from "./handoff.js";
-export { gatewayIntentOf, inheritableReceipts, inheritableUnknowns, returnedFailure, type InheritedReceipt, type InheritedUnknown } from "./handoff-receipts.js";
-export { inputProvenance, judgedRecords, type InputProvenance } from "./handoff-files.js";
-export { type InheritedSession, type InheritedEffect, type TranscriptMessage } from "./handoff-digest.js";
+export { gatewayIntentOf, returnedFailure, type InheritedReceipt, type InheritedUnknown } from "./handoff-receipts.js";
