@@ -5,31 +5,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter, toolImageProblems } from "@parcha/agentrun-harness-claude";
+import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 import { codexAdapter } from "@parcha/agentrun-harness-codex";
-import { codingSource, READ_IMAGE_MAX_BYTES } from "../dist/coding-tools.js";
-import { hostTools, workspaceRelative } from "../dist/host-tools.js";
+import { workspaceRelative } from "../dist/host-tools.js";
+import { monidRegistration } from "../dist/monid.js";
+import { webFetchTool } from "../dist/web-fetch.js";
+import { webSearchTool } from "../dist/web-search.js";
+import { localWorkspace } from "../dist/workspace/index.js";
+import { bashTool, fileTools, READ_IMAGE_MAX_BYTES } from "../dist/workspace/pi-env.js";
+import { hostToolsOf } from "./host-tools-of.mjs";
 import { rowPaths } from "../dist/workspace-paths.js";
 import { withEnv } from "./support.mjs";
 
-/** The run a host tool is built for: only its work directory is read, and nothing here calls a tool. */
-const RUN = { claim: { work: "/nonexistent/work" } };
+/** The run a host tool is built for: nothing here calls a tool. */
+const RUN = {};
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
+/** monid's three registrations, as the tool table binds them (monid.ts monidRegistration). */
+const monid = () => ["discover", "inspect", "run"].map((kind) => monidRegistration(kind, {}, () => localWorkspace("/nonexistent/work")));
+/** A registration named `name` that is no tool a host runs: what it would bind is never asked. */
+const named = (name) => ({ name, description: name, parameters: { type: "object" }, execute: async () => ({}) });
+/** The tools a run on another harness may name here, as their registrations. */
+const registrations = () => [...fileTools(), bashTool(), webFetchTool(process.env), webSearchTool(process.env), ...monid(), named("ask_person"), named("browser")];
 
-test("read, web_fetch and web_search are replay-safe; write and edit never replay; a name pi has no tool for, ask_person or browser, gives none", () => {
-  const tools = hostTools(RUN, ["read", "write", "edit", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map());
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["web_fetch", "safe"], ["web_search", "safe"]]);
+test("read, web_fetch and web_search are replay-safe; write, edit and bash never replay; a tool a host runs none of, ask_person or browser, gives none", () => {
+  const tools = hostToolsOf(RUN, ["read", "write", "edit", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map(), registrations());
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["web_fetch", "safe"], ["web_search", "safe"], ["bash", "never"]]);
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
-});
-
-test("in a box the coding source gives read, write, edit and bash (never replayed); the network tools stay this machine's, and a source holding another tool is refused", async () => {
-  const { codingSource } = await import("../dist/coding-tools.js");
-  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => ({}) });
-  const tools = hostTools({}, ["read", "write", "edit", "bash", "web_fetch"], ctx, new Map(), source.tools);
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["bash", "never"], ["web_fetch", "safe"]]);
-  assert.equal(tools.find((tool) => tool.name === "bash").inputSchema.properties.command.type, "string", "pi's bash schema");
-  const stray = { ...source.tools[0], name: "web_fetch" };
-  assert.throws(() => hostTools({}, ["web_fetch"], ctx, new Map(), [stray]), /holds web_fetch, which is no coding tool/);
 });
 
 test("a host tool's answer keeps the tail of a long output within pi's limits, then its diagnostics, also when the tool failed", async () => {
@@ -45,7 +46,7 @@ test("a host tool's answer keeps the tail of a long output within pi's limits, t
   };
   for (const fail of [false, true]) {
     const results = new Map();
-    const [tool] = hostTools(run, ["bash"], ctx, results, [chatty]);
+    const [tool] = hostToolsOf(run, ["bash"], ctx, results, [chatty]);
     const answer = await tool.call({ fail }, { callId: `c-${fail}`, signal: new AbortController().signal });
     assert.equal(answer.isError, fail);
     assert.ok(Buffer.byteLength(answer.text) < 52 * 1024, `bounded: ${Buffer.byteLength(answer.text)} bytes`);
@@ -92,8 +93,8 @@ test("a host tool reads snapshot, conversation and waitForTask from its own run'
       return {};
     },
   };
-  const [tool] = hostTools({ env: async () => ({}), harness: a.harness }, ["bash"], ctx, new Map(), [read]);
-  hostTools({ env: async () => ({}), harness: b.harness }, ["bash"], ctx, new Map(), [read]);
+  const [tool] = hostToolsOf({ env: async () => ({}), harness: a.harness }, ["bash"], ctx, new Map(), [read]);
+  hostToolsOf({ env: async () => ({}), harness: b.harness }, ["bash"], ctx, new Map(), [read]);
   const said = JSON.parse((await tool.call({}, { callId: "c", signal: new AbortController().signal })).text);
   assert.deepEqual([said.snapshot, said.conversation, said.waitForTask], [{ doc: "run-a" }, { id: 7, of: "run-a" }, { state: { status: "terminal" }, of: "run-a" }], "each member answers with its own run's value");
   assert.deepEqual(a.asked, [["snapshot", ["Doc", 1]], ["conversation", [7]], ["waitForTask", ["task-1"]]], "asked of its own run's Harness, as the tool asked");
@@ -115,7 +116,7 @@ test("a long output of multi-byte characters is cut at a character boundary, wit
   /** The text a host tool answers when its tool writes `chunks` under `limits`. */
   const answer = async (limits, chunks) => {
     const tool = { name: "bash", description: "d", parameters: { type: "object" }, outputLimits: limits, async execute(_args, api) { for (const chunk of chunks) api.output(chunk); return {}; } };
-    const [host] = hostTools(run, ["bash"], ctx, new Map(), [tool]);
+    const [host] = hostToolsOf(run, ["bash"], ctx, new Map(), [tool]);
     return (await host.call({}, { callId: "c", signal: new AbortController().signal })).text;
   };
   const kept = (text, marker) => text.replace(marker, "");
@@ -147,24 +148,20 @@ test("a tool answering as pi 1.2's bash does (its retained output asked for, its
       return { structuredOutput: { output: retained.text, truncated: retained.truncated, exitCode: 2 }, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: "Command exited with code 2" }] };
     },
   };
-  const [tool] = hostTools(run, ["bash"], ctx, new Map(), [bash12]);
+  const [tool] = hostToolsOf(run, ["bash"], ctx, new Map(), [bash12]);
   assert.deepEqual(await tool.call({}, { callId: "c", signal: new AbortController().signal }), { text: "first line\nlast line\n\n\nCommand exited with code 2", isError: true });
 });
 
-test("a run naming no monid tool never reads its claim: the other tools are built from a run with none", () => {
-  assert.deepEqual(hostTools({}, ["read", "web_fetch"], ctx, new Map()).map((tool) => tool.name), ["read", "web_fetch"]);
-});
-
 test("monid's three go under their wire names: discover and inspect replay-safe, run never; a wire name is not a catalog name", () => {
-  const tools = hostTools(RUN, MONID, ctx, new Map());
+  const tools = hostToolsOf(RUN, MONID, ctx, new Map(), monid());
   assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["monid_discover", "safe"], ["monid_inspect", "safe"], ["monid_run", "never"]]);
   assert.deepEqual(tools.map((tool) => tool.inputSchema.required), [["query"], ["provider", "endpoint"], ["provider", "endpoint"]], "monid's own parameters");
-  assert.deepEqual(hostTools(RUN, ["monid_run", "monid"], ctx, new Map()), [], "a revision names the catalog name, never the wire name");
+  assert.deepEqual(hostToolsOf(RUN, ["monid_run", "monid"], ctx, new Map(), monid()), [], "a revision names the catalog name, never the wire name");
 });
 
 test("both CLI adapters take the three as they are: names in their alphabet, schemas their own checks pass", (t) => {
   withEnv(t, { AGENTRUN_CLAUDE_AGENT_STANDIN: "1" });
-  const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: hostTools(RUN, ["read", ...MONID], ctx, new Map()) };
+  const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: hostToolsOf(RUN, ["read", ...MONID], ctx, new Map(), registrations()) };
   const provider = { origin: "https://api.example", credential: () => "" };
   assert.deepEqual(codexAdapter({ model: "gpt-5.4-mini", provider, standIn: { command: "true" } }).check(spec), []);
   assert.deepEqual(claudeAgentAdapter({ model: "claude-haiku-4-5", provider, standIn: { command: "true" }, sdk: {} }).check(spec), []);
@@ -221,26 +218,6 @@ test("a row's file path is named as a whole path: in the run's directory relativ
   assert.equal(rowPaths("runs/r1")("/data/runs/r1/work/a.md"), "/data/runs/r1/work/a.md");
 });
 
-test("on another harness (claude-agent), read of a PNG the model rendered in the box's /tmp reaches the model as an image, and one at read's bound fits the strictest platform's", async () => {
-  const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082", "hex");
-  // The box runs read's bounded command (`head -c "$2" -- "$1" | base64`) on the one file it holds.
-  const env = {
-    cwd: "/run/agentrun/run/work",
-    exec: async (command, options) => {
-      const [, , , , path, limit] = command;
-      if (path !== "/tmp/view/frame.png") return { ok: true, value: { exitCode: 1 } };
-      options.onOutput?.(PNG.subarray(0, Number(limit)).toString("base64"), {}, { stream: "stdout" });
-      return { ok: true, value: { exitCode: 0 } };
-    },
-  };
-  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => env });
-  const [read] = hostTools({ env: async () => ({}) }, ["read"], ctx, new Map(), source.tools);
-  const answer = await read.call({ path: "/tmp/view/frame.png" }, { callId: "c1", signal: new AbortController().signal });
-  assert.equal(answer.isError, false, answer.text);
-  assert.deepEqual(answer.images, [{ mimeType: "image/png", data: PNG.toString("base64") }], "the image, not an empty answer");
-  assert.match(answer.text, /\/tmp\/view\/frame\.png.*image\/png/);
-  // What the claude-agent adapter sends the model with the text (adapter.ts toolImageProblems): accepted.
-  assert.equal(toolImageProblems("read", answer.images), undefined);
-  // The largest image read answers is still one the adapter sends: its base64 within the adapter's cap.
+test("the largest image the runner's read answers (pi-env READ_IMAGE_MAX_BYTES) is still one the claude-agent adapter sends: its base64 within the adapter's cap", () => {
   assert.ok(Math.ceil(READ_IMAGE_MAX_BYTES / 3) * 4 <= CLAUDE_AGENT_MAX_IMAGE_BYTES, `${READ_IMAGE_MAX_BYTES} bytes is over ${CLAUDE_AGENT_MAX_IMAGE_BYTES} as base64`);
 });

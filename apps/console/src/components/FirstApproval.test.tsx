@@ -31,7 +31,7 @@ describe("the approval card's Allow", () => {
     const card = mount(createElement(ApprovalCard, { pending: PENDING, onAnswer: async () => null }));
     expect(buttons(card)).toEqual(["Allow once", "Deny"]);
     act(() => root?.unmount());
-    const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, run_id: "r1", agent_id: "a", agent_version: 1, revision: "rv", kind: "agentic", status: "input_required", state: "waiting", title: "T", created_at: "2026-11-05T10:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING };
+    const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, run_id: "r1", agent_id: "a", agent_version: 1, revision: "rv", kind: "agentic", status: "input_required", state: "waiting", title: "T", created_at: "2026-11-05T10:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING };
     const strip = mount(createElement(NeedsYouStrip, { asking: [run], failed: [], live: [], agentName: () => "A", onAnswer: async () => null, onApprove: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null }));
     expect(buttons(strip.querySelector("section[aria-label='Approval required']")!)).toEqual(["Allow once", "Deny"]);
   });

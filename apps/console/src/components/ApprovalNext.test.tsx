@@ -15,7 +15,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const approval = (n: 1 | 2): PendingApproval => ({ kind: "approval", id: `ap_${n}`, tool: "web_fetch", call_id: `call_${n}`, args_preview: `{"url":"http://public.example/${n}"}`, requested_at: `2026-11-05T10:00:0${n}.000Z` });
-const run = (pending: PendingApproval): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (pending: PendingApproval): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "fetcher", agent_version: 1, revision: "rv1", kind: "agentic", status: "input_required", state: "waiting", title: "Fetch two pages",
   created_at: "2026-11-05T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending,
 });

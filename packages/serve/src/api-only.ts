@@ -8,13 +8,13 @@ import type { Route } from "./server.js";
 export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 
 /** The routes (server.ts ROUTES, by name) an API-only server serves: a run's launch, read, list, timeline, messages,
- *  stop, cancel, kill and cap raise; its files and the uploads a launch names; an agent's Archil disk, read and removed
- *  (the agent layer of a run's disk, archil-routes.ts); capabilities, health and usage. */
+ *  stop, cancel and cap raise; its files and the uploads a launch names; an agent's Archil disk, read and removed (the
+ *  agent layer of a run's disk, archil-routes.ts); capabilities, health and usage. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun",
   "getAgentArchil", "deleteAgentArchil",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
-  "sendMessage", "stopRun", "cancelRun", "killRun", "raiseRunCap",
+  "sendMessage", "stopRun", "cancelRun", "raiseRunCap",
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage",
