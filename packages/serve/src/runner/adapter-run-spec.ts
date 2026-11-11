@@ -141,6 +141,10 @@ export interface AdapterSpecDeps {
   /** How a CLI run's claim waits for its harness's first-use install (harness-install.ts installSettled); a test wraps it
    *  to see the claim reach the wait. Absent, installSettled itself. */
   readonly installSettled?: typeof installSettled;
+  /** For tests only: the lock a claim's first-use install of each harness installs by (harness-install.ts installForClaim),
+   *  by harness, as the server's own option of that name gives its installs. The CLI's runner never sets it, and no
+   *  environment variable, flag or setting maps onto it; absent, the lock AgentRun ships. */
+  readonly harnessLocks?: Readonly<Record<string, string>>;
   /** A test runner's fake GitHub API, where the GitHub App's installation tokens are minted (runner/github-app.ts). Absent,
    *  https://api.github.com: the CLI's runner never sets it, and no environment variable, flag or setting maps onto it. */
   readonly githubApi?: string;

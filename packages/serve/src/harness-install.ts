@@ -362,8 +362,41 @@ export async function installSettled(entry: HarnessInstallEntry, dir: string, pi
   }
 }
 
+/** The file an installer holds while it installs into `dir`, beside the install's mark: made exclusively, so of every
+ *  process on this data (the server, a runner beside it, one of its own) one installs at a time, and the others wait for
+ *  that install. npm's staging directories beside `dir` are each install's own, and an install removes what an earlier one
+ *  left there, so two at once would undo each other. */
+export const installHoldOf = (dir: string): string => `${installMarkOf(dir)}.hold`;
+/** How young a hold that cannot be read yet is still taken as held: its installer made it and is writing it. */
+const HOLD_WRITING_MS = 10_000;
+
+/** Takes the hold on installs into `dir` for this process: true when it holds it now, false while another installer does
+ *  (its process alive, when it names this host; within INSTALL_TIMEOUT_MS, when another host's). A hold its installer left
+ *  (gone, or past that bound) is taken over. */
+async function takeHold(dir: string, { isAlive = alive, host = hostname(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; host?: string; timeoutMs?: number } = {}): Promise<boolean> {
+  const at = installHoldOf(dir);
+  await mkdir(dirname(at), { recursive: true });
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      await writeFile(at, JSON.stringify({ host, pid: process.pid, startedAt: Date.now() }), { flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const held = await readFile(at, "utf8").then((text) => JSON.parse(text) as Partial<{ host: string; pid: number; startedAt: number }>, () => undefined);
+    const live = held && typeof held.pid === "number" && typeof held.startedAt === "number"
+      ? Date.now() - held.startedAt <= timeoutMs && (held.host !== host || isAlive(held.pid))
+      // Not readable yet: its installer is writing it, unless it is older than that takes.
+      : await lstat(at).then((st) => Date.now() - st.mtimeMs <= HOLD_WRITING_MS, () => false);
+    if (live) return false;
+    await rm(at, { force: true });
+  }
+  return false;
+}
+
 /** The server's one installer of a harness into `dir`: `ensure()` resolves once it is installed whole, installing it first
- *  when it is not, and every caller while an install runs waits for that one. A failed install is not kept: the next call
+ *  when it is not, and every caller while an install runs waits for that one. While another process installs it (it holds
+ *  installHoldOf), this one waits for that install instead of starting its own. A failed install is not kept: the next call
  *  tries again. `stop()` stops an install that runs (its npm) and waits, bounded, for it to end. `onInstalled` hears of an
  *  install this server made, and how long it took. */
 export class HarnessInstall {
@@ -394,30 +427,43 @@ export class HarnessInstall {
     if (this.done) return Promise.resolve();
     if (this.stopping.signal.aborted) return Promise.reject(new Error("the server is stopping"));
     this.running ??= (async () => {
-      // The mark a run's claim reads, in this process or a runner's own (installSettled): installing now, then gone once
-      // it is in, or why it failed. Written first, before anything is read, so a claim made as this install starts (a run
-      // started just after the save that started it) finds it; gone at once when the harness is installed already.
-      await writeMark(this.dir, { host: hostname(), pid: process.pid, startedAt: Date.now() });
-      const pins = await this.pins().catch(async (error: unknown) => {
-        await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
-        throw error;
-      });
-      if (this.entry.lacking(this.dir, pins) === undefined) {
-        await rm(installMarkOf(this.dir), { force: true });
-        return void (this.done = true);
+      // One installer at a time on this data: while another process holds the install, wait for it to settle, then look
+      // again (installed: done; failed: so is this; let go with nothing in: take the hold).
+      while (!(await takeHold(this.dir))) {
+        if (this.stopping.signal.aborted) throw new Error("the server is stopping");
+        const settled = await installSettled(this.entry, this.dir, await this.pins(), { signal: this.stopping.signal });
+        if (settled === "installed") return void (this.done = true);
+        if (typeof settled === "object") throw new Error(settled.failed);
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      const started = performance.now();
       try {
-        await this.install(this.entry, this.dir, pins, this.stopping.signal);
-      } catch (error) {
-        // Why it failed, for the runs that waited on it; a server that stops leaves no mark (its npm was stopped, not refused).
-        if (this.stopping.signal.aborted) await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
-        else await writeMark(this.dir, { failed: (error as Error).message, at: Date.now() }).catch(() => undefined);
-        throw error;
+        // The mark a run's claim reads, in this process or a runner's own (installSettled): installing now, then gone once
+        // it is in, or why it failed. Written first, before anything is read, so a claim made as this install starts (a run
+        // started just after the save that started it) finds it; gone at once when the harness is installed already.
+        await writeMark(this.dir, { host: hostname(), pid: process.pid, startedAt: Date.now() });
+        const pins = await this.pins().catch(async (error: unknown) => {
+          await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
+          throw error;
+        });
+        if (this.entry.lacking(this.dir, pins) === undefined) {
+          await rm(installMarkOf(this.dir), { force: true });
+          return void (this.done = true);
+        }
+        const started = performance.now();
+        try {
+          await this.install(this.entry, this.dir, pins, this.stopping.signal);
+        } catch (error) {
+          // Why it failed, for the runs that waited on it; a server that stops leaves no mark (its npm was stopped, not refused).
+          if (this.stopping.signal.aborted) await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
+          else await writeMark(this.dir, { failed: (error as Error).message, at: Date.now() }).catch(() => undefined);
+          throw error;
+        }
+        await rm(installMarkOf(this.dir), { force: true });
+        this.done = true;
+        this.onInstalled?.(Math.round(performance.now() - started));
+      } finally {
+        await rm(installHoldOf(this.dir), { force: true }).catch(() => undefined);
       }
-      await rm(installMarkOf(this.dir), { force: true });
-      this.done = true;
-      this.onInstalled?.(Math.round(performance.now() - started));
     })().finally(() => (this.running = undefined));
     return this.running;
   }
@@ -426,5 +472,42 @@ export class HarnessInstall {
   async stop(): Promise<void> {
     this.stopping.abort();
     await this.running?.catch(() => undefined);
+  }
+}
+
+/** A runner's installs, by the directory each goes into: one HarnessInstall per directory in this process, which every
+ *  claim that needs it waits on, and how many wait now. */
+const claimInstalls = new Map<string, { install: HarnessInstall; waiting: number }>();
+
+/** Installs `entry` into `dir` for a run's claim when nothing installs it (no install runs, or the last one failed before
+ *  this claim): the claim installs it itself, by `lock` (default the one AgentRun ships), or waits for the install this
+ *  process or another runs for it already; it resolves once it is in and rejects with the install's own words when it
+ *  fails. `signal` aborted (the run stopped, its claim lost, the runner closing): this claim stops waiting at once, and the
+ *  install's npm is stopped once no claim waits for it. */
+export async function installForClaim(entry: HarnessInstallEntry, dir: string, pins: () => Promise<HarnessPins>, { lock, signal }: { lock?: string; signal?: AbortSignal } = {}): Promise<void> {
+  let held = claimInstalls.get(dir);
+  if (!held) {
+    held = { install: new HarnessInstall(entry, dir, pins, (entry, dir, pins, stop) => npmInstall(entry, dir, pins, { signal: stop, ...(lock ? { lock } : {}) })), waiting: 0 };
+    claimInstalls.set(dir, held);
+  }
+  const mine = held;
+  mine.waiting += 1;
+  try {
+    const installing = mine.install.ensure();
+    installing.catch(() => undefined);
+    if (!signal) return await installing;
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const stop = () => reject(signal.reason);
+      signal.addEventListener("abort", stop, { once: true });
+      installing.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+    });
+  } finally {
+    mine.waiting -= 1;
+    if (mine.waiting === 0 && claimInstalls.get(dir) === mine) {
+      claimInstalls.delete(dir);
+      // Nothing waits for it any more: its npm stops (nothing to stop once it is in or has failed).
+      void mine.install.stop();
+    }
   }
 }
