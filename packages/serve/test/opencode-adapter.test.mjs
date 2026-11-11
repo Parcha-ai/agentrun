@@ -865,3 +865,11 @@ test("an opencode second crash in the same open turn: recovery 1 marked and neve
   assert.match(texts[0] ?? "", /Write five files\./, "setup: recovery 2 carried the prompt");
   assert.equal(texts.at(-1), "and now?", `the next message is its own: ${JSON.stringify(texts)}`);
 });
+
+test("OpenCode's skills note gives a served skill's description as YAML reads it: a quote in it is a quote, never an escape", async () => {
+  const { skillsNote } = await import("../dist/harness-opencode/adapter.js");
+  const { servedSkill } = await import("../dist/learn/skills.js");
+  const served = servedSkill('---\nname: refunds\ndescription: Find "refund" policies, then the \\\\ path\n---\nSteps.\n');
+  const note = skillsNote([{ name: "refunds", files: { "SKILL.md": served } }]);
+  assert.match(note, /^- refunds: Find "refund" policies, then the \\\\ path$/m, note);
+});

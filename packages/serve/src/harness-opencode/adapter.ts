@@ -19,6 +19,7 @@ import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.j
 import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
 import { verifyOpenCode } from "./verify.js";
+import { learnedFront } from "../learn/skills.js";
 
 /** A name OpenCode keeps whole for an MCP tool (it turns anything else into `_`), short enough that `hands_<name>` is a
  *  function name the Responses API takes (at most 64). */
@@ -95,12 +96,13 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
-/** The skills as the instructions list them: each by name and description, read with `read_skill_file`. */
-function skillsNote(skills: readonly HostSkill[]): string {
+/** The skills as the instructions list them: each by name and description, read with `read_skill_file`. The
+ *  description as YAML reads it (learnedFront, the one front-matter reader: a quoted one's escapes decoded), so a quote
+ *  in it reaches the model as a quote, never as `\"`; on one line. */
+export function skillsNote(skills: readonly Pick<HostSkill, "name" | "files">[]): string {
   const lines = ["You have these skills. Read a skill's SKILL.md with read_skill_file before you use it, and the files it names the same way."];
   for (const skill of skills) {
-    const head = /^---\n([\s\S]*?)\n---/.exec(skill.files["SKILL.md"] ?? "")?.[1] ?? "";
-    const description = /^description:\s*(.+)$/m.exec(head)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+    const description = (learnedFront(skill.files["SKILL.md"] ?? "")?.description ?? "").replace(/\s+/g, " ").trim();
     lines.push(`- ${skill.name}: ${description}`);
   }
   return lines.join("\n");

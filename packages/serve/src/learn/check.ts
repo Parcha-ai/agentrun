@@ -148,13 +148,15 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
 }
 
 /** A skill's SKILL.md or a draft's README.md at `path`, its front matter read as YAML reads it (skills.ts frontValues:
- *  its escapes decoded, the value a harness is served): a secret's shape or the host's value there is refused as one in
- *  its text is, though the text as stored spells it in escapes. True when it found one. */
+ *  its escapes decoded, the value a harness is served): a hidden character, a secret's shape or the host's value there
+ *  is refused as one in its text is, though the text as stored spells it in escapes. True when it found one. */
 function frontScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
   const place = learnedPlace(path);
   if (!place || place.kind === "workflow") return false;
   let found = false;
   for (const value of frontValues(text)) {
+    const hidden = hiddenCharacter(value);
+    if (hidden) found = (add("invisible_unicode", `its front matter, read as YAML reads it, holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
     for (const kind of secretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
     if (refused(value)) found = (add("secret_value", "its front matter, read as YAML reads it, holds a value the host named as secret", path), true);
   }

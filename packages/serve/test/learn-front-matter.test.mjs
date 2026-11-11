@@ -228,3 +228,12 @@ test("an escape that does not decode cleanly leaves the front matter reading no 
   assert.deepEqual([result.notes, result.skills], [1, 0], JSON.stringify(result));
   assert.ok((result.left ?? []).some((problem) => problem.path === "skills/weekly-summary/SKILL.md" && problem.detail === UNCLEAR_FRONT), JSON.stringify(result.left));
 });
+
+test("a hidden character a skill's description spells as an escape is refused when proposed: the decoded value is read for it too, by the checks and by what is never stored", async () => {
+  const { unstorable } = await import("../dist/learn/check.js");
+  const text = skill('name: weekly-summary\ndescription: "Find\\u200b policies"\n');
+  assert.ok(!/[​]/.test(text), "the stored spelling holds no hidden character");
+  const result = checkProposal({ base: baseOf(), changes: [added("skills/weekly-summary/SKILL.md", text)], outcome: "completed" });
+  assert.ok(result.problems.some((problem) => problem.rule === "invisible_unicode"), JSON.stringify(result.problems));
+  assert.ok(unstorable([added("skills/weekly-summary/SKILL.md", text)]).some((problem) => problem.rule === "invisible_unicode"), "unstorable reads it decoded");
+});
