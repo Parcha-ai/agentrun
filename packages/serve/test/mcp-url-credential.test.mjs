@@ -4,6 +4,7 @@
 // that say to send it as a header, and nothing is kept or sent. A query of anything else (?version=2) is the server's own.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { createServer, request } from "node:http";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { serve, withEnv } from "./support.mjs";
@@ -73,6 +74,43 @@ test("a saved URL's path and query are held as a secret: every read shows its or
   assert.equal((await store.mcp.server("hidden")).url, url, "the saved URL is kept as it was");
   assert.equal((await api("POST", "/settings/mcp-servers/hidden/refresh")).status, 200);
   assert.ok(fake.log.length > 0, "the server was called");
+  // Every name a provider may put a credential under, listed or not: none is ever shown back whole.
+  for (const name of ["api_token", "private_token", "key", "x-auth-token", "access_key_id"]) {
+    const slot = `q-${name.replace(/[^a-z]/g, "")}`;
+    const answer = await api("PUT", `/settings/mcp-servers/${slot}`, { url: `${fake.url}?${name}=${SECRET}`, auth: { type: "none" } });
+    const reads = JSON.stringify([answer.body, (await api("GET", `/settings/mcp-servers/${slot}`)).body, (await api("GET", "/settings/mcp-servers")).body]);
+    assert.ok(!reads.includes(SECRET), `${name}: shown back whole (save ${answer.status})`);
+  }
+});
+
+/** A server that answers every path ending in /mcp as the fake MCP server does: a secret path segment is the server's own,
+ *  as Zapier's /mcp/<key>/sse is. */
+async function pathProxy(t, fake) {
+  const target = new URL(fake.url);
+  const http = createServer((req, res) => {
+    const path = new URL(req.url, "http://x").pathname.endsWith("/mcp") ? "/mcp" : req.url;
+    const out = request({ host: target.hostname, port: target.port, path, method: req.method, headers: req.headers }, (answer) => {
+      res.writeHead(answer.statusCode, answer.headers);
+      answer.pipe(res);
+    });
+    req.pipe(out);
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  return `http://127.0.0.1:${http.address().port}`;
+}
+
+test("a credential in a saved URL's path is never shown back: the save's answer, the server's read and the list show its origin and \"/…\"", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t, { runner: false });
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const base = await pathProxy(t, fake);
+  const saved = await api("PUT", "/settings/mcp-servers/pathed", { url: `${base}/sk-ak-${SECRET}/mcp`, auth: { type: "none" } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const reads = JSON.stringify([saved.body, (await api("GET", "/settings/mcp-servers/pathed")).body, (await api("GET", "/settings/mcp-servers")).body]);
+  assert.ok(!reads.includes(SECRET), `the path secret is shown: ${reads.slice(0, 400)}`);
+  assert.equal(saved.body.url, `${base}/…`);
 });
 
 test("a row saved before the save refused a credential in its URL's query is refused at its tools refresh, in the same words, and nothing is sent", async (t) => {
