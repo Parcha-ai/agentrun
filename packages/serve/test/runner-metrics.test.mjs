@@ -134,3 +134,23 @@ test("a CLI run's models count each request on the model its booking names: the 
   assert.equal(metrics.model, "anthropic/claude-haiku-5-5", "the run's model");
   assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 30, 13], "tokens stay totalled");
 });
+
+// #2480 review (PRRT_kwDOUmdVMs62RcPO): the run's own model, chosen as OpenRouter names it ("openrouter/anthropic/
+// claude-haiku-4.5") or by its dotted name, is booked by Anthropic's id ("claude-haiku-4-5"): matched as the router
+// matches them (the last segment, dots as dashes: provider.ts anthropicModelId), so its requests keep the chosen name.
+test("a CLI run on Claude through OpenRouter, or by its dotted name, counts its booked requests under the model it chose; another model stays apart", async () => {
+  const { bookedSpend, cliRunMetrics } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const root = [e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 })];
+  const all = [
+    ...root,
+    e(7, 2, "runner.request", { turn: 1, model: "claude-haiku-4-5" }),
+    e(7, 3, "runner.turn", { turn: 1, usd: 0.001, bookedUsd: 0.001, usage: { input: 5, output: 2, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
+    e(7, 4, "runner.request", { turn: 2, model: "claude-sonnet-5-5" }),
+    e(7, 5, "runner.turn", { turn: 2, usd: 0.003, bookedUsd: 0.003, usage: { input: 9, output: 4, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
+  ];
+  for (const chosen of ["openrouter/anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5"]) {
+    const metrics = cliRunMetrics(root, bookedSpend(all, "model"), { model: chosen });
+    assert.deepEqual(metrics.models, { [chosen]: 1, "claude-sonnet-5-5": 1 }, chosen);
+  }
+});
