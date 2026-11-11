@@ -595,3 +595,20 @@ test("a server whose AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY or AGENTRUN_BOX_PIDS
     });
   }
 });
+
+// The forms each setting takes, read once at the start: a number of CPUs, a size with its unit (MiB, the fraction dropped,
+// as Docker reads it), a whole number of processes. Anything else is one the provider refuses, never a guess.
+test("dockerLimitsOf reads each setting's form, and refuses what the Docker provider would", async () => {
+  const { dockerLimitsOf } = await import("../dist/workspace/computer-deps.js");
+  assert.deepEqual(dockerLimitsOf({}), {}, "none set: none");
+  assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_CPUS: " ", AGENTRUN_BOX_MEMORY: "" }), {}, "empty is unset");
+  assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_CPUS: "1.5" }), { cpus: 1.5 }, "only the ones set");
+  for (const [memory, mb] of [["2g", 2048], ["0.5g", 512], ["6.5m", 6], ["512M", 512], ["1048576k", 1024], [`${7 * 1024 * 1024}b`, 7]]) {
+    assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_MEMORY: memory }), { memoryMb: mb }, memory);
+  }
+  assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_PIDS: " 256 " }), { pids: 256 }, "trimmed");
+  const refusedBy = (name, value) => (error) => error.message.startsWith(`${name} ${JSON.stringify(value)} is refused by the Docker provider: `);
+  for (const [name, value] of [["AGENTRUN_BOX_CPUS", "two"], ["AGENTRUN_BOX_CPUS", "1e3"], ["AGENTRUN_BOX_CPUS", "-1"], ["AGENTRUN_BOX_MEMORY", "4gb"], ["AGENTRUN_BOX_MEMORY", "4096"], ["AGENTRUN_BOX_PIDS", "1.5"], ["AGENTRUN_BOX_PIDS", "4194305"]]) {
+    assert.throws(() => dockerLimitsOf({ [name]: value }), refusedBy(name, value), `${name}=${value}`);
+  }
+});

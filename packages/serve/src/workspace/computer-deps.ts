@@ -16,7 +16,7 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, DockerProvider, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { DockerPaths } from "../box-paths.js";
 import { type HostRead, unionOf } from "../docker-host-addresses.js";
@@ -39,6 +39,59 @@ export const COMPUTER_LIFETIME_MS = 24 * 60 * 60_000;
 
 /** A computer this server cannot make here, with the code the run fails with and its words. */
 const refused = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
+
+/** The settings that size a Docker computer (a sandbox or a desktop): its CPUs, its memory (swap included) and how many
+ *  processes and threads it may hold at once. Unset, the Docker provider's own defaults hold. A vendor's computer sizes
+ *  itself and is never given them. */
+export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
+export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
+export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+
+/** A Docker computer's size, as the Docker provider takes it on its spec. */
+export type DockerLimits = Pick<ComputerSpec, "cpus" | "memoryMb" | "pids">;
+
+/** Each setting's spec field and what it takes, in an operator's words. */
+const LIMIT_SETTINGS = [
+  { name: BOX_CPUS_ENV, field: "cpus", form: "a number of CPUs, such as 2 or 1.5" },
+  { name: BOX_MEMORY_ENV, field: "memoryMb", form: "a size with its unit (b, k, m or g), such as 512m or 4g" },
+  { name: BOX_PIDS_ENV, field: "pids", form: "a whole number of processes and threads, such as 1024" },
+] as const;
+
+/** A size's units as Docker reads them, each 1024 of the one before, in MiB. */
+const SIZE_MIB: Readonly<Record<string, number>> = { b: 1 / (1024 * 1024), k: 1 / 1024, m: 1, g: 1024 };
+
+/** One setting's value as its spec field: a number where it reads as one, else NaN, which the provider's check refuses. */
+const LIMIT_VALUE: Readonly<Record<(typeof LIMIT_SETTINGS)[number]["field"], (value: string) => number>> = {
+  cpus: (value) => (/^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN),
+  // Its MiB, the fraction dropped, as Docker reads a size: 0.5g is 512, 6.5m is 6.
+  memoryMb: (value) => {
+    const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value);
+    return size ? Math.floor(Number(size[1]) * SIZE_MIB[size[2]!.toLowerCase()]!) : Number.NaN;
+  },
+  pids: (value) => (/^\d+$/.test(value) ? Number(value) : Number.NaN),
+};
+
+/** Asked only check(): its constructor runs nothing and reads no Docker, and check() reads only the spec. */
+let checker: DockerProvider | undefined;
+
+/** A Docker computer's size from `env`'s AGENTRUN_BOX_CPUS, _MEMORY and _PIDS: each one set, as its spec field; none set,
+ *  none, so the provider's defaults hold. A value the Docker provider would refuse at every create throws, in its own
+ *  words, naming the setting and what it takes: the server's start reads them (startServe), so no run meets one. */
+export function dockerLimitsOf(env: KeyEnv): DockerLimits {
+  const limits: Record<string, number> = {};
+  for (const { name, field } of LIMIT_SETTINGS) {
+    const value = envValue(env, name)?.trim();
+    if (value !== undefined) limits[field] = LIMIT_VALUE[field](value);
+  }
+  if (Object.keys(limits).length === 0) return {};
+  checker ??= new DockerProvider({ daemonPath: "computerd" });
+  const refusals = checker.check({ image: DEFAULT_DOCKER_IMAGE, lifetimeMs: COMPUTER_LIFETIME_MS, network: "none", ...limits });
+  for (const { name, field, form } of LIMIT_SETTINGS) {
+    const refusal = refusals.find((one) => one.field === field);
+    if (refusal) throw new Error(`${name} ${JSON.stringify(envValue(env, name)!.trim())} is refused by the Docker provider: ${refusal.message} (${name} is ${form})`);
+  }
+  return limits as DockerLimits;
+}
 
 /** The Docker host's own addresses, for a Docker provider whose interfaces aren't that host's (the server in a
  *  container): a comma list of IP addresses. The Docker provider's egress proxy refuses them as the host's, so a
@@ -111,7 +164,8 @@ export interface ComputerDepsOptions {
  *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
  *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network
  *  (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read from `env`) for a launch that names
- *  none. No key and no environment. */
+ *  none; and a Docker computer's size, AGENTRUN_BOX_CPUS, _MEMORY and _PIDS (dockerLimitsOf, read once here), on
+ *  Docker's alone. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
@@ -126,11 +180,14 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
     if (entry.id === "docker" && kind === "desktop") throw refused("A Docker desktop needs an image with an X server; set one for desktops.");
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
+  const limits = dockerLimitsOf(env);
   return (entry, kind, run) => ({
     image: imageOf(entry, kind),
     // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
     lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
     network: networkOf(entry, kind, run, current, currentSet),
+    // A Docker computer's size, the operator's (dockerLimitsOf); a vendor's sizes itself.
+    ...(entry.id === "docker" ? limits : {}),
   });
 }
 
