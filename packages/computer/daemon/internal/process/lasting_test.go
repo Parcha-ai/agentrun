@@ -99,8 +99,10 @@ func TestTheEndComesAfterTheLastOutput(t *testing.T) {
 	if err != nil || info.Size() != size {
 		t.Fatalf("the log right after the wait: %v bytes, %v", info.Size(), err)
 	}
+	// Every byte is in the ring by the wait's return. Exited (the stream's end: every writer closed it) is not part of
+	// that: it can come a moment later, and never while a process left in the group holds the stream open.
 	res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "stdout", Offset: off(size)})
-	if err != nil || res.Size != size || !res.Exited {
+	if err != nil || res.Size != size {
 		t.Fatalf("stdout right after the wait: %+v %v", res, err)
 	}
 	// A process left in the group (kept, so it outlives the program) that holds stdout open doesn't hold the end: the
