@@ -27,9 +27,7 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
-const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
-const { saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
-const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
+const { mcpForClaim } = await import("../dist/runner/mcp-run.js");const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
 test.after(() => closeOpenSessions());
@@ -63,8 +61,6 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   // the runner's handle keeps the wall clock.
   const server = await openSqliteStore({ dataDir: dir, role: "server", ...(serverNow ? { now: serverNow } : {}) });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  // A local install, as a server on loopback writes at its start: the fake MCP server is on loopback.
-  await saveMcpLocalInstall(server, true);
   const fake = await startFakeMcp({ token: fakeToken, ...(inspect ? { inspect } : {}) });
   let runner;
   t.after(async () => {
@@ -86,7 +82,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),

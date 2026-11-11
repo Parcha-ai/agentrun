@@ -15,7 +15,7 @@ import { asOwner, serve, withEnv } from "./support.mjs";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
-const { savePrivateOAuthHosts, saveMcpLocalInstall } = await import("../dist/mcp-private-hosts.js");
+const { savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 
 const KEY = randomBytes(32);
@@ -196,12 +196,11 @@ test("on the runner, a server whose saved URL carries a credential in its query 
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const { store, dir } = await storeOn(t);
-  await saveMcpLocalInstall(store, true);
-  const secret = `not-a-secret-${"pinned-query"}`;
+  const secret =`not-a-secret-${"pinned-query"}`;
   await store.mcp.put({ name: "old", url: `${fake.url}?api_key=${secret}`, auth: "none", tools: [{ name: "add", input_schema: { type: "object" } }], sealed: null });
   await queued(store, "run-1");
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await assert.rejects(mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
+  await assert.rejects(mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
     assert.equal(error.message, "The MCP server old can't be used: api_key in the URL's query looks like a credential; send it as a header instead (Headers). Nothing was sent.");
     return true;
   });
@@ -209,27 +208,34 @@ test("on the runner, a server whose saved URL carries a credential in its query 
   assert.equal(fake.log.length, 0, "nothing sent");
 });
 
-test("on the runner, a server saved on loopback is reached only while the store's deployment is a local install, as its server wrote at its start: a hosted one's runs send it nothing", async (t) => {
+test("two runners on one store, one beside a local install and one not: a server saved on loopback is reached by the first alone, the other's runs send it nothing, whatever order they start in", async (t) => {
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const { store, dir } = await storeOn(t);
   await store.mcp.put({ name: "local", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }], sealed: null });
-  await queued(store, "run-1");
-  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir });
-  t.after(() => mcp.release());
-  const add = mcp.tools.find((tool) => tool.name === "mcp__local__add");
-  const call = (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
-  // No server has said this is a local install (a hosted server writes false; none written reads the same): refused unsent.
-  for (const local of [undefined, false]) {
-    if (local !== undefined) await saveMcpLocalInstall(store, local);
+  /** run `runId`'s add, on a runner told (or not) that the server beside it is a local install. */
+  const addOn = async (runId, runner, loopback) => {
+    await queued(store, runId);
+    const claim = await store.claim(runId, runner, { leaseMs: 60_000 });
+    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir, ...(loopback === undefined ? {} : { loopback }) });
+    t.after(() => mcp.release());
+    const add = mcp.tools.find((tool) => tool.name === "mcp__local__add");
+    return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
+  };
+  const local = await addOn("run-1", "runner-local", true);
+  const hosted = await addOn("run-2", "runner-hosted", false);
+  const unsaid = await addOn("run-3", "runner-unsaid", undefined);
+  assert.deepEqual(await local("call-1"), { text: "5" }, "the local install's runner reaches it");
+  for (const [call, which] of [[hosted, "a hosted runner"], [unsaid, "a runner told nothing"]]) {
     const sent = fake.log.length;
-    const refused = await call(`call-${local}`);
-    assert.equal(refused.isError, true, JSON.stringify(refused));
-    assert.match(refused.text, /^The MCP server local's address is refused here: .*Nothing was sent\.$/);
-    assert.equal(fake.log.length, sent, "the server heard nothing");
+    const refused = await call(`call-${which}`);
+    assert.equal(refused.isError, true, `${which}: ${JSON.stringify(refused)}`);
+    assert.match(refused.text, /^The MCP server local's address is refused here: .*Nothing was sent\.$/, which);
+    assert.equal(fake.log.length, sent, `${which}: the server heard nothing`);
   }
-  // A local install's server wrote so at its start: the same row is called.
-  await saveMcpLocalInstall(store, true);
-  assert.deepEqual(await call("call-local"), { text: "5" });
+  // The local runner's call again, after the others': nothing either did moved what the other may reach.
+  assert.deepEqual(await local("call-2"), { text: "5" });
+  const sent = fake.log.length;
+  assert.equal((await hosted("call-again")).isError, true);
+  assert.equal(fake.log.length, sent, "and the hosted runner's still sends nothing");
 });

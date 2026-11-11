@@ -376,7 +376,8 @@ if (!values["no-runner"] && askedAt === undefined) {
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
     // With the computer janitor: what a crashed runner of this server left is ended (never under --faux).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true });
+    // Its runs reach an MCP server on loopback only when this server is a local install (Serve.localInstall).
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, mcpLoopback: serve.localInstall });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();

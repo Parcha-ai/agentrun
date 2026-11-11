@@ -102,7 +102,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
-import { privateHostsRoute, saveMcpLocalInstall } from "./mcp-private-hosts.js";
+import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { OUTBOUND_WEBHOOK, type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
@@ -371,6 +371,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
  *  `setupOpen`: whether that setup takes no code (open setup on a loopback listener). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
 export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; boxesLine: string; close(): Promise<void>;
+  /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
+   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
+   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+  localInstall: boolean;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -3397,8 +3401,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const publicHost = options.publicUrl === undefined ? null : (URL.parse(options.publicUrl)?.hostname.replace(/^\[|\]$/g, "") ?? "");
   const localInstall = isLoopback(host) && (publicHost === null || isLoopback(publicHost));
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
-  // And for the runners on this store, which reach an MCP server's URL by the same rule (runner/mcp-run.ts).
-  await saveMcpLocalInstall(store, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
   // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
@@ -3546,6 +3548,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

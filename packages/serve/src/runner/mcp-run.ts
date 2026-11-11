@@ -23,7 +23,7 @@ import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
-import { mcpLocalInstall, privateOAuthHosts } from "../mcp-private-hosts.js";
+import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
@@ -60,6 +60,9 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
+  /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): only a runner
+   *  beside a local-install server is. Absent, never. */
+  readonly loopback?: boolean;
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -139,11 +142,11 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     credentials: step.credentials,
     // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
     // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
-    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only while the store's
-    // deployment is a local install (its server writes which at each start: mcpLocalInstall), so a row saved on a local
-    // install never reaches this machine's own services once a hosted server runs on the store.
+    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
+    // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
+    // one host's local install never opens loopback for another host's runner on a shared store.
     reach: async (url, signal) => {
-      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: await mcpLocalInstall(options.store) });
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
     beforeCall: step.beforeCall,

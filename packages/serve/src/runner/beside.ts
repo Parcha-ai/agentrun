@@ -32,7 +32,7 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  (RunnerOptions), the CLI start's from the server's flags (besideRunnerOptions). `janitor`: run the computer janitor
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. Returns the runner and a close() that stops both and
  *  closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, mcpLoopback }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; mcpLoopback?: boolean } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -61,7 +61,9 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const { dockerPathsForRuns } = await import("../box-paths.js");
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
+  // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
+  // loopback; any other runner's runs never do.
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
   const runner = startRunner({ store, createLoop, memory: runnerMemory(store), ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
@@ -82,7 +84,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const { besideRunEnv } = await import("./main.js");
   const { loops, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), mcpLoopback: serve.localInstall }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });
