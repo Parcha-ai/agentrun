@@ -841,7 +841,7 @@ test("a capped pi run refused for room with no stop pauses at its cap: its cost 
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
   // Its next pause, past the question it answered: the answer is taken once the run reads as no longer asking.
-  const run = await pausedPast(api, runId, "ask");
+  const run = await pausedPast(api, runId, "question");
   assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
   assert.equal(run.cost.usd, first, "the known total, never null");
   // Its journal, from the one store, once its claim is let go at the pause.
