@@ -14,7 +14,7 @@ import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
-import { bookedSpend, costIsBooked } from "../runner/metrics.js";
+import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 import { waitingText } from "../tool-gate.js";
 
@@ -168,19 +168,24 @@ export async function runTimeline(store: Store, runId: string, context: Context,
  *  session of the run but its decisions'): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
  *  costsofar/1), in the renderer's words (`Cost` once ended, else `Cost so far`). The renderer's own row is replaced in
  *  place; a run that booked a request and rendered none gets one at the end. One that booked none keeps its rows, with no
- *  usage row. */
+ *  usage row, unless it is a CLI run whose model worked with none booked (metrics.ts cliModelWorked: its requests went
+ *  past its model proxy): its usage row says its cost is unknown, its model's work one charge with no price, so its view,
+ *  live or ended, reads unknown, never $0. */
 function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
   const model = bookedSpend(entries, "model");
   const paid = bookedSpend(entries, "paid");
   const at = rows.findIndex((row) => row.kind === "usage");
   const kept = rows.filter((row) => row.kind !== "usage");
-  if (!model.requests && !paid.requests) return kept;
-  const usd = model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
-  const unpriced = model.unpriced + paid.unpriced;
+  const unbooked = !model.requests && isCliRecord(entries) && cliModelWorked(entries);
+  if (!model.requests && !paid.requests && !unbooked) return kept;
+  const usd = unbooked || model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
+  const unpriced = model.unpriced + paid.unpriced + (unbooked ? 1 : 0);
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
   const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
   const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
-  const summary = `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
+  const summary = unbooked
+    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${charges}`
+    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
   const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {

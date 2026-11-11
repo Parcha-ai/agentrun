@@ -90,7 +90,7 @@ export type FauxAction =
 
 /** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
  *  would add it to the body: filed with its text, for a test to see. */
-export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
+export const FAUX_RECORDS = { request: "faux.request", unbooked: "faux.unbooked", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. */
@@ -144,10 +144,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
       io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
-      // The script's place: one past its last request's (each faux.request keeps its action's index), never the count of
-      // them, since an action refused with `onRefused: "next"` is skipped with no record.
+      // The script's place: one past its last request's (each faux.request keeps its action's index, as each faux.unbooked
+      // does for an answer that booked none), never the count of them, since an action refused with `onRefused: "next"` is
+      // skipped with no record.
       let cursor = records.reduce((next, r) => {
-        const index = r.kind === FAUX_RECORDS.request ? (r.data as { index?: unknown } | null)?.index : undefined;
+        const index = r.kind === FAUX_RECORDS.request || r.kind === FAUX_RECORDS.unbooked ? (r.data as { index?: unknown } | null)?.index : undefined;
         return typeof index === "number" && index + 1 > next ? index + 1 : next;
       }, 0);
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
@@ -193,7 +194,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             if ("unbooked" in action) {
-              cursor += 1;
+              // Its place kept in a record of its own (no faux.request: no model request was booked), so a session opened
+              // again goes on past it, never answers it twice.
+              await append(FAUX_RECORDS.unbooked, { index: cursor++ });
               io.onEvent({ type: "text", delta: action.unbooked });
               continue;
             }

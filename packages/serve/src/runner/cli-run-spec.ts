@@ -444,7 +444,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
       const total = costUsd === null || paid === null ? null : costUsd + paid;
-      return { ...(total !== null ? { costUsd: total } : {}), metrics };
+      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
+      return { costUsd: total, metrics };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.
