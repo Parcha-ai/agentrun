@@ -163,9 +163,13 @@ Over a cap is refused, never cut.
   again, until it passes, and goes on to the grader, and the run's learning names what was left out (`problems`). A
   count cap names the items past it, in the order the answer gave them whatever their kind, and a size cap the item
   over it: one oversized or extra item is left out, the rest kept. A note left out past the supersedes cap holds
-  nothing as superseded for the notes after it. The whole proposal is refused when a problem names no item it proposed,
-  when its rule refuses the whole (`outside`, `deleted`, `index_full`, the notes' total, which no one item is past,
-  `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
+  nothing as superseded for the notes after it. New notes are settled in one order: each alone against the seed (what
+  it supersedes), then one note a rule (the rest its alternates), then the holders' shared checks (two notes
+  superseding one, the supersedes cap, and the index counted whole after the repeats are out: past 200 lines, the notes
+  that add lines are left out from the answer's end, `index_full`); a holder they refuse is left out and its next
+  alternate holds its rule, until nothing changes, and only then the unneeded alternates are left out as `duplicate`.
+  The whole proposal is refused when a problem names no item it proposed, when its rule refuses the whole (`outside`,
+  `deleted`, `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
   trusted for any item), or when nothing is left, with every pass's problems. Before any item is kept, every name and text
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.

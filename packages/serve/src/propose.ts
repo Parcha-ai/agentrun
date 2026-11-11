@@ -23,12 +23,12 @@ export type Proposed =
   | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
 /** The rules that refuse a proposal whole, whatever item they name: a path outside what a run may write, a deletion,
- *  the folder's index full (the notes' total, which no one item is past), anything that must never be stored (a secret,
- *  a character a reader does not see), which says the run's answer is not to be trusted for any item, and text that is
- *  not UTF-8, which cannot be read for one. Every other problem is its item's alone: a count cap names the items past it
- *  (learn/check.ts), a size cap the item over it, and they are left out and the rest kept; unstorable reads every item's
- *  text whole first. */
-const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
+ *  anything that must never be stored (a secret, a character a reader does not see), which says the run's answer is
+ *  not to be trusted for any item, and text that is not UTF-8, which cannot be read for one. Every other problem is its
+ *  item's alone: a count cap names the items past it (learn/check.ts), a size cap the item over it, the index's lines
+ *  the notes that add lines from the answer's end, and they are left out and the rest kept; unstorable reads every
+ *  item's text whole first. */
+const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["outside", "deleted", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
 
 /** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
 const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);

@@ -1,7 +1,7 @@
 // A count or size cap broken by some items of a run's answer leaves those items out and keeps the rest (propose.ts over
 // learn/check.ts): a ninth new note, a note over its size, a second skill, and a note that takes the notes superseded past
-// the cap are each left out, named in `left`, and the other items go on to the grader. Only what no one item is past (the
-// index's total) still refuses the whole answer.
+// the cap are each left out, named in `left`, and the other items go on to the grader; past the index's lines, the notes
+// that add lines are left out from the answer's end.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

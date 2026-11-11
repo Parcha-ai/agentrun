@@ -274,40 +274,101 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   const notes = problems.length ? [] : settled(candidates);
   return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
 
-  /** `candidates` once nothing else is wrong: which are duplicates, and what the merge's checks (mergeProblems) refuse,
-   *  settled together so a refused note never holds a rule. A new note of a rule held already (the seed's active
-   *  notes', then each earlier new note's) is a duplicate, whatever its name, unless it supersedes the note it repeats
-   *  (an update); of two new notes the same, the first is kept. The merge's checks read the rest, duplicates left out
-   *  (so a repeat never fills the index); a note they name is refused and holds no rule, and the duplicates are read
-   *  again without it, so a valid copy of its rule is kept. A refusal of the whole set (the index past its lines) ends
-   *  it. The notes that pass. */
+  /** `candidates` once nothing else is wrong, settled in one order, so no note is ever lost to another's failure:
+   *  1. Each note alone against the base (ownProblems): what it supersedes, active there, and how many. One that fails
+   *     is left out with its own reason.
+   *  2. The survivors by rule: the first of a rule holds it, the rest are its alternates. A rule the seed's active
+   *     notes hold is held already (an alternate that supersedes its holder is an update, and holds it).
+   *  3. The holders' shared checks (sharedProblems): two notes superseding one note, the supersedes cap over the run,
+   *     the index's lines, each counted in order, after the duplicates are out. A holder they refuse is left out with
+   *     that reason, and its next alternate holds the rule in its place; then 3 again, until nothing changes (each
+   *     round leaves one note out or more: bounded by the count).
+   *  4. Only then the alternates no rule needed are left out, each as the duplicate of its rule's holder.
+   *  The notes that pass, in the answer's order. */
   function settled(all: readonly ProposedNote[]): ProposedNote[] {
-    let kept = [...all];
+    const survivors = all.filter((note) => {
+      const own = ownProblems(input.base, note);
+      for (const problem of own) add(problem.rule, problem.detail, problem.path);
+      return own.length === 0;
+    });
+    const out = new Set<string>();
     for (;;) {
-      const rules = new Map(input.base.rules ?? []);
-      const rest: ProposedNote[] = [];
-      const dupes: [string, string][] = [];
-      for (const note of kept) {
-        const rule = ruleOf(note.body);
-        const holder = rules.get(rule);
-        if (holder !== undefined && !note.supersedes.includes(holder)) {
-          dupes.push([note.file, holder]);
-          continue;
-        }
-        rules.set(rule, note.file);
-        rest.push(note);
+      const { holders } = byRule(survivors.filter((note) => !out.has(note.file)));
+      const shared = sharedProblems(input.base, holders);
+      if (!shared.length) {
+        const { holders: kept, alternates } = byRule(survivors.filter((note) => !out.has(note.file)));
+        for (const [note, holder] of alternates) add("duplicate", `it says what ${holder} says`, note.file);
+        return kept;
       }
-      const merged = mergeProblems(input.base, rest, values);
-      problems.push(...merged);
-      const named = new Set(merged.flatMap((problem) => (problem.path === undefined ? [] : [problem.path])));
-      if (merged.length && merged.every((problem) => problem.path !== undefined) && kept.some((note) => named.has(note.file))) {
-        kept = kept.filter((note) => !named.has(note.file));
-        continue;
+      for (const problem of shared) {
+        add(problem.rule, problem.detail, problem.path);
+        out.add(problem.path!);
       }
-      for (const [path, holder] of dupes) add("duplicate", `it says what ${holder} says`, path);
-      return rest;
     }
   }
+
+  /** `notes` by rule, in order: the first of a rule holds it, the rest are its alternates (each with its holder). A
+   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update). */
+  function byRule(notes: readonly ProposedNote[]): { holders: ProposedNote[]; alternates: [ProposedNote, string][] } {
+    const rules = new Map(input.base.rules ?? []);
+    const holders: ProposedNote[] = [];
+    const alternates: [ProposedNote, string][] = [];
+    for (const note of notes) {
+      const rule = ruleOf(note.body);
+      const holder = rules.get(rule);
+      if (holder !== undefined && !note.supersedes.includes(holder)) {
+        alternates.push([note, holder]);
+        continue;
+      }
+      rules.set(rule, note.file);
+      holders.push(note);
+    }
+    return { holders, alternates };
+  }
+}
+
+/** What `note` alone cannot join `base` with, needing no other note: a `supersedes` that names no active note of `base`,
+ *  or more of them than CAPS.supersedes. */
+function ownProblems(base: Base, note: LearnedNote): Problem[] {
+  const active = new Set(base.active.map((one) => one.file));
+  const out: Problem[] = note.supersedes.filter((old) => !active.has(old)).map((old) => ({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` }));
+  if (note.supersedes.length > CAPS.supersedes) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${note.supersedes.length} notes; the cap is ${CAPS.supersedes} a run` });
+  return out;
+}
+
+/** What stops the holders `notes` (one a rule, each passing ownProblems) from joining `base` together, each named by the
+ *  note it falls on. In the answer's order: a note that supersedes one an earlier note supersedes, or that takes the
+ *  notes superseded past CAPS.supersedes (a note named counts toward neither, so a later one that fits is kept). Then
+ *  the index over the rest, whole (each active new note a line, each note it supersedes one fewer), so a note that frees
+ *  lines counts wherever it stands: past INDEX_LINES, the notes that add lines are named from the answer's end until
+ *  it fits. */
+function sharedProblems(base: Base, notes: readonly LearnedNote[]): (Problem & { path: string })[] {
+  const out: (Problem & { path: string })[] = [];
+  const replaced = new Set<string>();
+  const fits: LearnedNote[] = [];
+  for (const note of notes) {
+    const twice = note.supersedes.find((old) => replaced.has(old));
+    if (twice) {
+      out.push({ rule: "supersedes", path: note.file, detail: `${twice} is superseded by another new note too` });
+      continue;
+    }
+    const would = new Set([...replaced, ...note.supersedes]);
+    if (would.size > CAPS.supersedes) {
+      out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
+      continue;
+    }
+    for (const old of note.supersedes) replaced.add(old);
+    fits.push(note);
+  }
+  const net = (note: LearnedNote) => (note.status === "active" ? 1 : 0) - note.supersedes.length;
+  let lines = base.active.length + fits.reduce((sum, note) => sum + net(note), 0);
+  for (const note of [...fits].reverse()) {
+    if (lines <= INDEX_LINES) break;
+    if (net(note) <= 0) continue;
+    out.push({ rule: "index_full", path: note.file, detail: `with it the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
+    lines -= net(note);
+  }
+  return out;
 }
 
 /** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its
