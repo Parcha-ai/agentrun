@@ -233,18 +233,21 @@ test("a setting's image selects the provider's configuration of that image, whos
   assert.deepEqual(e2b.launched[0][1].configuration, PROVIDERS.find((one) => one.id === "e2b").capabilities.find((one) => one.kind === "desktop"));
 });
 
-test("Orgo's own descriptor: windows launches its configuration with its os, no image launches the Linux desktop; another image (macos too, until a server runs the janitor) is refused naming the two", async () => {
+test("Orgo's own descriptor: linux, named or not, launches the Linux desktop; windows and macos are refused as parked, and another image as none of Orgo's, each naming linux", async () => {
   const root = scratch();
-  for (const [image, os] of [["windows", "windows"], [undefined, undefined]]) {
+  for (const image of ["linux", undefined]) {
     const side = claim(root);
     const resolved = await resolveComputer({ kind: "desktop", provider: "orgo", ...(image ? { image } : {}) }, 1, KINDS, side);
     await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
     const { configuration } = side.launched[0][1];
-    assert.deepEqual([configuration.image, configuration.options.os], [image ?? "linux", os], String(image));
+    assert.deepEqual([configuration.image, configuration.options.os], ["linux", undefined], String(image));
   }
-  for (const image of ["beos", "macos"]) {
-    assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image }, 1, KINDS, claim(root))).refused, new RegExp(`^Orgo has no desktop image "${image}"\\. It offers the desktop images linux, windows: pick one`));
+  const side = claim(root);
+  for (const image of ["windows", "macos"]) {
+    assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image }, 1, KINDS, side)).refused, new RegExp(`^Orgo's [A-Za-z]+ desktops are parked for now: .*, so this agent's "${image}" desktop is parked\\. It offers the desktop image linux: pick one`));
   }
+  assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image: "beos" }, 1, KINDS, side)).refused, /^Orgo has no desktop image "beos"\. It offers the desktop image linux: pick one/);
+  assert.deepEqual(side.launched, [], "nothing was launched");
 });
 
 test("an image the provider does not offer for the kind is refused before anything starts, in words naming the ones it offers", async () => {
