@@ -7,7 +7,7 @@
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable, Writable } from "node:stream";
-import { homeBusy, storeBusy } from "./agents.js";
+import { answerOf, logged } from "./agents.js";
 import { ApiError, invalid } from "./errors.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { isJson, ownOrigin } from "./page.js";
@@ -290,8 +290,9 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
       if (!res.writableEnded && !res.destroyed) throw new Error(`${call.method} ${target} gave no answer`);
       await res.settled;
     } catch (error) {
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
+      // The same answer the HTTP route gives (answerOf): a store busy or past a write's deadline is home_busy, never 500.
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
       return { status: known.status, headers: { "content-type": "application/json" }, bytes: Buffer.from(JSON.stringify(known.body(requestId))), tooBig: false };
     }
     return res.answered();

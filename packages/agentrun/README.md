@@ -38,7 +38,10 @@ Every other command is the server's API, from a second terminal: `npx @parcha/ag
 `--data` on its own: the server writes its address and where its token is to `DIR/.server.json` once it listens. For
 another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`. The response's JSON goes to stdout and an error's to
 stderr; the exit code is 0 when it worked, 1 when the server refused, 2 for bad usage, 3 when the server cannot be
-reached and 4 for a missing or refused token. The token is never a flag and never printed.
+reached, 4 for a missing or refused token and 5 when the server does not offer the command here (a 501,
+`unsupported_here`, its error saying why). The token is never a flag and never printed. A list command (`agents list`,
+`runs list` and every other that takes `--cursor`) prints one page; `--all` follows `next_cursor` and prints every page
+as one list.
 
 `runs wait RUN_ID` waits until the run ends or waits on a person and prints it; `runs start AGENT_ID ... --wait` starts
 a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person

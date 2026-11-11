@@ -112,6 +112,35 @@ function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "not an error";
 }
 
+/** What `docker version` says of this machine's Docker daemon: it answers (`up`), or why not. `absent`: no daemon
+ *  answers this process (no docker command, a call that fails, or one that names no daemon); not absent: one is there,
+ *  and its socket refuses this process (the group it lacks). */
+export type DockerDaemon = { readonly up: true } | { readonly up: false; readonly absent: boolean; readonly reason: string };
+
+/** Asks this machine's Docker daemon its version (`docker version`), as the Docker computer's check (docker-daemon.ts)
+ *  does: the CLI is on PATH and its daemon answers this user. `signal` bounds it. */
+export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSignal, groups: { file: string; user: string; ids: readonly number[] } = ownGroups()): Promise<DockerDaemon> {
+  // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
+  // name shaped like a key.
+  const dockerEnv = withoutSecrets(env);
+  const answer = await new Promise<{ failed?: string; denied?: true; out: string }>((resolve) =>
+    execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+      const code = (error as { code?: unknown } | null)?.code;
+      resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}) } : {}), out: String(stdout) });
+    }),
+  );
+  const absent = (reason: string): DockerDaemon => ({ up: false, absent: true, reason });
+  // The box's probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
+  // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
+  if (answer.failed === "ENOENT") return absent("Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
+  // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's):
+  // a restart alone where the group file already lists this user, else joining it first.
+  if (answer.denied) return { up: false, absent: false, reason: (await joinedSince(groups)) ? DOCKER_NOT_IN_GROUP : DOCKER_JOIN_GROUP };
+  if (answer.failed) return absent(`Docker isn't running on this machine, or this user may not use it (docker version failed: ${answer.failed}): start Docker, or add this user to the docker group, then restart AgentRun`);
+  if (!answer.out.trim()) return absent("Docker isn't running on this machine (docker version named no daemon): start Docker, then restart AgentRun");
+  return { up: true };
+}
+
 /** Docker's offer: `docker version` names the daemon's version, so the CLI is on PATH and its daemon answers this user.
  *  Bounded by `timeoutMs`; never rejects. */
 async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { file: string; user: string; ids: readonly number[] }): Promise<BoxOffer> {

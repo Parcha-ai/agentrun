@@ -19,6 +19,14 @@ export async function consumer(): Promise<void> {
   const response: Response = await client.runs.readFile(run.run_id, "notes.md", undefined, { stream: true });
   const note: string = (await client.learning.write("notes", "policies.md", "# Policies\n", { "If-None-Match": "*" })).body;
   await client.files.upload("f1", new Uint8Array([1, 2]), { contentType: "image/png" });
+  // What the server serves, in the types with no cast: a workflow agent's definition with no instructions, version or
+  // skills; a create's warnings; the archived agents' list; the usage report's unpriced runs.
+  const flow = await client.agents.create({ definition: { id: "review", name: "Review", workflow: { start: "check" } } });
+  const warned: string[] = (flow.warnings ?? []).map((warning) => `${warning.field}: ${warning.reason}`);
+  const instructions: string | undefined = (await client.agents.get("review")).body.definition.instructions;
+  const archived: string[] = (await client.agents.list({ archived: true })).agents.map((listed) => listed.agent_id);
+  const unpriced: number | undefined = (await client.usage()).unpriced_runs;
+  void [warned, instructions, archived, unpriced];
   try {
     await client.agents.get("notes");
   } catch (error) {
