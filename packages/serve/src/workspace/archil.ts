@@ -8,6 +8,12 @@
 // output while the exec runs (archil-exec.ts); the workspace's own calls are rooted at the root, so they never meet it,
 // each exec's files are deleted on every path, and sweep() clears what a killed exec left.
 //
+// An exec asked to run with no network (ExecOptions.network "deny", a bash policy's shell: run-tools.ts) is sent with
+// its egress denied (DENY_EGRESS): the container reaches the two mounted folders and nothing else. Archil refuses a
+// network policy on a plan without one (its Free plan). Then the command runs with the network open, as the owner's
+// plan allows, and its stderr starts with one line saying so and why, Archil's words included. The workspace remembers
+// the refusal, so its later execs are sent without the policy and say the same.
+//
 // Durability. Archil commits a put, an append or a delete before it answers 200, so each call returns once the API
 // has answered. A write is one put. The API has no rename, so there is no temporary key; that a reader sees the old
 // file or the new one, never a mix, rests on Archil's S3 gateway publishing an object when its put completes (a
@@ -40,8 +46,8 @@
 // sync of its own. Without a region and a token function, both are refused in words. Background programs need a
 // computer: here `process` refuses every call, cause no-computer, as with any workspace that has none.
 import type { MountSpec } from "@parcha/agentrun-computer";
-import { type ArchilDisk, type ArchilImage, type ArchilListPage, pinnedImage } from "./archil-disk.js";
-import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
+import { type ArchilDisk, type ArchilImage, type ArchilListPage, DENY_EGRESS, pinnedImage } from "./archil-disk.js";
+import { ArchilEgressRefused, archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, type ExecJob, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
 import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
@@ -129,6 +135,8 @@ class ArchilWorkspace implements Workspace {
   readonly #mountToken: (() => string | Promise<string>) | undefined;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
+  /** Why Archil refused an exec's network policy, once it has: an exec asking for no network then runs with it open. */
+  #egressOpen: string | undefined;
   #rooted = false;
 
   constructor(disk: ArchilDisk, root: string, options: ArchilWorkspaceOptions = {}) {
@@ -558,13 +566,26 @@ class ArchilWorkspace implements Workspace {
           const stdin = options.stdin;
           await this.#settle("", () => this.#disk.putObject(files.in, stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
         }
-        const read = await archilExec(this.#disk, {
+        const job: ExecJob = {
           root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput: readBack, queueMs: this.#queueMs,
           stdin: options.stdin !== undefined, ...(this.#image === undefined ? {} : { image: this.#image }),
-        });
+        };
+        const deny = options.network === "deny";
+        let read: ExecResult | undefined;
+        if (deny && this.#egressOpen === undefined) {
+          try {
+            read = await archilExec(this.#disk, { ...job, network: DENY_EGRESS });
+          } catch (error) {
+            // Archil's plan takes no network policy: nothing ran, so the command runs again with the network open.
+            if (!(error instanceof ArchilEgressRefused)) throw error;
+            this.#egressOpen = error.message;
+          }
+        }
+        read ??= await archilExec(this.#disk, job);
         // Archil answers once the command has ended: each stream once, whole. An error the caller's callback throws is
         // not the call's.
-        const stderr = Buffer.from(read.stderr, "utf8");
+        const warning = deny && this.#egressOpen !== undefined ? `agentrun: this command ran with the network open. ${this.#egressOpen}\n` : "";
+        const stderr = Buffer.from(`${warning}${read.stderr}`, "utf8");
         for (const chunk of [{ stream: "stdout", data: read.stdout }, { stream: "stderr", data: stderr }] as const) {
           try { options.onOutput?.(chunk); } catch { /* the caller's callback */ }
         }

@@ -125,6 +125,11 @@ export type ExecOptions = {
   /** Ends the call: the whole process group is killed, and exec rejects with the signal's reason (an AbortError). A
    *  signal already aborted runs nothing. */
   readonly signal?: AbortSignal;
+  /** "deny": the program reaches no network (a bash policy's shell, run-tools.ts). Archil's serverless exec sends it as
+   *  the container's network policy; where Archil's plan takes none, the program runs with the network open and its
+   *  stderr starts with a line saying so (archil.ts). A backend that cannot deny a program's network refuses the call
+   *  (REFUSED) and runs nothing. */
+  readonly network?: "deny";
 };
 
 export type ExecResult = {

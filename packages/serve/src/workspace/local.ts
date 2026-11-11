@@ -560,6 +560,7 @@ class LocalWorkspace implements Workspace {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
     const cap = options.maxOutput ?? EXEC_OUTPUT_MAX;
     if (!Number.isSafeInteger(cap) || cap < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
+    if (options.network !== undefined) throw new WorkspaceError("REFUSED", "a command here runs on this machine, which cannot deny its network: nothing ran");
     const cwd = options.cwd ?? "";
     const segments = relativeSegments(cwd);
     const { signal } = options;

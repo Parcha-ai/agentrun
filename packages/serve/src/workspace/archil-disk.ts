@@ -28,7 +28,9 @@
 //   from mount name to a mount, so one disk can be mounted twice, each a different folder (the types allow it; the docs
 //   neither promise nor forbid it). It answers once the line ended, with stdout and stderr as text (cut by Archil
 //   somewhere below 14 MB, measured live) and the exit code. The SDK retries it only when the connection failed, so a
-//   line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1).
+//   line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1). `network` sets the
+//   container's egress (`{ egress: { default: "deny" } }`: nothing but the disk's own mounts, which Archil keeps
+//   reachable); Archil refuses it on a plan without network policies (its Free plan).
 import type { Archil as ArchilClient, Disk as SdkDisk } from "disk";
 
 /** One object of a listing: its whole key, its size in bytes, and its time (S3's lastModified, in ms) when the listing
@@ -67,14 +69,20 @@ export function pinnedImage(image: unknown): ArchilImage {
   return { imageId, digest };
 }
 
+/** An exec's network: its egress denied, so the container reaches nothing but the disk's own mounts. */
+export type ArchilExecNetwork = { readonly egress: { readonly default: "deny" } };
+/** The one network an exec is given: no egress. */
+export const DENY_EGRESS: ArchilExecNetwork = Object.freeze({ egress: Object.freeze({ default: "deny" as const }) });
+
 /** One exec: `command` runs with each folder of `mounts` (mount name → folder of the disk), and nothing else of the
  *  disk, at /mnt/archil/<name>, each held for the line (waiting up to queueMs for another client's hold), in `image` or
- *  Archil's default. */
+ *  Archil's default, with `network` (absent: Archil's default, egress open). */
 export type ArchilExecRequest = {
   readonly mounts: Readonly<Record<string, string>>;
   readonly queueMs: number;
   readonly command: string;
   readonly image?: ArchilImage;
+  readonly network?: ArchilExecNetwork;
 };
 export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
@@ -336,6 +344,8 @@ class SdkArchilDisk implements ArchilDisk {
     }
     const answer = await client.exec({
       ...(image === undefined ? {} : "baseImage" in image ? { baseImage: image.baseImage } : { imageId: image.imageId }),
+      // The network's one field, picked by name, as the image's are.
+      ...(request.network === undefined ? {} : { network: { egress: { default: request.network.egress.default } } }),
       command: request.command,
       disks: Object.fromEntries(Object.entries(request.mounts).map(([name, subdirectory]) => [name, { disk: this.id, subdirectory, queueMs: request.queueMs }])),
     });
