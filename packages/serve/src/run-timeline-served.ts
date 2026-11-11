@@ -45,7 +45,9 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   // the run's view carries it and main's served Timeline did, so the console's "The agent asks" box reads that question,
   // never an earlier wait's words.
   // Its final answer whole, as the run's view serves it (store-reads/journal.ts wholeAnswers): a row's cut is no answer's.
-  const options = { redact };
+  // A run that ended is read settled, as its view reads it: nothing of it is in flight, so a request it left unanswered
+  // is a cost unknown, never one still running.
+  const options = { redact, settled: ended };
   const timeline = await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, options), options, wholeAnswerFor(values));
   const rows = withApprovalRows(withAsks(timeline), asksOf(records.entries), answersOf(records.entries, { final }), redact);
   // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many

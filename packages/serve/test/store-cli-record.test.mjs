@@ -9,6 +9,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { spentOverStore } = await import("../dist/store-reads/cap.js");
@@ -256,6 +258,28 @@ test("a claude-agent run's paid MCP charge renders a Tool cost row under its cal
   // A CLI run's usage row says what its sessions booked (#2205): here the charge alone, its one paid tool call.
   const usage = rows.filter((x) => x.kind === "usage");
   assert.deepEqual(usage.map((x) => [x.summary, x.usage]), [["Cost so far: $0.0500 over 0 model requests and 1 paid tool call", { usd: 0.05, requests: 0 }]], `its usage row: ${JSON.stringify(usage)}`);
+});
+
+test("an ended CLI run that left a request unanswered serves its Timeline cost unknown, with the known part: never a known total", async (t) => {
+  const { store } = await storeOn(t);
+  const claim = await claimed(store, { harness: "codex", runId: "run-1" });
+  const j = store.journal(claim);
+  const [conv, key] = [await j.mintId(), await j.mintId()];
+  const [req1, turn1, req2] = [await j.mintId(), await j.mintId(), await j.mintId()];
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
+    { type: "conversation", value: { id: conv } },
+    entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
+    // One request answered at $0.01, one admitted whose answer was never booked (its end came first).
+    { type: "entry", value: { id: req1, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "gpt-test", heldUsd: 0.02 } } },
+    { type: "entry", value: { id: turn1, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: 0.01 } } },
+    { type: "entry", value: { id: req2, conversationId: conv, kind: "runner.request", data: { turn: 2, model: "gpt-test", heldUsd: 0.02 } } },
+    entry(await j.mintId(), "agentrun.message", { role: "model", text: "Done." }),
+  ], context);
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", endedAt: T0 + 9 });
+  const usage = (await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, store, "run-1", context)).filter((row) => row.kind === "usage");
+  assert.deepEqual(usage.map((row) => row.usage), [{ usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 }], `the unanswered request is a cost unknown on an ended run: ${JSON.stringify(usage)}`);
 });
 
 test("a running CLI run whose booked request has no figure lists its spend unknown (null), never $0", async (t) => {
