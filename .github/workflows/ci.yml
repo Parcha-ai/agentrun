@@ -185,8 +185,8 @@ jobs:
           if-no-files-found: ignore
 
   serve-postgres:
-    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
-    # in verify's needs nor a required check, until it has run green.
+    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Required:
+    # verify needs it, so a change that breaks the Postgres store (a host's least-privilege roles included) can't merge.
     name: serve store on Postgres
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -281,20 +281,21 @@ jobs:
         run: python -m unittest discover -s python/tests -v
 
   verify:
-    # The one required check: it passes when every test shard (both Node versions) and the console passed. It reads
-    # `needs`, not the jobs API, so an API error cannot fail a required check. `needs.test.result` is the result of
-    # every matrix instance of `test`, so a red shard on either Node fails this job.
+    # The one required check: it passes when every test shard (both Node versions), the console and the store on
+    # Postgres passed. It reads `needs`, not the jobs API, so an API error cannot fail a required check.
+    # `needs.test.result` is the result of every matrix instance of `test`, so a red shard on either Node fails this job.
     name: verify
-    needs: [test, console]
+    needs: [test, console, serve-postgres]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Every test shard and the console passed
+      - name: Every test shard, the console and the store on Postgres passed
         env:
           RESULT: ${{ needs.test.result }}
           CONSOLE: ${{ needs.console.result }}
-        run: test "$RESULT" = success && test "$CONSOLE" = success
+          POSTGRES: ${{ needs.serve-postgres.result }}
+        run: test "$RESULT" = success && test "$CONSOLE" = success && test "$POSTGRES" = success
 
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
