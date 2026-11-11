@@ -583,3 +583,30 @@ test("a re-filed skill whose same-rule note on main is retired is not retired: t
   assert.match(notes["report-format.md"], /^status: retired$/m, "main's note stays retired");
   assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "active"]], "the skill is not retired: the rule stays served");
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62XH5h, P1): a rule is held only by a note that stays active after this merge. old.md
+// holds R; the run keeps a note of rule S that supersedes old.md, and a skill re-filed as a note of R under another
+// name. The re-filed note is no copy of a rule main keeps (old.md goes), so it is kept and the skill retired: R stays
+// served, by the re-filed note.
+const R_OLD = noteNamed("old-format", "Old format", "Start every report with STATUS, at most 5 lines, and end it with Next:.");
+const S_NEW = noteNamed("report-v2", "Report v2", "Open every report with a one-line summary.", "supersedes: [old-format.md]\n");
+
+test("the checks: a seed rule whose note this proposal supersedes is held by no one, so its copy under another name is kept", () => {
+  const base = { files: ["MEMORY.md", R_OLD.file], active: [parseNoteFile(R_OLD.file, R_OLD.text)], rules: new Map([[ruleOf("Start every report with STATUS, at most 5 lines, and end it with Next:."), R_OLD.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const copy = noteNamed("report-format", "Report format", "start every report with STATUS, at most 5 lines, and end it with Next:.");
+  const checked = checkProposal({ base, changes: [change(S_NEW), change(copy)] });
+  assert.deepEqual(checked.problems, [], JSON.stringify(checked.problems));
+  assert.deepEqual(checked.notes.map(({ file }) => file), [S_NEW.file, copy.file]);
+});
+
+test("the merge: a rule whose note the merge supersedes is kept by its re-filed copy, and the skill retired: the rule is never left unserved", async (t) => {
+  const answer = verdictOf([{ file: S_NEW.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const { end, notes, skills, learning } = await refileRun(t, { existing: { [R_OLD.file]: R_OLD.text }, skill: SKILL, notes: [S_NEW], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes[R_OLD.file], /^status: superseded$/m, "old-format.md superseded by report-v2.md");
+  assert.ok(notes["report-format.md"], `the rule is served by the re-filed note: ${JSON.stringify(Object.keys(notes))}`);
+  assert.match(notes["report-format.md"], /Start every report with STATUS/);
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]]);
+  assert.deepEqual(learning.learned.map(({ file }) => file).sort(), ["report-format.md", S_NEW.file].sort(), JSON.stringify(learning));
+});
