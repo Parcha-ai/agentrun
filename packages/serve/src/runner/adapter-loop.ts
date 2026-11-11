@@ -35,7 +35,7 @@ import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold 
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { portModels, type PortModels } from "../port-models.js";
+import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions">;
@@ -248,8 +248,9 @@ export interface RunLedger {
   readonly paid: RunTools;
   /** The session's proxied models for a request the host sends beside the harness's own, under `label` (portModels on
    *  the session's port), read at each request: a spec may take them at its build, before the session opens; a request
-   *  made while no port is up (no session, or a harness with none) finds no model. */
-  models(label: string): Promise<PortModels>;
+   *  made while no port is up (no session, or a harness with none) finds no model. `tier`: the run's model of that tier
+   *  (AdapterSession.port's `tier`), listed under tierProvider(tier). */
+  models(label: string, tier?: string): Promise<PortModels>;
   /** A paid call the run's cap refused that pauses the run (an agent's ask for a person's browser time: main's paidCall
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
@@ -367,9 +368,10 @@ interface CliRecord {
   /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
    *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
-  /** A call through a CLI's own MCP client, as it reaches its gate: its start, marked parked (nothing sent until start()
-   *  writes its sent mark), so it shows on the record while it waits (once per call id). */
-  park(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** A call through a CLI's own MCP client, as it reaches its gate, or one its tool bridge's gate asks about (`bridge`):
+   *  its start, marked parked (nothing sent until start() writes its sent mark), so it shows on the record while it waits
+   *  (once per call id). */
+  park(callId: string, tool: string, input: unknown, replaySafe: boolean, bridge?: true): Promise<void>;
   /** A call its tool bridge's gate refused (a deny set, no one to approve, or a person's deny of its ask): its start and
    *  its end, refused in the gate's words, in one commit, as pi writes a refused call and its error result (once per call
    *  id). The same entries a parked MCP call refused at its door ends with (park, then end refused), with no wait between. */
@@ -499,11 +501,11 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         started.set(callId, false);
       });
     },
-    async park(callId, tool, input, replaySafe) {
+    async park(callId, tool, input, replaySafe, bridge) {
       await flushText();
       await inTurn(async () => {
         if (started.has(callId)) return;
-        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...(cwd ? { cwd } : {}) });
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...(bridge ? { bridge } : {}), ...(cwd ? { cwd } : {}) });
         started.set(callId, false);
         parked.add(callId);
       });
@@ -1035,7 +1037,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           // Lazy, as main's process takes them (portModels(() => sessionPort?.(...))): a spec takes them at its build, and
           // each request reads the session's port then, there once the session is open.
-          models: (label) => portModels(() => session?.port?.(label)),
+          models: (label, tier) => portModels(() => session?.port?.(label, tier), undefined, tier === undefined ? PORT_PROVIDER : tierProvider(tier)),
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },
@@ -1325,14 +1327,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
         // start and its end, refused in the gate's words, go on the record here, as pi writes a refused call and its error
-        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it).
+        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it). A call it asks
+        // about goes on the record first, its start marked parked (once per call id), as an MCP call parked at its door does,
+        // and marked the bridge's: the bridge hands the CLI nothing while it waits, so no waiting result shows, as on pi. Its
+        // row shows while it waits, before its approval; the claim that runs it once allowed writes its sent mark on that
+        // one start (start()), and a stop withdraws it never sent (unsentParked). A start refused because another call of the
+        // round parked the run first (the journal sealed) leaves this call held as that one is.
+        const replaySafe = (name: string) => tools.find((one) => one.name === name)?.replay === "safe";
+        const askingGate = record
+          ? preIntentGate(spec, hooks, (call) =>
+              record.park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), true).catch((error: unknown) => {
+                if (!gate?.sealed) throw error;
+              }),
+            )
+          : gateOf;
         const bridgeGate: typeof gateOf = record
           ? async (call, hookContext) => {
-              const answer = await gateOf(call, hookContext);
-              if (answer !== "allow" && "deny" in answer) {
-                const tool = tools.find((one) => one.name === call.tool);
-                await record.refused(call.callId, call.tool, call.args ?? {}, tool?.replay === "safe", answer.deny);
-              }
+              const answer = await askingGate(call, hookContext);
+              if (answer !== "allow" && "deny" in answer) await record.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny);
               return answer;
             }
           : gateOf;
@@ -1684,8 +1696,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
-  /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park). */
-  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks) {
+  /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park).
+   *  `beforeAsk`: what goes on the record of a call the gate asks about, before its ask is written or read (a CLI's call
+   *  through its tool bridge: its start, marked parked, so its row shows while it waits and reads before its approval). */
+  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
@@ -1713,6 +1727,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Shown first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES) still names them whatever the input's size.
       // The gate's own fields win over any of the same name in the call's input, which the model wrote.
       const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
+      // The call on the record before its ask (beforeAsk), with the input its model gave it.
+      await beforeAsk?.(call);
       const answer = await answerOf({ ...call, tool, args }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
       // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as
