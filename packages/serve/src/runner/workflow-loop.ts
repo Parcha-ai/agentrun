@@ -121,6 +121,8 @@ export const isWorkflowRevision = (revision: { readonly kind: string }): boolean
  *  the claim opens from the store (redact.ts holdClaimed). */
 export interface WorkflowSpecRun {
   readonly redact?: (text: string) => string;
+  /** The claim's journal, for what the spec reads from the run's records at its end (its decisions' booked cost). */
+  readonly journal?: Journal;
 }
 
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */
@@ -302,7 +304,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim, deps.redact ? { redact: deps.redact } : {});
+    spec = await specOf(claim, { ...(deps.redact ? { redact: deps.redact } : {}), journal: deps.journal(claim) });
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };

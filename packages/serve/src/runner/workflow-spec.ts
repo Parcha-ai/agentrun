@@ -52,7 +52,9 @@ import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostH
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
-import type { Store } from "../store/store.js";
+import type { JournalReads, Store } from "../store/store.js";
+import { journalEntries } from "./journal-reader.js";
+import { bookedSpend } from "./metrics.js";
 
 /** A model node's submit tool, by name: pi's SUBMIT_TOOL (packages/pi/src/host-tools.ts). Named here, not imported from
  *  @parcha/agentrun-pi, whose root loads its runner and with it pi-coding-agent, an optional peer an installed server
@@ -336,7 +338,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(claimed.capUsd) } : {}),
-      endPatch: async () => endPatchOf(booking, decisionCap, paidTools),
+      endPatch: async () => endPatchOf(booking, decisionCap, paidTools, run?.journal),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -741,10 +743,13 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
 /** The end's cost and metrics: what every model request of the run cost (the booking) plus what its decisions and its
  *  call nodes' paid requests cost (the decision cap, the paid tools), one spend for the run. Unknown (no figure) once any
  *  part is unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined, journal: JournalReads | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
   if (!booking) return {};
   const model = booking.spentUsd();
-  const decision = decisionCap ? decisionCap.spentUsd() : 0;
+  // A decision's cost is what its booking says it charged (bookedSpend over the decisions session's records, as the pi and
+  // CLI specs read it): one its provider reported no cost for is unknown, never the hold the cap counts it at
+  // (decisionCap.spentUsd, which stays the cap's own figure). With no journal to read, any decision is unknown.
+  const decision = !decisionCap ? 0 : journal ? bookedSpend((await journalEntries(journal, BACKGROUND_CONTEXT)) as never, "decisions").usd : null;
   const paid = paidTools ? paidTools.spentUsd() : 0;
   return model === null || decision === null || paid === null ? {} : { costUsd: model + decision + paid };
 }
