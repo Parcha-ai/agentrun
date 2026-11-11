@@ -33,10 +33,14 @@ test("an authorization server that lets no app register itself: the start withou
     assert.equal(preview.body.error.code, "auth_required", what);
     assert.deepEqual([preview.body.error.details.auth, preview.body.error.details.oauth], ["oauth", { registration }], `${what}: ${JSON.stringify(preview.body.error.details)}`);
     const name = `signin${registration ? "dyn" : what.length}`;
+    const metadataReads = () => as.log.filter((entry) => entry.path === "/.well-known/oauth-authorization-server").length;
+    const before = metadataReads();
     const started = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url });
     if (registration) {
       assert.equal(started.status, 200, `${what}: ${JSON.stringify(started.body)}`);
       assert.ok(as.log.some((entry) => entry.path === "/register"), `${what}: it registered itself`);
+      // The check's discovery is the sign-in's: the authorization server's metadata is read once for the start.
+      assert.equal(metadataReads() - before, 1, `${what}: the start read the metadata once`);
       continue;
     }
     assert.equal(started.status, 422, `${what}: ${JSON.stringify(started.body)}`);

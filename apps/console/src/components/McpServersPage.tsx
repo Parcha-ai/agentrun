@@ -28,7 +28,9 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
 export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [loadError, setLoadError] = useState<Problem | null>(null);
-  const [form, setForm] = useState<{ saved?: McpServer } | null>(null);
+  // The open form: a new server, or a saved one; `problem`, a saved row's refusal it opens with (its sign-in needs a
+  // Client ID), so the form keeps that guidance.
+  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem } | null>(null);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -61,9 +63,9 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
           </Banner>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
         <PrivateHosts v2={v2} />
       </div>
@@ -75,7 +77,7 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onChanged: () => void }) {
+function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -98,7 +100,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
-          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onChange} /></ul>}
+          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : () => onChange()} /></ul>}
           {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
@@ -106,7 +108,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
             {oauth && s.credential !== "sealed" && writable && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) }))}>Sign in again</Button>}
             {/* The list is read again however the refresh went: a refusal (a sign-in expired or revoked) changes the credential's state too. */}
             <Button size="sm" disabled={busy} onClick={() => void run(async () => { try { setNote(await v2.refreshMcpServer(s.name)); } finally { onChanged(); } })}>Refresh</Button>
-            <Button size="sm" disabled={busy} onClick={onChange}>Change</Button>
+            <Button size="sm" disabled={busy} onClick={() => onChange()}>Change</Button>
             <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirm(true)}>Delete</Button>
           </div>
         )}
@@ -118,7 +120,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
       )}
-      {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={onChange}>Enter a Client ID</Button>}</div>}
+      {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={() => onChange(problem)}>Enter a Client ID</Button>}</div>}
     </li>
   );
 }
@@ -178,14 +180,15 @@ const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */
-function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, given, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; given?: Problem; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const [name, setName] = useState(saved?.name ?? "");
   const [url, setUrl] = useState(saved?.url ?? "");
   const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
   const [preview, setPreview] = useState<McpPreview | null>(null);
-  const [problem, setProblem] = useState<Problem | null>(null);
+  // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
+  const [problem, setProblem] = useState<Problem | null>(given ?? null);
   const [busy, setBusy] = useState(false);
   // Each change of the address or the credential: a preview's answer counts only for the inputs it was asked for.
   const edits = useRef(0);
@@ -243,7 +246,7 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
         <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
-        <Input name="mcp-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
+        <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
       <fieldset>
         <legend className="caps mb-2 text-small font-semibold">Credential</legend>
         <div className="flex flex-wrap gap-4">

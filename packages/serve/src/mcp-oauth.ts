@@ -306,16 +306,24 @@ export class McpSignIns {
    *  publishes no metadata or the metadata offers neither. undefined when the discovery could not be made (refused,
    *  unreachable, not OAuth): the start's own words say why. */
   async registration(url: URL): Promise<{ registration: boolean } | undefined> {
-    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed() });
+    return found && { registration: found.registration };
+  }
+
+  /** The discovery registration() reads, with what it found (`state`, as the SDK's auth() keeps a discovery), so a
+   *  start that checked it hands it to auth() instead of discovering the same server again. */
+  private async discovered(url: URL, reach: Reach): Promise<{ registration: boolean; state: OAuthDiscoveryState } | undefined> {
     const seen: Seen = {};
-    let metadata: { registration_endpoint?: unknown; client_id_metadata_document_supported?: unknown } | undefined;
+    let info: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>["discoverOAuthServerInfo"]>>;
     try {
-      metadata = (await (await sdk()).discoverOAuthServerInfo(url, { fetchFn: guarded(undefined, url.href, this.network, seen, reach) })).authorizationServerMetadata as typeof metadata;
+      info = await (await sdk()).discoverOAuthServerInfo(url, { fetchFn: guarded(undefined, url.href, this.network, seen, reach) });
     } catch {
       return undefined;
     }
     if (seen.refused) return undefined;
-    return { registration: Boolean(metadata?.registration_endpoint) || Boolean(metadata?.client_id_metadata_document_supported && this.metadataUrl) };
+    const metadata = info.authorizationServerMetadata as { registration_endpoint?: unknown; client_id_metadata_document_supported?: unknown } | undefined;
+    const registration = Boolean(metadata?.registration_endpoint) || Boolean(metadata?.client_id_metadata_document_supported && this.metadataUrl);
+    return { registration, state: { authorizationServerUrl: String(info.authorizationServerUrl), ...(info.resourceMetadata ? { resourceMetadata: info.resourceMetadata } : {}), ...(info.authorizationServerMetadata ? { authorizationServerMetadata: info.authorizationServerMetadata } : {}) } };
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
@@ -329,8 +337,12 @@ export class McpSignIns {
     const provider = this.provider(entry, reach, { state, redirect: (to) => void (opened = to), seen });
     // With no client entered or kept, the authorization server must let this app register itself: one that doesn't (a
     // code host's login, with no metadata or no registration endpoint) is said up front, on the field that fixes it.
-    if (!options.client && (await this.registration(url))?.registration === false) throw registrationUnavailable(url);
+    const checked = options.client ? undefined : await this.discovered(url, reach);
+    if (checked?.registration === false) throw registrationUnavailable(url);
     try {
+      // What that check discovered, kept as the sign-in's discovery (through saveDiscoveryState, so its addresses are
+      // checked as any discovery's are): auth() then reads it, never discovering the same server twice.
+      if (checked) await provider.saveDiscoveryState?.(checked.state);
       await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, reach) });
     } catch (error) {
       // Named by the endpoint and its status, never by what the authorization server said: its answer is not passed on.

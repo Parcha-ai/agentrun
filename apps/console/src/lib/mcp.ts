@@ -66,7 +66,7 @@ export function staleGrants(tools: readonly string[], servers: readonly McpServe
 
 /** The words for a sign-in whose authorization server lets no app register itself: the owner makes an OAuth app with its
  *  provider (sending the browser back to `callback`) and enters that app's Client ID and Secret. */
-const NEEDS_CLIENT = (callback: string) => `Create an OAuth app with its provider (on GitHub: Settings → Developer settings → OAuth Apps), with ${callback} as its callback URL, then enter its Client ID and Secret in this server's OAuth fields and sign in.`;
+const NEEDS_CLIENT = (callback: string) => `Create an OAuth app with its provider (on GitHub, an OAuth App in your account's developer settings), with ${callback} as its callback URL, then enter its Client ID and Secret in this server's OAuth fields and sign in.`;
 /** Where an authorization server sends the browser back to after a sign-in (serve's mcp-oauth.ts OAUTH_CALLBACK). */
 export const OAUTH_CALLBACK_PATH = "/v2/settings/mcp-servers/oauth/callback";
 
