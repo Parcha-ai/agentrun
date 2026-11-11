@@ -23,7 +23,7 @@ import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
-import { deniedText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
+import { deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
 import { loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
@@ -212,7 +212,14 @@ export function modelAskOf(pinned: { provider: string; modelId: string } | undef
  */
 /** The run's tool permissions as a learned workflow's call nodes are held to them (learned-workflow.ts policy, denyFrom,
  *  refresh): the same gate as the run's own calls, its settings read again from the store before each call node. */
-export type RunPermissions = { readonly policy: (tool: string) => Permission; readonly denyFrom: (tool: string) => SettingFrom; readonly refresh: () => Promise<void> };
+export type RunPermissions = {
+  readonly policy: (tool: string) => Permission;
+  readonly denyFrom: (tool: string) => SettingFrom;
+  readonly refresh: () => Promise<void>;
+  /** The gate's whole decision of one call with its arguments (RunGate.decide: its deny, its argument pins, its ask or a
+   *  refusal where no one can approve), as the run's own call of the tool gets it: a learned workflow's MCP node's. */
+  readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
+};
 
 export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
@@ -229,11 +236,17 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     // before any node runs, never mid-run: one set to deny refuses the call in the gate's words, nothing sent; one set to
     // ask asks for the call, up front, on the run's one card (a running workflow can't park mid-call: it is never run
     // again after a crash), and the person's allow lets that call's MCP nodes run, and only that call's.
-    if ((call.tool as string) !== LEARNED_WORKFLOW_TOOL || decision !== "allow") return decision;
+    // Checked whether the learned_workflow call is itself allowed or asked: a workflow that can't run is never put to a
+    // person.
+    if ((call.tool as string) !== LEARNED_WORKFLOW_TOOL || typeof decision === "object") return decision;
     const tools = await mcpOf(call.args);
+    const refused = (why: string) => ({ deny: `The learned workflow ${String((call.args as { name?: unknown }).name)} was not run: ${why}` });
     const denied = tools.find((tool) => gate.policy(tool) === "deny");
-    if (denied) return { deny: `The learned workflow ${String((call.args as { name?: unknown }).name)} was not run: ${deniedText(denied, undefined, gate.denyFrom(denied))}` };
-    return tools.some((tool) => gate.policy(tool) === "ask") ? "ask" : decision;
+    if (denied) return refused(deniedText(denied, undefined, gate.denyFrom(denied)));
+    const asked = tools.find((tool) => gate.policy(tool) === "ask");
+    // An ask no one can answer (the server's accounts off) is refused at once in the gate's words, never parked.
+    if (asked && !approvers) return refused(noApproverText(asked, "no"));
+    return asked ? "ask" : decision;
   };
   /** The MCP tools the learned workflow a learned_workflow call names can call; none for another call or workflow. */
   const mcpOf = async (args: unknown): Promise<string[]> => {
@@ -242,7 +255,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
-  const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), refresh: async () => { current = await storeSettings(store); } };
+  const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), refresh: async () => { current = await storeSettings(store); }, decide: (tool, args) => gate.decide(tool, args) };
   // What a learned_workflow call's card shows beside its own input: every MCP tool set to ask that the workflow can call,
   // and that their arguments are decided while it runs, so the person sees what they approve.
   const askedFor = async (tool: string, args: unknown): Promise<Record<string, unknown> | undefined> => {
@@ -609,7 +622,7 @@ export async function learnedWorkflowHostTool(opts: {
   const flows = opts.workflows;
   const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
   const mcpTools = (opts.mcp?.tools ?? []).map((one) => opts.mcp!.catalogOf(one.name)).filter((name): name is string => typeof name === "string");
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, mcpTools });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 

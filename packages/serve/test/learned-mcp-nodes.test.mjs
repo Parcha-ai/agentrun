@@ -99,6 +99,45 @@ test("an MCP node set to deny refuses the whole learned_workflow call at the gat
   assert.equal((await api("GET", `/runs/${runId}`)).body.pending ?? null, null, "never asked: a deny is never put to a person");
 });
 
+test("an MCP node is held to the tool's argument pins with the arguments the workflow resolved: one outside the pin is refused in the pin's words, nothing sent", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const fake = await addFake(t, api);
+  // add allowed only with a = 9; the workflow sends a = 2.
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" }, "mcp:fake/add": { permission: "allow", pin: { a: 9 } } })).status, 200);
+  const runId = await learnedRun(server, "pinned", ["mcp:fake/add"], [ADD_FLOW], RUN_ADD);
+  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  const result = learnedResult(rows);
+  assert.match(`${result?.text ?? ""} ${result?.tool_result_preview ?? ""}`, /add-two failed: .*\ba\b/s, JSON.stringify(result));
+  assert.equal(calls(fake).length, 0, "the server saw nothing");
+});
+
+test("on a server with accounts off no one can approve: a workflow whose MCP node is set to ask is refused at once in the gate's words, never parked, nothing sent", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const server = await serveOf(t, { faux: FAUX_MCP, accounts: false, openSetup: false });
+  const { api } = server;
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" } })).status, 200);
+  const runId = await learnedRun(server, "unattended", ["mcp:fake/add"], [ADD_FLOW], RUN_ADD);
+  const { last, rows } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", `refused at once, never parked on an approval no one can give: ${last.status}`);
+  const result = learnedResult(rows);
+  assert.match(`${result?.text ?? ""} ${result?.tool_result_preview ?? ""}`, /The learned workflow add-two was not run: .*accounts off/s, JSON.stringify(result));
+  assert.equal(calls(fake).length, 0, "nothing was sent");
+});
+
+test("a workflow with an MCP node set to deny is refused without asking, even when learned_workflow itself is set to ask", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" }, "mcp:fake/add": { permission: "deny" } })).status, 200);
+  const runId = await learnedRun(server, "denied-ask", ["mcp:fake/add"], [ADD_FLOW], RUN_ADD);
+  const { last, rows } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", `refused, never put to a person: ${last.status}`);
+  assert.match(`${learnedResult(rows)?.text ?? ""} ${learnedResult(rows)?.tool_result_preview ?? ""}`, /was not run: .*mcp:fake\/add.*deny/s);
+  assert.equal(calls(fake).length, 0, "nothing was sent");
+});
+
 /** Run `runId`'s pending approval of `tool`, once it waits on one: a call other than `after`'s (an earlier card the run
  *  read before its answer was taken). */
 async function pendingOf(api, runId, tool, after) {

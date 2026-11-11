@@ -151,6 +151,9 @@ export type LearnedWorkflowRun = {
   /** The run's MCP tools by catalog name (`mcp:<server>/<tool>`): those the claim's pin holds, which its revision grants.
    *  A call node may name one of these; it runs through the run's own MCP, as the loop wrapped it (host-calls.ts). */
   mcpTools?: readonly string[];
+  /** The gate's whole decision of an MCP node's call with its arguments, as the run's own call of the tool gets it
+   *  (RunGate.decide: deny, argument pins, ask, no approver). Required for an MCP node: one with none is never sent. */
+  decide?: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -282,12 +285,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (tool && MCP_TOOL.test(tool)) {
       // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
       // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
-      const send = (run.mcpTools ?? []).includes(tool) ? hostCalls()?.mcp(tool) : undefined;
-      if (!send) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
+      const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
+      if (!send || !run.decide) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
+      // The gate's whole decision of this call with the arguments the workflow resolved, as the harness's own call of the
+      // tool gets it: its deny, its argument pins (a messaging tool held to one channel), its ask, or no one to approve.
+      // The call's approval lifts only an ask, never a pin or a deny.
       await run.refresh?.();
-      const permission = run.policy(tool);
-      if (permission === "deny") throw new Error(deniedText(tool, undefined, run.denyFrom(tool)));
-      if (permission === "ask" && hostCalls()?.approved !== true) throw new Error(`This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
+      const verdict = await run.decide(tool, given);
+      if (typeof verdict === "object") throw new Error(verdict.deny);
+      if (verdict === "ask" && hostCalls()?.approved !== true) throw new Error(`This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
       const answer = await send(given, { callId, signal: own });
       if (answer.isError) throw new Error(answer.text);
       return mcpValue(answer.text);
