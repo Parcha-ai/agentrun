@@ -225,9 +225,9 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const side: ClaimSide = {
     keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
-    async launch(entry, { kind, keys, mount, signal }) {
+    async launch(entry, { kind, keys, mount, gpu, signal }) {
       if (deps.launch) {
-        const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(signal ? { signal } : {}) });
+        const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
@@ -250,7 +250,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       // pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no registry, so a
       // run of it unbuilt would be refused.
       const ready = await readyImage(provider, signal, deps.onImageWait);
-      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}) };
+      const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}) };
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
