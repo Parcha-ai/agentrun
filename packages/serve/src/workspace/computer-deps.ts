@@ -23,7 +23,7 @@ import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
-import { boxAllowOf } from "../run-box.js";
+import { boxAllowOf } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
@@ -110,7 +110,7 @@ export interface ComputerDepsOptions {
  *  none. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
-  // This server's allow setting, as a launch is stamped with it (run-box.ts boxAllowOf; its start checks the setting).
+  // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
   const current = (): readonly string[] | "none" => boxAllowOf(env as NodeJS.ProcessEnv);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
     if (entry.id === "docker" && named !== undefined) return named;
