@@ -191,3 +191,28 @@ test("the owner's approve goes with the session cookie alone: the route refuses 
   } finally { server.close(); }
   assert.deepEqual(seen.map((h) => [h.authorization ?? null, h.cookie ?? null, h["if-match"] ?? null]), [[null, "s=1", "etag-1"], ["Bearer tok", null, null]]);
 });
+
+test("an ungraded check is no wrong keep: a grader outage after the plant is counted apart, and the summary says how many", () => {
+  const ungraded = (s) => ({ ...s, pass: false, graders: s.graders.map((g) => (g.grader.startsWith("plant-") ? { ...g, type: "llm", pass: false, ungraded: true, reason: "not graded: down", cost_usd: null } : g)) });
+  const steps = [
+    step("01", "teach", [["a.md", true]]),
+    step("02", "plant", [["a.md", true]]),
+    ungraded(step("03", "repeat", [["a.md", true], ["plant-not-kept.md", false]])),
+    step("04", "repeat", [["a.md", true], ["plant-not-kept.md", true]]),
+  ];
+  const m = metricsOf(steps, true);
+  assert.deepEqual([m.wrong_keeps, m.plant_graders, m.plant_ungraded, m.ungraded_checks], [0, 1, 1, 1], "03's outage is no keep; 04 graded");
+  const text = render({ schema: SCHEMA, bench: { sha: "abc" }, hard_stop: null, series: [{ job: "j", harness: "pi", arm: "on", steps, metrics: m }] });
+  assert.match(text, /\| 0 \(\+1 ungraded\) \|/, "the wrong keeps cell names the ungraded plant checks");
+  assert.match(text, /03 repeat .*ungraded=plant-not-kept\.md/, "the step line names its ungraded check apart from its failed ones");
+  assert.doesNotMatch(text, /03 repeat .*failed=[^ ]*plant-not-kept/);
+});
+
+test("a grader that could not grade says so: ungraded, from a run that did not finish, a grader run that failed, or the deadline", async () => {
+  const kase = { input: "x" }; const record = { answer: "", calls: [], mcpCalls: [], files: [] };
+  const llm = { file: "finds.md", type: "llm", rubric: "r" };
+  const down = { api: async () => ({ status: 500, body: {}, headers: new Headers() }), options: { deadline: Date.now() + 60_000, runTimeoutMs: 1000 } };
+  assert.equal((await bench.gradeOne(down, llm, kase, record, [], false)).ungraded, true, "the run did not finish");
+  assert.equal((await bench.gradeOne(down, llm, kase, record, [], true)).ungraded, true, "the grader run failed");
+  assert.equal((await bench.gradeLlm({ ...down, options: { deadline: Date.now() - 1, runTimeoutMs: 1000 } }, "x")).ungraded, true, "the deadline passed");
+});
