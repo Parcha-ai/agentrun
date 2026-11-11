@@ -3,13 +3,12 @@
 // through its own connection to the browser: the cdp provider names the browser's own URL for that connection, so a drop
 // on the driver's side never cuts it, and the next attach finds the browser free.
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { rm } from "node:fs/promises";
 import test from "node:test";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { heldProxy } from "./fixtures/held-proxy.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { startSite } from "./fixtures/site.mjs";
 
@@ -18,7 +17,7 @@ const SPEC = { tag: "reinit", maxLifetimeS: 600, idleTimeoutS: 60, proxies: fals
 /** A browser (its extension confined, as in production), a proxy in front of it, and a driver attached through the proxy
  *  that has set a value the page keeps. Null when this Chrome cannot run the extension. */
 async function proxiedDriver(t) {
-  const dir = await mkdtemp(path.join(tmpdir(), "pi-browser-reinit-"));
+  const dir = await scratch(t, "pi-browser-reinit-");
   const drivers = [];
   let provider, ref, proxy;
   t.after(async () => {
