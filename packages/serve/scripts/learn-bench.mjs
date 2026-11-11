@@ -25,7 +25,8 @@
 // template eval starts one. Models come from this process's environment (AGENT_MODEL_BASE_URL with AGENT_MODEL_API_KEY
 // and AGENT_MODEL for pi and the default grader; ANTHROPIC_BASE_URL with ANTHROPIC_API_KEY for claude-agent): the bench
 // wrapper hands them placeholder keys and a broker. Hard stop: each step's run capped by its prompt's max_cost_usd; before
-// each step the server's whole spend is read (spentOf: GET /v2/stats and /v2/usage's learning meter), and the step starts
+// each step the server's whole spend is read (spentOf: GET /v2/stats and /v2/usage's learning meter; a cost it could
+// not price stops the bench, as learn-eval stops at a cost it can't read), and the step starts
 // only when that plus its worst case (stepWorst: its run's cap and its llm graders') fits under --max-usd (capStop), else
 // the bench ends there and exits 3; only a step's learning grade, which has no cap of its own, can pass it. --deadline-s
 // for the whole.
@@ -274,10 +275,13 @@ export async function settled(api, runId, learns, deadline) {
 export const unsettledStop = (result) => (result.learning_unsettled ? `the learning of step ${result.id} had not settled by its deadline (--run-timeout-s): no later step runs without its lesson` : null);
 
 /** What the bench's own server has spent: every run's cost (GET /stats) and learning's grades, which no run's cost holds
- *  (GET /usage's `learning` meter, since the server began: the bench's data directory is its own). */
+ *  (GET /usage's `learning` meter, since the server began: the bench's data directory is its own). Null when a cost the
+ *  server could not price is in it (/usage's `unpriced_runs`, a grade that failed after a paid request among them): the
+ *  spend is then not known, and no dollar total stands for it. */
 export async function spentOf(api) {
   const runs = (await api("GET", "/stats")).body?.analytics?.totals?.cost_usd ?? 0;
   const usage = (await api("GET", "/usage?from=1970-01-01T00%3A00%3A00Z&group_by=meter")).body;
+  if ((usage?.unpriced_runs ?? 0) > 0) return null;
   const learning = (usage?.lines ?? []).find((line) => line.meter === "learning")?.usd ?? 0;
   return runs + learning;
 }
@@ -286,9 +290,10 @@ export async function spentOf(api) {
  *  when its run has no cap. Its learning grade has no cap of its own and is not in it. */
 export const stepWorst = (kase) => (kase?.maxCostUsd === undefined ? undefined : kase.maxCostUsd + (kase.graders ?? []).filter((g) => g.type === "llm").length * TE.GRADER_CAP_USD);
 
-/** Why the bench stops before step `id`, or null: its spend so far passed --max-usd, or the step's worst case would take
- *  it past. */
+/** Why the bench stops before step `id`, or null: its spend so far is not known (spentOf's null), passed --max-usd, or
+ *  the step's worst case would take it past. */
 export function capStop(spent, worst, maxUsd, id) {
+  if (spent === null) return `its spend holds a cost that could not be priced, so --max-usd ${maxUsd} could not be held before step ${id}`;
   if (spent > maxUsd) return `the server's spend ${spent} passed --max-usd ${maxUsd} before step ${id}`;
   if (worst !== undefined && spent + worst > maxUsd) return `step ${id} could spend up to $${worst} (its run's cap and its graders'), past --max-usd ${maxUsd} with $${spent} spent`;
   return null;
