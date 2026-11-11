@@ -191,12 +191,16 @@ export class Webhooks {
    *  log of attempts stays. */
   remove(): Promise<void> {
     return this.change(async () => {
-      if (!this.config()) return;
-      await this.store.settings.remove(WEBHOOK_SETTING);
-      await this.store.flush();
-      this.current = undefined;
+      if (this.config()) {
+        // Its pending messages fail first: whatever fails after, none of them is sent, to this receiver or a later one.
+        await this.drop("the webhook was removed");
+        await this.store.settings.remove(WEBHOOK_SETTING);
+        await this.store.flush();
+        this.current = undefined;
+      }
+      // Its secret goes last, and on every DELETE (a no-op once gone): a removal of it that failed is finished by the
+      // next DELETE, which finds no webhook.
       await this.secret.remove(SERVER_SCOPE);
-      await this.drop("the webhook was removed");
     });
   }
 

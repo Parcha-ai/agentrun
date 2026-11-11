@@ -705,6 +705,35 @@ test("a trigger's failure told again while its first outbox write is still in fl
   assert.deepEqual(await Promise.all([first, again]), ["unsaved", "unsaved"], "neither is counted as queued: the write that held it failed");
 });
 
+test("a DELETE whose secret removal fails has dropped the pending messages first: a DELETE again finishes it, and a PUT after sends none of them", async (t) => {
+  const hook = await receiver(t, () => 503);
+  const store = await storeIn(t, await scratch(t));
+  const secret = sealedSettingsOverStore(store, OUTBOUND_WEBHOOK.id, OUTBOUND_WEBHOOK.settings, randomBytes(32), () => undefined);
+  await secret.load();
+  let refuseRemoval = true;
+  const flaky = { get: (...args) => secret.get(...args), mint: (...args) => secret.mint(...args), remove: async (scope) => {
+    if (refuseRemoval) throw ((refuseRemoval = false), new Error("the store refused the write"));
+    return secret.remove(scope);
+  } };
+  const webhooks = new Webhooks(store, flaky, () => undefined, [60_000]);
+  await webhooks.load();
+  t.after(() => webhooks.close());
+  await webhooks.save({ url: hook.url });
+  await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, "m1");
+  await hook.when(1);
+  // Its first try answered 503: pending, its next try a minute away.
+  while (webhooks.attemptsView().attempts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(webhooks.remove(), /refused the write/);
+  await webhooks.remove();
+  const pending = (await store.settings.get(OUTBOX_SETTING)).messages.filter((m) => m.status === "pending");
+  assert.deepEqual(pending, [], "no message of the removed webhook is still to send");
+  assert.equal(webhooks.view().configured, false);
+  const fresh = await receiver(t);
+  const again = await webhooks.save({ url: fresh.url });
+  assert.match(again.secret ?? "", /^whsec_/, "a new webhook, a new secret");
+  assert.deepEqual((await store.settings.get(OUTBOX_SETTING)).messages.filter((m) => m.status === "pending"), [], "and nothing of the old one goes to it");
+});
+
 test("a PUT that makes a new secret for a webhook whose secret no longer opens, and fails to write the webhook, shows none and keeps none: the next PUT makes one and shows it", async (t) => {
   const hook = await receiver(t);
   const store = await storeIn(t, await scratch(t));
