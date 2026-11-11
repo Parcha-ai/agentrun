@@ -181,3 +181,26 @@ test("the live eval's --max-usd is a hard stop: once its spend reaches the cap, 
   assert.equal(unpriced.requests, 1);
   assert.match(unpriced.summary, /cost of a request could not be read/);
 });
+
+test("the live eval keeps what a job spent when the cap stops it part way: an end-of-run turn cut between its requests books both, in its row and in the summary's total", { timeout: 120_000 }, async (t) => {
+  const { startFauxGateway } = await import("./fixtures/faux-gateway.mjs");
+  const { spawn } = await import("node:child_process");
+  const script = new URL("../scripts/learn-eval.mjs", import.meta.url).pathname;
+  // Every answer reads a note, so the turn asks again; $1 a million in, $2 out: $0.0014 a request, the cap past the second.
+  const gateway = await startFauxGateway({ call: () => ({ name: "read", input: { path: ".learning/MEMORY.md" } }), usage: { input: 1_000, output: 200 } });
+  t.after(() => gateway.close());
+  const out = join(await scratch(t), "out");
+  const env = { PATH: process.env.PATH, AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: ["fake", "test", "key"].join("-"), AGENT_MODEL: "gpt-test", AGENT_MODEL_PRICE: "1,2,0.5" };
+  const done = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [script, "--out", out, "--set", "heldout", "--only", heldOut[0].id, "--modes", "reflect", "--models", "default", "--concurrency", "1", "--max-usd", "0.002", "--label", "cut"], { env });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.stdout.resume();
+    child.on("close", (status) => resolve({ status, stderr }));
+  });
+  assert.equal(done.status, 3, done.stderr.slice(-2000));
+  assert.equal(gateway.requests.filter((r) => r.method === "POST").length, 2, "two requests, the cap reached by the second");
+  const [row] = readFileSync(join(out, "cut.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(Math.abs(row.usd - 0.0028) < 1e-9, `the row books both requests: ${row.usd}`);
+  assert.match(readFileSync(join(out, "cut.md"), "utf8"), /spent \$0\.0028/);
+});
