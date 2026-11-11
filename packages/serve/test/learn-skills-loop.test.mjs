@@ -223,7 +223,8 @@ test("a skill is laid into a run with its name and description alone in its fron
   await ended(api, runId);
   const given = readFileSync(join(runDir(data, runId), "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
   assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
-  assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
+  // Served as servedSkill writes it: name and description, each quoted (#2255), and nothing else.
+  assert.match(given, /^---\nname: "find-policies"\ndescription: "[^\n]+"\n---\n/);
 });
 
 test("a skill left out unread for its size that hides a secret's shape refuses the whole answer: the note and the draft beside it are not kept", { timeout: 120_000 }, async (t) => {

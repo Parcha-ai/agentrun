@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { checkProposal } from "../dist/learn/check.js";
-import { frontKeys, frontMatter, isHeld, learnedFront, learnedStatus, setsStatus, skillProblems, UNCLEAR_FRONT } from "../dist/learn/skills.js";
+import { frontKeys, frontMatter, isHeld, learnedFront, learnedStatus, released, retiredLearned, setsStatus, skillProblems, UNCLEAR_FRONT } from "../dist/learn/skills.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { readSeed } from "../dist/learn/seed-check.js";
 import { agentFolderOf } from "../dist/files.js";
@@ -82,6 +82,26 @@ test("an explicit-key status is none the writers meet: never held (approve refus
   assert.equal(learnedStatus(asked), "retired");
   assert.equal(frontMatter(asked), undefined);
   assert.equal(learnedFront(asked), undefined);
+});
+
+// #2255 review, P1: the writers (released, retiredLearned) take the `status:` line out whole, so a status is one plain
+// line or it reads unclear: a quoted status that runs on (`"pen\` then `  ding"`, which YAML reads as pending), a block or a
+// wrapped one is never held, never active, and no writer edits it, so an approve never leaves part of it behind.
+test("a status set on more than one line reads unclear: never held, never active, and no writer edits it", () => {
+  for (const status of ['status: "pen\\\n  ding"\n', "status: \"pen\n  ding\"\n", "status: >\n  pending\n", "status: pen\n  ding\n"]) {
+    const text = skill(`${CLEAN}${status}`);
+    assert.equal(learnedStatus(text), "retired", status);
+    assert.equal(isHeld(text), false, status);
+    assert.throws(() => released(text), /status/, `released: ${status}`);
+    assert.throws(() => retiredLearned(text), /status/, `retiredLearned: ${status}`);
+  }
+  // One line, plain or quoted: as written, and each writer's result reads as it says.
+  for (const status of ["status: pending\n", 'status: "pending"\n', "status: 'pending'\n"]) {
+    const text = skill(`${CLEAN}${status}`);
+    assert.equal(learnedStatus(text), "pending", status);
+    assert.equal(learnedStatus(released(text)), "active", status);
+    assert.equal(learnedStatus(retiredLearned(text)), "retired", status);
+  }
 });
 
 test("a skill whose name and description are explicit keys is never served: the snapshot reads it retired, and a seed never lays it", async (t) => {
