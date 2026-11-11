@@ -27,12 +27,13 @@ const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const PER_REQUEST = 0.002;
 const ENDED = ["completed", "failed", "cancelled", "input_required"];
 
-async function setup(t, { mcp = false, sandbox, runner = true } = {}) {
+async function setup(t, { mcp = false, sandbox, runner = true, strong = "faux-strong" } = {}) {
   const tag = randomBytes(6).toString("hex");
   const log = join(process.env.TMPDIR ?? "/tmp", `faux-subagent-${tag}.jsonl`);
   /** The file whose being there lets a "Hold" child answer (fixtures/faux-subagent.mjs). */
   const release = join(process.env.TMPDIR ?? "/tmp", `faux-subagent-${tag}.release`);
-  withEnv(t, { FAUX_SUBAGENT_LOG: log, FAUX_SUBAGENT_RELEASE: release, AGENT_MODEL_STRONG: "faux-strong", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  // The host's strong model, or none (`strong: null`): AGENT_MODEL_STRONG is unset then.
+  withEnv(t, { FAUX_SUBAGENT_LOG: log, FAUX_SUBAGENT_RELEASE: release, ...(strong ? { AGENT_MODEL_STRONG: strong } : {}), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
   const server = await serve(t, { faux: FAUX_SUBAGENT, ...(runner ? {} : { runner: false }), ...(mcp ? { accounts: true, openSetup: true } : {}), ...(sandbox ? { fauxBox: FAUX_BOX, computerForClaim: sandbox } : {}) });
   let fake;
   if (mcp) {
@@ -255,6 +256,14 @@ test("a call's max_tool_calls narrows the agent's tool-call budget for its child
   assert.equal(own.answer, "Results: Reads: 2");
   const bad = await run("budget-bad", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say no", max_tool_calls: 0 }]));
   assert.equal(resultsOf(bad.rows)[0]?.tool_status, "failed", "a budget below 1 is refused before any child starts");
+});
+
+test("a tier with no model of its own (no model_tiers, no AGENT_MODEL_STRONG) runs its child on the agent's own model", { timeout: 240_000 }, async (t) => {
+  const { run, lines } = await setup(t, { strong: null });
+  const own = await run("no-tier-model", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say mine", model: "strong" }]));
+  assert.equal(own.last.status, "completed", JSON.stringify(own.view));
+  assert.equal(own.answer, "Results: mine");
+  assert.deepEqual(requests(lines()).filter((line) => line.child).map((line) => line.model), ["faux-1"], "the agent's own model");
 });
 
 test("a call that names no tier runs its child on the agent's own model", { timeout: 240_000 }, async (t) => {

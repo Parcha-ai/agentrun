@@ -174,6 +174,12 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
+/** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
+ *  tier: those nodes keep their own route and fallback). */
+const SUBAGENT_ROUTE = "subagent-";
+const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
+const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
+
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
  *  the workflow loop). */
 type RevisionBody = {
@@ -391,7 +397,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
   // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.
-  const tierRoutes = new Map<Tier, ModelRoute>();
+  const tierRoutes = new Map<string, ModelRoute>();
   // The run's pi-native extensions, in the root agent through the pi adapter (PiAdapterOptions.extensions), which installs
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
@@ -404,21 +410,24 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // pi-native tools in the session's own extension (PiAdapterOptions.tools): the subagent tool, pushed below.
   const piTools: ToolRegistration[] = [];
   // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
-  // host's for the tier, each on a route of its own (its proxy on the session's booking, adapters/pi.ts tiers). A tier no
-  // route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
+  // host's for the tier (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), each on a route of its own (its proxy on the session's
+  // booking, adapters/pi.ts tiers). A tier with neither is the agent's own model, as a learned workflow's node of it runs
+  // on the run's. A tier no route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
   // provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's model): so
   // its route reads every model key the server holds (savedModelKeys). Those reach the tier's proxy alone, as its
   // credential, never the run's tools (toolEnv).
-  // Each is the run's one route of its tier (tierRoutes, beside a learned workflow's node of the tier), on that tier's
-  // proxy, which names its tier on each request, so the cap prices a child's requests as that route books them.
+  // Each is in tierRoutes under its own key (subagentRoute: never a learned workflow's tier, whose nodes keep their own
+  // routes and fallback), on a proxy of its own that names that key on each request, so the cap prices a child's
+  // requests as that route books them.
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
     const savedKeys = await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
     holdClaimed(cut, savedKeys);
     const tierEnv = withModelKeys(deps.env, { ...savedKeys, ...toolEnv });
     for (const tier of SUBAGENT_TIERS) {
+      if (body.modelTiers?.[tier] === undefined && tierModelOf(tierEnv, tier) === undefined) continue;
       try {
-        tierRoutes.set(tier, await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
+        tierRoutes.set(subagentRoute(tier), await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
       } catch (error) {
         tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
       }
@@ -458,7 +467,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     capUsd: () => launch.maxCostUsd,
     modelOf: (id, by) => {
       if (by === undefined) return id === route.model ? capModel : undefined;
-      const tierRoute = tierRoutes.get(by as Tier);
+      const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
@@ -520,9 +529,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const tierEnv = withModelKeys(deps.env, { ...toolEnv, ...tierKeys });
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
       if ("why" in routed) tierUnreachable.set(tier, routed.why);
-      // A tier the agent's subagent calls already route (its definition's model_tiers, else the host's) keeps that one
-      // route: one route of a tier a run.
-      else if (!tierRoutes.has(tier)) tierRoutes.set(tier, routed);
+      else tierRoutes.set(tier, routed);
     }
     const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
     holdClaimed(cut, learnedKeys);
@@ -546,7 +553,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const handTools = tools.hostTools(withKindTools(granted, tools), results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
+  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp)).map((tool) => answersCut(tool, cut));
@@ -572,11 +579,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       granted,
       sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
       tier: (tier) => {
-        const at = tierRoutes.get(tier);
-        if (!at) return { why: tierWhy.get(tier) ?? "none is set" };
+        const why = tierWhy.get(tier);
+        if (why !== undefined) return { why };
+        // A tier with no model of its own (no model_tiers, no AGENT_MODEL_<TIER>): the agent's own model.
+        const at = tierRoutes.get(subagentRoute(tier));
+        if (!at) return { ref: { provider: PORT_PROVIDER, modelId: route.model } };
         // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on.
         if (at.unpriced && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
-        return { ref: { provider: tierProvider(tier), modelId: at.model } };
+        return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
       preamble: environmentLine(),
       ...(revision.body.maxToolCalls !== undefined ? { toolCalls: revision.body.maxToolCalls } : {}),
