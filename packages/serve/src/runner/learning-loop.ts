@@ -115,7 +115,7 @@ export type GradedData = { readonly source: string; readonly verdict: Verdict; r
 export type DroppedData = { readonly source: string; readonly reason: string; readonly detail: string; readonly problems?: readonly Problem[]; readonly usd?: number | null; readonly tokens?: Tokens | null };
 /** `verdict`: each item's final decision once the merge settled it (takenOnMain's and the commit's left-out notes dropped,
  *  with their words), which the run's learning end reads in place of the grade's (store-reads/learning.ts). */
-export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string; readonly verdict?: Verdict };
+export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string; readonly verdict: Verdict };
 type UnavailableData = { readonly source: string; readonly error: string };
 
 /** The graded item a proposal's file is judged as (grade.ts itemOf): a draft's README.md with its workflow.json, every

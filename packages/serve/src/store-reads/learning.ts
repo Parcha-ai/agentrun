@@ -72,12 +72,12 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
   if (merged && graded) {
-    // Each item as the merge settled it (its record's verdict: a note it left out is no longer kept, and says why), else
-    // the grade's, for a merge recorded before it kept one.
-    const verdict = merged.verdict ?? graded.verdict;
-    const what = learnedOf(keptOf(row.proposal, verdict), verdict);
+    // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
+    // recorded with none (before the record kept it) reads no item decisions.
+    const verdict = merged.verdict;
+    const what = verdict ? learnedOf(keptOf(row.proposal, verdict), verdict) : { learned: [], pending: [], skills: [], workflows: [] };
     return {
-      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, verdict, graded: { ...graded.graded }, ...cost, merged: merged.commit,
+      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
       learned: what.learned, ...(what.pending.length ? { pending: what.pending } : {}), ...(what.skills.length ? { skills: what.skills } : {}), ...(what.workflows.length ? { workflows: what.workflows } : {}),
     };
   }
