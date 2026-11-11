@@ -50,6 +50,7 @@ import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
+import { mcpServersOf } from "../tool-gate.js";
 import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -315,7 +316,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
   // store at each decide, and the turn's origin read through the run's Workspace (Mode 2: on the run's disk) — adapterRunGate
   // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, mcpServersOf(granted));
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
