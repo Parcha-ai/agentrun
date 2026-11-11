@@ -288,7 +288,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   let closed = false;
   const existing = await run.harness.commit((tx) => tx.submissionByRequest(root.id, INPUT_REQUEST), context);
   if (existing) input = await run.harness.submission(existing.id, context);
-  let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" ? "idle" : "open_turn";
+  // Once that first input is settled, a later input of the root still in flight (a follow-up a reopen sent, its turn cut by
+  // a lost claim or a drain) is the turn the session is in: its end is the one recover() reads, never the first input's.
+  const later = existing && (existing.status === "done" || existing.status === "unanswered")
+    ? (await run.harness.inspect(context)).submissions.filter((one) => one.conversationId === root.id && one.type === "input").at(-1)
+    : undefined;
+  if (later) input = await run.harness.submission(later.id, context);
+  let state: AdapterSession["state"] = existing === undefined ? "new" : later ? "open_turn" : existing.status === "done" ? "idle" : "open_turn";
   let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
   const watch = (submission: Submission) => {
     running = submission.wait(context).then(

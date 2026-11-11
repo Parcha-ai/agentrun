@@ -13,7 +13,7 @@ laptop with one command, in one container, or as a server with runners. Apache-2
 
 ## Start in three steps
 
-You need Node 24.11 or newer, on macOS or Linux.
+You need Node 24.22.3 or newer, on macOS or Linux.
 
 1. Start the server:
 

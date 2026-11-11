@@ -291,8 +291,9 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
 export interface EndData {
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
-  /** How an ended run ended, set only for an escalation (the store's RunOutcome). */
-  readonly outcome?: "completed" | "escalated";
+  /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
+   *  (a person's stop: the turn is over, not the run) or 'cancelled' (stopEnd). */
+  readonly outcome?: "completed" | "escalated" | "stopped" | "cancelled";
   /** What the run cost, as its end knows it. */
   readonly costUsd?: number;
   /** The run's metrics (the old StoredMetrics JSON). */

@@ -54,7 +54,7 @@ function browserProvider(id, url, record) {
 for (const [provider, keys, url] of [
   ["browserbase", { BROWSERBASE_API_KEY: "bb-test", BROWSERBASE_PROJECT_ID: "proj-test" }, "wss://connect.browserbase.test/?signingKey=SECRET-bb"],
   ["kernel", { KERNEL_API_KEY: "kn-test" }, "wss://cdp.kernel.test/browser/k1?jwt=SECRET-kn"],
-  ["local", {}, "ws://127.0.0.1:9222/devtools/browser/abc"],
+  ["local-chrome", {}, "ws://127.0.0.1:9222/devtools/browser/abc"],
 ]) {
   test(`a ${provider} browser computer: the claim makes nothing; the browser tool opens, attaches to and releases each session through its provider, and the claim's release lets go of what it left`, async () => {
     const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-claim-browser-")));

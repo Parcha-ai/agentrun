@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, runDir, serve, serverLog } from "./support.mjs";
+import { agent, follow, runDir, scratchDir, serve, serverLog } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -95,8 +95,7 @@ async function filesUnder(dir, at = "") {
   return out;
 }
 
-// SKIP (follow-up #2080): the claude-agent CLI on the runner does not run under setpriv --no-new-privs as pi's commands do.
-test.skip("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
@@ -113,7 +112,7 @@ test.skip("a run on claude-agent: through the adapter's proxy with the native mo
   assert.equal(field(status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
   const cwd = await readlink(`/proc/${cli}/cwd`);
-  assert.equal(cwd, realpathSync(join(runDir(data, runId), "work")), "the CLI works in the run's workspace, where its file tools write");
+  assert.equal(cwd, realpathSync(scratchDir(data, runId)), "the CLI works in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0").filter(Boolean);
   assert.ok(!environ.some((line) => line.includes(KEY)), "the key never reaches the CLI");
   assert.deepEqual(environ.filter((line) => /^(ANTHROPIC_API_KEY|AGENTRUN_[A-Z_]*)=/.test(line)).map((line) => line.split("=")[0]), [], "nor the server's variables");
