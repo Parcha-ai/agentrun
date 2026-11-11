@@ -41,6 +41,7 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
+import { TOOL_BUDGET_TEXT } from "../tool-budget.js";
 
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
@@ -63,6 +64,9 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
   readonly askedAs?: (tool: string) => string;
   /** What an asked call's card shows beside its input (a learned workflow's MCP calls it would make), if anything. */
   readonly askedFor?: (tool: string, args: unknown) => Promise<Record<string, unknown> | undefined>;
+  /** The revision's tool-call budget (definition.max_tool_calls, tool-budget.ts): the calls each conversation may make. A
+   *  call past it is refused before anything else is asked; one the adapter counts no calls for (a CLI's) is not held. */
+  readonly toolCalls?: number;
 };
 
 /** What one claimed run's adapter loop runs. */
@@ -1655,6 +1659,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
+      // The tool-call budget, before the gate's settings: a call past it is refused in its fixed words, never parked or
+      // asked about, and the refusal is marked so its own count leaves it out.
+      const budget = spec.gate?.toolCalls;
+      if (budget !== undefined && call.callsBefore && (await call.callsBefore()) >= budget) return { deny: TOOL_BUDGET_TEXT, spent: true };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";

@@ -12,7 +12,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { type Conversation, type Cursor, defineExtension, defineTool, type EntryRecord, type Extension, GenerationTask, type Harness, hook, type HookApi, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -21,6 +21,7 @@ import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
+import { callsBefore, TOOL_BUDGET_SPENT } from "../../tool-budget.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -38,10 +39,14 @@ export interface PreIntentCall {
   /** An earlier attempt of the call may have been sent (a CLI's kernel bridge, asking about a replay-safe call a crash
    *  cut: GateCall's `replayed`), so a refusal never says nothing was. */
   readonly replayed?: true;
+  /** The tool calls the call's conversation made before it, read from its committed entries (tool-budget.ts callsBefore),
+   *  for the gate's tool-call budget: pi's model-issued calls only, never a nested call or a CLI's. */
+  readonly callsBefore?: () => Promise<number>;
 }
 
-/** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */
-export type PreIntentAnswer = "allow" | { readonly deny: string } | { readonly park: true };
+/** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here).
+ *  `spent`: the refusal is the tool-call budget's, marked so on its result, which the budget's count then leaves out. */
+export type PreIntentAnswer = "allow" | { readonly deny: string; readonly spent?: true } | { readonly park: true };
 
 /** SessionIO with the gate asked before a call's intent (SessionIO.gate in the adapter contract: "allow", a deny, or a park). */
 export type PiSessionIO = SessionIO & {
@@ -169,15 +174,18 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     tools,
     hooks: [
       hook(ToolTask, {
-        beforeTool: async (call, _api, hookContext: Context) => {
+        beforeTool: async (call, api, hookContext: Context) => {
           if (!io.gate) return undefined;
-          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
+          // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
+          // parent's part.
+          const counted = call.parent === undefined ? { callsBefore: async () => callsBefore(await conversationEntries(api, hookContext), call.id) } : {};
+          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...counted }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);
             return undefined;
           }
           if ("deny" in answer) {
-            refusals.refuse(call.id, answer.deny);
+            refusals.refuse(call.id, answer.deny, "spent" in answer && answer.spent === true ? true : undefined);
             return { block: answer.deny };
           }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
@@ -295,25 +303,37 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
  *  call's result (afterTool): a blocked result becomes those words alone, an error, as main gives a refused call's
  *  result, never pi's framing of a blocked call. Every other result is pi's own. `held`: the words still held. */
 export function refusalWords() {
-  const words = new Map<string, string>();
+  const words = new Map<string, { text: string; spent?: true }>();
   return {
-    refuse(callId: string, text: string): void {
-      words.set(callId, text);
+    refuse(callId: string, text: string, spent?: true): void {
+      words.set(callId, { text, ...(spent ? { spent } : {}) });
     },
-    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true; details: { [CALL_REFUSED]: true } } | undefined {
-      const text = words.get(callId);
+    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true; details: { [CALL_REFUSED]: true; [TOOL_BUDGET_SPENT]?: true } } | undefined {
+      const refused = words.get(callId);
       // Let go on every result: the call has its one result now, whatever it is.
       words.delete(callId);
       const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
-      if (text === undefined || !blocked) return undefined;
+      if (refused === undefined || !blocked) return undefined;
       // Marked refused in its details (which the model never reads): its Timeline rows say it was refused, never that it
-      // ran and failed.
-      return { output: [{ type: "text", text }], isError: true, details: { [CALL_REFUSED]: true } };
+      // ran and failed. A budget refusal is marked so too, so the budget's count leaves it out.
+      return { output: [{ type: "text", text: refused.text }], isError: true, details: { [CALL_REFUSED]: true, ...(refused.spent ? { [TOOL_BUDGET_SPENT]: true as const } : {}) } };
     },
     get held(): number {
       return words.size;
     },
   };
+}
+
+/** Every committed entry of a hook's conversation, oldest first. */
+async function conversationEntries(api: HookApi, context: Context): Promise<EntryRecord[]> {
+  const entries: EntryRecord[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const page = await api.entries({ order: "ascending" }, 500, cursor, context);
+    entries.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return entries;
 }
 
 /** pi's output limits for a host tool, from the host's result bound: a result within it holds at most that many
