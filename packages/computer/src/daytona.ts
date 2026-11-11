@@ -192,6 +192,12 @@ export const DAYTONA_GPU_MAX = 8;
 /** The one region Daytona runs a GPU sandbox in, whatever the provider's target. */
 export const DAYTONA_GPU_REGION = "earth";
 /**
+ * The snapshot every GPU sandbox is made from: Daytona's general GPU snapshot, its default sandbox image (user daytona,
+ * passwordless sudo) with the CUDA toolkit, as Daytona's dashboard makes one (GET /snapshots/daytona-gpu, 11-11). A GPU
+ * spec names it, or "default"; no other snapshot is proven to give a GPU computer, so check() refuses one.
+ */
+export const DAYTONA_GPU_SNAPSHOT = "daytona-gpu";
+/**
  * The GPUs Daytona offers, as capabilities().gpu and CAPABILITIES declare them, with its limits on a GPU sandbox: its stop
  * deletes it (no pause, no snapshot: nothing is kept), it runs in region earth, each GPU comes with 16 vCPUs, 192 GiB
  * of memory and 512 GiB of disk (Daytona's defaults), and it may be preempted (daytona.io/pricing lists its GPUs as
@@ -554,8 +560,11 @@ interface SandboxExpected {
 function sandboxDrift(spec: ComputerSpec, sb: Sandbox, expected: SandboxExpected): string[] {
 	const found: string[] = [];
 	const mismatch = (field: string, declared: unknown, actual: unknown) => found.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
-	// Daytona's default snapshot is whichever it names: a computer made from it is not held to a name.
-	if (spec.image !== DAYTONA_DEFAULT_SNAPSHOT && sb.snapshot !== spec.image) mismatch("snapshot", spec.image, sb.snapshot);
+	// A GPU computer is made from daytona-gpu, whatever image named it. Daytona's default snapshot is whichever it names: a
+	// computer made from it is not held to a name.
+	if (spec.gpu !== undefined) {
+		if (sb.snapshot !== DAYTONA_GPU_SNAPSHOT) mismatch("snapshot", DAYTONA_GPU_SNAPSHOT, sb.snapshot);
+	} else if (spec.image !== DAYTONA_DEFAULT_SNAPSHOT && sb.snapshot !== spec.image) mismatch("snapshot", spec.image, sb.snapshot);
 	const network = networkOf(sb);
 	if (!samePolicy(network, spec.network)) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
 	const labels = sb.labels ?? {};
@@ -765,7 +774,12 @@ export class DaytonaProvider implements ComputerProvider {
 				refuse("mount", `an Archil mount's tools run as agentrun-tool, ${tool}:${tool}, and this provider's daemon user is ${this.#uid}:${this.#gid}: give it daemonUser "${tool}:${tool}"`);
 			}
 		}
-		refusals.push(...checkGpu(given.gpu, this.capabilities()));
+		const gpuRefused = checkGpu(given.gpu, this.capabilities());
+		refusals.push(...gpuRefused);
+		// A GPU computer is made from daytona-gpu: a spec names it, or Daytona's default, never another snapshot.
+		if (given.gpu !== undefined && gpuRefused.length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== DAYTONA_GPU_SNAPSHOT) {
+			refuse("image", `a Daytona GPU computer is made from Daytona's GPU snapshot ${DAYTONA_GPU_SNAPSHOT} alone, not ${JSON.stringify(image)}: give "${DAYTONA_GPU_SNAPSHOT}" or "${DAYTONA_DEFAULT_SNAPSHOT}"; no other snapshot is proven to give a GPU computer`);
+		}
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (SIZE_FIELDS.has(field)) refuse(field, `a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`);
@@ -792,8 +806,9 @@ export class DaytonaProvider implements ComputerProvider {
 		const archil = archilOf(spec);
 		const body = {
 			name,
-			// "default" sends no snapshot, and Daytona makes the sandbox from its default snapshot.
-			...(spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
+			// A GPU sandbox is made from daytona-gpu (check() took "default" or that name). Otherwise "default" sends no
+			// snapshot, and Daytona makes the sandbox from its default snapshot.
+			...(spec.gpu !== undefined ? { snapshot: DAYTONA_GPU_SNAPSHOT } : spec.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: spec.image }),
 			// An Archil computer carries its mount as a label: kind and source, never the token.
 			labels: { ...spec.labels, ...(archil ? archilLabels(archil) : {}), [COMPUTER_LABEL]: "1", [DEADLINE_LABEL]: deadline, [IMAGE_LABEL]: spec.image },
 			env: {},
@@ -802,7 +817,8 @@ export class DaytonaProvider implements ComputerProvider {
 			...(spec.gpu !== undefined ? { target: DAYTONA_GPU_REGION } : this.#target === undefined ? {} : { target: this.#target }),
 			ttlMinutes: Math.max(1, Math.ceil(spec.lifetimeMs / 60_000)),
 			autoStopInterval: this.#autoStop,
-			// A GPU sandbox's stop deletes it (no pause, no snapshot), so it is asked for and read back as deleted at stop.
+			// A GPU sandbox's stop deletes it (no pause, no snapshot), so it is asked for and read back as deleted at stop:
+			// autoDeleteInterval 0 is Daytona's ephemeral (its SDK's ephemeral sets it; CreateSandbox has no ephemeral field).
 			autoDeleteInterval: this.#autoDeleteFor(spec.gpu !== undefined),
 			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
 			// holds the tools to none.
