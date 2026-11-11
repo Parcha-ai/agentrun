@@ -129,6 +129,27 @@ test("the grader is told, under a draft, each MCP tool its call nodes run, by se
   assert.ok(!none.includes("Its call nodes run MCP tools"), "nothing for a draft with no MCP node");
 });
 
+// LS-07: an MCP tool with no declared per-call price runs outside the run's cost and cap (mcp-gateway.ts "not metered").
+// A draft calling one unattended is held for its owner's OK in code, whatever the grade: the hold is structural, and the
+// grader is told the same line under the draft.
+const UNPRICED = "its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap";
+test("a draft held as unpriced waits for its owner's OK whatever the grader decides, the hold's reason its why; one not held follows the grade; the grader is told the line under it", () => {
+  const draftFile = MCP_FILES[0].file;
+  const keepBoth = JSON.stringify({ merge: true, reason: "Both are worth keeping.", items: [{ file: draftFile, decision: "keep", origin: "run", why: "A repeatable job." }] });
+  const held = parseVerdict(keepBoth, [MCP_FILES[0]], { [draftFile]: [UNPRICED] });
+  assert.deepEqual(held.items[0], { file: draftFile, keep: true, pending: true, origin: "run", question: "Unpriced", why: UNPRICED });
+  const free = parseVerdict(keepBoth, [MCP_FILES[0]]);
+  assert.deepEqual([free.items[0].keep, free.items[0].pending], [true, undefined], "no hold: the grade stands");
+  // A drop stays a drop: the hold only ever holds what the grader kept.
+  const dropped = parseVerdict(JSON.stringify({ merge: false, reason: "No.", items: [{ file: draftFile, decision: "drop", question: "General", why: "One case." }] }), [MCP_FILES[0]], { [draftFile]: [UNPRICED] });
+  assert.equal(dropped.items[0].keep, false);
+  const prompt = gradePrompt({ run: RUN, active: ACTIVE, superseded: [], proposed: [], files: MCP_FILES, held: { [draftFile]: [UNPRICED] } });
+  // The host's words outside a fence; the step's label, the draft's own text, inside one, as data.
+  const said = prompt.slice(prompt.indexOf("## The new skill"));
+  assert.ok(said.includes("It waits for its owner's OK whatever you decide, for the reason below, as data: it names the draft's own steps."), said);
+  assert.match(said, new RegExp(`----- begin \\w+: workflows/file-ticket/workflow\\.json, why it waits -----\\n${UNPRICED.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`));
+});
+
 test("the user's own messages are fenced as data, in order, every one of them, each cut to GRADE_CAPS.askedMessage, with unseen characters gone; none given says so", () => {
   assert.deepEqual([GRADE_CAPS.askedMessage, GRADE_CAPS.askedTotal], [1_000, 40_000], "each message to 1,000 characters, 40,000 in all: forty messages at the cap");
   assert.equal(GRADE_CAPS.asked, undefined, "no count of messages: every one is shown while they fit");

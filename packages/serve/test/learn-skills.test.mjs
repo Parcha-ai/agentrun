@@ -127,6 +127,17 @@ test("a draft whose MCP tools set to ask would not all fit on its learned call's
   assert.equal(check(draft(manyCalls(40)), { tools: allowed.tools, gated: allowed.gated, ask: { asked: allowed.asked, fits: learnedAskFits } }).ok, true);
 });
 
+test("a draft's unpriced MCP call nodes, by step: each MCP tool with no declared price, named by its step, tool and server; a priced one and a table tool are not", async () => {
+  const { unpricedCalls, unpricedLine } = await import("../dist/learn/skills.js");
+  const doc = JSON.parse(richWorkflow());
+  doc.root.steps.splice(1, 1, { ...mcpCall("mcp:linear/create_issue", "File the ticket"), as: "a" }, { ...mcpCall("mcp:linear/list_issues", "List them"), as: "b" });
+  const priced = (tool) => (tool === "mcp:linear/list_issues" ? 0.002 : undefined);
+  const calls = unpricedCalls(doc, priced);
+  assert.deepEqual(calls, [{ label: "File the ticket", tool: "create_issue", server: "linear" }]);
+  assert.equal(unpricedLine(calls[0]), "its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap");
+  assert.deepEqual(unpricedCalls(JSON.parse(richWorkflow()), () => undefined), [], "web_fetch is no MCP tool");
+});
+
 test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate denies is refused in the gate's words", () => {
   const offered = ["web_fetch", "mcp:linear/create_issue"];
   assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: offered }), { ok: true, problems: [], notes: [] });

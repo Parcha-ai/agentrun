@@ -300,6 +300,30 @@ test("a run's workflow draft whose ask-set MCP tools would not all fit on its le
   assert.match(JSON.stringify(kept?.proposal?.left ?? kept?.proposal), /its approval card can't name all 40 MCP tools it would call that are set to ask/);
 });
 
+test("a run's workflow draft calling an MCP tool with no declared price is proposed held, saying which step, tool and server; one calling a priced tool is not (LS-07)", async (t) => {
+  for (const prices of [undefined, { create_issue: 0.01 }]) {
+    const flow = {
+      v: 2, name: "file-ticket",
+      schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+      input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" },
+      root: { node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{title}" }, out: "R", as: "r", deadline_s: 30 },
+    };
+    const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-ticket\n---\ndescription: Files a ticket; use when asked to file one\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
+    const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
+      const seed = await seedOf(dir, "agent-1");
+      return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+    }, async (server) => {
+      await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], ...(prices ? { prices } : {}) });
+    });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+    await w.ended();
+    const kept = await w.server.learning.proposal("run-1");
+    assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
+    const want = prices ? undefined : { "workflows/file-ticket/workflow.json": ["its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap"] };
+    assert.deepEqual(kept.proposal.proposal.held, want, prices ? "priced: no hold" : "unpriced: held");
+  }
+});
+
 // A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives
 // nothing new to look back on: it is not asked its end-of-run turn (no model request), and its learning is dropped
 // `empty` in said.onlyWorkflow's words, at no cost. Any other tool, or a learned workflow that fails, is asked as before.
