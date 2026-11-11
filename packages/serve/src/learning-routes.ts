@@ -16,7 +16,7 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, frontMatter, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, statusOnOneLine, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, frontMatter, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, statusOnOneLine, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront } from "./learn/index.js";
 import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -39,7 +39,8 @@ type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
 /** Who retired a retired item, and when; or, for a skill or draft that reads retired only because its file can't be read
- *  (its front matter reads no way: SnapLearned `unread`), that no one did: the host could not read it. */
+ *  (its front matter reads no way: unclearFront, read from its file as the view is made), that no one did: the host could
+ *  not read it. */
 type Retired = { at: string; by: "person" | "run" } | { at: string; by: "host"; why: "unreadable" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
@@ -116,13 +117,13 @@ const noteView = (note: SnapNote, text: string, shown: Shown, runs: NoteRuns): N
  *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
  *  which an approval names; cut of the host's secrets (a name or a file holding one reads [redacted]). */
 type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
-function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown): LearnedView {
+function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown, unread = false): LearnedView {
   const file = kind === "skill" ? item.file : `${WORKFLOWS_DIR}/${item.name}/workflow.json`;
   const bytes = item.files.find(({ path }) => path === file)?.bytes ?? item.bytes;
   return {
     name: shown.name(item.name), file: shown.name(file), ...(kind === "workflow" ? { readme: shown.name(item.file) } : {}), description: shown.text(item.description), status: item.status, run: item.run, bytes, etag: etagOf(item.oid),
     ...(item.history.last ? { last_change: item.history.last } : {}),
-    ...(item.status === "retired" ? { retired: retiredOf(item.history, item.unread === true) } : {}),
+    ...(item.status === "retired" ? { retired: retiredOf(item.history, unread) } : {}),
   };
 }
 
@@ -209,7 +210,10 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
   return reading<AgentView>(data, agentId, async ({ snapshot, body }) => {
     const index = snapshot.index.bytes ? await body(INDEX_FILE, snapshot.index.oid) : "";
     const notes = await notesPage(snapshot.notes, snapshot.main, 0, NOTES_PAGE, body, shown, runs);
-    return { agent: agentId, main: snapshot.main, index: shown.text(index), notes, skills: snapshot.skills.map((item) => learnedView(item, "skill", shown)), workflows: snapshot.workflows.map((item) => learnedView(item, "workflow", shown)), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
+    // A retired skill or draft whose key file can't be read is said so (unclearFront), read from its file now, as the
+    // snapshot's status was: a few retired items, one read each.
+    const unread = async (item: SnapLearned) => item.status === "retired" && unclearFront(await body(item.file, item.oid));
+    return { agent: agentId, main: snapshot.main, index: shown.text(index), notes, skills: await Promise.all(snapshot.skills.map(async (item) => learnedView(item, "skill", shown, await unread(item)))), workflows: await Promise.all(snapshot.workflows.map(async (item) => learnedView(item, "workflow", shown, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
   }, () => ({ agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact }));
 }
 

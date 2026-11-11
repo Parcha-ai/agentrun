@@ -438,17 +438,12 @@ const LEARNING_NOTE_REQUIRED = closed({
 });
 /** When a retired note, skill or draft was retired, and by whom: on a retired one alone. */
 const RETIRED = {
-  oneOf: [
-    closed({
-      at: { type: "string", format: "date-time", description: "When: the commit that retired it." },
-      by: { enum: ["person", "run"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it." },
-    }),
-    closed({
-      at: { type: "string", format: "date-time", description: "When: the newest commit on its file." },
-      by: { const: "host", description: "No one retired it: a skill's SKILL.md or a draft's README.md whose front matter can't be read (it reads no way, or its status is none the host writes) reads retired, so no run is given it. Fix the file, then restore it." },
-      why: { const: "unreadable" },
-    }),
-  ],
+  type: "object", additionalProperties: false, required: ["at", "by"],
+  properties: {
+    at: { type: "string", format: "date-time", description: "When: the commit that retired it; for `host`, the newest commit on its file." },
+    by: { enum: ["person", "run", "host"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it; `host`: no one retired it, a skill's SKILL.md or a draft's README.md whose front matter can't be read (it reads no way, or its status is none the host writes) reads retired, so no run is given it (`why`). Fix the file, then restore it." },
+    why: { const: "unreadable", description: "With `by: host` alone: why it reads retired." },
+  },
   description: "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.",
 };
 /** The newest change to a note, skill or draft, from the newest commit on its file. */

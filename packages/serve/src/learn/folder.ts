@@ -25,7 +25,7 @@ import {
   learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
 } from "../workspace/index.js";
 import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { learnedFront, learnedName, learnedPlace, learnedStatus, unclearFront, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
+import { learnedFront, learnedName, learnedPlace, learnedStatus, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
 /** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never a note's, never seeded. */
 export const HOST_DIR = ".agentrun";
@@ -74,9 +74,6 @@ export type SnapLearned = {
   oid: string; bytes: number;
   order: number;
   history: SnapHistory;
-  /** Present when it reads retired only because its key file can't be read (unclearFront: its front matter reads no
-   *  way, or its status is none the host writes): no one retired it. */
-  unread?: true;
   /** Past SNAPSHOT.md v1, additive, present only when there are some: the paths of the tracked symbolic links (git mode
    *  120000) in the item's folder. A seed never lays such a skill (seed-check.ts readSeed's `refused`); `files` names
    *  regular files alone. */
@@ -306,7 +303,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
 /** A learned item from its folder's files: listed when its folder is well named, its key file (SKILL.md, a draft's
  *  README.md) is there and reads, and a draft has its workflow.json too, each of those a regular file under FILE_CAP
  *  (only those are given their texts by `text`). */
-function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"]; unread?: true }): SnapLearned | undefined {
+function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"] }): SnapLearned | undefined {
   if (!learnedName(kind, name)) return undefined;
   const key = files.find(({ path }) => path === keyFile(kind, name));
   const shown = files.find(({ path }) => path === viewFile(kind, name));
@@ -315,9 +312,9 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
   if (!fields) {
     const body = text(key.path);
     if (body === undefined) return undefined;
-    fields = { description: learnedFront(body)?.description ?? "", status: learnedStatus(body), ...(unclearFront(body) ? { unread: true as const } : {}) };
+    fields = { description: learnedFront(body)?.description ?? "", status: learnedStatus(body) };
   }
-  return { name, file: key.path, description: fields.description, status: fields.status, ...(fields.unread ? { unread: true as const } : {}), run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history, ...(links.length ? { links: [...links].sort(byBytes) } : {}) };
+  return { name, file: key.path, description: fields.description, status: fields.status, run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history, ...(links.length ? { links: [...links].sort(byBytes) } : {}) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -407,7 +404,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
         order: 0,
         history: touched.has(key) ? foldNewer(old?.history, commit, key) : (old?.history ?? { at: commit.at }),
         run: runId && touched.has(viewFile(kind, name)) ? runId : (old?.run ?? null),
-      }, keyText === undefined && old ? { description: old.description, status: old.status, ...(old.unread ? { unread: true as const } : {}) } : undefined);
+      }, keyText === undefined && old ? { description: old.description, status: old.status } : undefined);
       if (item) out.push(item);
     }
     return out.sort(byName);

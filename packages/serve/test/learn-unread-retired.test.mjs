@@ -37,6 +37,10 @@ test("a skill whose front matter can't be read reads retired by the host, unread
   assert.deepEqual(by.frozen, ["retired", { by: "host", why: "unreadable" }]);
   assert.deepEqual(by.shelved, ["retired", { by: "run", why: undefined }], "retired in so many words: who set it, as before");
   for (const skill of view.skills) assert.equal(typeof skill.retired.at, "string");
+  // A later write that leaves the unreadable skill as it is: the view still says the host could not read it.
+  await commit(data, "fronts", { "skills/later/SKILL.md": "---\nname: later\ndescription: A skill landed after\n---\nUse it.\n" });
+  const after = (await api("GET", "/agents/fronts/learning")).body;
+  assert.deepEqual(after.skills.find((skill) => skill.name === "unclosed").retired.by, "host", "unchanged since, read the same way");
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schema = doc.paths["/agents/{agent_id}/learning"].get.responses["200"].content["application/json"].schema;
   assert.deepEqual(schemaProblems(doc, schema, view), [], "the view meets its contract");
