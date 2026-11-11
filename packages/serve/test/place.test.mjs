@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import { commitAgent, createAgent, getAgent } from "../dist/agents-store.js";
 import { BOX_IDS } from "../dist/boxes.js";
-import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { agent, flowAgent, follow, serve } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const storedBodies = (data) => {

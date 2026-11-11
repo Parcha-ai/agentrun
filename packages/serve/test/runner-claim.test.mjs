@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { fauxLoops, observed, queue, recorder, stores } from "./runner-support.mjs";
 
 const LEASE_MS = 400;
 const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs: 20, commandPollMs: 20 };
