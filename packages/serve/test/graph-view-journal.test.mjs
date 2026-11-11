@@ -11,7 +11,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { createWorkflowExtension, nodeRunner, taskScope } from "@parcha/agentrun-pi/durable";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
-import { startWorkflowRevision } from "@parcha/pi-durable-agent/workflow";
+import { startWorkflowRevision } from "../dist/workflow-run.js";
 import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
