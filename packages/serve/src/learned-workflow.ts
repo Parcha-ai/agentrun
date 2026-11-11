@@ -103,11 +103,12 @@ export type LearnedWorkflowRun = {
   complete?: Complete;
   /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
    *  refused before any node runs, and asked again as each call node runs, a composed workflow's inner ones too, so one
-   *  set to either since the call began is refused there, never run. None: every tool allowed (a test's run). */
-  policy?: (tool: string) => string;
+   *  set to either since the call began is refused there, never run. Required: a learned workflow never runs a tool
+   *  on a default of allow (#2153). */
+  policy: (tool: string) => string;
   /** Where the gate's permission of a tool was set (tool-gate.ts RunGate denyFrom), so a refusal names it: this agent's
-   *  settings or this server's. None: the server's. */
-  denyFrom?: (tool: string) => SettingFrom;
+   *  settings or this server's. */
+  denyFrom: (tool: string) => SettingFrom;
   /** Reads the gate's settings again (a runner's are in its store, read anew at each of its gate's decisions), awaited as
    *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
    *  gate reads its settings live (main's process). */
@@ -196,7 +197,9 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // Checked again at the call, against the agent's own tools as its run has them, before any node runs: what merged under
   // another revision may name one it has no more.
   // The tools the gate allows now; one set to ask or deny is refused in the words a workflow revision's call node is.
-  const { tools, gated, deniedBy } = learnedDraftTools(run.granted, (name) => run.policy?.(name) ?? "allow", run.plane, run.denyFrom);
+  // A run handed no gate (a caller past the types) runs nothing: a tool is never allowed for want of a policy.
+  if (typeof run.policy !== "function" || typeof run.denyFrom !== "function") return refuse("its run gave no tool policy for its call nodes");
+  const { tools, gated, deniedBy } = learnedDraftTools(run.granted, run.policy, run.plane, run.denyFrom);
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
@@ -229,8 +232,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     // a tool set to deny since the call began is refused in the gate's words, one set to ask too, since a call node
     // cannot wait for an approval. Neither runs.
     await run.refresh?.();
-    const permission = run.policy?.(tool!) ?? "allow";
-    if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom?.(tool!)));
+    const permission = run.policy(tool!);
+    if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
     const booked = ledger ? { ledger: { call: `${ledger.call}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: ledger.record } } : {};

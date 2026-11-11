@@ -80,6 +80,18 @@ export async function dropPostgresSchema(url: string, schema: string): Promise<v
   }
 }
 
+/** Makes `schema` (absent, under the migration lock). A role with no CREATE on the database is refused in words that say
+ *  what to do: the schema made ahead of time, owned by this role, or CREATE granted. */
+async function createSchema(client: pg.ClientBase, schema: string): Promise<void> {
+  try {
+    await client.query(`CREATE SCHEMA ${schema}`);
+  } catch (error) {
+    // 42501: insufficient_privilege.
+    if ((error as { code?: string })?.code !== "42501") throw error;
+    throw new Error(`${placeOf(schema)} does not exist, and this role may not create it (no CREATE on the database): create the schema ahead of time, owned by this role, or grant this role CREATE on the database`, { cause: error });
+  }
+}
+
 /** Applies every pending migration to `schema`, in one transaction under the schema's migration lock, at `at` (ms). A
  *  schema at a version this build does not know is refused (SchemaVersionUnknown), and so is an applied file whose text
  *  changed since. Answers the version it leaves. */
@@ -89,7 +101,10 @@ export async function migrate(client: pg.ClientBase, schema: string, at: number,
   await client.query("BEGIN");
   try {
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('migrate'))", [schema]);
-    await client.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+    // Made only when absent: Postgres checks CREATE on the database before IF NOT EXISTS, so a role that owns a schema an
+    // administrator made ahead of time, with no CREATE on the database, could not start on it otherwise.
+    const exists = (await client.query("SELECT 1 FROM pg_namespace WHERE nspname = $1", [schema])).rowCount !== 0;
+    if (!exists) await createSchema(client, schema);
     await client.query(`SET LOCAL search_path TO ${schema}`);
     await client.query("CREATE TABLE IF NOT EXISTS schema_migrations (version BIGINT PRIMARY KEY, name TEXT NOT NULL, sha256 TEXT NOT NULL, applied_at BIGINT NOT NULL)");
     const applied = (await client.query("SELECT version, name, sha256 FROM schema_migrations ORDER BY version")).rows as { version: string | number; name: string; sha256: string }[];

@@ -10,7 +10,7 @@
 // skill's files with `read_skill_file`: OpenCode's own skills are off.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
+import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
@@ -151,7 +151,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
       // With skills the model also reads their files (read_skill_file), from the session's own copy of them.
       const skillsDir = join(dir, "skills");
-      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(skillsDir, skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
+      const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(skillsDir, skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
       if (skills.length) {
         const { mkdirSync, writeFileSync } = await import("node:fs");
         const { dirname } = await import("node:path");

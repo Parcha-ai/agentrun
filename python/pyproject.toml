@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parcha-agentrun"
-version = "0.3.0"
+version = "0.3.1"
 description = "A typed Python client for a self-hosted AgentRun server: a method per operation of its API, typed from its OpenAPI document, with waiting for a run and following its timeline. Standard library only."
 readme = "README.md"
 requires-python = ">=3.10"

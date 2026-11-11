@@ -90,6 +90,9 @@ test("a learning run's grade goes where the runner's route sends it, for the gra
   const learning = await runLearningEnd(store, "run-1");
   assert.equal(learning?.state, "merged", JSON.stringify(learning));
   assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 3 + USED.output * 15) / 1e6), "the grade's dollars, booked");
+  // The learning run's own row keeps them as its cost: what GET /usage's learning meter reads (store learning.spend).
+  assert.equal(eight((await store.runs.get("learn-1")).costUsd), eight(learning.cost_usd.grade), "the learning run's cost is the grade's");
+  assert.deepEqual((await store.learning.spend({ from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => eight(one.costUsd)), [eight(learning.cost_usd.grade)]);
 });
 
 test("with no grade model named, the route is asked for the agent's own: the run is graded on it, as main grades", async (t) => {
@@ -123,4 +126,33 @@ test("a grader that never answers is cut at the grade's bound: the learning is d
   const learning = await runLearningEnd(store, "run-1");
   assert.deepEqual([learning?.state, learning?.reason], ["dropped", "grade_failed"], JSON.stringify(learning));
   assert.equal(learning.cost_usd.grade, null, "what the cut grade spent is unknown");
+  assert.equal((await store.runs.get("learn-1")).costUsd, null, "and its learning run's cost is unknown too, never $0");
+});
+
+test("a grade model the server names is the strong tier's on a gateway: sent whole though gateway ids are bare, and booked at the strong tier's price; the agent's own model keeps the default tier's", async () => {
+  const { gradeRouteFor } = await import("../dist/runner/harness-loops.js");
+  const { gradeRouteOf } = await import("../dist/runner/learning-dispatch.js");
+  const { routeOf } = await import("../dist/runner/model-route.js");
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: "fake-test-key", AGENT_MODEL: "agent-model", AGENT_MODEL_GATEWAY_IDS: "bare", AGENT_MODEL_PRICE: "1,2,0.1,1", AGENT_MODEL_STRONG_PRICE: "10,20,1,10" };
+  const million = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const named = await gradeRouteFor({ model: "openai/gpt-grader", agentId: "agent-1" }, env, routeOf);
+  assert.equal(named.model, "openai/gpt-grader", "the named grader is sent whole");
+  assert.equal(named.price(named.model, million), 10, "booked at AGENT_MODEL_STRONG_PRICE");
+  // What the default tier made of it before: its bare id, at the default price.
+  const before = await gradeRouteOf("openai/gpt-grader", env, (model) => routeOf(model, env, "default", ["anthropic-messages", "openai-responses"]));
+  assert.deepEqual([before.model, before.price(before.model, million)], ["gpt-grader", 1]);
+  // The agent's own model (no grade model named) goes as its runs do: the default tier's.
+  const own = await gradeRouteFor({ own: "openai/agent-own", agentId: "agent-1" }, env, routeOf);
+  assert.deepEqual([own.model, own.price(own.model, million)], ["agent-own", 1]);
+});
+
+test("a named grader on the strong tier keeps every key the runner's environment holds, a non-enumerable one too (a launcher-held or Settings key): its request authenticates", async () => {
+  const { gradeRouteFor } = await import("../dist/runner/harness-loops.js");
+  const { routeOf } = await import("../dist/runner/model-route.js");
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "agent-model", AGENT_MODEL_STRONG_PRICE: "10,20,1,10" };
+  // Held as the launcher and Settings hold a key: readable by name, never listed (spread or Object.keys leave it out).
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: "fake-test-key", enumerable: false });
+  const named = await gradeRouteFor({ model: "openai/gpt-grader", agentId: "agent-1" }, env, routeOf);
+  assert.equal(named.model, "openai/gpt-grader");
+  assert.equal(await named.provider.credential(), "fake-test-key", "the grade's request carries the held key");
 });

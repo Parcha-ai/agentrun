@@ -1,18 +1,24 @@
-// A trigger source's sealed settings over the one store (store.triggerSettings), the store-backed replacement for the
-// SealedSettings file class (sealed-settings.ts). Each (scope, field) is a sealed row, bound to its adapter, scope and
-// field by the store's documented AAD trigger_settings|<adapter>|<scope>|<field>; the store holds base64 ciphertext and
-// never opens it. With no seal key none is kept, never in the clear. The surface is SealedSettings', so the switch swaps
-// `new SealedSettings(data, ...)` for `sealedSettingsOverStore(store, ...)` then awaits load() once: get()/values() are
+// A trigger source's sealed settings over the one store (store.triggerSettings): the trigger kernel's one store of them.
+// Each (scope, field) is a sealed row, bound to its adapter, scope and field by the store's documented AAD
+// trigger_settings|<adapter>|<scope>|<field>; the store holds base64 ciphertext and never opens it, and none is kept in
+// the clear (the server always has its seal key: seal-key.ts). The server awaits load() once: get()/values() are
 // synchronous off a snapshot the server (the one writer) loads once and keeps in step with every write; set/mint/remove
 // are durable before they resolve.
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
-import type { SettingsSpec } from "./sealed-settings.js";
 import { keyBytes, MIN_KEY_BYTES, mintSecret, SECRET_PREFIX } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import type { TriggerSettings } from "./store/index.js";
 
-export { SERVER_SCOPE, type SettingsSpec } from "./sealed-settings.js";
+/** What an adapter keeps sealed, and where: `server`, one set for the server; `trigger`, one set per trigger, by its id.
+ *  A field with `mint` is a Standard Webhooks secret this server makes (standard-webhooks.ts), shown once; any other is
+ *  given (set). `minBytes`: the fewest bytes its value may hold (standard-webhooks.ts keyBytes), MIN_KEY_BYTES for a key
+ *  a request is verified with. `public`: a value that is no secret (an app's id, its name), kept with the rest but never
+ *  in the list of the server's secrets, so no run's text is cut of it, and of any length. `format: "pem"`: a PEM private
+ *  key, whose lines each are listed as secrets. */
+export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number; public?: true; format?: "pem" }> };
+/** The scope of a server-scoped adapter's settings. */
+export const SERVER_SCOPE = "server";
 
 /** The store's documented AAD for a trigger setting (store schema `trigger_settings`): the composite row key is in the
  *  AAD, not store/seal.ts's single-row aadOf, which refuses a key holding the separator. */
@@ -206,8 +212,8 @@ class SealedSettingsOverStore {
 
 export type { SealedSettingsOverStore };
 
-/** The SealedSettings surface over the one store: the switch swaps `new SealedSettings(data, id, spec, key, say)` for this,
- *  then awaits load() once at start before the first get()/values(). */
+/** An adapter's sealed settings over the one store; the server awaits load() once at start before the first
+ *  get()/values(). */
 export function sealedSettingsOverStore(store: SealedSettingsStore, adapterId: string, spec: SettingsSpec, key: Buffer, say: (fields: Record<string, string>) => void): SealedSettingsOverStore {
   return new SealedSettingsOverStore(store, adapterId, spec, key, say);
 }

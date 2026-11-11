@@ -49,7 +49,7 @@ import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { ClaimRefused } from "./loop-contract.js";
-import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
+import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
 import { tokenLeftOf } from "../mcp-probe.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
@@ -384,7 +384,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   await fresh();
-  // Before each call (the gateway's beforeCall; both doors meet in it, and a throw refuses the call unsent): the server's
+  // Before each call (the gateway's beforeCall; a throw refuses the call unsent): the server's
   // row stamp first (removed: dropped and refused; changed: opened again; an access token near its end: refreshed under
   // the lease, behind the call while still valid, waited on once run out), then a github_app token's App (disconnected or replaced since the mint: dropped and refused).
   const beforeCall = async (server: string, signal: AbortSignal): Promise<void> => {
@@ -422,7 +422,6 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
         // The registry keeps each tool as its server listed it (input_schema); the pin holds the harnesses' shape.
         return row && { url: row.url, tools: ((row.tools ?? []) as McpTool[]).map(boundTool), ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
       },
-      headers: () => undefined,
     });
   } catch (error) {
     throw new McpClaimRefused((error as Error).message);

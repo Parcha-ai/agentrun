@@ -136,7 +136,6 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
-    liveCredentials: true,
     // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
     // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
     // save, or a host the owner no longer allows, is refused unsent. A URL on loopback as written is dialled as written:

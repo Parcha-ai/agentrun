@@ -47,10 +47,10 @@ function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "unavailable" = "sealed") {
+async function open(v2: ReturnType<typeof createClient>) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(WebhookPage, { v2, atRest })));
+  act(() => root!.render(createElement(WebhookPage, { v2 })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp, within: Element = host) => [...within.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -112,7 +112,7 @@ describe("WebhookPage", () => {
   });
 
   it("says why nothing is sent: a webhook a 410 turned off, a secret that doesn't open here, and a refused redelivery", async () => {
-    const off: Webhook = { ...SET, signing: "seal_key_missing", disabled: { at: "2026-11-03T12:02:00.000Z", reason: "the receiver answered 410 Gone" } };
+    const off: Webhook = { ...SET, signing: "unreadable", disabled: { at: "2026-11-03T12:02:00.000Z", reason: "the receiver answered 410 Gone" } };
     const { v2 } = server({ webhook: off, attempts: [attempt({ status_code: 410, error: "answered 410" })] },
       () => json(409, { error: { code: "webhook_off", message: "the webhook is off (the receiver answered 410 Gone): set it again with PUT /v2/settings/webhook", retryable: false } }));
     const page = await open(v2);
@@ -159,10 +159,6 @@ describe("WebhookPage", () => {
     await page.click(/^Remove the webhook$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
     expect(page.host.textContent).toContain("No webhook is set");
-    act(() => root!.unmount()); root = undefined;
-    const none = await open(server({ webhook: NONE, attempts: [] }).v2, "unavailable");
-    expect(none.host.textContent).toContain("can't keep a webhook secret");
-    expect(none.button(/^Save$/)?.disabled).toBe(true);
   });
 });
 

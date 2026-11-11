@@ -12,7 +12,7 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
-const { givenOf, learnedOf } = await import("../dist/learning.js");
+const { learnedParts } = await import("../dist/learning.js");
 
 const dirs = [];
 after(() => {
@@ -428,7 +428,7 @@ test("startRun records the exact given notes, seed, # Learned section and seedNo
   const run = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
   const launch = readLaunchBody((await store.runs.launch(run.id)).body);
   const options = { budget: 8000, read: true, shown: shown() };
-  const expected = { given: givenOf(learningSeed(), options), seed: "seed-abc", section: learnedOf(learningSeed(), options) ?? "", seedNotes: Object.keys(learningSeed().notes).length };
+  const expected = { given: learnedParts(learningSeed(), options).given.map(({ file, name }) => ({ file, name })), seed: "seed-abc", section: learnedParts(learningSeed(), options).section ?? "", seedNotes: Object.keys(learningSeed().notes).length };
   assert.deepEqual(launch.learning, expected);
   assert.deepEqual(learningStartOf(launch), expected);
   // Each given entry carries its name, not just a file.
@@ -443,6 +443,24 @@ test("seedNotes counts the whole seed, so a seed over the budget has seedNotes a
   const learning = readLaunchBody((await store.runs.launch(run.id)).body).learning;
   assert.equal(learning.seedNotes, 3);
   assert.ok(learning.seedNotes > learning.given.length, "the budget narrowed given below the whole seed's note count");
+});
+
+test("startRun records the learned skills the seed offers the run: each with its files and no host secret, none held by its size", async () => {
+  const store = await freshStore();
+  const seed = () => ({
+    ...learningSeed(),
+    skills: [
+      { name: "weekly-report", bytes: 10, files: { "SKILL.md": "---\nname: weekly-report\ndescription: d\n---\nSteps." } },
+      { name: "too-big", bytes: 999999 },
+      { name: "leaky", bytes: 10, files: { "SKILL.md": "---\nname: leaky\ndescription: d\n---\nUse secret-value-0001." } },
+    ],
+  });
+  const holds = { text: (t) => t, name: (n) => n, holds: (t) => t.includes("secret-value-0001") };
+  const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: seed() }), shown: () => holds }), entryOf(), { input: { content: "hi" } });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning.skills, ["weekly-report"]);
+  // A seed with no skill records none.
+  const plain = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" } });
+  assert.equal("skills" in readLaunchBody((await store.runs.launch(plain.id)).body).learning, false);
 });
 
 test("startRun records no learning for a non-learning run", async () => {

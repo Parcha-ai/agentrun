@@ -1,17 +1,12 @@
-// The tool keys over the one store (tool-keys-store.ts), the store-backed ToolKeys: a value is a sealed row in
-// store.sealedKeys, read through an in-memory snapshot the server loads once; GET names each field and where it is set,
-// never a value; a value that does not open (no seal key, another one, a damaged row) is asked for again, told apart by
-// the same words ToolKeys used. The shared-case block runs the same checks against the file ToolKeys and the store one, so
-// their answers match byte for byte. A real store on a temp file; the file class on a temp directory.
+// The tool keys over the one store (tool-keys-store.ts): a value is a sealed row in store.sealedKeys, read through an
+// in-memory snapshot the server loads once; GET names each field and where it is set, never a value; a value that does not
+// open (another seal key, a damaged row) is asked for again, told apart. A real store on a temp file.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 import { toolKeysOverStore, sealedToolKeyBytes, TOOL_KEY_CHECKS_KEY } from "../dist/tool-keys-store.js";
-import { ToolKeys, TOOL_KEYS, SEAL_KEY_ENV } from "../dist/tool-keys.js";
+import { TOOL_KEYS, SEAL_KEY_ENV } from "../dist/tool-keys.js";
 import { ApiError } from "../dist/errors.js";
 
 const KEY = randomBytes(32);
@@ -28,13 +23,6 @@ async function storeKeys(t, { env = sealEnv(), clock } = {}) {
   const keys = toolKeysOverStore(store, env, quiet);
   await keys.load();
   return { store, keys };
-}
-
-/** A file-backed ToolKeys on a fresh temp directory, for the shared-case comparison. */
-function fileKeys(t, { env = sealEnv() } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "toolkeys-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return { dir, keys: new ToolKeys(dir, env, quiet) };
 }
 
 test("a tool key saved is kept sealed at rest and read back by name; the view says set/stored, never the value", async (t) => {
@@ -58,10 +46,9 @@ test("a reload reads the saved value back from the store (the snapshot is the st
   assert.equal(again.value(FIELD), "sk-persisted", "a second instance loads it from the store");
 });
 
-test("with no seal key nothing is kept: a save is refused and no row is written", async (t) => {
-  const { store, keys } = await storeKeys(t, { env: {} });
-  await assert.rejects(() => keys.save(TOOL_ROW.id, { values: { [FIELD]: "x" } }), (e) => e instanceof ApiError && e.code === "no_sealing_key");
-  assert.equal(await store.sealedKeys.get(FIELD), undefined, "nothing written");
+test("with no seal key there are no tool keys: they are never kept or read in the clear (the server starts with its key)", async (t) => {
+  const { store } = await storeOn(t);
+  assert.throws(() => toolKeysOverStore(store, {}, quiet), /kept under the server's seal key \(AGENTRUN_SEAL_KEY\)/);
 });
 
 test("PUT refuses an unknown key, an unknown field, empty values, a control character and an over-long value", async (t) => {
@@ -106,21 +93,15 @@ test("a save with a check shows it; a stored key with no check reads as not chec
   assert.equal(otherKey.check.state, "not_checked", "no check row reads as not checked");
 });
 
-test("a value that does not open is asked for again, told apart: no seal key, another key, a damaged row", async (t) => {
-  // No seal key now.
-  const missing = await storeKeys(t);
-  await missing.keys.save(TOOL_ROW.id, { values: { [FIELD]: "sk-x" } });
-  const noKey = toolKeysOverStore(missing.store, {}, quiet);
-  await noKey.load();
-  assert.equal(noKey.value(FIELD), undefined);
-  assert.equal(noKey.view().reenter.reason, "seal_key_missing");
-  assert.ok(noKey.view().keys.find((k) => k.id === TOOL_ROW.id).fields[0].stored_unreadable);
-
+test("a value that does not open is asked for again, told apart: another key, a damaged row", async (t) => {
   // Another seal key: the fingerprint no longer matches -> seal_key_changed.
-  const changed = toolKeysOverStore(missing.store, sealEnv(randomBytes(32)), quiet);
+  const saved = await storeKeys(t);
+  await saved.keys.save(TOOL_ROW.id, { values: { [FIELD]: "sk-x" } });
+  const changed = toolKeysOverStore(saved.store, sealEnv(randomBytes(32)), quiet);
   await changed.load();
   assert.equal(changed.value(FIELD), undefined);
   assert.equal(changed.view().reenter.reason, "seal_key_changed");
+  assert.ok(changed.view().keys.find((k) => k.id === TOOL_ROW.id).fields[0].stored_unreadable);
 
   // A damaged row under the right key and matching fingerprint -> file_unreadable.
   const dmg = await storeKeys(t);
@@ -143,62 +124,30 @@ test("a sealed value moved to another field's name does not open there (the AAD 
   assert.equal(fresh.value(FIELD), "sk-bound", "at its own name it opens");
 });
 
-// ---- Shared cases: the same inputs through the file ToolKeys and the store one answer the same. ----
-test("shared: value, values and view match the file class for a saved key", async (t) => {
+test("each key row's secrets are SecretMeta, named <kind>:<FIELD>; saving one key moves no other key's changed_at", async (t) => {
   const env = sealEnv();
-  const file = fileKeys(t, { env });
-  const store = await storeKeys(t, { env });
-  for (const target of [file.keys, store.keys]) await target.save(TOOL_ROW.id, { values: { [FIELD]: "sk-same" } }, { state: "accepted", at: "2026-11-09T02:00:00.000Z" });
-  assert.equal(file.keys.value(FIELD), store.keys.value(FIELD), "value matches");
-  assert.deepEqual(file.keys.values(), store.keys.values(), "values match");
-  // Byte for byte but the time each field was saved, which each takes from its own clock: there in both, or in neither.
-  const timeless = (view) => JSON.parse(JSON.stringify(view, (name, value) => (name === "changed_at" ? (value === null ? null : "a time") : value)));
-  assert.deepEqual(timeless(store.keys.view()), timeless(file.keys.view()), "view matches byte for byte");
-});
-
-test("shared: each key row's secrets are SecretMeta, named <kind>:<FIELD>; saving one key moves no other key's changed_at", async (t) => {
-  const env = sealEnv();
-  const file = fileKeys(t, { env });
   const clock = { now: Date.parse("2026-11-09T03:00:00.000Z") };
   const store = await storeKeys(t, { env, clock });
   const secretOf = (keys, field) => keys.view().keys.flatMap((k) => k.secrets).find((meta) => meta.name.endsWith(`:${field}`));
-  for (const keys of [file.keys, store.keys]) {
-    const row = keys.view().keys.find((k) => k.id === TOOL_ROW.id);
-    assert.deepEqual(row.secrets.map((meta) => meta.name), TOOL_ROW.fields.map((name) => `tool:${name}`), "named tool:<FIELD>, in fields' order");
-    assert.deepEqual(secretOf(keys, FIELD), { name: `tool:${FIELD}`, set: false, source: null, changed_at: null }, "unset: no source, no time");
-    const modelRow = keys.view().keys.find((k) => k.kind === "model");
-    assert.ok(modelRow.secrets.every((meta) => meta.name.startsWith("model:")), "a model key's are model:<FIELD>");
-  }
-  for (const keys of [file.keys, store.keys]) await keys.save(TOOL_ROW.id, { values: { [FIELD]: "sk-first" } });
-  const first = { file: secretOf(file.keys, FIELD), store: secretOf(store.keys, FIELD) };
-  assert.equal(first.store.changed_at, "2026-11-09T03:00:00.000Z", "the store's: its own row's time");
-  for (const meta of Object.values(first)) {
-    assert.equal(meta.set, true);
-    assert.equal(meta.source, "console", "saved here by the owner");
-    assert.match(meta.changed_at, /^\d{4}-\d{2}-\d{2}T/);
-  }
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  const row = store.keys.view().keys.find((k) => k.id === TOOL_ROW.id);
+  assert.deepEqual(row.secrets.map((meta) => meta.name), TOOL_ROW.fields.map((name) => `tool:${name}`), "named tool:<FIELD>, in fields' order");
+  assert.deepEqual(secretOf(store.keys, FIELD), { name: `tool:${FIELD}`, set: false, source: null, changed_at: null }, "unset: no source, no time");
+  const modelRow = store.keys.view().keys.find((k) => k.kind === "model");
+  assert.ok(modelRow.secrets.every((meta) => meta.name.startsWith("model:")), "a model key's are model:<FIELD>");
+  await store.keys.save(TOOL_ROW.id, { values: { [FIELD]: "sk-first" } });
+  const first = secretOf(store.keys, FIELD);
+  assert.deepEqual(first, { name: `tool:${FIELD}`, set: true, source: "console", changed_at: "2026-11-09T03:00:00.000Z" }, "saved here by the owner, at its own row's time");
   clock.now += 60_000;
-  for (const keys of [file.keys, store.keys]) await keys.save(MODEL_ROW.id, { values: { [MODEL_ROW.fields[0]]: "sk-second" } });
-  assert.deepEqual(secretOf(file.keys, FIELD), first.file, "the file: another key's save leaves this one's time");
-  assert.deepEqual(secretOf(store.keys, FIELD), first.store, "the store: another key's save leaves this one's time");
+  await store.keys.save(MODEL_ROW.id, { values: { [MODEL_ROW.fields[0]]: "sk-second" } });
+  assert.deepEqual(secretOf(store.keys, FIELD), first, "another key's save leaves this one's time");
   assert.equal(secretOf(store.keys, MODEL_ROW.fields[0]).changed_at, "2026-11-09T03:01:00.000Z", "and the saved one's is its own");
-  assert.ok(secretOf(file.keys, MODEL_ROW.fields[0]).changed_at > first.file.changed_at, "the file's saved one is later");
   // After a restart, the store's time is read back from the row.
   const again = toolKeysOverStore(store.store, env, quiet);
   await again.load();
-  assert.deepEqual(secretOf(again, FIELD), first.store, "read back whole");
+  assert.deepEqual(secretOf(again, FIELD), first, "read back whole");
   // A key the server is started with is env's, with no time here.
   const started = toolKeysOverStore(store.store, sealEnv(KEY, { [FIELD]: "sk-env" }), quiet);
   await started.load();
   assert.deepEqual(secretOf(started, FIELD), { name: `tool:${FIELD}`, set: true, source: "env", changed_at: null });
-  assert.ok(!JSON.stringify([file.keys.view(), store.keys.view()]).includes("sk-first"), "never the value");
-});
-
-test("shared: an unknown-key refusal reads the same from both", async (t) => {
-  const env = sealEnv();
-  const file = fileKeys(t, { env });
-  const store = await storeKeys(t, { env });
-  const of = async (keys) => { try { await keys.save("nope", { values: { [FIELD]: "x" } }); return null; } catch (e) { return { code: e.code, fields: e.extra.fields }; } };
-  assert.deepEqual(await of(store.keys), await of(file.keys), "same refusal");
+  assert.ok(!JSON.stringify(store.keys.view()).includes("sk-first"), "never the value");
 });

@@ -27,13 +27,13 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.features.tool_permissions, true, "a tool setting carries a permission, which the tool gate holds every call to");
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]).length === 0 || !!process.env.KERNEL_API_KEY;
   const monid = !!process.env.MONID_API_KEY;
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, true, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, false, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   // The browser runs on either vendor's keys, which no one list of variables says: its reason names both (tool-plane.ts).
   assert.match(body.tools.find((t) => t.name === "browser").reason ?? "", keyed ? /^$/ : /BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.*KERNEL_API_KEY/, "what browser lacks here, by name");
-  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "web_fetch", "web_search", "browser"]);
+  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "web_fetch", "web_search"]);
   // This server's environment sets no Jev key (the test clears both): typed questions do not run, and say why.
-  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "web_fetch", "web_search", "browser"], adapters: ["runNode", "runEffect"], decisions: undefined });
+  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "web_fetch", "web_search"], adapters: ["runNode", "runEffect"], decisions: undefined });
   assert.deepEqual(body.workflows.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false], ["openrouter", false]]);
   // And with TYPESAFE_API_KEY set, they do: runJudge is an adapter, and jev is available.
   process.env.TYPESAFE_API_KEY = "fake-test-key";
@@ -234,21 +234,23 @@ test("the error envelope: each code with its one status, 405 with Allow, 404 out
   check(await api("GET", "/agents?limit=0"), "bad_request");
 });
 
-test("every feature declared off answers 501 unsupported_here naming it, before any lookup", async (t) => {
+test("quotes, declared off, answer 501 unsupported_here naming it, before any lookup; the contract's routes this server does not serve are 404 and declared off", async (t) => {
   const { api, baseUrl } = await serve(t);
   const caps = (await client(baseUrl)("GET", "/capabilities")).body;
-  const probes = [
-    ["quotes", "POST", "/quotes", { agent_id: "x" }],
+  assert.equal(caps.features.quotes, false, "quotes are declared off");
+  const quote = await api("POST", "/quotes", { agent_id: "x" });
+  assert.equal(quote.status, 501);
+  assert.deepEqual([quote.body.error.code, quote.body.error.capability], ["unsupported_here", "quotes"]);
+  const gone = [
     ["runs.kill", "POST", "/runs/x/kill", {}],
     ["home.export", "GET", "/agents/x/home", undefined, { accept: "application/json" }],
     ["home.import", "PUT", "/agents/x/home", {}],
   ];
-  for (const [capability, method, path, body, headers] of probes) {
+  for (const [capability, method, path, body, headers] of gone) {
     const [group, name] = capability.split(".");
-    assert.equal(name ? caps.features[group][name] : caps.features[group], false, `${capability} is declared off`);
+    assert.equal(caps.features[group][name], false, `${capability} is declared off`);
     const res = await api(method, path, body, headers);
-    assert.equal(res.status, 501, `${method} ${path}`);
-    assert.deepEqual([res.body.error.code, res.body.error.capability], ["unsupported_here", capability]);
+    assert.deepEqual([res.status, res.body.error.code], [404, "not_found"], `${method} ${path}`);
   }
 });
 

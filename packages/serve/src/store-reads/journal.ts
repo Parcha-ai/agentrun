@@ -2,16 +2,19 @@
 // order, its timeline (the renderer unchanged), and what was said to it (its hearing). The old path read each run's
 // its own database file ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
 // The renderer and the hearing keep their words; only where the entries come from changes.
+import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { CAPS, costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
-import { labelled, type Reflect } from "../learning-run.js";
+import { redactedAnswer } from "../key-refusal.js";
+import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
+import { bookedSpend } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -39,20 +42,28 @@ export async function runReflect(store: Store, runId: string, context: Context):
 function piShaped(entries: readonly EntryLike[]): EntryLike[] {
   return entries.map((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
+    const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
       const text = typeof data.text === "string" ? data.text : "";
-      if (data.role === "person") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text }] };
+      if (data.role === "person") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text, ...timestamp }] };
       // A model turn's text; its stop reason is the answer's (a cut at the output limit reads "length", as pi's does).
       const stopReason = data.stopReason === "length" ? "length" : "stop";
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}) }] };
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}), ...timestamp }] };
+    }
+    // The end-of-run turn's answer, as the CLI record keeps it (adapter-loop.ts answered): a model turn that ended, so the
+    // timeline shows it as pi's end-of-run turn shows its own (labelled then marks it the learning's).
+    if (entry.kind === KINDS.endOfRunTurn && data.role === "model") {
+      const text = typeof data.text === "string" ? data.text : "";
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }] }] };
+      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text.
       const failed = data.status !== undefined && data.status !== "done";
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content: data.output ?? "", ...(failed ? { isError: true } : {}) }] };
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content: data.output ?? "", ...(failed ? { isError: true } : {}), ...timestamp }] };
     }
     return entry;
   });
@@ -104,15 +115,115 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
 
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
- *  (withPaidCosts). The usage row the renderer folds from the model turns is dropped for a CLI run: its record carries no
- *  per-request cost, so the run's cost reads from its stored total (costView over no usage row), as it did before this
- *  rendering existed, never a $0/unknown usage row. The end-of-run turn's rows are labelled as the server labels them
- *  (learning-run.ts labelled). */
+ *  (withPaidCosts). A CLI run's record carries no per-request cost, so the usage row the renderer folds from its model
+ *  turns is put in its booking's words (bookedUsage): its model requests at what the run's model proxy booked them at,
+ *  and its paid tool calls at what they charged, as a pi run's usage row counts them. The end-of-run turn's rows are
+ *  labelled as the server labels them (reflect-range.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
-  const rows = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options).filter((row) => !cli || row.kind !== "usage");
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, rows);
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
+  const rows = cli ? bookedUsage(rendered, entries, options) : rendered;
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+}
+
+/** A CLI run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every session of the
+ *  run): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
+ *  costsofar/1), in the renderer's words (`Cost` once ended, else `Cost so far`). The renderer's own row is replaced in
+ *  place; a run that booked a request and rendered none gets one at the end. One that booked none keeps its rows, with no
+ *  usage row. */
+function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
+  const model = bookedSpend(entries, "model");
+  const paid = bookedSpend(entries, "paid");
+  const at = rows.findIndex((row) => row.kind === "usage");
+  const kept = rows.filter((row) => row.kind !== "usage");
+  if (!model.requests && !paid.requests) return kept;
+  const usd = model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
+  const unpriced = model.unpriced + paid.unpriced;
+  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
+  const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
+  const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
+  const summary = `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
+  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+  const last = rows[rows.length - 1];
+  const base: TimelineEvent = at >= 0 ? rows[at]! : {
+    ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,
+    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null,
+  };
+  const row: TimelineEvent = { ...base, kind: "usage", summary, usage };
+  const out = [...kept];
+  out.splice(at >= 0 ? at : out.length, 0, row);
+  return out;
+}
+
+/** `rows` with none dated 1970: a row the renderer found no time for (an entry of a CLI record written before its entries
+ *  carried `at`; the store's entry rows keep no write time of their own) reads the run's start, the earliest time it can
+ *  have, never epoch 0. Every other row is as the renderer dated it. */
+async function datedRows(store: Store, runId: string, rows: TimelineEvent[]): Promise<TimelineEvent[]> {
+  if (!rows.some((row) => Date.parse(row.timestamp) === 0)) return rows;
+  const run = await store.runs.get(runId);
+  if (!run) return rows;
+  const started = new Date(run.startedAt).toISOString();
+  return rows.map((row) => (Date.parse(row.timestamp) === 0 ? { ...row, timestamp: started, created_at: started } : row));
+}
+
+/** How a reader serves an answer whole: its redactor over the whole text (key-refusal.ts redactedAnswer with the run's
+ *  values), and a key for those values (their digest), so an answer is read once per held value set. */
+export type WholeAnswer = { readonly serve: (text: string) => string; readonly key: string };
+/** The WholeAnswer of a run whose served words are cut of `values` (run-cut.ts runCutValues). */
+export const wholeAnswerFor = (values: readonly string[]): WholeAnswer => ({
+  serve: (text) => redactedAnswer(text, values),
+  key: createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex"),
+});
+
+/** What each store's readers last served of a cut answer row, by run, row and held value set: a console polls a run's
+ *  view and its Timeline, and an answer a run was made to write can be large (main's runs.ts servedOnce). A row is an
+ *  entry's, whose words never change. Kept by store, the newest ANSWERS_KEPT of each. */
+const answersServed = new WeakMap<Store, Map<string, string>>();
+const ANSWERS_KEPT = 32;
+
+/** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer
+ *  cuts a row's text at CAPS.text, and its redactor (`options.redact`, key-refusal.ts redacted) reads only the head a row
+ *  shows and cuts the rest, ending what it cut in "..." (short of the cap when it replaced a held value there), or giving
+ *  "[redacted]" alone when all it read was redacted. A final answer row at the cap, ending so or reading so is read again
+ *  from the journal, settled as the rows were, with no text cap and none
+ *  of the rows' redactor, the same row by its id (its entry's), and given through `whole.serve`, which reads every byte
+ *  of it and never cuts. Every other row is as it was. */
+export async function wholeAnswers(store: Store, runId: string, context: Context, rows: TimelineEvent[], options: TimelineOptions, whole: WholeAnswer): Promise<TimelineEvent[]> {
+  // The rows' redactor gives exactly "[redacted]" for a text whose head it read was all held or secret-shaped values: the
+  // rest of the answer is past what it read, so that row is read again too.
+  const cut = (row: TimelineEvent) => row.kind === "final_answer" && row.text !== null && (row.text.length >= CAPS.text || row.text.endsWith("...") || row.text === "[redacted]");
+  if (!rows.some(cut)) return rows;
+  let kept = answersServed.get(store);
+  if (!kept) answersServed.set(store, (kept = new Map()));
+  const keyOf = (row: TimelineEvent) => `${runId}\0${row.id}\0${whole.key}`;
+  let uncut: Map<string, string | null> | undefined;
+  const out: TimelineEvent[] = [];
+  for (const row of rows) {
+    if (!cut(row)) {
+      out.push(row);
+      continue;
+    }
+    const key = keyOf(row);
+    let served = kept.get(key);
+    if (served === undefined) {
+      uncut ??= new Map((await runTimeline(store, runId, context, { settled: options.settled, caps: { ...options.caps, text: Number.POSITIVE_INFINITY } })).map((one) => [one.id, one.text]));
+      const text = uncut.get(row.id);
+      if (text === undefined || text === null) {
+        out.push(row);
+        continue;
+      }
+      served = whole.serve(text);
+      kept.delete(key);
+      kept.set(key, served);
+      for (const oldest of kept.keys()) {
+        if (kept.size <= ANSWERS_KEPT) break;
+        kept.delete(oldest);
+      }
+    }
+    out.push({ ...row, text: served });
+  }
+  return out;
 }
 
 /** What was said to a run (its hearing), from the one store's entries, as runs.ts noteTurns fed it from the stream: each

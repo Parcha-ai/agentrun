@@ -8,7 +8,7 @@
 import { decisionKeysFor } from "../decisions.js";
 import { GATEWAY_KEY_ENV, PROVIDER_KEYS } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
-import { keysFor, needsOf, RUN_SECRETS } from "../runs.js";
+import { keysFor, needsOf, RUN_SECRETS } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import type { SealedKeys } from "../store/store.js";

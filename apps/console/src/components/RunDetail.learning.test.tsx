@@ -23,7 +23,7 @@ const ROWS: TimelineRow[] = [
   row("l5", 7, { kind: "text_block", agent_label: "learning", summary: "Reflected.", text: "Reflected." }),
   row("learning", 8, { kind: "learning", agent_label: "learning", summary: "Learned 2 notes: Refund limit; Answer shape", text: "Learned 2 notes: Refund limit; Answer shape", learning: { state: "merged", reason: null, detail: "Learned 2 notes: Refund limit; Answer shape" } }),
 ];
-const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
   created_at: "2026-11-03T18:50:00Z", ended_at: "2026-11-03T18:50:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });

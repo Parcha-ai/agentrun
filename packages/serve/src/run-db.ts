@@ -87,10 +87,6 @@ export function readRunDbSync<T>(file: string, held: boolean, read: (db: Databas
   }
 }
 
-/** readRunDbSync, for an async caller. */
-export async function readRunDb<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): Promise<T> {
-  return readRunDbSync(file, held, read);
-}
 
 /** A read of a run's database whose last entry is below one already seen for that run: an older view of the file, which a
  *  read must never show (the monotonic guard). The caller keeps what it read before. */

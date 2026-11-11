@@ -21,7 +21,9 @@ const WAIT_MS = 30_000;
 after(closeOpenSessions);
 
 /** Run-1 of agent-1 through a real runner on the adapter loop: its spec gets `onSpec` (an endOfRun, a beforeRelease, a
- *  release), the loop's deps `deps`. Resolves with the run's row and learning kept once it ended. */
+ *  release), the loop's deps `deps`. Resolves with the run's row and learning kept once it ended and the runner says it
+ *  released it: the end's commit releases the row, and the loop's teardown (the session's close, then the spec's
+ *  release) runs after it, before the runner's "released". Waiting on the row alone could read the release as not done. */
 async function runWith(t, { onSpec = {}, deps = {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-endofrun-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -37,12 +39,14 @@ async function runWith(t, { onSpec = {}, deps = {} }) {
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const spec = piAdapterSpec({ script: [{ say: "The job's answer." }], tools: {}, hooks: quiet });
   const createLoop = (loopDeps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...onSpec }))({ ...loopDeps, ...deps });
-  runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
+  let released = false;
+  const onEvent = (event) => void (event.type === "released" && event.runId === "run-1" && (released = true));
+  runner = startRunner({ store, createLoop, name: "runner-a", onEvent, ...TIMING });
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const row = await server.runs.get("run-1");
-    if (row.state === "ended" && row.runner === null) return { row, kept: await server.learning.proposal("run-1") };
-    if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}`);
+    if (row.state === "ended" && row.runner === null && released) return { row, kept: await server.learning.proposal("run-1") };
+    if (Date.now() > deadline) throw new Error(`run-1 did not end with its runner saying it released it: ${JSON.stringify(row)}, released ${released}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }

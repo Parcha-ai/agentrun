@@ -302,7 +302,7 @@ export class Triggers {
     if (enabled) await this.needAgentOn(agentId);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
-    // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
+    // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
     const minted = await this.mint(source, id);
     const name = typeof body.name === "string" ? body.name.trim() : id;
     let row: TriggerRow;

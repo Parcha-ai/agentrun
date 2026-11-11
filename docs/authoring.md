@@ -123,7 +123,7 @@ if (result.status === 'complete') {
 
 With compiled NodeNext TypeScript, local imports use `.js` even when the source file is `.ts`.
 
-`deps` supplies `runEffect` for `call` nodes, `runJudge` for Jev decisions such as `judge`, `pick` and `sift`, and `runNode` for model steps such as `agent`, `decide` and `report`. The example's fixture factory supplies all three offline. For real execution, supply your search tool and configured adapters; see the [Jev adapter](../packages/jev/README.md) and [Pi adapter](../packages/pi/README.md). The engine does not grant tool access or choose credentials.
+`deps` supplies `runEffect` for `call` nodes, `runJudge` for Jev decisions such as `judge`, `pick` and `sift`, and `runNode` for model steps such as `agent`, `decide` and `report`. The example's fixture factory supplies all three offline. For real execution, supply your search tool and configured adapters; see the [Jev adapter](../packages/jev/README.md) and [what each adapter owes the engine](host-integration.md). The engine does not grant tool access or choose credentials.
 
 Type inference covers the declared input/output boundaries. Intermediate state paths and node-to-schema references receive runtime validation, not full static dataflow inference. Raw JSON schemas infer `unknown`.
 
@@ -190,5 +190,7 @@ const candidate = await authorWorkflow({ request, outputDir: './candidates', run
 ```
 
 `authorWorkflow` asks the host's `runNode` adapter for one session with no tools. It retains every candidate with its review, refuses candidates outside the addendum's node kinds or output types before validation, validates the rest against the addendum's initial state, and then runs the host's `acceptance` callback. Acceptance does not activate a candidate. The result, `request.json` and `result.json` carry `contractSha256`, the digest of the exact contract text the session received.
+
+For an authoritative SOP, supply complete `rubricSections` to `authorWorkflow` and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them.
 
 The contract's grammar sentences are enforced by `validateWorkflow`, by engine admission (`sopSection` headings) or by `candidatePolicyErrors`; the package tests pair 49 of them with a candidate their check refuses. The guarantee is bounded by those checks, not a proof that every accepted workflow is correct. A few sentences state intent that no mechanical check can decide: keep the workflow small, the generative kinds' duties (transcribe, judge, gather, render), keep code away from prose, never paraphrase policy, never invent tools or results, and send uncertainty to an escalation or an explicit fallback. They stay because they define what the language is for. A host's acceptance checks and tool admission judge them.

@@ -33,3 +33,24 @@ test("a refusal after requests that were sent adds no request and no cost", () =
   assert.deepEqual(usageOf([user("go"), started(), priced("one"), ...refusal()])?.usage, usageOf([user("go"), started(), priced("one")])?.usage);
   assert.equal(usageOf([user("go"), started(), priced("one"), ...refusal()])?.usage.requests, 1);
 });
+
+// The model proxy's own refusal of a request for the run's spend cap (run-adapters host/proxy.ts refuse): pi-ai writes its
+// 400 as `400 <the proxy's JSON body>`. Read by the body's fields, it is no model failure: no row (the run's park at its cap
+// says what happened), no request, no cost. A provider's own 400, or a proxy refusal of another kind, keeps its row.
+const proxyRefused = (error) => assistant([], 0, { stopReason: "error", errorMessage: `400 ${JSON.stringify({ error })}`, usage: { input: 0, output: 0, cost: { total: 0 } } });
+const CAP_BODY = { message: "refused before it was sent: Not sent: the next step needs at least $0.11, and this run's cap is $0.05.", type: "agentrun_proxy", code: "spend_cap_reached" };
+const failedRows = (rows) => rows.filter((row) => row.kind === "error" && String(row.summary).startsWith("Model request failed"));
+
+test("the model proxy's refusal of a request for the run's cap shows no Model request failed row, and adds no request or cost", () => {
+  const rows = rowsOf([user("go"), started(), priced("one"), proxyRefused(CAP_BODY)]);
+  assert.deepEqual(failedRows(rows).map((row) => row.summary), [], JSON.stringify(rows.map((row) => [row.kind, row.summary])));
+  assert.deepEqual(usageOf([user("go"), started(), priced("one"), proxyRefused(CAP_BODY)])?.usage, usageOf([user("go"), started(), priced("one")])?.usage, "the refused request is no request and no cost");
+});
+
+test("a provider's own 400, and a proxy refusal with no cap code, keep their Model request failed row", () => {
+  const provider = rowsOf([user("go"), started(), proxyRefused({ type: "invalid_request_error", message: "messages: roles must alternate" })]);
+  assert.equal(failedRows(provider).length, 1, JSON.stringify(provider.map((row) => [row.kind, row.summary])));
+  // The proxy's other refusals carry no code: the same words without the cap's code still show.
+  const other = rowsOf([user("go"), started(), proxyRefused({ message: CAP_BODY.message, type: "agentrun_proxy" })]);
+  assert.equal(failedRows(other).length, 1, "matched by the body's fields, never its words");
+});

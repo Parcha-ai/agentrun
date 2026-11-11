@@ -12,6 +12,7 @@ import { cap, capRun, rootEntries } from "./adapter-pi-cap-support.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { paidRequest, parallelSearchFee } = await import("../dist/paid-calls.js");
+const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -38,10 +39,13 @@ async function paidRun(t, capUsd, call) {
   };
   const runCap = { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const run = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE } });
-  return { ...run, answered, budgets: await rootEntries(run.server, "agentrun.budget") };
+  return { ...run, answered, budgets: await rootEntries(run.server, "agentrun.budget"), rows: timelineOf(await rootEntries(run.server), { settled: true }) };
 }
 
-function assertParked({ row, budgets, answered }, capUsd, leastUsd, words) {
+function assertParked({ row, budgets, answered, rows }, capUsd, leastUsd, words) {
+  // The run's next model request, refused in the paused call's words through the model proxy, is the cap's refusal (its
+  // code carried as a field): no "Model request failed" row (the park says what happened).
+  assert.deepEqual(rows.filter((r) => String(r.summary ?? "").startsWith("Model request failed")).map((r) => r.summary), [], JSON.stringify(rows.map((r) => [r.kind, r.summary])));
   assert.match(answered[0] ?? "", words, `the call was refused in the cap's words: ${JSON.stringify(answered)}`);
   assert.equal(row.state, "parked", `the run parked on the refused call: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
   assert.equal(budgets.length, 1, `one pause: ${JSON.stringify(budgets)}`);

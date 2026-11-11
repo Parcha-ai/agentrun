@@ -70,7 +70,8 @@ export const PRINT_MAX = 4096;
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
  *  any case, base64, a hex identifier in it folded) and each secret-shaped run replaced by "[redacted]": what the
  *  checker prints never holds a secret, wherever it was found, a file's name included, each value as a path names it too
- *  (pathSpelling). Every form is found in `text` as given, and overlapping finds are redacted as one, so
+ *  (pathSpelling) and as a URL's path writes it (percentForms). Every form is found in `text` as given, and overlapping
+ *  finds are redacted as one, so
  *  one value never hides part of another from the search. A text
  *  that still holds a value or a shape after that (a form not found as it stands: percent encoded, split by whitespace,
  *  an NFKC variant), or that is over `max` bytes (PRINT_MAX unless the caller names more), is redacted whole, never in
@@ -80,7 +81,7 @@ export const PRINT_MAX = 4096;
 export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
   const given = withPathSpellings(values.filter((v) => v.length > 0));
-  const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? needlesOf(v).plain : [])]).filter((form) => form.length > 0));
+  const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? [...needlesOf(v).plain, ...percentForms(v)] : [])]).filter((form) => form.length > 0));
   const found = [
     ...[...forms].flatMap((form) => places(text, form)),
     ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
@@ -136,12 +137,25 @@ function percentDecode(text: string, plusIsSpace: boolean): string {
 
 const asJson = (value: string) => JSON.stringify(value).slice(1, -1);
 /** `value` as a path names it, when that differs: a tool that resolves a path the model wrote (pi's read) collapses each
- *  run of "/" to one and drops a leading and a trailing one, and its error names that path, so a held value holding "//"
- *  (a random base64 key does, now and then) comes back so. A normalizer also rewrites "/./" and "/../", which base64 has
- *  no "." to make; a value holding them is not respelled. Only a spelling still long enough to be a secret is listed. */
+ *  run of "/" to one, drops each "." segment ("/./", a leading "./") and a leading and a trailing "/", and its error
+ *  names that path, so a held value holding "//" (a random base64 key does, now and then) or "/./" comes back so. A
+ *  "/../" is not resolved: it drops the segment before it, and what is left is no longer the value. Only a spelling
+ *  still long enough to be a secret is listed. */
 const pathSpelling = (value: string): string[] => {
-  const path = value.replace(/\/{2,}/g, "/").replace(/^\//, "").replace(/\/$/, "");
+  let path = value;
+  for (let before = ""; before !== path; ) {
+    before = path;
+    path = path.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/|$)/g, "").replace(/^\.\//, "").replace(/^\//, "").replace(/\/$/, "");
+  }
   return path !== value && longEnough(path) ? [path] : [];
+};
+
+/** `value` as a URL's path writes it, percent-encoded, when that differs: each byte encodeURIComponent encodes, its hex
+ *  in upper case as it writes it and in lower case as some encoders do. Cut in place where found as it stands; any other
+ *  encoding is still found by the matcher's decoded views, and the text is then cut whole. */
+const percentForms = (value: string): string[] => {
+  const upper = encodeURIComponent(value);
+  return upper === value ? [] : [...new Set([upper, upper.replace(/%[0-9A-F]{2}/g, (byte) => byte.toLowerCase())])];
 };
 /** Each held value, then its path spelling when it has one: every form a cut or the guard derives, derived of both. */
 const withPathSpellings = (values: readonly string[]): string[] => values.flatMap((value) => [value, ...pathSpelling(value)]);

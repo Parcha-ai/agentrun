@@ -6,7 +6,7 @@
 // committed on the agent's main.
 import assert from "node:assert/strict";
 import { copyFile, readdir, readFile } from "node:fs/promises";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { ended, git, resnap } from "./learn-support.mjs";
-import { agent, runDir, scratch, serve } from "./support.mjs";
+import { agent, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -24,6 +24,8 @@ const RULE = "Start every report with STATUS: OK or STATUS: FAIL.";
 const SKILL = `---\nname: ${NAME}\ndescription: Use for every report to the user\n---\n${RULE}\n`;
 const READ = { skill: NAME, path: "SKILL.md" };
 const noSetpriv = !existsSync("/usr/bin/setpriv") && "no setpriv here";
+/** Every `codex-home` directory under `dir`: a codex session's CODEX_HOME, wherever the runner lent its session one. */
+const codexHomes = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name === "codex-home").map((entry) => join(entry.parentPath, entry.name));
 
 /** Agent `id`'s learning folder as a first run makes it, with the skill committed on main. */
 async function learnedSkill(data, id) {
@@ -70,6 +72,17 @@ function envFor(t, vars) {
 /** The run's read_skill_file results on its Timeline, each one's status (an adapter's own tool's text is not kept there:
  *  harness-app.ts records serve's host tools' results alone). */
 const skillReads = (rows) => rows.filter((row) => row.kind === "tool_result" && String(row.tool_name ?? "").endsWith("read_skill_file")).map((row) => ({ status: row.tool_status }));
+/** The read on the run's Timeline (#2306): its call, naming the file, then its result, holding the SKILL.md's rule; the
+ *  call's row before its result's, both under the call's one id. */
+function readOnTimeline(rows) {
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "read_skill_file");
+  assert.ok(call, `the read's call is on the Timeline: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.equal(call.tool_input_preview, READ.path, "the call names the file it reads, as a read's row does");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === call.tool_use_id);
+  assert.ok(result && rows.indexOf(call) < rows.indexOf(result), "its result follows it, under the same call id");
+  assert.equal(result.tool_name, "read_skill_file");
+  assert.ok(String(result.tool_result_preview ?? result.text ?? "").includes(RULE), `the result is the SKILL.md: ${JSON.stringify(result)}`);
+}
 
 /** Agent `id` on `harness`, learning, its learned skill on main; one run of `content` ended: its id and Timeline. */
 async function ranWithSkill(api, data, id, harness, content) {
@@ -83,8 +96,7 @@ async function ranWithSkill(api, data, id, harness, content) {
   return { runId: run.body.run_id, rows };
 }
 
-// SKIP (follow-up #2078): a learned skill is not handed to codex or opencode as their own on the runner
-test.skip("a codex run gets the skill its agent learned as Codex's own: seeded in its session's CODEX_HOME/skills, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: noSetpriv }, async (t) => {
+test("a codex run gets the skill its agent learned as Codex's own: seeded in its session's CODEX_HOME/skills, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t, () => said("Codex answered."));
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
@@ -99,7 +111,10 @@ test.skip("a codex run gets the skill its agent learned as Codex's own: seeded i
   });
   const { api, data } = await serve(t, { faux: undefined });
   const { runId, rows } = await ranWithSkill(api, data, "codex-skilled", "codex", `call read_skill_file ${JSON.stringify(READ)}`);
-  const home = join(runDir(data, runId), "harness", "codex-home");
+  // The run's CODEX_HOME, where the runner lends its session a directory: one, under the data directory.
+  const homes = codexHomes(data);
+  assert.equal(homes.length, 1, `one CODEX_HOME for the run ${runId}: ${JSON.stringify(homes)}`);
+  const home = homes[0];
   assert.equal(existsSync(join(home, "skills", NAME, "SKILL.md")) ? readFileSync(join(home, "skills", NAME, "SKILL.md"), "utf8") : null, SKILL, "Codex finds the learned skill where it lists a user's skills");
   const sessions = join(home, "sessions");
   const rollouts = (await readdir(sessions, { recursive: true })).filter((path) => path.endsWith(".jsonl"));
@@ -107,13 +122,13 @@ test.skip("a codex run gets the skill its agent learned as Codex's own: seeded i
   const meta = lines[0].payload;
   assert.ok((meta.dynamic_tools ?? []).some((tool) => tool.name === "read_skill_file"), `read_skill_file is among Codex's tools: ${JSON.stringify((meta.dynamic_tools ?? []).map((tool) => tool.name))}`);
   assert.deepEqual(skillReads(rows).map(({ status }) => status), ["success"], "the run's Timeline shows the read, ended well");
+  readOnTimeline(rows);
   // What the model got back, as Codex recorded it: the learned SKILL.md.
   const outputs = lines.filter((line) => line.payload?.type === "function_call_output").map((line) => String(line.payload.output));
   assert.ok(outputs.some((output) => output.includes(RULE)), `the read returns the learned SKILL.md: ${JSON.stringify(outputs)}`);
 });
 
-// SKIP (follow-up #2078): a learned skill is not handed to codex or opencode as their own on the runner
-test.skip("an opencode run gets the skill its agent learned as OpenCode's own: named in its instructions, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: noSetpriv }, async (t) => {
+test("an opencode run gets the skill its agent learned as OpenCode's own: named in its instructions, read_skill_file among its tools, and a read of it returns the SKILL.md", { timeout: 120_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t, (body) => {
     const reads = (body.tools ?? []).find((tool) => String(tool.name).endsWith("read_skill_file"));
     const answered = (body.input ?? []).some((item) => item?.type === "function_call_output");
@@ -137,6 +152,7 @@ test.skip("an opencode run gets the skill its agent learned as OpenCode's own: n
   assert.ok((first?.tools ?? []).some((tool) => String(tool.name).endsWith("read_skill_file")), `read_skill_file is among OpenCode's tools: ${JSON.stringify((first?.tools ?? []).map((tool) => tool.name))}`);
   assert.match(JSON.stringify(first?.input ?? []), new RegExp(`- ${NAME}: Use for every report to the user`), "OpenCode's instructions name the learned skill");
   assert.deepEqual(skillReads(rows).map(({ status }) => status), ["success"], "the run's Timeline shows the read, ended well");
+  readOnTimeline(rows);
   // What the model got back, in OpenCode's next request: the learned SKILL.md.
   assert.ok(gw.seen.slice(1).some((body) => JSON.stringify(body.input ?? []).includes(RULE)), "the read returns the learned SKILL.md to the model");
 });

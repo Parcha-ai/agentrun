@@ -25,7 +25,7 @@ function serve() {
     if (init?.method === "POST") posted.push(u.pathname);
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: signedIn });
     if (u.pathname === "/v2/auth/sign-out" || u.pathname === "/v2/auth/sign-out-everywhere") { signedIn = false; return json(200, { signed_out: true }); }
-    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: {} });
+    if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: {} });
     if (u.pathname === "/v2/stats") return json(200, STATS);
     if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
     if (u.pathname === "/v2/runs") return json(200, { runs: [], next_cursor: null });

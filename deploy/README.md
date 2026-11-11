@@ -32,9 +32,11 @@ What each takes, from its environment alone:
 | `AGENTRUN_SEAL_KEY` | required | required | The key saved model keys, tool keys and MCP credentials are sealed under. Set it explicitly, the same in every process (`openssl rand -base64 32`), and keep it. Without it the server keeps one in the data directory beside the store, made at the first start. A store whose secrets were sealed with another key refuses to start, in words: hand the server the original key. |
 | `AGENTRUN_STORE_URL` | optional | optional | A `postgres://` URL for a Postgres store. Unset, the store is SQLite in `/data`, and every process must share that one volume. It holds the database's password, so it is a secret: give it from an env file or a secret store, never written into a compose file or a command line. The launcher hands it to the process over a pipe and keeps it out of the process environment, so no run sees it. |
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). |
+| `AGENTRUN_STORE_POOL_SIZE` | optional | optional | The most connections this process's Postgres store holds at once (default `10`): a whole number from 1 to 1000; any other value stops the process at start, in words. Each process holds its own pool, plus one connection for renewing claims, and the server one more for its owner lock, so a server with a runner beside it holds up to twice the size plus three. Keep the sum over every server and runner below the database's `max_connections`. With the SQLite store the size has no effect, but a value that is no size still stops the start. |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
+| `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes alone, for a server behind its caller's backend: the console, sign-in, setup, settings, MCP, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
 port. A runner listens on nothing.
@@ -93,6 +95,10 @@ AGENTRUN_STORE_URL=postgres://agentrun:<the same password>@postgres:5432/agentru
 
 then `docker compose --profile pg up -d`. The server and runners do not wait for it: one that cannot reach its store yet
 exits and is started again.
+
+On a database you run yourself, the store's role needs no `CREATE` on the database when the schema is made ahead of time
+and given to it (`CREATE SCHEMA agentrun AUTHORIZATION <role>`, or the name in `AGENTRUN_STORE_SCHEMA`): the server
+migrates a schema its role owns.
 
 **Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
 it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
