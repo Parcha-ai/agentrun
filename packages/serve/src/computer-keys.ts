@@ -37,6 +37,8 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly ProviderKey[]>> = {
     { name: "BROWSERBASE_PROJECT_ID", option: "projectId", required: true },
   ],
   kernel: [{ name: "KERNEL_API_KEY", option: "apiKey", required: true }],
+  // This machine's Chrome: no key.
+  local: [],
 };
 
 /** Each provider's name in words (the registry's labels). */
@@ -49,6 +51,7 @@ const LABELS: Readonly<Record<string, string>> = {
   "phone-harness": "Phone harness",
   browserbase: "Browserbase",
   kernel: "Kernel",
+  local: "Local Chrome",
 };
 
 /** The Modal app a server's computers live in when its settings name none (serve's box app until now). */

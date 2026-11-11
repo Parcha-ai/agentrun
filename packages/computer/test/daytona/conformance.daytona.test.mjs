@@ -58,7 +58,7 @@ describe("the conformance suite on Daytona", { skip }, () => {
 
 	it("passes Core, with daemon and provider of one version", () => {
 		assert.equal(report.core, "pass", formatReport(report));
-		assert.equal(report.daemon?.version, report.providerVersion);
+		assert.ok(report.daemons.length > 0 && report.daemons.every((daemon) => daemon.version === report.providerVersion), JSON.stringify(report.daemons));
 	});
 
 	it("leaves no computer behind", async () => {
