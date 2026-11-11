@@ -128,7 +128,7 @@ async function sessionRecords(store) {
 
 /** A store with one queued workflow run (its launch body) and a runner on the workflow loop with the money spec.
  *  `providerOf` defaults to the gpt-6-sol provider on a submit origin; a test gives its own (a stalling origin for a stop). */
-async function worldWith(t, { capUsd, question, usage, providerOf, workflow = answerFlow() }) {
+async function worldWith(t, { capUsd, question, usage, providerOf, workflow = answerFlow(), journalOf, specOf: wrapSpec }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-money-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -141,7 +141,13 @@ async function worldWith(t, { capUsd, question, usage, providerOf, workflow = an
   });
   await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { question }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
-  const specOf = workflowSpecOf({ store, providerOf: providerOf ?? gpt6Provider(submitOrigin(usage)) });
+  // `journalOf`: wraps each journal the runner opens (a test that holds a commit); `wrapSpec`: wraps each claim's spec.
+  if (journalOf) {
+    const open = store.journal.bind(store);
+    store.journal = (...args) => journalOf(open(...args));
+  }
+  const made = workflowSpecOf({ store, providerOf: providerOf ?? gpt6Provider(submitOrigin(usage)) });
+  const specOf = wrapSpec ? async (...args) => wrapSpec(await made(...args)) : made;
   runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
   return { server, store };
 }
@@ -151,8 +157,9 @@ const PRICED = Object.freeze({ id: "faux-priced", api: "anthropic-messages", pri
 const PER_TOKEN = 100 / 1e6;
 const eight = (usd) => Math.round(usd * 1e8) / 1e8;
 
-/** An origin whose first answer streams `text`, resolves `streamed`, and holds open until the request is aborted. */
-function stallingOrigin(text) {
+/** An origin whose first answer streams `text`, resolves `streamed`, and holds open until the request is aborted; with
+ *  `gate`, it ends on that abort only once `gate` resolves (a provider slow to let go). */
+function stallingOrigin(text, gate) {
   let said = () => {};
   const streamed = new Promise((resolve) => (said = resolve));
   const fetch = async (_url, init = {}) => {
@@ -166,7 +173,8 @@ function stallingOrigin(text) {
           controller.enqueue(frame({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
           controller.enqueue(frame({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }));
         }
-        const abort = () => controller.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        const fail = () => controller.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        const abort = () => (gate ? void gate.then(fail) : fail());
         if (init.signal?.aborted) abort();
         else init.signal?.addEventListener("abort", abort, { once: true });
         said();
@@ -295,6 +303,37 @@ test("a person's stop while a model node streams counts what it streamed and 1,0
   const held = (await sessionRecords(store)).requests[0]?.heldUsd;
   assert.ok(typeof held === "number" && held > 0.5, `the request was held at most of the cap: ${held}`);
   assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), `14 bytes streamed and 1,024 tokens ($0.1038), not the $${held} held`);
+});
+
+// The same stop, the provider's side slow to end: the stopped request's upstream answers its abort only once the run's end
+// waits for its booking (the spec's settle, which waits for every request its model proxies are still booking) or the
+// run's Harness closes without waiting. The node ends as soon as its client lets go, so a run that closes its Harness then
+// can no longer write the request's booking, and its records count the request at its $1 hold. Each step is made to
+// happen by the one before it, never by a timer.
+test("a person's stop whose request is still being booked when the node ends: the run's end waits for the booking", async (t) => {
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const origin = stallingOrigin("Half of one.md", released); // 14 bytes streamed
+  const journalOf = (journal) => {
+    const close = journal.close.bind(journal);
+    journal.close = async (...args) => {
+      release();
+      return close(...args);
+    };
+    return journal;
+  };
+  const specOf = (spec) => ({ ...spec, ...(spec.settle ? { settle: async () => { release(); await spec.settle(); } } : {}) });
+  const { server, store } = await worldWith(t, { capUsd: 1, question: "Take your time.", providerOf: pricedProvider(origin.fetch), journalOf, specOf });
+  const acting = (async () => {
+    await origin.streamed;
+    await sendCommand(server, "run-1", { kind: "stop", body: {} });
+  })();
+  acting.catch(() => {});
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  await acting;
+  assert.equal(row.state, "stopped", `the person's stop ends the run: ${JSON.stringify(row)}`);
+  assert.equal(await spendFromRecords(store), eight((14 + 1024) * PER_TOKEN), "the stopped request is booked at what streamed and 1,024 tokens, not at its $1 hold");
+  assert.equal(row.costUsd, eight((14 + 1024) * PER_TOKEN), "and the run's cost says so");
 });
 
 test("a model node on a tier other than the default runs on that tier's model: asked, held and booked at its price", async (t) => {
