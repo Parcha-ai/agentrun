@@ -6,6 +6,7 @@
 // are written back in step in the same commit. The run is no listed run, and its cost is on its row. After the 5th merge
 // past the budget, a run's merge queues one.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -402,4 +403,58 @@ test("a consolidation's grade holds the consolidation rule: a replacement must k
   const w = await world(t);
   const { asks } = await consolidate(w, replaceAsked);
   assert.match(asks[1], CONSOLIDATION_RULE);
+});
+
+/** A workflow draft named `name`, whose README names the skill find-policies, so the two pair. */
+const partnerDraft = (name) => [
+  { path: `workflows/${name}/workflow.json`, text: JSON.stringify({ ...DRAFT, name }) },
+  { path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Runs find-policies on a store\n---\n` },
+];
+
+test("a skill with 3 workflow partners, rewritten, would need 6 files beside it: more than the grade holds, so that rewrite is left out of this consolidation, said, and nothing is asked of the model", async (t) => {
+  const w = await world(t, {}, async (onFolder) => {
+    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, ...partnerDraft("policies-a"), ...partnerDraft("policies-b"), ...partnerDraft("policies-c")] }));
+    assert.equal(made.ok, true, JSON.stringify(made));
+  });
+  // The drafts changed last: the skill is the side to rewrite, and all 3 drafts would go beside it.
+  const changed = (name) => ({ path: `workflows/${name}/workflow.json`, text: JSON.stringify({ ...DRAFT, name, root: { ...DRAFT.root, instructions: "Say the refund policy and its window, from the page." } }) });
+  assert.equal((await mergeOn(w, "run-drafts", [changed("policies-a"), changed("policies-b"), changed("policies-c")])).ok, true);
+  const pairs = ["policies-a", "policies-b", "policies-c"].map((workflow) => ({ skill: "find-policies", workflow, changed: "workflow" }));
+  const { end, entries, asks } = await consolidate(w, () => { throw new Error("the model is never asked"); }, { pairs });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(asks.length, 0, "no paid request");
+  const dropped = entries.find((e) => e.kind === KINDS.learningDropped)?.data;
+  assert.ok(dropped?.problems?.some((p) => p.path === "skills/find-policies/SKILL.md" && /do not fit/.test(p.detail)), JSON.stringify(dropped));
+});
+
+/** `n` words of letters only, drawn from `seed`: text no other note's shares. */
+const wordsOf = (seed, n) => Array.from({ length: n }, (_, i) => createHash("sha256").update(`${seed} ${i}`).digest("hex").replace(/[0-9]/g, "").slice(0, 8)).join(" ");
+
+test("a rewrite whose companions fit the count but not the grade prompt's room (a full index, a full cluster, big partner skills) is left out of this consolidation, said, before any paid request for it", async (t) => {
+  // 186 active notes, each listed by a long index line, and one cluster of 8 near-full notes saying one rule.
+  const filler = Object.fromEntries(Array.from({ length: 186 }, (_, i) => [`fact-${i}.md`, note(`Fact ${wordsOf(`name ${i}`, 3)}`, wordsOf(`desc ${i}`, 32), `${wordsOf(`body ${i}`, 20)}.\n`)]));
+  const rule = "Match each invoice total to its ledger entry before reconciling";
+  const cluster = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`invoice-${i}.md`, note(`invoice rule ${i}`, rule, `${rule}, case ${i}. ${"Keep the ledger and the invoice side by side while you match them. ".repeat(55)}\n`)]));
+  // A draft paired with 3 skills near the file cap: 3 files beside it, within the count, over the room.
+  const big = (name) => ({ path: `skills/${name}/SKILL.md`, text: `---\nname: ${name}\ndescription: Use ${name} for a store's refund policy\n---\n${"1. Read the refund policy page and quote it.\n".repeat(340)}` });
+  const w = await world(t, {}, async (onFolder) => {
+    for (const [i, batch] of [Object.entries(filler), Object.entries(cluster)].entries()) {
+      for (let at = 0; at < batch.length; at += 30) {
+        const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: `run-notes-${i}-${at}`, reason: "learned notes", graded: {}, files: batch.slice(at, at + 30).map(([path, text]) => ({ path, text })) }));
+        assert.equal(made.ok, true, JSON.stringify(made));
+      }
+    }
+    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [big("refund-a"), big("refund-b"), big("refund-c"), { path: "workflows/refunds/workflow.json", text: JSON.stringify({ ...DRAFT, name: "refunds" }) }, { path: "workflows/refunds/README.md", text: "---\nname: refunds\ndescription: Runs refund-a, refund-b and refund-c\n---\n" }] }));
+    assert.equal(made.ok, true, JSON.stringify(made));
+  });
+  // The skills changed last: the draft is the side to rewrite, with all 3 skills beside it.
+  assert.equal((await mergeOn(w, "run-skills", ["refund-a", "refund-b", "refund-c"].map((name) => ({ ...big(name), text: big(name).text.replace("quote it", "quote it whole") })))).ok, true);
+  const pairs = ["refund-a", "refund-b", "refund-c"].map((skill) => ({ skill, workflow: "refunds", changed: "skill" }));
+  const { entries, asks } = await consolidate(w, replaceAsked, { pairs });
+  // The cluster is still asked about; the draft is not.
+  assert.ok(asks.length >= 1, "the cluster is asked about");
+  assert.doesNotMatch(asks[0], /workflow draft out of step/, "the draft is not asked about");
+  const said = JSON.stringify(entries.map((e) => e.data?.left ?? e.data?.problems ?? []));
+  assert.match(said, /workflows\/refunds\/workflow\.json/, said.slice(0, 600));
+  assert.match(said, /do not fit/);
 });
