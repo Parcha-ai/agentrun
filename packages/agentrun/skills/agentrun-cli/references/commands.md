@@ -45,6 +45,7 @@ Route: `GET /agents`.
 - `--limit INTEGER` (integer)
 - `--cursor STRING` (string): `next_cursor` from the previous page.
 - `--archived` (boolean): true lists only archived agents; false, the default, the others.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun agents runs AGENT_ID`
 
@@ -55,6 +56,7 @@ Route: `GET /agents/{agent_id}/runs`.
 - `--limit INTEGER` (integer)
 - `--cursor STRING` (string): `next_cursor` from the previous page.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun agents unarchive AGENT_ID`
 
@@ -108,6 +110,7 @@ Route: `GET /files`.
 
 - `--limit INTEGER` (integer)
 - `--cursor STRING` (string): `next_cursor` from the previous page.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun files upload FILE_ID`
 
@@ -165,6 +168,7 @@ Route: `GET /agents/{agent_id}/learning/log`.
 
 - `--cursor STRING` (string): `next_cursor` from the previous page: opaque.
 - `--limit INTEGER` (integer): At most 200.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun learning notes AGENT_ID`
 
@@ -175,6 +179,7 @@ Route: `GET /agents/{agent_id}/learning/notes`.
 - `--cursor STRING` (string): `next_cursor` from the previous page: opaque, read at the commit the first page was.
 - `--limit INTEGER` (integer): At most 200.
 - `--status active|superseded|retired|pending` (string, one of these): Only notes with this status.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun learning read AGENT_ID FILE`
 
@@ -350,6 +355,7 @@ Route: `GET /agents/{agent_id}/revisions`.
 
 - `--limit INTEGER` (integer)
 - `--cursor STRING` (string): `next_cursor` from the previous page.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun revisions set-current AGENT_ID`
 
@@ -442,6 +448,7 @@ Route: `GET /runs`.
 - `--revision STRING` (string): Only runs of this revision.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
 - `--archived` (boolean): true lists only archived runs; false, the default, the others.
+- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun runs message RUN_ID`
 

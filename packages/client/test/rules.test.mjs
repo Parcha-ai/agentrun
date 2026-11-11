@@ -239,6 +239,34 @@ test("a download comes back byte for byte, as bytes or as the Response", async (
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
 });
 
+test("a streamed download cut midway or stalled rejects with AgentRunUnreachable and a code, never the platform's error, and is sent once", async (t) => {
+  const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+  const server = await listener(t, (req, res) => {
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length) });
+    res.write(bytes.subarray(0, 100));
+    if (!req.url.endsWith("/stall.bin")) setTimeout(() => res.destroy(), 20);
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const cut = await client.runs.readFile("r1", "cut.bin", undefined, { stream: true });
+  assert.ok(cut instanceof Response, "still a Response");
+  assert.deepEqual([cut.status, cut.headers.get("content-type")], [200, "application/octet-stream"]);
+  const failed = await thrown(cut.arrayBuffer());
+  assert.ok(failed instanceof AgentRunUnreachable, `${failed?.name}: ${failed?.message}`);
+  assert.match(failed.cause, /^[A-Za-z0-9_]+$/);
+  assert.ok(!printed(failed).includes(KEY));
+  const stalled = await client.runs.readFile("r1", "stall.bin", undefined, { stream: true, timeoutMs: 300 });
+  const late = await thrown(stalled.arrayBuffer());
+  assert.ok(late instanceof AgentRunUnreachable, `${late?.name}: ${late?.message}`);
+  assert.equal(late.cause, "timeout");
+  assert.equal(server.requests.length, 2, "each was sent once: what was read is the caller's");
+  const reason = new Error("the caller let go");
+  const controller = new AbortController();
+  const aborted = await client.runs.readFile("r1", "stall.bin", undefined, { stream: true, signal: controller.signal });
+  const reading = thrown(aborted.arrayBuffer());
+  controller.abort(reason);
+  assert.equal(await reading, reason, "the caller's own abort, as it is everywhere");
+});
+
 test("a body cut after a 2xx is tried again for a GET and a download, and a POST's is unreachable with a code", async (t) => {
   const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
   const cut = (res, type, whole) => {

@@ -9,6 +9,8 @@ description: Drive an AgentRun server from a shell with the agentrun CLI. Make a
 
 `agentrun` drives an AgentRun server (the open platform's server for agents) through its API. It is the command `npm install -g @parcha/agentrun` puts on the PATH; without it, write `npx @parcha/agentrun` in its place. Each command prints the server's JSON answer on stdout, one line when piped, and an error's JSON on stderr. `agentrun help` lists the commands, `agentrun GROUP COMMAND --help` gives one's flags, and [references/commands.md](references/commands.md) has every command with its flags and route.
 
+A list command (`agentrun agents list`, `agentrun runs list` and the others with `--cursor`) prints one page, with the `next_cursor` to pass as `--cursor` for the next; `--all` reads every page and prints them as one list, its `next_cursor` null.
+
 ## The server and the token
 
 The first of these that is set wins:
@@ -80,13 +82,13 @@ agentrun runs get "$run" > out.json && node -p 'JSON.stringify(require("./out.js
 
 ### 5. Raise a cap or approve a call
 
-A run stopped at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.
+A run paused at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.
 
 A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run's `cost.overshoot_bound_usd`:
 
 ```sh
 agentrun runs start notes --max-cost-usd 0.05 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json
-# exit 8 once it stops at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
+# exit 8 once it pauses at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
 ```
 
 Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:
@@ -107,6 +109,7 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 - 2: bad usage, nothing sent: a bad flag or argument, or a base URL that is not http or https or has a query, a fragment, a user or a password.
 - 3: the server cannot be reached.
 - 4: no token, the token was refused, or the config file, the local server's record or its token file was refused (open to others, or not what it should hold).
+- 5: the server does not offer the command here: a 501, `unsupported_here`, its error saying why (a capability this server has off, say).
 - 8: the run waits on a person: a question, its spend cap, a stopped turn, or a paused workflow. stderr says what to run next.
 
 ## From a program
