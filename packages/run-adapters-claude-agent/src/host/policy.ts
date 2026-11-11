@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -387,15 +387,10 @@ export function anthropicAnswers(body: Record<string, unknown>, options: Pick<An
 }
 
 /** The Claude Agent CLI's provider policy for one session. */
-/** The image blocks in `value`, at any depth (a tool's result holds them). */
-function imagesIn(value: unknown): number {
-  if (Array.isArray(value)) return value.reduce((n: number, item) => n + imagesIn(item), 0);
-  if (!isPlain(value)) return 0;
-  return (value.type === "image" ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + imagesIn(item), 0);
-}
-
-/** The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources): the
- *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. None
+/** The input tokens the provider bills for `body` beyond its bytes (`providerInputOverhead`, with its sources): the
+ *  tool-use system prompt when it has tools, and each image at the most it can be billed as by its size, in place of the
+ *  bytes its base64 takes in the body (below 0 for a screenshot, whose megabyte of base64 Claude bills as some 1,200
+ *  tokens). None
  *  can be said for a body with the web search tool: the provider bills the pages it finds as input, on each of its
  *  searches, so its input is unmeasured (undefined), never bounded by its bytes. */
 export function anthropicServerInputOverhead(body: Record<string, unknown>, searchAllowance?: number): number | undefined {
@@ -405,7 +400,9 @@ export function anthropicServerInputOverhead(body: Record<string, unknown>, sear
   const shape: InputShape = {
     tools: Array.isArray(body.tools) && body.tools.length > 0,
     ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}),
-    images: imagesIn(body.messages),
+    images: messagesImagesIn(body.messages),
+    // Its images at the routed model's provider's rule (a gateway may route the Messages API to another vendor's model).
+    ...(typeof body.model === "string" ? { model: body.model } : {}),
   };
   return (providerInputOverhead("anthropic-messages", shape) as number) + (searches ? searchAllowance! : 0);
 }
