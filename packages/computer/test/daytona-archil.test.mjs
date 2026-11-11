@@ -110,14 +110,16 @@ test("create: preflight, mount (the token on its stdin alone), serve, each as ro
 	assert.ok(exec.every((r) => r.body.suppressInputEcho === true), "no command echoes its input");
 });
 
-test("a GPU computer on the Archil image is refused before any request: a GPU computer is made from daytona-gpu alone", async () => {
-	const { fake, provider } = setup();
-	const gpu = { type: "RTX-4090", count: 1 };
-	assert.deepEqual(provider.check({ ...SPEC, gpu }).map(({ field }) => field), ["image"]);
-	const made = await provider.create({ ...SPEC, gpu });
-	assert.equal(made.ok, false);
-	assert.match(made.error.message, /image: a Daytona GPU computer is made from Daytona's GPU snapshot daytona-gpu alone, not "agentrun-archil-snap"/);
-	assert.equal(fake.requests.length, 0, "nothing was asked of Daytona");
+test("a GPU computer with an Archil mount is refused before any request: daytona-gpu's user is not root and it has no Archil client", async () => {
+	const gpu = { type: "H100", count: 1 };
+	for (const image of [SPEC.image, "default", "daytona-gpu"]) {
+		const { fake, provider } = setup();
+		assert.deepEqual(provider.check({ ...SPEC, image, gpu }).map(({ field }) => field), ["gpu"], image);
+		const made = await provider.create({ ...SPEC, image, gpu });
+		assert.equal(made.ok, false);
+		assert.match(made.error.message, /gpu: a GPU computer here takes no archil mount/, image);
+		assert.equal(fake.requests.length, 0, "nothing was asked of Daytona");
+	}
 });
 
 test("attach and list read the mount back under the epoch label, exclusive; network() reads none from the daemon (lo alone), and refuses any policy but none", async () => {

@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-computer
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
 kind: breaking
 ---
-A Daytona GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`), sent as `snapshot` and held in the read-back. Its spec's image is `"daytona-gpu"` or `"default"`. `check()` now refuses a GPU spec that names any other snapshot, a box/Dockerfile one included: give `"default"`.
+A Daytona GPU computer is now made from Daytona's GPU snapshot `daytona-gpu` and has its one H100: give image `"default"` or `"daytona-gpu"` and `gpu: { type: "H100", count: 1 }`, with no mount. Any other snapshot, type or count, or an Archil mount (so serve's Mode 2), is refused in words; the create sends no resource fields beside the snapshot, and notes who installed the daemon.

@@ -20,7 +20,7 @@ const ROOT = 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"';
 const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); case "$1" in ?????[!w]??[!w]?|?????[!w]??[!w]?.) ;; *) false ;; esac && [ "$3" = 0 ] || { echo "the daemon at $d is not root\'s alone: $x is ${1:-missing}, owner ${3:-none}"; return 1; }; [ "$x" = / ] && return 0; x=${x%/*}; x=${x:-/}; done; }';
 
 /** Installs the uploaded daemon root-owned and read-only to its user, makes its home and socket directory (init gives
- *  them to the daemon's user), and prints the installed binary's sha256. As root, or through passwordless sudo; else
+ *  them to the daemon's user), and prints who installed it and the installed binary's sha256. As root, or through passwordless sudo; else
  *  it says why. The daemon's directory is made root's (0755) even when the image already had it, a stale entry at
  *  the daemon's path is removed first, and the whole path is held to `held` before and after; a path another user can
  *  change is refused with nothing installed. Every tool is in BusyBox and in coreutils alike: no privilege tool of the
@@ -36,8 +36,18 @@ const INSTALL_SCRIPT = [
 	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" && $p install -m 0755 -o 0 -g 0 "$s" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "$d" || exit 6',
 	'rm -f "$s"',
+	// Who installed it: the sandbox user's uid and name, and "sudo" when through passwordless sudo (installerOf).
+	'echo "installer $(id -u) $(id -un 2>/dev/null || echo unnamed)${p:+ sudo}"',
 	'echo "sha256 $($p sha256sum "$d" | cut -c1-64)"',
 ].join("\n");
+
+/** Who ran install, from its output's `installer <uid> <name>[ sudo]` line, in words; undefined when it has none. */
+export function installerOf(output: string): string | undefined {
+	const found = /^installer (\d+) (\S+)( sudo)?$/m.exec(output);
+	if (found === null) return undefined;
+	const [, uid, name, sudo] = found;
+	return `the daemon was installed by ${name} (uid ${uid})${sudo ? ", through passwordless sudo" : ", as root"}`;
+}
 
 /** Starts init, the long-lived command, as root in a clean environment from its home: `init --user` gives HOME and the
  *  socket's directory to the daemon's user, sets no_new_privs and empties every capability set on every thread, and
