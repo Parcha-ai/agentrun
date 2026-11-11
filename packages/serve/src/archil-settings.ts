@@ -96,11 +96,12 @@ export async function serverIdOf(store: { settings: Pick<Settings, "putIfAbsent"
   return id;
 }
 
-/** The name of agent `agentId`'s own disk on server `serverId`: agentrun-<server id>-<agent id>. Archil takes letters,
- *  digits, dashes and underscores: an id with anything else (a dot), or past 48 characters, is kept as its first 32 such
- *  characters and 8 hex digits of its SHA-256, so two ids never share a name. */
+/** The name of agent `agentId`'s own disk on server `serverId`: agentrun-<server id>-<part>, its part at most 48
+ *  characters. Archil takes letters, digits, dashes and underscores. An id of those alone, at most 46 of them, is
+ *  `i-<id>`; any other (a dot, or longer) is `h-<its first 21 such characters>-<24 hex digits of its SHA-256>`. The two
+ *  forms start with different letters, so no id's name is another's. */
 export function diskNameOf(serverId: string, agentId: string): string {
-  const plain = /^[A-Za-z0-9_-]{1,48}$/.test(agentId);
-  const part = plain ? agentId : `${agentId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 32)}-${createHash("sha256").update(agentId).digest("hex").slice(0, 8)}`;
+  const plain = /^[A-Za-z0-9_-]{1,46}$/.test(agentId);
+  const part = plain ? `i-${agentId}` : `h-${agentId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 21)}-${createHash("sha256").update(agentId).digest("hex").slice(0, 24)}`;
   return `agentrun-${serverId}-${part}`;
 }

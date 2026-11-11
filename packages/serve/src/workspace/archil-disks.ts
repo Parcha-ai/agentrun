@@ -5,12 +5,14 @@
 //           made it; 200 when a disk of that name is there already with this configuration (idempotent); 409 when one
 //           of that name is there with another, which is found by listing that name; 403 `disk_limit_reached` when the
 //           plan's per-region disk limit is reached (`organization_plan_required`: a free organization makes none). A
-//           made disk comes with a default token user, which is removed at once: no standing token is kept anywhere.
+//           made disk comes with a default token user, which is removed at once: no standing token is kept anywhere. A
+//           disk found there already (200, 409) loses every token user that is not a run's, so a default token whose
+//           removal failed on an earlier try is removed on the next.
 // - read:   GET    {control}/api/disks/{id}: its name, region and status; 404 when the account has none of that id.
 // - list:   GET    {control}/api/disks?name=<name>: the disks of that exact name.
 // - remove: DELETE {control}/api/disks/{id}: the disk and everything on it. Idempotent: a 404 is already gone.
 // Neither the key nor a token is ever in an error: an error carries the status and Archil's own words, scrubbed.
-import { type ArchilControlOptions, controlOf, errorOf, scrub } from "./archil-mount-credential.js";
+import { type ArchilControlOptions, controlOf, errorOf, isRunNickname, listTokenUsers, scrub } from "./archil-mount-credential.js";
 
 /** A call to Archil's disks refused or not answered, in words with no secret in them. */
 export class ArchilDiskError extends Error {
@@ -99,15 +101,37 @@ export function limitOf(words: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+/** Removes token user `identifier` of disk `diskId`. Idempotent: one already gone (404) is removed. */
+async function removeToken(options: ArchilControlOptions, diskId: string, identifier: string, what: string, context: Context): Promise<void> {
+  const removed = await call(options, "DELETE", `/api/disks/${encodeURIComponent(diskId)}/users/token?identifier=${encodeURIComponent(identifier)}`, what, context);
+  if (!removed.response.ok && removed.response.status !== 404) throw await refused(removed.response, removed.key, what);
+  await removed.response.body?.cancel().catch(() => undefined);
+}
+
+/** Removes every token user of disk `diskId` that is not a run's (isRunNickname): the default one Archil made with it,
+ *  left standing when an earlier call's removal failed or its answer was lost. A run's token is the run's to revoke. */
+async function removeStrayTokens(options: ArchilControlOptions, diskId: string, name: string, context: Context): Promise<void> {
+  const what = `remove the disk ${name}'s default token`;
+  let users: readonly { readonly nickname?: string; readonly identifier: string }[];
+  try {
+    users = await listTokenUsers({ ...options, disk: diskId }, context);
+  } catch (error) {
+    throw new ArchilDiskError(`Archil's token users of the disk ${name} could not be read to ${what}: ${(error as Error).message}`, (error as { status?: number }).status);
+  }
+  for (const user of users) if (!isRunNickname(user.nickname)) await removeToken(options, diskId, user.identifier, what, context);
+}
+
 /** Makes the disk `name` (Archil-managed storage, the control plane's region), or finds it when it is there already: its
- *  id, and whether this call made it. A disk this call made has its default token user removed before it is answered. The
- *  plan's limit is an ArchilDiskLimit. */
+ *  id, and whether this call made it. A disk this call made has its default token user removed before it is answered; a
+ *  disk found there already has every token user that is not a run's removed (an earlier call's default token, when its
+ *  removal failed). The plan's limit is an ArchilDiskLimit. */
 export async function ensureDisk(options: ArchilControlOptions, name: string, context: Context = {}): Promise<{ readonly id: string; readonly made: boolean }> {
   const { response, key } = await call(options, "POST", "/api/disks", `make the disk ${name}`, context, { name });
   if (response.status === 409) {
     await response.body?.cancel().catch(() => undefined);
     const there = await diskNamed(options, name, context);
     if (there === undefined) throw new ArchilDiskError(`Archil said a disk named ${name} is there with another configuration, and no disk of that name is listed`, 409);
+    await removeStrayTokens(options, there.id, name, context);
     return { id: there.id, made: false };
   }
   if (response.status === 403) {
@@ -124,10 +148,10 @@ export async function ensureDisk(options: ArchilControlOptions, name: string, co
     const users = Array.isArray(data.authorizedUsers) ? (data.authorizedUsers as { type?: unknown; identifier?: unknown }[]) : [];
     for (const user of users) {
       if (user?.type !== "token" || typeof user.identifier !== "string") continue;
-      const removed = await call(options, "DELETE", `/api/disks/${encodeURIComponent(data.diskId)}/users/token?identifier=${encodeURIComponent(user.identifier)}`, `remove the new disk ${name}'s default token`, context);
-      if (!removed.response.ok && removed.response.status !== 404) throw await refused(removed.response, removed.key, `remove the new disk ${name}'s default token`);
-      await removed.response.body?.cancel().catch(() => undefined);
+      await removeToken(options, data.diskId, user.identifier, `remove the new disk ${name}'s default token`, context);
     }
+  } else {
+    await removeStrayTokens(options, data.diskId, name, context);
   }
   return { id: data.diskId, made };
 }

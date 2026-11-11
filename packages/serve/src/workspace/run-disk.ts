@@ -7,7 +7,7 @@
 //   region.
 // - The agent's disk is stored on the agent (archil-settings.ts agentDiskOf). An agent with none yet has it made now, on
 //   its first run that uses it (never at the agent's creation: an agent whose runs all name a disk never has one), named
-//   agentrun-<server id>-<agent id> (diskNameOf), idempotent by that name. The plan's disk limit refuses the run in words.
+//   agentrun-<server id>-i-<agent id> (diskNameOf), idempotent by that name. The plan's disk limit refuses the run in words.
 import { agentDiskOf, diskNameOf, serverIdOf, storeAgentDisk } from "../archil-settings.js";
 import type { Settings } from "../store/index.js";
 import type { LaunchDisk } from "../run-launch.js";

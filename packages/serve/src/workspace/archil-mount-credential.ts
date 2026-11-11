@@ -83,6 +83,9 @@ function claimOfNickname(nickname: unknown): { run: string; epoch: number } | un
   return match ? { run: match[1]!, epoch: Number(match[2]) } : undefined;
 }
 
+/** Whether a token user's nickname is a run's (nicknameOf): every token this server mints is one. */
+export const isRunNickname = (nickname: unknown): boolean => claimOfNickname(nickname) !== undefined;
+
 /** `text` with each secret replaced. */
 export const scrub = (text: string, secrets: readonly string[]): string => secrets.filter((one) => one.length >= 4).reduce((out, one) => out.split(one).join("[redacted]"), text);
 

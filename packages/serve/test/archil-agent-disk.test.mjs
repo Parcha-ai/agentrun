@@ -1,5 +1,5 @@
 // A disk per agent in Archil mode (#2261): each agent's runs keep their folders on its own disk, made on its first run
-// that uses it (agentrun-<server id>-<agent id>, idempotent by that name), unless the run's launch names another disk (a
+// that uses it (agentrun-<server id>-i-<agent id>, idempotent by that name), unless the run's launch names another disk (a
 // customer's: run-launch.ts archilDisk), which is read at Archil at the launch (a 422 before any run is made) and again
 // at the claim. The run's mount credential is minted, revoked and reclaimed on that one disk, so Archil refuses it on any
 // other: no path logic of ours. There is no server-wide disk and no fallback to one. Over the fake control plane
@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agentDiskOf, ARCHIL_SETTINGS_KEY, diskNameOf, loadArchilSettings, saveArchilSettings, serverIdOf, storeAgentDisk } from "../dist/archil-settings.js";
-import { archilRoute, createArchilRoutes } from "../dist/archil-routes.js";
+import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "../dist/archil-routes.js";
 import { ApiError } from "../dist/errors.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
@@ -152,22 +152,90 @@ test("making an agent's disk is idempotent: two first runs at once, a 200 for th
   assert.ok(conflicted.control.requests.some((one) => one.method === "GET" && one.path === "/api/disks" && one.query.name), "listed by its name");
 });
 
-test("removing an agent's disk deletes it at Archil, only once the agent is archived with no live run; a launch's disk is never touched", async (t) => {
+/** An agent as the dispatch hands it to an agent's Archil route, with `live` runs on any disk asked about. */
+const agentOf = (id, { archived = false, external = false, live = 0 } = {}) => ({ id, archived, external, liveOn: async () => live });
+
+test("removing an agent's disk deletes it at Archil, only once the agent is archived with no live run on it; a launch's disk is never touched", async (t) => {
   const env = await setup(t);
   const routes = createArchilRoutes({ store: env.store, sealKey: Buffer.alloc(32), env: { ARCHIL_API_KEY: API }, control: { baseUrl: env.control.baseUrl, fetch: env.control.fetch } });
   const own = await claimOf(env, { agentId: "agent-a" });
   await claimOf(env, { agentId: "agent-a", runId: "run-customer", launch: { diskId: CUSTOMER, kind: "launch" } });
   const call = (name, agent) => archilRoute(routes, name, { agent });
-  assert.deepEqual(await call("getAgentArchil", { id: "agent-a", archived: false, live: 0 }), { on: true, archil_disk: { disk_id: own.disk } });
-  assert.ok(!JSON.stringify(await call("getAgentArchil", { id: "agent-a", archived: false, live: 0 })).includes(API), "never a key");
-  await assert.rejects(call("deleteAgentArchil", { id: "agent-a", archived: false, live: 0 }), (error) => error instanceof ApiError && error.code === "precondition_failed" && /archive it first/.test(error.message));
-  await assert.rejects(call("deleteAgentArchil", { id: "agent-a", archived: true, live: 1 }), (error) => error instanceof ApiError && error.code === "precondition_failed" && /live run/.test(error.message));
+  assert.deepEqual(await call("getAgentArchil", agentOf("agent-a")), { on: true, archil_disk: { disk_id: own.disk } });
+  assert.ok(!JSON.stringify(await call("getAgentArchil", agentOf("agent-a"))).includes(API), "never a key");
+  await assert.rejects(call("deleteAgentArchil", agentOf("agent-a")), (error) => error instanceof ApiError && error.code === "precondition_failed" && /archive it first/.test(error.message));
+  const asked = [];
+  const busy = { ...agentOf("agent-a", { archived: true }), liveOn: async (disk) => (asked.push(disk), 1) };
+  await assert.rejects(call("deleteAgentArchil", busy), (error) => error instanceof ApiError && error.code === "precondition_failed" && /1 live run is on the agent agent-a's disk/.test(error.message));
+  assert.deepEqual(asked, [own.disk], "the live runs counted are those on its disk");
   assert.ok(env.control.disks.has(own.disk), "nothing removed on a refusal");
-  const removed = await call("deleteAgentArchil", { id: "agent-a", archived: true, live: 0 });
+  const removed = await call("deleteAgentArchil", agentOf("agent-a", { archived: true }));
   assert.deepEqual(removed, { on: true, archil_disk: null, removed: { disk_id: own.disk } });
   assert.equal(env.control.disks.has(own.disk), false, "its disk deleted at Archil");
   assert.equal(env.control.disks.has(CUSTOMER), true, "the customer's disk its run named is left alone");
   assert.deepEqual(env.control.requests.filter((one) => one.method === "DELETE" && /^\/api\/disks\/[^/]+$/.test(one.path)).map((one) => one.path), [`/api/disks/${own.disk}`]);
+});
+
+test("an agent its source manages (an inline run's, never archived here) has its disk removed with no archive, once no live run is on it", async (t) => {
+  const env = await setup(t);
+  const routes = createArchilRoutes({ store: env.store, sealKey: Buffer.alloc(32), env: { ARCHIL_API_KEY: API }, control: { baseUrl: env.control.baseUrl, fetch: env.control.fetch } });
+  const own = await claimOf(env, { agentId: "agent-inline" });
+  const call = (agent) => archilRoute(routes, "deleteAgentArchil", { agent });
+  await assert.rejects(call(agentOf("agent-inline", { external: true, live: 2 })), (error) => error instanceof ApiError && error.code === "precondition_failed" && /2 live runs are on/.test(error.message));
+  assert.ok(env.control.disks.has(own.disk));
+  assert.deepEqual(await call(agentOf("agent-inline", { external: true })), { on: true, archil_disk: null, removed: { disk_id: own.disk } });
+  assert.equal(env.control.disks.has(own.disk), false);
+});
+
+test("the live runs on an agent's disk are any agent's: a run whose launch names the disk, a run of the agent whose launch names none, and a run whose launch can't be read", async () => {
+  const DISK = "dsk-a000000000000001";
+  const runs = [
+    { id: "b-names-a", agentId: "agent-b", state: "running", disk: { diskId: DISK, kind: "launch" } },
+    { id: "a-plain", agentId: "agent-a", state: "queued" },
+    { id: "a-own", agentId: "agent-a", state: "parked", disk: { diskId: DISK, kind: "agent" } },
+    { id: "b-plain", agentId: "agent-b", state: "running" },
+    { id: "c-other", agentId: "agent-c", state: "running", disk: { diskId: CUSTOMER, kind: "launch" } },
+    { id: "a-elsewhere", agentId: "agent-a", state: "running", disk: { diskId: CUSTOMER, kind: "launch" } },
+    { id: "unreadable", agentId: "agent-c", state: "running", unreadable: true },
+    { id: "b-ended", agentId: "agent-b", state: "ended", disk: { diskId: DISK, kind: "launch" } },
+  ];
+  const store = {
+    list: async ({ state }) => runs.filter((run) => run.state === state),
+    launch: async (id) => {
+      const run = runs.find((one) => one.id === id);
+      if (run.unreadable) throw new Error("no launch");
+      return { runId: id, body: launchBody({ input: {}, title: "t", place: { mode: "runner" }, ...(run.disk ? { archilDisk: run.disk } : {}) }) };
+    },
+  };
+  assert.equal(await liveRunsOnDisk(store, "agent-a", DISK), 4, "b-names-a, a-plain, a-own and unreadable");
+});
+
+test("a disk found there already (Archil's 200 or 409) loses a default token an earlier make failed to remove; a run's token on it stays", async (t) => {
+  let failOnce = true;
+  const env = await setup(t, { answer: ({ method, path }) => (method === "DELETE" && /\/users\/token$/.test(path) && failOnce ? ((failOnce = false), { status: 500, body: { success: false, error: "try again" } }) : undefined) });
+  await assert.rejects(claimOf(env, { agentId: "agent-a" }), (error) => error instanceof ArchilClaimRefused && /default token/.test(error.message));
+  assert.equal([...env.control.users.values()].filter((user) => user.nickname === "default").length, 1, "the failed removal left it");
+  assert.equal(await agentDiskOf(env.store, "agent-a"), undefined, "no disk stored");
+  // A run's token on that disk (a run of another first claim), which is the run's to revoke.
+  const made = [...env.control.disks.values()].find((disk) => disk.name.startsWith("agentrun-"));
+  env.control.users.set("run-token", { type: "token", token: "run-held", identifier: "run-token", nickname: "agentrun:run-x:1", disk: made.id });
+  const again = await claimOf(env, { agentId: "agent-a", runId: "run-a-2" });
+  assert.equal(again.disk, made.id, "Archil's 200 names it");
+  assert.deepEqual([...env.control.users.values()].filter((user) => user.disk === made.id).map((user) => user.nickname), ["agentrun:run-x:1"], "the default token is gone, the run's stays");
+});
+
+test("disk names: an id Archil takes is i-<id>, any other h-<its safe characters>-<24 hex>; no id's name is another's", () => {
+  const server = "0123456789ab";
+  assert.equal(diskNameOf(server, "agent-a"), "agentrun-0123456789ab-i-agent-a");
+  const dotted = diskNameOf(server, "a.b");
+  assert.match(dotted, /^agentrun-0123456789ab-h-a_b-[0-9a-f]{24}$/);
+  const lookalike = dotted.slice("agentrun-0123456789ab-".length);
+  assert.notEqual(diskNameOf(server, lookalike), dotted, "an id spelled as another's hashed part names another disk");
+  assert.notEqual(diskNameOf(server, "a_b"), dotted);
+  const long = "x".repeat(47);
+  assert.match(diskNameOf(server, long), /^agentrun-0123456789ab-h-x{21}-[0-9a-f]{24}$/);
+  assert.equal(diskNameOf(server, "x".repeat(46)), `agentrun-0123456789ab-i-${"x".repeat(46)}`);
+  for (const id of ["agent-a", "a.b", long]) assert.ok(diskNameOf(server, id).length - "agentrun-0123456789ab-".length <= 48, id);
 });
 
 test("no migration: an old row's server-wide diskId is dropped, and an existing agent gets its own disk on its first run, as a new one does", async (t) => {

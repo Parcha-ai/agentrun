@@ -11,16 +11,18 @@
 //   POST   /v2/workspace/archil/test  one listing of the account's disks at the region's control plane, with the
 //                                     account key opened as a claim opens it: { ok, detail } or { ok: false, why }
 //   GET    /v2/agents/{id}/archil     the agent's disk: its id, or none yet
-//   DELETE /v2/agents/{id}/archil     an archived agent with no live run: its disk removed at Archil and forgotten; a disk
-//                                     a launch named is a customer's and never touched here
+//   DELETE /v2/agents/{id}/archil     an archived agent's (or an agent its source manages): its disk removed at Archil and
+//                                     forgotten, with no live run of any agent on it; a disk a launch named is a
+//                                     customer's and never touched here
 // And a launch's archil_disk is read here once before its run is made (checkLaunchDisk).
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
 import { agentDiskOf, ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
+import { readLaunchBody } from "./run-launch.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
-import type { Store } from "./store/index.js";
+import type { RunState, Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
 import { pinnedImage } from "./workspace/archil-disk.js";
@@ -49,9 +51,29 @@ const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_
 /** The Archil settings as the owner reads them: the account key as `secret`, its SecretMeta, never a value. */
 export type ArchilView = { on: boolean; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
-/** An agent's disk as GET /v2/agents/{id}/archil answers it: the one agentrun made for it (agentrun-<server id>-<agent
- *  id>), or none until its first run that uses it. */
+/** An agent's disk as GET /v2/agents/{id}/archil answers it: the one agentrun made for it (diskNameOf:
+ *  agentrun-<server id>-i-<agent id>), or none until its first run that uses it. */
 export type AgentArchilView = { on: boolean; archil_disk: { disk_id: string } | null };
+/** The agent an agent's Archil route acts on, as the dispatch reads it: whether it is archived, whether its source
+ *  manages it (an inline run's agent), and how many live runs, of any agent, are on a disk (liveRunsOnDisk). */
+export type RemovingAgent = { readonly id: string; readonly archived: boolean; readonly external: boolean; readonly liveOn: (diskId: string) => Promise<number> };
+
+/** The states of a run that may still mount its disk: every one but the final ones. */
+const LIVE: readonly RunState[] = ["queued", "running", "parked"];
+
+/** How many live runs, of any agent, are on agent `agentId`'s disk `diskId`: a run whose launch names that disk (a run of
+ *  another agent may name it in its archil_disk), or a run of the agent whose launch names none (its claim takes the
+ *  agent's disk). A live run whose launch can't be read is counted: the disk is kept while a run might be on it. */
+export async function liveRunsOnDisk(runs: Pick<Store["runs"], "list" | "launch">, agentId: string, diskId: string): Promise<number> {
+  let count = 0;
+  for (const state of LIVE) {
+    for (const run of await runs.list({ state })) {
+      const read = await runs.launch(run.id).then((row) => ({ disk: readLaunchBody(row.body)?.archilDisk }), () => undefined);
+      if (read === undefined || (read.disk === undefined ? run.agentId === agentId : read.disk.diskId === diskId)) count += 1;
+    }
+  }
+  return count;
+}
 
 export interface ArchilRoutesOptions {
   /** The server's one store: its settings and sealed keys. */
@@ -161,15 +183,17 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     }
   }
 
-  /** Agent `agentId`'s disk removed: archived, with no live run (its folders, home and learning go with the disk), deleted
-   *  at Archil, then forgotten: its next run, if it is unarchived, makes a new one. A launch's disk is never stored on the
-   *  agent, so it is never reached here. */
-  async function removeAgentDisk(agent: { readonly id: string; readonly archived: boolean; readonly live: number }, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
+  /** Agent `agentId`'s disk removed, with no live run of any agent on it (its folders, home and learning go with the
+   *  disk), deleted at Archil, then forgotten: its next run makes a new one. An agent of this server must be archived
+   *  first; an agent its source manages (an inline run's, which is never archived here) needs no archive, since its source
+   *  decides when it is done. A launch's disk is never stored on the agent, so it is never reached here. */
+  async function removeAgentDisk(agent: RemovingAgent, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
     const settings = await loadArchilSettings(store);
     const disk = settings === undefined ? undefined : await agentDiskOf(store, agent.id);
     if (settings === undefined || disk === undefined) return { ...(await agentView(agent.id)), removed: null };
-    if (!agent.archived) throw new ApiError("precondition_failed", `the agent ${agent.id} is not archived: archive it first (POST /v2/agents/${agent.id}/archive), then remove its disk`);
-    if (agent.live > 0) throw new ApiError("precondition_failed", `the agent ${agent.id} has ${agent.live} live run${agent.live === 1 ? "" : "s"} on its disk: stop ${agent.live === 1 ? "it" : "them"} first`);
+    if (!agent.archived && !agent.external) throw new ApiError("precondition_failed", `the agent ${agent.id} is not archived: archive it first (POST /v2/agents/${agent.id}/archive), then remove its disk`);
+    const live = await agent.liveOn(disk.diskId);
+    if (live > 0) throw new ApiError("precondition_failed", `${live} live run${live === 1 ? " is" : "s are"} on the agent ${agent.id}'s disk ${disk.diskId}: stop ${live === 1 ? "it" : "them"} first`);
     const key = await keyOr("unavailable", `the agent's disk ${disk.diskId} can't be removed`);
     try {
       await deleteDisk(control(settings, key), disk.diskId, signal ? { signal } : {});
@@ -204,7 +228,7 @@ export type ArchilRoutes = ReturnType<typeof createArchilRoutes>;
 
 /** One of the owner's Archil routes at its handler: its answer (sent 200), or an ApiError (sent with its status). An
  *  agent's route takes the agent as the dispatch read it. */
-export async function archilRoute(routes: ArchilRoutes, name: string, request: { readonly body?: unknown; readonly signal?: AbortSignal; readonly agent?: { readonly id: string; readonly archived: boolean; readonly live: number } }): Promise<unknown> {
+export async function archilRoute(routes: ArchilRoutes, name: string, request: { readonly body?: unknown; readonly signal?: AbortSignal; readonly agent?: RemovingAgent }): Promise<unknown> {
   if (name === "getWorkspaceArchil") return routes.view();
   if (name === "putWorkspaceArchil") return routes.save(request.body);
   if (name === "deleteWorkspaceArchil") return routes.off();

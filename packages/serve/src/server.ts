@@ -130,7 +130,7 @@ import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { archilRoute, createArchilRoutes } from "./archil-routes.js";
+import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
@@ -2575,13 +2575,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getAgentArchil":
       case "deleteAgentArchil": {
-        // The agent's Archil disk (archil-routes.ts): its rules are the handler's; removing it takes the agent archived with
-        // no live run, which the dispatch reads here.
+        // The agent's Archil disk (archil-routes.ts): its rules are the handler's; the dispatch reads the agent (archived, or
+        // managed by its source) and how to count the live runs on a disk.
         const entry = await needAgent(id);
-        const live = found.name === "deleteAgentArchil" ? (await listRunsOverStore(store, { agent: id }, ctx)).filter((run) => run.state === "running").length : 0;
         const controller = new AbortController();
         req.once("close", () => controller.abort());
-        return send(res, 200, await archilRoute(archil, found.name, { agent: { id, archived: entry.agent.archivedAt != null, live }, signal: controller.signal }), { "cache-control": "no-store" });
+        const agent = { id, archived: entry.agent.archivedAt != null, external: entry.agent.externalRef !== null, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
+        return send(res, 200, await archilRoute(archil, found.name, { agent, signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "forgetSignIn": {
         await needAgent(id);

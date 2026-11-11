@@ -736,7 +736,9 @@ computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": 
   minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
 
 **Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
-it, never when the agent is made, in the account key's region, named `agentrun-<server id>-<agent id>`; making it is
+it, never when the agent is made, in the account key's region, named `agentrun-<server id>-i-<agent id>` (an id with
+characters Archil doesn't take, or past 46 of them, is `h-` with its first 21 safe characters and 24 hex digits of its
+SHA-256, so no agent's disk name is another's); making it is
 idempotent by that name, and `GET /v2/agents/{agent_id}/archil` says which disk it is. A run's mount credential is minted
 on its run's disk, so Archil refuses that token on every other disk: a run of one agent can't mount another agent's
 files. This is the default, and it is enough for one owner: this server has no roles, and everything on it is its
@@ -757,9 +759,11 @@ owner's.
   for its plan's limit, the run fails in words ("your Archil plan allows 5 disks; upgrade or delete an agent"); no run
   falls back to a shared disk.
 - **Removing an agent's disk.** This server archives agents and never deletes one, and an archive keeps everything,
-  its disk included. `DELETE /v2/agents/{agent_id}/archil`, for an archived agent with no live run, deletes its own disk
-  at Archil (its runs' folders, its home and its learning with it) and frees a disk of the plan. It never touches a disk
-  a run's launch named.
+  its disk included. `DELETE /v2/agents/{agent_id}/archil` deletes the agent's own disk at Archil (its runs' folders,
+  its home and its learning with it) and frees a disk of the plan, once no live run of any agent is on it (a run of
+  another agent may name it in `archil_disk`). The agent must be archived, unless its source manages it: an inline
+  run's agent is never archived here, and its caller decides when it is done. It never touches a disk a run's launch
+  named.
 - **Before you upgrade.** In Archil mode, an agent's files from before this release stay on the old server disk at
   Archil; the agent starts on a new disk of its own. `diskId` is no longer a setting: there is no server-wide disk, and
   no agent falls back to one.
