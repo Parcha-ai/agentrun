@@ -2360,7 +2360,7 @@ left out: 2 sessions still being written: they come in next time
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
      not replayed. A cancelled run cannot: a message to it is `409 not_continuable`, and its `next_action` is to start a
      new run of the agent.
-   - A workflow revision runs on the workflow loop, which drives the DSL's durable workflow task on the run's journal
+   - A workflow revision runs on the workflow loop, which drives the server's durable workflow task (src/workflow/task.ts) on the run's journal
      (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`, `report`) on the run's model, with the file
      tools each node names, and its typed questions on Jev or Parallel ([decision workflows](#decision-workflows)). A
      workflow that needs code or a tool call this host does not run is not saved here (`422`). The run is `queued`
