@@ -10,7 +10,7 @@ import { serve } from "./helpers.mjs";
 const AGENT = { definition: { id: "notes", version: 1, name: "Notes", instructions: "Do what you are asked, and write what you make to a file.", skills: [], tools: ["write", "ask_person"] } };
 const text = (bytes) => new TextDecoder().decode(bytes);
 
-test("demo: create an agent, start a capped run and wait, list runs, answer a question, raise a cap, follow a timeline, read a file", { timeout: 180_000 }, async (t) => {
+test("demo: create an agent, start a capped run and wait, list runs, answer a question, raise a cap, follow a timeline, read a file", { timeout: 900_000 }, async (t) => {
   const server = await serve(t);
   const client = new AgentRun({ baseUrl: server.baseUrl, apiKey: server.token });
   assert.ok(!inspect(client, { depth: 4 }).includes(server.token) && !JSON.stringify(client).includes(server.token), "a printed client holds no key");
@@ -26,7 +26,11 @@ test("demo: create an agent, start a capped run and wait, list runs, answer a qu
   // first request, which this faux model would read as its person's message.
   const started = await client.runs.start("notes", { input: { content: "Write notes.md with three facts about the Moon." }, max_cost_usd: 5 });
   assert.equal(started.agent_id, "notes");
-  const done = await client.runs.wait(started.run_id, { timeoutMs: 60_000 });
+  // The server's first run starts its first Docker computer (the agent writes a file), and on a fresh machine the server
+  // first builds that computer's image from its recipe (apt installs git, node, npm and rg): about 6 minutes cold on a
+  // loaded build box, under one on a CI runner. The server bounds that build at 10 minutes (IMAGE_TIMEOUT_MS), so the
+  // run gets that bound plus a minute for its own turn.
+  const done = await client.runs.wait(started.run_id, { timeoutMs: 660_000 });
   assert.deepEqual([done.run_id, done.status, done.cost.cap_usd], [started.run_id, "completed", 5]);
   const listed = await client.runs.list({ limit: 10 });
   assert.ok(listed.runs.some((run) => run.run_id === started.run_id), "the run is listed");
