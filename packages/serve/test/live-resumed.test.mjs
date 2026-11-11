@@ -16,7 +16,7 @@ import { test } from "node:test";
 import { collect, shape } from "./live-support.mjs";
 
 const { watchRun } = await import("../dist/live/stream.js");
-const { RUN_RESUMED } = await import("@parcha/pi-durable-agent/timeline");
+const { RUN_RESUMED } = await import("../dist/timeline/index.js");
 
 const RUN = "run-1";
 const ROOT = 1;

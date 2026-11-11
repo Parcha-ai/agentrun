@@ -256,8 +256,11 @@ runner you start yourself).
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
-it, needs a 1 GB instance for one and 2 GB for two. The runner beside the server holds at most `--max-runs` runs at
-once (below); a run past that waits `queued` until one ends, and is never refused for a place. A harness whose one run
+it, needs a 1 GB instance for one and 2 GB for two. A runner holds runs by this memory and by `--max-runs` (below): it
+claims a waiting run only while the runs it holds and that run's size fit the host's memory less the server's 128 MB,
+oldest first, so a run that does not fit yet waits `queued`, the runs behind it too, until one ends. A run is never
+refused for a place. A 2 GB host's default count is 15, as many pi runs as fit, but it holds 6 claude-agent runs at
+once, not 15. A harness whose one run
 needs more than all the memory for runs (claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable:
 capabilities say why in its `harnesses` entry. pi always has one place, however small the host.
 
@@ -335,9 +338,11 @@ and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, w
 `sandbox` (such as `native_tools: true`), never a third mode.
 
 `bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default, with
-the sandbox place as its `fix`), and a workflow's place is `runner` or none (`422` on a sandbox, with the runner place as
-its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
-each box's own reason) when no box this server has can run it.
+the sandbox place as its `fix`), or, in Mode 2, by one on the runner, where `bash` runs on Archil's serverless exec
+([where `bash` runs](#computers)); the background tools run in a box alone, in either mode. A workflow's place is `runner`
+or none (`422` on a sandbox, with the runner place as its `fix`). In `capabilities.tools`, `bash` is `available: false`
+with a `reason` (`no box is set up on this server: …`, each box's own reason) when no box this server has can run it and
+the server is in Mode 1.
 
 `GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready`,
 `preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
@@ -717,7 +722,12 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
-refused before anything starts, in words that name the fix in Settings → Computers. `GET /v2/computers` lists each kind,
+refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
+daemon on this server: where none answers `docker version` (Render and most hosted services run none), Docker is not
+ready and says to use a vendor's computer. The server asks again every 30 s, so a daemon that stops is seen. A daemon
+started after the server is taken at the next restart, since the start's checks of Docker (its host, this server's
+paths and addresses) ran without it.
+`GET /v2/computers` lists each kind,
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
@@ -822,8 +832,10 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a browser are on their vendor's
-own network, whatever the list says.
+Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
+vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
+only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
+`AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
 `npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers
@@ -895,7 +907,7 @@ A definition is checked for what keeps it from running here when it is saved, wi
 it starts:
 
 - What no setting of this host fixes refuses the save, `422 input_invalid` by field, and nothing is written: a tool
-  this host does not bind (`definition.tools[i]`), `bash` on an agent whose place is not a sandbox, a model pi-ai does
+  this host does not bind (`definition.tools[i]`), `bash` on an agent whose place is not a sandbox (in Mode 1), a model pi-ai does
   not know when no gateway is set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
   call this host does not run, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one
   field per need).
@@ -929,7 +941,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `read` | Read a file in the run's `work/`; in a box, also an image (png, jpg, gif, webp, by its bytes) at any absolute path in the box, such as one rendered to `/tmp`, read through the box and never from the host | nothing | yes, no |
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
-| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 120 s when the call names no timeout and at most 600 s (a longer one runs at 600 s and says so; longer work is `bash_background`) | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
+| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 120 s when the call names no timeout and at most 600 s (a longer one runs at 600 s and says so; longer work is `bash_background`) | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)), or one on the runner in Mode 2 (Archil's serverless exec, at most 295 s) | no, no |
 | `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command, tty?}` in, `tty: true` for a terminal. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
 | `bash_output` | Read a background process's output from a byte offset: `{id, offset?, max_bytes?}` in (at most 48 KiB a call), its state, exit code, the log's size and the next offset out | an agentic definition whose place is a sandbox | no, no |
 | `bash_input` | Write to a running background process's stdin: `{id, text, close?}` (at most 64 KiB a call) | an agentic definition whose place is a sandbox | no, no |
@@ -1609,12 +1621,12 @@ A run's end and its `run.ended` are one durable step. The server chooses the end
 store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
 store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
 store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
-stores it. The outbox (`DIR/webhook-outbox.json`) keeps, in the same write as each message, which end and which wait of
+stores it. The outbox, in the store with the runs, keeps, in the same write as each message, which end and which wait of
 each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
 not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
 queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
 `webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
-`run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
+`run.ended` is in the outbox (`503` meanwhile), so a continued run's next end is its own, under its own id.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
@@ -1637,14 +1649,15 @@ with any of its libraries: `webhook-id` (the same on every try of a message, so 
 the secret's bytes. A receiver checks the signature against the raw body and refuses a timestamp more than 5 minutes
 from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
 and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
-sealed under `AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600). A new secret is a `DELETE` and a `PUT`.
+sealed under `AGENTRUN_SEAL_KEY`, in the store (SQLite or Postgres) with the webhook itself. A new secret is a `DELETE` and a
+`PUT`; a secret that no longer opens under the server's key (sealed under another) is replaced, and shown once, by the next `PUT`.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
 spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
 (`event=webhook condition=delivery_failed`). Each message goes on its own tries, so two queued close together can
 arrive in either order: a receiver orders them by `webhook-timestamp`, or reads the run (`GET /v2/runs/{id}`). A
-`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outbox.json`, so the next server goes on with
-them after a restart; a message can then come twice, under the same `webhook-id`. An outbox file of another version
+`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in the store's outbox, so the next server goes on with
+them after a restart; a message can then come twice, under the same `webhook-id`. An outbox of another version
 is not read: the server starts with none, and the log says so (`condition=outbox_not_read`). `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
@@ -1977,7 +1990,7 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -2262,15 +2275,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
-comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
-the rest of the store page's data), for a
-script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
+comes through `/v2`. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
 token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
 `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
-`/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
+`/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 

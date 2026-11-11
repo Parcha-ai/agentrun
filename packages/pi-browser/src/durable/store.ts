@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineTask, type ConversationDocToken, type ConversationId, type Cursor, type DocumentReader, type Harness, type TaskId, type TaskRuntime, type Tx } from "@earendil-works/pi-durable";
-import { backoffMs, moveRecord, notices } from "../core/custody.js";
+import { backoffMs, HANDOFF_POLL_MS, moveRecord, notices } from "../core/custody.js";
 import type { BrowserConfig, BrowserProvider, HandoffOutcome, HandoffPort, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "../core/host.js";
 import type { LeaseRef, LeaseState } from "../core/lease.js";
 
@@ -198,8 +198,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     },
   });
 
-  /** Polls the port until it answers, then gives the session back with the outcome's notice, if it is still held for
-   *  this request. */
+  /** Polls the port until it answers, every HANDOFF_POLL_MS while the answer is pending, then gives the session back with
+   *  the outcome's notice, if it is still held for this request. `attempt` counts the reads in a row that failed, which
+   *  back off (backoffMs); a read that answers "pending" starts it again. */
   const HandoffTask = defineTask<HandoffInput, { phase: "poll"; attempt: number }, HandoffResult, object>({
     name: `${name}.handoff`,
     version: 1,
@@ -219,12 +220,20 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         }, context);
         if (over) return;
         let answer: "pending" | HandoffOutcome | { outcome: HandoffOutcome; reason: string } = "pending";
+        let failed = false;
         try { if (handoff) answer = await handoff.outcome(interactionId, runtime.signal); } catch (error) {
           if (runtime.signal.aborted) throw error;
           runtime.report(scrubbed(error));
+          failed = true;
+        }
+        // A person's answer can come at any moment: while it is pending, it is asked again at a short fixed interval, so
+        // a hand-back resumes the agent within one poll. A read that failed backs off instead.
+        if (failed) {
+          await runtime.sleepUntil(runtime.now() + backoffMs(attempt), { phase: "poll", attempt: attempt + 1 }, context);
+          return;
         }
         if (answer === "pending") {
-          await runtime.sleepUntil(runtime.now() + backoffMs(attempt), { phase: "poll", attempt: attempt + 1 }, context);
+          await runtime.sleepUntil(runtime.now() + HANDOFF_POLL_MS, { phase: "poll", attempt: 0 }, context);
           return;
         }
         const outcome = typeof answer === "string" ? answer : answer.outcome;

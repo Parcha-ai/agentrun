@@ -170,3 +170,18 @@ test("a string value may hold the protocol's own closing tags; a call the reply 
   assert.deepEqual(events.filter((event) => event.type === "content_block_start").map((event) => event.content_block.type), ["text"]);
   assert.equal(events.find((event) => event.type === "message_delta").delta.stop_reason, "max_tokens");
 });
+
+test("as text: the reply's thinking goes as a Messages thinking block before its text, cut by the run's redactor first, so a text-tools model's run shows it too", async () => {
+  const SECRET = `not-a-secret-${"ab12".repeat(4)}`;
+  const redact = (text) => text.replaceAll(SECRET, "[redacted]");
+  const upstream = async () => {
+    const chunk = (delta, finish, usage) => `data: ${JSON.stringify({ id: "gen-1", object: "chat.completion.chunk", created: 0, model: "particle-ai/particle-1", choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}`;
+    return new Response([chunk({ role: "assistant", reasoning: `I recall ${SECRET.slice(0, 10)}` }, null), chunk({ reasoning: `${SECRET.slice(10)} from the file.` }, null), chunk({ content: "Done." }, null), chunk({}, "stop", { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }), "data: [DONE]", "", ""].join("\n\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const route = await routeOf(MODEL, { OPENROUTER_API_KEY: KEY }, "default", undefined, upstream, redact);
+  const events = await eventsOf(route.fetch, route.provider.origin);
+  const started = events.filter((event) => event.type === "content_block_start").map((event) => event.content_block.type);
+  assert.deepEqual(started, ["thinking", "text"], "the thinking first, then the text");
+  const thought = events.filter((event) => event.type === "content_block_delta" && event.delta.type === "thinking_delta").map((event) => event.delta.thinking).join("");
+  assert.equal(thought, "I recall [redacted] from the file.", "the whole thinking, cut as one text: the key split across two deltas is cut");
+});

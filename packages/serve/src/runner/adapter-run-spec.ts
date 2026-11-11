@@ -61,6 +61,7 @@ import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
+import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
@@ -101,10 +102,11 @@ const BROWSER_TOOL = "browser";
 /** Whether the runner offers the browser at all: on pi's native route (PiAdapterOptions.extensions), where pi-browser's
  *  durable extension runs in the claim's Harness, its tools pi's own tool tasks (their memo, task and conversations). */
 export const BROWSER_ON_RUNNER = true;
-/** Whether the runner installs the browser for a run whose revision grants `granted`, fail closed: only on the native route
- *  (BROWSER_ON_RUNNER), and only with the run's ledger booking on its ToolHost (host.ledger.paid), so no browser call is
- *  held on this process's own spend. */
-export const browserListed = (host: Pick<ToolHost, "ledger">, granted: readonly string[]): boolean => BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && granted.includes(BROWSER_TOOL);
+/** Whether the runner installs the browser for a run whose revision grants `granted`, or whose computer is a browser
+ *  (host.browserComputer), fail closed: only on the native route (BROWSER_ON_RUNNER), and only with the run's ledger
+ *  booking on its ToolHost (host.ledger.paid), so no browser call is held on this process's own spend. */
+export const browserListed = (host: Pick<ToolHost, "ledger" | "browserComputer">, granted: readonly string[]): boolean =>
+  BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && (granted.includes(BROWSER_TOOL) || host.browserComputer !== undefined);
 
 /** What the runner hands the spec builder, beside the claim and the loop's own Harness (the AdapterRun): the store (its
  *  agent and run reads, and the live-viewer seam the browser tool writes through), the data directory a Mode 1 run folder
@@ -199,8 +201,8 @@ export function modelAskOf(pinned: { provider: string; modelId: string } | undef
  * The run's gate before a call's intent, as the adapter loop asks it: the revision's tool settings and approvals over the
  * server's, from the one store (loadToolSettings), through RunGate (decide: deny with its words, a pin, allow, ask). The
  * adapter loop handles the ask/park/answer on the journal itself, so only the answer is read here, never RunGate's own
- * file-based approval flow. `root`: the run's files, the run's Workspace (Mode 2: its folder on the run's disk; the turn's
- * origin is read through it, never a folder of this machine) or the local folder's path.
+ * file-based approval flow. `root`: the run's folder, the run's Workspace (Mode 2: its folder on the run's disk, never a
+ * folder of this machine) or the local folder's path, for the gate's path checks; nothing in it is read.
  *
  * The server's settings are read again at each call, from the store (a row of the local store: no cache, no signal from
  * the server, which may be another process), so a permission set while the run goes reaches its next call ("applies at the
@@ -214,12 +216,14 @@ export function modelAskOf(pinned: { provider: string; modelId: string } | undef
  *  refresh): the same gate as the run's own calls, its settings read again from the store before each call node. */
 export type RunPermissions = { readonly policy: (tool: string) => Permission; readonly denyFrom: (tool: string) => SettingFrom; readonly refresh: () => Promise<void> };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
-  const gate = runGate({ root: folder, work: folder }, claim.runId, revision, () => current, root, approvers);
+  // Where the run's shell is (run-tools.ts shell): with no computer, a tool no setting names takes the kernel's ruled
+  // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused.
+  const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0]) => {
     current = await storeSettings(store);
     return gate.decide(call.tool, call.args);
@@ -367,9 +371,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // ask it leaves into an allow). The adapter loop asks `gate` and handles the ask/park/answer on the journal itself, so
   // only the permission is read here, never runGate's own file-based approval flow.
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
-  // The gate reads the run's own files (the turn's origin) through the run's Workspace: in Mode 2, its folder on the run's
-  // disk, never this machine's folder at the same path.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
+  // the same path), for its path checks; it reads nothing in it.
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell);
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -440,7 +444,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through (buildToolHost, the one the CLI
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
-  const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut });
+  // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
+  const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
@@ -653,7 +659,6 @@ export function buildToolHost(opts: {
     personWait: life.register.personWait,
     // The run row's summary staged on a commit of the run's (a hand-over's wait, its claim held: run.needs_input).
     ...(run.rowSummaryOn ? { rowSummaryOn: run.rowSummaryOn } : {}),
-    handoverInJournal: true,
     store: opts.store,
     claim,
     sealKey: opts.sealKey,
