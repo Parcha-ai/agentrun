@@ -309,7 +309,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
     // `read`: one snapshot in a deferred transaction, taking no writer lock (its statements only read).
     const run = this.#queued(async () => {
       started = true;
-      if (gaveUp || (until !== undefined && Date.now() >= until)) throw new StoreDeadline(deadlineMs);
+      if (gaveUp || (until !== undefined && Date.now() >= until)) throw holderNamed(new StoreDeadline(deadlineMs), { opened });
       // Its wait for the database's lock (another process's write) bounded by what the deadline leaves: a lock still held
       // when that runs out is the deadline's end, not the connection's own busy wait.
       const busyMs = until !== undefined ? Math.max(0, until - Date.now()) : undefined;
@@ -321,49 +321,52 @@ export class Connection implements SqliteDatabase, StoreConnection {
       }
       const open = { opened, began: Date.now() };
       OPEN.add(open);
-      let live = true;
-      let clear = () => {};
-      const deadline = new Promise<never>((_, reject) => {
-        const expire = () => reject(holderNamed(new StoreDeadline(deadlineMs), { opened }));
-        // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
-        // it. Counted from its begin, it is the time this process could run (store/deadline.ts runnableDeadline): while other work held
-        // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
-        if (until !== undefined) {
-          const timer = setTimeout(expire, Math.max(0, until - Date.now()));
-          clear = () => clearTimeout(timer);
-        } else clear = runnableDeadline(deadlineMs, expire).clear;
-      });
-      let value: T;
       try {
-        // The worker answers in order: a statement already sent finishes before the rollback a deadline sends after it.
-        const running = callback(this.#executor(() => live));
-        // Past the deadline the callback's own end is nobody's: its refused next statement must not surface as an
-        // unhandled rejection.
-        running.catch(() => undefined);
-        value = await Promise.race([running, deadline]);
-      } catch (error) {
+        let live = true;
+        let clear = () => {};
+        const deadline = new Promise<never>((_, reject) => {
+          const expire = () => reject(holderNamed(new StoreDeadline(deadlineMs), { opened }));
+          // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
+          // it. Counted from its begin, it is the time this process could run (store/deadline.ts runnableDeadline): while other work held
+          // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
+          if (until !== undefined) {
+            const timer = setTimeout(expire, Math.max(0, until - Date.now()));
+            clear = () => clearTimeout(timer);
+          } else clear = runnableDeadline(deadlineMs, expire).clear;
+        });
+        let value: T;
+        try {
+          // The worker answers in order: a statement already sent finishes before the rollback a deadline sends after it.
+          const running = callback(this.#executor(() => live));
+          // Past the deadline the callback's own end is nobody's: its refused next statement must not surface as an
+          // unhandled rejection.
+          running.catch(() => undefined);
+          value = await Promise.race([running, deadline]);
+        } catch (error) {
+          live = false;
+          clear();
+          try {
+            await this.#send({ op: "rollback" });
+          } catch (rollback) {
+            // A worker lost mid-transaction failed both: its loss is the one error, as every later call's.
+            if (this.#lost) throw this.#lost;
+            throw new AggregateError([error, rollback], "the store's transaction failed, and so did its rollback");
+          }
+          throw error;
+        }
         live = false;
         clear();
-        OPEN.delete(open);
-        try {
+        // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
+        if (until !== undefined && Date.now() >= until) {
           await this.#send({ op: "rollback" });
-        } catch (rollback) {
-          // A worker lost mid-transaction failed both: its loss is the one error, as every later call's.
-          if (this.#lost) throw this.#lost;
-          throw new AggregateError([error, rollback], "the store's transaction failed, and so did its rollback");
+          throw holderNamed(new StoreDeadline(deadlineMs), { opened });
         }
-        throw error;
+        await this.#send({ op: "commit" });
+        return value;
+      } finally {
+        // Kept until the worker has answered the commit or rollback: until then this transaction still holds the lock.
+        OPEN.delete(open);
       }
-      live = false;
-      clear();
-      OPEN.delete(open);
-      // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
-      if (until !== undefined && Date.now() >= until) {
-        await this.#send({ op: "rollback" });
-        throw new StoreDeadline(deadlineMs);
-      }
-      await this.#send({ op: "commit" });
-      return value;
     });
     if (until === undefined) return run;
     // Counted from its call, its wait behind the queue is inside the deadline too: still queued at its end, it rejects then,
@@ -373,7 +376,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
       waitTimer = setTimeout(() => {
         if (started) return;
         gaveUp = true;
-        reject(new StoreDeadline(deadlineMs));
+        reject(holderNamed(new StoreDeadline(deadlineMs), { opened }));
       }, deadlineMs);
     });
     return Promise.race([run, queuedPast]).finally(() => clearTimeout(waitTimer));

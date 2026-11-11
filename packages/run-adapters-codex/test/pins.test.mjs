@@ -94,7 +94,7 @@ test('a binary is checked once per identity in a process: the same file answers 
 
 test("the host's check hands its event loop back while the binary answers --version, and the adapter's own check then answers from it", async () => {
   // The binary answers only once this process has run a callback it queued after starting the check: a check that held
-  // the event loop (a synchronous --version) never lets that callback run, and the binary gives up after 5 s with another
+  // the event loop (a synchronous --version) never lets that callback run once the binary has started, and the binary gives up after 5 s with another
   // version. A server ran that check in its event loop, so every request and open store transaction waited on it.
   const go = join(ROOT, 'go');
   const asked = join(ROOT, 'asked-free');
@@ -103,7 +103,9 @@ test("the host's check hands its event loop back while the binary answers --vers
   chmodSync(path, 0o755);
   const pins = { version: '0.164.0', sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
   const checked = verifyCodexBinaryAsync({ path }, pins);
-  setImmediate(() => writeFileSync(go, ''));
+  // Released only once the binary has started (its first line writes `asked`): a check that ran --version synchronously
+  // would hold this interval back until the binary gave up, so only an awaited --version passes.
+  const release = setInterval(() => { if (existsSync(asked)) { clearInterval(release); writeFileSync(go, ''); } }, 10);
   assert.deepEqual(await checked, { path });
   assert.deepEqual(verifyCodexBinary({ path }, pins), { path }, "the adapter's check: answered from the host's");
   assert.equal(readFileSync(asked, 'utf8').split('\n').filter(Boolean).length, 1, 'the binary was asked its version once');

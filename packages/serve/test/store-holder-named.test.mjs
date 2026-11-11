@@ -67,3 +67,31 @@ test("a begin that waits out its busy timeout names the transaction open in this
   release();
   await holding;
 });
+
+test("a transaction counted from its call that runs out of time still in the connection's queue names where it was opened, and the one ahead of it", async (t) => {
+  const db = await Connection.open(await file(t));
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  // Let go whatever the assertions say, before the close (after-hooks run in order).
+  t.after(() => release());
+  t.after(() => db.close());
+  await db.exec("CREATE TABLE notes (text TEXT)");
+  let began;
+  const begun = new Promise((resolve) => { began = resolve; });
+  const aheadOfItInTheQueue = () => db.transaction(async (tx) => {
+    await tx.run("INSERT INTO notes (text) VALUES (?)", "ahead");
+    began();
+    await released;
+  });
+  const ahead = aheadOfItInTheQueue();
+  await begun;
+  const queuedByThisTest = () => db.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "queued"), { fromCall: true, deadlineMs: 100 });
+  await assert.rejects(queuedByThisTest(), (error) => {
+    assert.ok(error instanceof StoreDeadline, String(error));
+    assert.match(error.stack, /the transaction was opened at:\n[\s\S]*queuedByThisTest/);
+    assert.match(error.stack, /other transactions open in this process:\n {2}open \d+ ms, opened at:\n[\s\S]*aheadOfItInTheQueue/);
+    return true;
+  });
+  release();
+  await ahead;
+});

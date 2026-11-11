@@ -105,7 +105,9 @@ test("the host's check hands its event loop back while the CLI answers --version
   chmodSync(path, 0o755);
   const pins = { sha256: createHash('sha256').update(readFileSync(path)).digest('hex'), version: '2.1.286' };
   const checked = verifyClaudeAgentCliAsync(path, pins);
-  setImmediate(() => writeFileSync(go, ''));
+  // Released only once the binary has started (its first line writes `asked`): a check that ran --version synchronously
+  // would hold this interval back until the binary gave up, so only an awaited --version passes.
+  const release = setInterval(() => { if (existsSync(asked)) { clearInterval(release); writeFileSync(go, ''); } }, 10);
   assert.deepEqual(await checked, { path });
   assert.deepEqual(verifyClaudeAgentCli(path, pins), { path }, "the adapter's check: answered from the host's");
   assert.equal(readFileSync(asked, 'utf8').split('\n').filter(Boolean).length, 1, 'the CLI was asked its version once');
