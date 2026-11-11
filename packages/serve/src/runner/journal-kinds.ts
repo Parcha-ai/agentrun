@@ -70,6 +70,10 @@ export const KINDS = {
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
    *  over it, and the turn is never on the run's visible record. */
   endOfRunTurn: "agentrun.end-of-run.turn",
+  /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
+   *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
+   *  what the run was given. Neither a call nor a message. */
+  learningLaid: "agentrun.learning.laid",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
@@ -131,6 +135,15 @@ export interface RaiseData {
   readonly takes: readonly number[];
 }
 
+/** The cap a run is held to now, from its journal: its newest raise's (a KINDS.raise entry above 0), else its launch's;
+ *  none for a run launched with no cap. The one figure every reader of the run's cap takes: each request's admission
+ *  (adapter-loop.ts capNow), the run's view, and its end-of-run look back (learning-end.ts). */
+export function capNowOf(launchCapUsd: number | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[]): number | undefined {
+  if (launchCapUsd === undefined) return undefined;
+  const raised = entries.findLast((entry) => entry.kind === KINDS.raise && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && (entry.data as RaiseData).capUsd > 0);
+  return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
+}
+
 /** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
  *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
 export interface BudgetData {
@@ -150,6 +163,9 @@ export interface CallStartData {
   /** Written as the call reached its gate through a CLI's own MCP client, before any answer: nothing is sent until its
    *  agentrun.call.sent mark (KINDS.callSent). */
   readonly parked?: true;
+  /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
+   *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
+  readonly cwd?: string;
   /** When it was written (ms, the loop's clock): the Timeline dates the call's row by it. */
   readonly at?: number;
 }
