@@ -82,18 +82,21 @@ cite it as `<name>:<line>`.
    A defect this change didn't write but now triggers is `pre_existing`.
 5. **Rescue.** One turn with no tool call: reread your coverage and dropped lists. Add only a concrete defect you
    noticed and never listed, and prove it like the rest (one read at most). No variants or restatements.
-6. **Previous findings and priority.** Never raise a `dismissed` finding again unless the code around it changed and
-   the reply's reason no longer holds; an `active` one whose `reply` declines it is dismissed. List in `resolve` the
-   `active` fingerprints this change fixes. Each finding's priority is the impact if it ships, by the bar and the
-   examples in `CODEREVIEW.md`: `P0` a break on a common path (data loss, a hole an untrusted caller reaches, a crash
-   or wrong answer on normal input, a broken build or release); `P1` a real defect on a less common path (edge input,
-   error path, race, caller contract, a test that can't fail); `P2` real but low impact. Nothing breaks: not a
-   finding. Limits unless the rules set others: 4 P2 (2 on a push), 3 pre-existing, 10 in all; `confidence` under
-   0.5 is dropped. `fingerprint`: path (whitespace as `_`), enclosing symbol and a short kind (`null-deref`,
-   `authz`), lowercased, joined with `:`; it survives moved lines.
-7. **Risk score**, 1-5, from what you post: none 1 (safe to merge); only P2 2 (minor issues); one P1 3 (fix before
-   merge); two or more P1, or a P1 on a named hot spot, 4 (real defects likely to hit); any P0 5 (do not merge). Move
-   one step only for what the diff shows beyond the findings (a source file skipped for budget raises it), and say so.
+6. **Previous findings and priority.** Never raise a `dismissed` finding again unless the code around it changed and the
+   reply's reason no longer holds; an `active` one whose `reply` declines it is dismissed. List in `resolve` the
+   `active` fingerprints this change fixes. A defect you already raised keeps its fingerprint and is never posted again:
+   a candidate whose fingerprint is a previous finding's stays out of `findings`, and an `active` one this change
+   doesn't fix stays open (not in `resolve`) and counts toward the risk score. Each finding's priority is the impact if
+   it ships, by the bar and the examples in `CODEREVIEW.md`: `P0` a break on a common path (data loss, a hole an
+   untrusted caller reaches, a crash or wrong answer on normal input, a broken build or release); `P1` a real defect on
+   a less common path (edge input, error path, race, caller contract, a test that can't fail); `P2` real but low impact.
+   Nothing breaks: not a finding. Limits unless the rules set others: 4 P2 (2 on a push), 3 pre-existing, 10 in all;
+   `confidence` under 0.5 is dropped. `fingerprint`: path (whitespace as `_`), enclosing symbol and a short kind
+   (`null-deref`, `authz`), lowercased, joined with `:`; it survives moved lines.
+7. **Risk score**, 1-5, from what you post plus the `active` previous findings still open: none 1 (safe to merge); only
+   P2 2 (minor issues); one P1 3 (fix before merge); two or more P1, or a P1 on a named hot spot, 4 (real defects likely
+   to hit); any P0 5 (do not merge). Move one step only for what the diff shows beyond the findings (a source file
+   skipped for budget raises it), and say so.
 8. **Return** exactly one fenced `json` block that meets `findings.schema.json` (beside this SKILL.md), and nothing
    after it:
 
@@ -161,8 +164,9 @@ You read through them and post the review yourself; the review is the one write 
    `get_file_contents(path, sha: <head_sha>)`. `search_code` searches the default branch only.
 3. **Post, always**: one submitted review per run, with zero findings too and after a budget stop. Build the JSON
    first. `pull_request_review_write` `method: create`, `commitID: <head_sha>`; then `add_comment_to_pending_review`
-   per finding that is not `pre_existing` (`side: RIGHT`, `subjectType: LINE`), its body `**P1** **<title>**`, a
-   blank line, the failure, a blank line, `<!-- fp: <fingerprint> -->`. A refused comment is not retried: its finding
+   per finding that is not `pre_existing` (`side: RIGHT`, `subjectType: LINE`), its body `**<priority>** **<title>**`
+   (the finding's own `priority`, never a fixed label), a blank line, the failure, a blank line,
+   `<!-- fp: <fingerprint> -->`. A refused comment is not retried: its finding
    goes in the body with its failure. Then `submit_pending`, `event: COMMENT`, this body (empty sections left out):
 
    ```text
@@ -172,8 +176,8 @@ You read through them and post the review yourself; the review is the one write 
    <summary>
 
    **Findings**
-   1. **P1** <title> `path:line`
-   **Pre-existing:** **P2** <title> `path:line`: <one sentence>
+   1. **<priority>** <title> `path:line`
+   **Pre-existing:** **<priority>** <title> `path:line`: <one sentence>
    **Skipped:** `path` (reason) · **Fixed since the last review:** `<fingerprint>`
 
    <sub>Risk 1 = safe to merge ... 5 = do not merge. Rules: <the repo CODEREVIEW.md read, or "none at base; starter: https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/code-review/rules/CODEREVIEW.md"></sub>

@@ -15,7 +15,7 @@ const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validat
 test("template validate checks a package folder as the server does", (t) => {
   const ok = validate(REVIEW);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.deepEqual(JSON.parse(ok.stdout), { valid: true, name: "code-review", version: "0.2.0", skills: ["review"], evals: ["clean-refactor", "injection", "never-flag", "null-name", "off-by-one", "re-review", "repo-rule", "two-defects"] });
+  assert.deepEqual(JSON.parse(ok.stdout), { valid: true, name: "code-review", version: "0.2.0", skills: ["review"], evals: ["clean-refactor", "injection", "never-flag", "null-name", "off-by-one", "re-review", "re-review-open", "repo-rule", "two-defects"] });
 
   const dir = join(mkdtempSync(join(tmpdir(), "agentrun-template-")), "code-review");
   t.after(() => rmSync(join(dir, ".."), { recursive: true, force: true }));
