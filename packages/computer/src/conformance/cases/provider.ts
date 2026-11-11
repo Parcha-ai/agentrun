@@ -136,6 +136,26 @@ export const providerCases: Case[] = [
 			`check of lifetimeMs ${maxLifetimeMs + 1}, past maxLifetimeMs, refuses lifetimeMs in words: ${JSON.stringify(refusals)}`,
 		);
 		await refusedCreate(t, over, "create of a spec past maxLifetimeMs");
+		// GPUs are a capability too: one the provider does not offer is refused with no vendor call, and a provider that
+		// declares no gpu refuses any.
+		const { gpu } = t.provider.capabilities();
+		if (gpu !== undefined) {
+			t.assert(
+				Array.isArray(gpu.types) && gpu.types.length > 0 && gpu.types.every((type) => typeof type === "string" && type !== "") && Number.isSafeInteger(gpu.max) && gpu.max >= 1,
+				`capabilities().gpu is { types: [one or more names], max: a whole number from 1 }, not ${JSON.stringify(gpu)}`,
+			);
+		}
+		const offered = gpu?.types[0] ?? "T4";
+		const outside = gpu === undefined ? [{ type: offered, count: 1 }] : [{ type: `not-${offered}`, count: 1 }, { type: offered, count: 0 }, { type: offered, count: gpu.max + 1 }];
+		for (const asked of outside) {
+			const spec = t.spec({ labels, gpu: asked });
+			const refused = t.provider.check(spec);
+			t.assert(
+				refused.some((r) => r.field === "gpu" && r.message !== ""),
+				`check of gpu ${JSON.stringify(asked)}, which the provider ${gpu === undefined ? "declares no gpu for" : "does not offer"}, refuses gpu in words: ${JSON.stringify(refused)}`,
+			);
+			await refusedCreate(t, spec, `create with gpu ${JSON.stringify(asked)}`);
+		}
 		t.deepEqual(await names(t, labels), [], "the computers the refused creates made");
 	}),
 	provider("create-release", async (t) => {

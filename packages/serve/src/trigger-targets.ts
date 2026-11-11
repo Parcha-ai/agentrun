@@ -9,7 +9,7 @@ import { message, type RunMoment, type RunsStore, startRun, type StartDeps, WAIT
 import { runOfOrigin } from "./store-reads/runs.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { MessageOrigin } from "./timeline/index.js";
 import type { Json } from "./validate.js";
 import type { RunTrigger, Target } from "./triggers.js";
 

@@ -76,6 +76,27 @@ run is not given. So is an agent node that asks more than the learned runner's 8
 starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
+A draft the static checks pass is then dry-run (`draftDryRun`, the DSL's `dryRunWorkflow`); one they refuse, or any
+when they refuse the answer whole, never is. It runs on its block's `example:` line, one JSON object, the run's own
+input to it, else on an input synthesized from its input schema. Every model, Jev and tool-call answer is synthesized
+from the node's output schema: no request is sent, nothing is paid and no tool runs. No code runs in the host: the dry
+run hands every code node to a runner that refuses it, so the DSL never evaluates a code expression or body. Nothing large is built in the host either: a schema whose minItems is past 100 or
+minLength past 1,000, or whose synthesized instance would hold more than 2,000 values or 64,000 characters, is refused
+(`workflow`), and a dry run handed one anyway stands down as not run before building it. The bounds are read at schema
+positions only (properties, items, `$defs` and definitions, anyOf, oneOf, allOf and the rest): a `const`, an `enum`
+value, a `default` or an example that holds `minItems` is data, never a bound. Its loops are bounded the same
+way, read at node positions only (a chain's steps, a parallel's branches, a map's or a loop's body, a route's branches,
+a composed workflow's root), so a literal shaped like a loop is no loop: a loop's maxIters past 50, or nested loops whose maxIters multiply past 1,000, is refused, since a loop whose body
+asks no model (an empty map) is work no step counts; and the dry run stops by the clock after 10 s. It checks
+the wiring of the path that one input takes at run time (the state each step reads, the output's path and schema),
+not every branch or body, and never the answers. A draft whose dry run fails is left out (`workflow`, "its dry run failed ..."), and the end-of-run turn is asked
+once more for the whole answer with that draft fixed or left out; the second answer stands only when the checks keep it and no draft in it still fails its dry run.
+The example is never written anywhere in the folder (the README holds `name` and `description` alone), and is read for
+what must never be stored as every text the run gives is: one holding a held secret or a secret's shape refuses the
+whole answer. The proposal keeps each kept draft's dry run (`dryRuns`: passed, or not run and why), and the grader is
+told it under the draft in the host's own words; what the check said is made from the draft's own text (a schema's id,
+a path), so it is fenced as data, never outside a fence.
+
 ## The index
 
 `MEMORY.md` is one line per active note, by file name, `- [name](file.md) — description`, built by the host from the

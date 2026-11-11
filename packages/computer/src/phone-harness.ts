@@ -42,6 +42,7 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
 	type NetworkForm,
 	type NetworkPolicy,
@@ -413,6 +414,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (spec?.[field] !== undefined) refusals.push({ field, message: `${field}: a cloud phone's size and folders are the vendor's, and cannot be asked for` });
 		}
 		if (spec?.mount !== undefined) refusals.push({ field: "mount", message: "mount: a cloud phone mounts no folder" });
+		refusals.push(...checkGpu(spec?.gpu, this.capabilities()));
 		return refusals;
 	}
 
