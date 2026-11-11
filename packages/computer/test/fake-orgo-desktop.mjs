@@ -99,6 +99,8 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 				links: new Map(),
 				// Paths another program holds open without sharing delete: a move of one fails.
 				held: new Set(),
+				// Files this user may not open (an ACL that denies it): a read of one is an UnauthorizedAccessException.
+				denied: new Set(),
 				inputs: [],
 				commands: [],
 				notReady,
@@ -268,6 +270,8 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 				if (box.dirs.has(path)) return no("is_dir", `${path} is a folder`);
 				// [IO.File]::Open of a file that is not there: a FileNotFoundException, inside the method's wrapper.
 				if (!box.files.has(path)) return dotnet("not_found", "Open", `Could not find file '${path}'.`);
+				// One its ACL denies this user: an UnauthorizedAccessException, inside the same wrapper.
+				if (box.denied.has(path)) return dotnet("denied", "Open", `Access to the path '${path}' is denied.`);
 				const bytes = box.files.get(path);
 				return say({ data: bytes.subarray(p.offset, p.offset + p.length).toString("base64"), size: bytes.length });
 			}

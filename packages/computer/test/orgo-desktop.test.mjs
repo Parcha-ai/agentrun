@@ -462,9 +462,20 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.deepEqual([decode((await call("files.read", { path: `${dir}\\b.txt` })).value.data), box.files.has(`${dir}\\held.txt`)], ["new", false]);
 	assert.equal((await call("files.remove", { path: `${dir}\\sub` })).error.code, "invalid");
 	assert.deepEqual((await call("files.remove", { path: `${dir}\\sub`, recursive: true })).value, {});
-	assert.equal((await call("files.read", { path: `${dir}\\sub\\only.txt` })).error.code, "not_found");
+	// A .NET file error says its own code, not the wrapper's: a missing file is not_found, one its ACL denies is denied,
+	// each in the inner error's words; a bad request is invalid.
+	const missing = await call("files.read", { path: `${dir}\\sub\\only.txt` });
+	assert.equal(missing.error.code, "not_found");
+	assert.match(missing.error.message, /Could not find file/);
+	assert.doesNotMatch(missing.error.message, /Exception calling/);
+	await call("files.write", { path: `${dir}\\locked.txt`, data: Buffer.from("x").toString("base64") });
+	fake.boxOf(ref.id).denied.add(`${dir}\\locked.txt`);
+	const denied = await call("files.read", { path: `${dir}\\locked.txt` });
+	assert.equal(denied.error.code, "denied", JSON.stringify(denied));
+	assert.match(denied.error.message, /Access to the path .* is denied/);
 	assert.equal((await call("files.read", { path: dir })).error.code, "is_dir");
 	assert.equal((await call("files.read", { path: "relative\\x" })).error.code, "invalid");
+	assert.equal((await call("files.read", { path: `${dir}\\locked.txt`, offset: -1 })).error.code, "invalid", "a bad offset is a bad request");
 	assert.equal((await call("tar.pull.begin", { path: dir })).error.code, "unsupported");
 	assert.equal((await call("process.list", {})).error.code, "unsupported");
 });
