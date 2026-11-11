@@ -183,8 +183,10 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  triggers, tool keys and trigger secrets (all in the store now), and the per-run door's token (the per-run door is
  *  gone). This version's own top-level files are not among them, so a directory holding them opens: .token and
  *  .server.json beside the store and its lock, a leftover box-image.json, and the files this version still keeps beside
- *  the store in the same format an earlier version did (the webhook config and its outbox, the kept idempotency answers,
- *  and the learning usage ledger), which an earlier version's copy of reads the same. */
+ *  the store in the same format an earlier version did (the kept idempotency answers and the learning usage ledger),
+ *  which an earlier version's copy of reads the same. A webhook config and outbox an earlier build kept beside the store
+ *  (webhook.json, webhook-outbox.json) do not refuse the directory either: nothing reads them, and the webhook, now in
+ *  the store, is set again. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
