@@ -463,3 +463,17 @@ test("a resumed merge reads each note's text on main: a changed path that holds 
   const skill = learning.verdict.items.find(({ file }) => file === SKILL.file);
   assert.deepEqual([skill.keep, skill.why], [false, NOTE_NAME_TAKEN("report-format")]);
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62DEyt): a note reserves its rule only once it passes its other checks, its own merge
+// onto the base among them. a.md supersedes a note the folder does not hold (refused at the merge check); b.md says the
+// same rule and supersedes nothing: b.md is no duplicate of a note that is refused, and the checks name a.md alone.
+test("the checks: a note refused for what it supersedes reserves no rule, so a valid copy of its rule is no duplicate", () => {
+  const base = { files: ["MEMORY.md"], active: [], rules: new Map() };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const a = noteNamed("a", "A", "Retry a flaky fetch twice.", "supersedes: [missing.md]\n");
+  const b = noteNamed("b", "B", "Retry a flaky fetch twice.");
+  const checked = checkProposal({ base, changes: [change(a), change(b)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["supersedes", a.file]], JSON.stringify(checked.problems));
+  const alone = checkProposal({ base, changes: [change(b)] });
+  assert.deepEqual([alone.ok, alone.notes.map(({ file }) => file)], [true, [b.file]], "with a.md left out, b.md passes");
+});
