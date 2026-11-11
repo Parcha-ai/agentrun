@@ -47,7 +47,7 @@ import { type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
-import { runCutValues, runErrorWordsOf } from "./run-cut.js";
+import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
@@ -190,11 +190,15 @@ function liveOf(runRow: RunRow, now: number): boolean {
 async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<StoreRun | undefined> {
   // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
   // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
-  // was handed (rowShown's choke point).
-  const known = await store.runs.get(runId);
-  if (!known) return undefined;
-  const cut = await runCutValues(deps, store, runId, { runRow: known, launch: await launchOf(store, runId) });
-  const run = await store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut));
+  // was handed (rowShown's choke point). The snapshot renders under it, so it is read first, and read again after: the cut
+  // only grows, so one that is the same after the snapshot holds every value saved before the rows were read (underCut
+  // builds again under a cut that grew meanwhile).
+  const cutOf = async () => {
+    const known = await store.runs.get(runId);
+    return known ? runCutValues(deps, store, runId, { runRow: known, launch: await launchOf(store, runId) }) : undefined;
+  };
+  if (!(await store.runs.get(runId))) return undefined;
+  const run = await underCut(async () => (await cutOf()) ?? "unreadable", (cut) => store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut)));
   if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd };
   // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
   // currentLearning); its record stays as the merge wrote it.

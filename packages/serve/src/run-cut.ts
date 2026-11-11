@@ -20,6 +20,26 @@ export async function runCutValues(deps: { serverSecrets: () => string[]; signIn
   return { values: [...deps.serverSecrets(), ...handed.refs.filter((ref) => ref.length >= MIN_SECRET)] };
 }
 
+/** How many times `underCut` builds again against a cut that grew while it built, before it gives up and withholds. */
+const CUT_TRIES = 5;
+
+/** `build` against run `runId`'s cut, and the cut read again once it is built: `build` is made again, under the cut as it then
+ *  stood, until the cut it ran under is the cut after it. The cut only grows (a value saved stays held), so a cut that is the
+ *  same after a build holds every value saved before that build's reads, and what `build` rendered under it is cut of all
+ *  of them. A cut that keeps growing past CUT_TRIES builds fails closed: `build` is made under `unreadable`, the run withheld. */
+export async function underCut<T>(read: () => Promise<Awaited<ReturnType<typeof runCutValues>>>, build: (cut: Awaited<ReturnType<typeof runCutValues>>) => Promise<T>): Promise<T> {
+  const same = (a: Awaited<ReturnType<typeof runCutValues>>, b: Awaited<ReturnType<typeof runCutValues>>) =>
+    a === "unreadable" || b === "unreadable" ? a === b : new Set(a.values).size === new Set([...a.values, ...b.values]).size && new Set(b.values).size === new Set(a.values).size;
+  let cut = await read();
+  for (let tries = 1; ; tries++) {
+    const built = await build(cut);
+    const now = await read();
+    if (same(cut, now)) return built;
+    if (tries >= CUT_TRIES) return build("unreadable");
+    cut = now;
+  }
+}
+
 /** Run `runId`'s cut as a function of a text: the one rule its served words are shown by (run-view.ts shownOf: no value
  *  of the cut set, in any spelling, and no loopback address), or `unreadable` when the run is withheld. */
 export async function runCutOf(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Pick<Store, "runs">, runId: string): Promise<((text: string) => string) | "unreadable"> {
