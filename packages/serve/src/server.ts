@@ -1078,11 +1078,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
    *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
    *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
-   *  reason, which says how to fix it. */
+   *  reason, which says how to fix it. The provider whose computers run on this machine's container engine is the one
+   *  whose descriptor declares `local`. */
   const dockerDaemon = dockerDaemonCheck({ env });
   const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+    const local = COMPUTER_PROVIDERS.find((one) => one.id === provider)?.local === true;
+    if (local && !fauxBox && (enabledBoxes(env) as ReadonlySet<string>).has(provider)) {
       const daemon = await dockerDaemon();
       if (!daemon.up || box?.available) return daemon;
     } else if (box?.available) return { up: true };
@@ -1114,12 +1116,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
-  const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
+  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
     computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {

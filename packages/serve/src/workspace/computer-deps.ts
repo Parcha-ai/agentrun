@@ -16,7 +16,9 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, DockerProvider, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+// The local container engine's provider, for its check() of the operator's size settings at the start (dockerLimitsOf).
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { DockerPaths } from "../box-paths.js";
 import { dockerDaemonCheck } from "../docker-daemon.js";
@@ -99,10 +101,6 @@ export function dockerLimitsOf(env: KeyEnv): DockerLimits {
  *  computer's allow-list never reaches the host itself; without them it refuses any allow-list there. */
 export const DOCKER_HOST_ADDRESSES_ENV = "AGENTRUN_DOCKER_HOST_ADDRESSES";
 
-/** The variables the local browser's provider finds its Chrome by (the computer package's findChrome): the server's own
- *  values are handed to it, and no other variable of the server's. */
-export const CHROME_LOOKUP = ["CHROME_PATH", "PI_BROWSER_CHROME", "PATH"] as const;
-
 /** `env`'s AGENTRUN_DOCKER_HOST_ADDRESSES: its addresses, each once; undefined when unset or empty, never one made up.
  *  An entry that is not an IP address throws, naming it: the server's start checks the setting, so no run meets one. */
 export function dockerHostAddressesOf(env: KeyEnv): string[] | undefined {
@@ -163,35 +161,39 @@ export interface ComputerDepsOptions {
   readonly faux?: FauxComputers;
 }
 
-/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
- *  owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox the package's recipe; any other provider's: its registry
- *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
- *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network
- *  (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read from `env`) for a launch that names
- *  none; and a Docker computer's size, AGENTRUN_BOX_CPUS, _MEMORY and _PIDS (dockerLimitsOf, read once here), on
- *  Docker's alone. No key and no environment. */
+/** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (a provider that
+ *  prepares its own image, its descriptor's prepareImage: the owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox
+ *  the package's recipe, which its prepareImage() builds; any other provider's: its descriptor's defaultImage for the
+ *  kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in words, a prepared desktop's saying
+ *  it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the
+ *  run's release), and its network (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read
+ *  from `env`) for a launch that names none; and the size of a computer on this machine's container engine (its
+ *  descriptor's `local`), AGENTRUN_BOX_CPUS, _MEMORY and _PIDS (dockerLimitsOf, read once here): a vendor's computer
+ *  sizes itself. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
   const current = (): readonly string[] | "none" => boxAllowOf(env as NodeJS.ProcessEnv);
   const currentSet = (): boolean => boxAllowSetIn(env as NodeJS.ProcessEnv);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
-    if (entry.id === "docker" && named !== undefined) return named;
-    // Docker's sandbox: the package's own recipe, which serve builds (the registry gives Docker no default).
-    if (entry.id === "docker" && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
+    if (entry.prepareImage && named !== undefined) return named;
+    // A sandbox whose provider prepares its image: the package's own recipe, which its prepareImage() builds (the
+    // descriptor gives it no default).
+    if (entry.prepareImage && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
     const image = entry.defaultImage?.[kind];
     if (image !== undefined) return image;
-    if (entry.id === "docker" && kind === "desktop") throw refused("A Docker desktop needs an image with an X server; set one for desktops.");
+    if (entry.prepareImage && kind === "desktop") throw refused(`A ${entry.label} desktop needs an image with an X server; set one for desktops.`);
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
   const limits = dockerLimitsOf(env);
-  return (entry, kind, run) => ({
-    image: imageOf(entry, kind),
+  return (entry, kind, run, image) => ({
+    // The setting's configuration's image (Orgo's `windows`), else the kind's.
+    image: image ?? imageOf(entry, kind),
     // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
     lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
     network: networkOf(entry, kind, run, current, currentSet),
-    // A Docker computer's size, the operator's (dockerLimitsOf); a vendor's sizes itself.
-    ...(entry.id === "docker" ? limits : {}),
+    // The size of a computer on this machine's container engine, the operator's (dockerLimitsOf); a vendor's sizes itself.
+    ...(entry.local ? limits : {}),
   });
 }
 
@@ -264,24 +266,25 @@ const dockerDaemonOf = (env: KeyEnv): NonNullable<ComputerForClaimDeps["daemon"]
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
   const kinds = claimKinds(options);
-  // The Docker provider is given its image's source, which it makes ready itself (its image(): built from the recipe
-  // when Docker lacks it, or pulled by name): the owner's AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the
-  // recipe's bare tag, which no registry has.
+  // A provider that prepares its own image (its descriptor's prepareImage) is given that image's source, which its
+  // prepareImage() makes ready (built from the recipe when the engine lacks it, or pulled by name): the owner's
+  // AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the recipe's bare tag, which no registry has.
   const named = envValue(env, DOCKER_IMAGE_ENV);
-  const dockerImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
+  const preparedImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
   // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES), checked once here.
   const namedAddresses = dockerHostAddressesOf(env);
   // Where this process's Docker has the data, read once, when a Docker provider is first built.
   let paths: Promise<DockerPaths> | undefined;
-  /** The Docker provider's options beside its image: for a server in a container of its Docker's, the named volume that
-   *  holds its data and the daemon copy's place under it (dockerVolumeOf), and the Docker host's own addresses for its
-   *  egress proxy, the union of the read through the socket (`hostAddresses`) and the operator's; on a host, the
-   *  operator's alone (the provider reads its own interfaces). With none, none are given, and the provider refuses an
-   *  allow-list where it isn't on the Docker host, in its words. The read is made only for a claim whose run's computer
-   *  has an allow-list (`boxAllow`, the claim's own launch's box_allow, a list): a run launched under a list keeps it
-   *  across a restart, whatever this process's AGENTRUN_BOX_ALLOW says now; one with none, or no claim, reads nothing.
-   *  The read itself is once per process (`hostAddresses`). */
-  const dockerOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
+  /** A local provider's host options (its descriptor's `local`: its computers run on this machine's container engine):
+   *  for a server in a container of that engine's, the named volume that holds its data and the daemon copy's place
+   *  under it (dockerVolumeOf), and the host's own addresses for its egress proxy, the union of the read through the
+   *  socket (`hostAddresses`) and the operator's; on a host, the operator's alone (the provider reads its own
+   *  interfaces). With none, none are given, and the provider refuses an allow-list where it isn't on the host, in its
+   *  words. The read is made only for a claim whose run's computer has an allow-list (`boxAllow`, the claim's own
+   *  launch's box_allow, a list): a run launched under a list keeps it across a restart, whatever this process's
+   *  AGENTRUN_BOX_ALLOW says now; one with none, or no claim, reads nothing. The read itself is once per process
+   *  (`hostAddresses`). */
+  const localHostOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
     const volume = dockerVolumeOf(where);
     // A launch that names no box_allow (a row from before every launch was stamped) allows what this server allows now,
@@ -289,15 +292,24 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     const allow = boxAllow ?? boxAllowOf(env as NodeJS.ProcessEnv);
     const read = volume && Array.isArray(allow) && options.hostAddresses ? await options.hostAddresses() : undefined;
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
-    return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+    return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+  };
+  /** The server's own values of the environment variables a provider declares it reads on this machine (hostEnv: Local
+   *  Chrome's, where it finds Chrome), and no other variable of the server's. */
+  const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
+  /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: the image source
+   *  for one that prepares its image, the host options for a local one, the host environment it reads. */
+  const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
+    const entry = kinds.PROVIDERS.find((one) => one.id === id);
+    return {
+      ...(entry?.prepareImage ? { image: preparedImage } : {}),
+      ...(entry?.local ? await localHostOptions(boxAllow) : {}),
+      ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
+    };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  // The local browser finds its Chrome where the server's environment names one (CHROME_PATH, PI_BROWSER_CHROME, else
-  // PATH): those three alone, for the claim and Settings → Computers' test alike.
-  const chromeEnv = { env: Object.fromEntries(CHROME_LOOKUP.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]]))) };
-  const providers = computerProviderMakers({
-    load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : id === "local" ? { ...given, ...chromeEnv } : given),
-  });
+  // The claim and Settings → Computers' test alike.
+  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, { ...given, ...(await declaredOptions(id, claim?.boxAllow)) }) });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

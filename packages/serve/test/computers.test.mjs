@@ -64,17 +64,29 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
   assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", network: "the vendor's own network; this server's allow-list doesn't apply" });
   assert.equal(kindOf(view, "sandbox").offered, true);
-  // What this server's allow-list means for each provider, from its declared network (the computer package's NETWORK):
-  // none for Docker, which takes the list; words for a computer with no network, and for one on the vendor's own.
+  // What this server's allow-list means for each provider, from its descriptor's network: none for Docker, which takes
+  // the list; words for a computer with no network (Orgo's offered Linux desktop among them: its Windows one is parked),
+  // and for one on the vendor's own.
   const networkOf = (kind, id) => providerOf(view, kind, id).network;
   assert.deepEqual(
     [networkOf("sandbox", "docker"), networkOf("sandbox", "daytona"), networkOf("sandbox", "modal"), networkOf("sandbox", "e2b"), networkOf("desktop", "orgo"), networkOf("browser", "kernel")],
     [undefined, "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "the vendor's own network; this server's allow-list doesn't apply"],
   );
-  // Local Chrome, behind its own egress proxy ("open" and "allow", the computer package's registry entry): open, unless
-  // the operator sets the list.
-  const local = PROVIDERS.find((one) => one.id === "local");
+  // Local Chrome, behind its own egress proxy ("open" and "allow", its descriptor's): open, unless the operator sets the
+  // list.
+  const local = PROVIDERS.find((one) => one.id === "local-chrome");
   assert.equal(networkWords(local.network), "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts");
+});
+
+test("a provider that offers images by name lists them for the kind, its default first; one that offers none lists none", async (t) => {
+  const acme = { id: "acme-desk", label: "Acme Desk", kinds: ["desktop"], keys: [], mounts: [], metered: true, defaultImage: { desktop: "linux" }, capabilities: [
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "linux", options: {} },
+  ] };
+  const { routes } = await setup(t, { kinds: { ...KINDS, PROVIDERS: [...KINDS.PROVIDERS, acme] } });
+  const view = await routes.view();
+  assert.deepEqual(providerOf(view, "desktop", "acme-desk").images, ["linux", "windows"]);
+  assert.equal("images" in providerOf(view, "desktop", "e2b"), false);
 });
 
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
@@ -190,7 +202,7 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
   assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs groups cdp, which the provider does not declare; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
   assert.match(await routes.claimRefusal({ kind: "desktop", provider: "nobody" }), /names the provider nobody, which this server does not have/);
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY and ORGO_WORKSPACE_ID saved: save them in Settings → Computers (PUT /v2/computers/orgo/keys)");
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
 });

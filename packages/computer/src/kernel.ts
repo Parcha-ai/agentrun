@@ -12,9 +12,10 @@
 // connection closes, and sets no wall clock. So lifetimeMs is the longest a browser lives unwatched, at most Kernel's
 // largest idle timeout (72 h), and list reads no deadline.
 import { readFileSync } from "node:fs";
+import { KERNEL } from "./descriptors/kernel.js";
+import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import {
 	cdpUrlProblem,
-	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
 	browserHello,
@@ -39,29 +40,33 @@ import {
 	restCall,
 	type RestReply,
 	type UrlStore,
-	vendorFail,
+	causedFail,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	CreatedComputer,
-	NetworkForm,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type CreatedComputer,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { connectionError } from "./test-connection.js";
+
+/** This module's failures: one with code vendor names Kernel. */
+const fail = failFor("kernel");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Kernel";
@@ -76,12 +81,10 @@ export const KERNEL_MAX_LIFETIME_MS = 259_200_000;
 const MAX_PAGES = 100;
 
 /** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = [];
-/** The network a Kernel browser runs on: Kernel's own, open; it cannot be closed or narrowed. */
-export const NETWORK: readonly NetworkForm[] = ["open"];
+export const MOUNT: readonly MountKind[] = KERNEL.mounts;
 
-/** The one configuration it offers, the kind registry's entry (kinds.ts): a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp", "stream"] }];
+/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
+export const CAPABILITIES: readonly KindCapabilities[] = KERNEL.capabilities;
 
 /** A browser as Kernel answers it; only what the provider reads. */
 export interface KernelBrowser {
@@ -159,7 +162,7 @@ export class KernelProvider implements ComputerProvider {
 		return {
 			kind: "browser",
 			lifetime: "vendor",
-			network: [...NETWORK],
+			network: [...KERNEL.network],
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",
@@ -182,7 +185,7 @@ export class KernelProvider implements ComputerProvider {
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
 		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
-		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: written };
+		const body = { ...settings, timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000), tags: written };
 		let made: RestReply;
 		try {
 			made = await this.#request("POST", "/browsers", { body, ...(signal ? { signal } : {}) });
@@ -190,7 +193,7 @@ export class KernelProvider implements ComputerProvider {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
 			if (failed.ok || !createUncertain(error)) return failed;
 			// The browser may have been made though its answer never came: found by its create label, never made again.
-			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "kernel");
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
@@ -204,7 +207,7 @@ export class KernelProvider implements ComputerProvider {
 		if (unusable !== undefined) {
 			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
 			const released = await this.release(refOf(id), "delete");
-			return fail("kernel", `Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
+			return vendorFail("kernel",`Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
 		}
 		this.#urls.set(id, url);
 		const live = text(browser.browser_live_view_url);
@@ -241,8 +244,8 @@ export class KernelProvider implements ComputerProvider {
 			const reached = (error as { status?: unknown } | null)?.status !== undefined || failed.error.code === "aborted";
 			return fail(reached ? connectionError(failed.error).code : "unreachable", failed.error.message);
 		}
-		if (page.status === 404) return fail("kernel", `Kernel ${call} answered 404: the API URL is not Kernel's`);
-		if (!Array.isArray(page.json)) return fail("kernel", `Kernel ${call} answered ${page.status} (not_a_list)`);
+		if (page.status === 404) return vendorFail("kernel",`Kernel ${call} answered 404: the API URL is not Kernel's`);
+		if (!Array.isArray(page.json)) return vendorFail("kernel",`Kernel ${call} answered ${page.status} (not_a_list)`);
 		const n = page.json.length;
 		const more = page.headers.get("x-has-more") === "true" ? " or more" : "";
 		return ok({ detail: `Kernel answered: ${n}${more} active ${n === 1 && more === "" ? "browser" : "browsers"} in the organization` });
@@ -326,10 +329,10 @@ export class KernelProvider implements ComputerProvider {
 			}
 			if (page.headers.get("x-has-more") !== "true") return ok(found);
 			const next = Number(page.headers.get("x-next-offset"));
-			if (!Number.isInteger(next) || next <= offset) return fail("kernel", "Kernel reported more browsers without the next page's offset");
+			if (!Number.isInteger(next) || next <= offset) return vendorFail("kernel","Kernel reported more browsers without the next page's offset");
 			offset = next;
 		}
-		return fail("kernel", `Kernel kept answering more pages of browsers past ${MAX_PAGES}`);
+		return vendorFail("kernel",`Kernel kept answering more pages of browsers past ${MAX_PAGES}`);
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
@@ -370,7 +373,7 @@ export class KernelProvider implements ComputerProvider {
 		}
 		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Kernel's own domain.
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
-		if (unusable !== undefined) return fail("kernel", `the Kernel browser ${id} is not handed over: ${unusable}`);
+		if (unusable !== undefined) return vendorFail("kernel",`the Kernel browser ${id} is not handed over: ${unusable}`);
 		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
@@ -378,7 +381,7 @@ export class KernelProvider implements ComputerProvider {
 	}
 
 	/** Deletes the browser and waits until Kernel reads it as gone; one already deleted or unknown is released. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (how !== "delete") return fail("refused", `a Kernel browser is released with "delete"; it cannot be stopped and kept, so ${String(how)} is refused and the browser is left as it is`);
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);

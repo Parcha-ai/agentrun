@@ -1,7 +1,7 @@
 // Settings' "test connection" (ComputerProvider.testConnection): what each provider's one account-level read means, in
 // the same words. A key the vendor refused is unauthorized and a vendor not reached in time unreachable; any other
 // error keeps its code. A message is the provider's own, which never carries a key.
-import { type ComputerError, fail, ok, type Result } from "./result.js";
+import { type ComputerError, ok, type Result } from "./result.js";
 
 /** An error of the read, as testConnection answers it. */
 export function connectionError(error: ComputerError): ComputerError {
@@ -15,7 +15,7 @@ export function connectionError(error: ComputerError): ComputerError {
  * "or more" when the vendor has another page the test did not read.
  */
 export function countTested(vendor: string, counted: Result<{ count: number; more?: boolean }>): Result<{ detail: string }> {
-	if (!counted.ok) return fail(connectionError(counted.error).code, connectionError(counted.error).message);
+	if (!counted.ok) return { ok: false, error: connectionError(counted.error) };
 	const { count, more = false } = counted.value;
 	return ok({ detail: `${vendor} answered: ${count}${more ? " or more" : ""} ${count === 1 && !more ? "computer" : "computers"} of this provider` });
 }
