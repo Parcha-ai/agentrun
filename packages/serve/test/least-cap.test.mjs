@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_STARTED } from "../dist/timeline/index.js";
 import { capBefore, paidCall, useSpend } from "../dist/cap.js";
 import { KEY } from "./fixtures/faux-monid.mjs";
 import { agent, client, follow, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
