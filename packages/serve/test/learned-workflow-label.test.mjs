@@ -43,7 +43,8 @@ test("a held value a text output breaks across two lines is on no row, in either
   const { timelineOf } = await import("../dist/timeline/index.js");
   const { redacted } = await import("../dist/key-refusal.js");
   const { assistant, call, result, user } = await import("./timeline-lib-support.mjs");
-  const held = ["not-a-secret", "held-workflow-key", "0123456789abcdef"].join("-");
+  // No ordinary word in it, so no run of it can match the row's own words ("workflow" is in the label).
+  const held = ["not-a-secret", "zq7kxv93m2", "0123456789abcdef"].join("-");
   const cut = 24;
   const text = `| Category | Count | Total |\n|---|---|---|\nKey: ${held.slice(0, cut)}\n${held.slice(cut)}\nGrand total: $2.00`;
   const rows = timelineOf([user("Run it."), assistant([call("w1", "learned_workflow", { name: "card-report", input: { text: "x" } })]), result("w1", "learned_workflow", text)], { redact: (t) => redacted(t, [held]) });
