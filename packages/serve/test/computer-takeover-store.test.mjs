@@ -16,6 +16,7 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
+import { Connection } from "../dist/store/sqlite/connection.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 
@@ -72,6 +73,16 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
   const restart = async () => {
     await server.close();
     server = await openSqliteStore({ dataDir: dir, role: "server" });
+  };
+  /** The run's claim lapses now, as the store reads a lease that ran out: its claimed_until in the past, written on the
+   *  store's file through a connection of its own (store/sqlite/connection.ts). */
+  const lapse = async () => {
+    const db = await Connection.open(join(dir, "store.sqlite"));
+    try {
+      await db.run("UPDATE runs SET claimed_until = 1 WHERE id = 'run-1'");
+    } finally {
+      await db.close();
+    }
   };
   /** The run's phase rows, as its Timeline shows them. */
   const rows = async () => (await runTimeline(server, "run-1", ctx)).map((row) => row.summary);
@@ -210,7 +221,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     if (row.state !== "running" && row.state !== "queued") return { over: row };
     return (await check()) && { running: row };
   }, what);
-  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startPerClaim, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
+  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startPerClaim, lapse, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
 }
 
 test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, and the Timeline says both at their own times", async (t) => {
@@ -490,19 +501,21 @@ test("a take-over after the hand-back, while the run's end-of-run step runs, is 
 
 test("a person's take outlives the runner that held the run: another runner that claims the run after a lapse keeps the person driving, the run waiting for their hand-back, and only then ends it (#2134)", async (t) => {
   const world = await setup(t);
-  // A short lease, so the second runner claims the run as soon as the first one's has run out.
-  const lease = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200 };
+  // Both runners on a long lease: the lapse is forced below, never waited for, and no stall of this process loses a claim.
+  const lease = { leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 200 };
   const run = await world.startPerClaim(lease);
   await heldWhileAnswering(world, run);
   const words = holdWords("desktop");
   const seen = await world.runningUntil(async () => (await world.rows()).includes(words.ending), "the run says it waits for the hand-back");
   assert.ok(seen.running, `the run waits for the hand-back: ${seen.over?.state}`);
-  // The first runner goes as a crash goes (its lease lapses, nothing of it is released or written), and another runner
-  // takes the run over once that lease has run out.
+  // The first runner goes as a crash goes (nothing of it is released or written), and its lease runs out at once: the
+  // run's claimed_until set in the past, as the store reads a lease that lapsed. Another runner then takes the run over.
   run.first.kill();
+  await world.lapse();
   await run.second({ name: "runner-b" });
   const kept = await world.runningUntil(async () => run.holds.length === 2 && run.holds[1].state() === "person" && (await world.hold()) === "person", "the second claim's computer comes up with the person driving");
   assert.ok(kept.running, `the run still waits for the person's hand-back on the second claim: ${kept.over?.state}; second claim's hold ${run.holds[1]?.state()}`);
+  assert.equal(kept.running.runner, "runner-b", "the second runner holds the run");
   assert.deepEqual(run.releases, [], "nothing let the desktop go under the person's hand");
   await world.route("handBackRunComputer");
   const row = await world.ended();
