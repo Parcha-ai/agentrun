@@ -72,6 +72,10 @@ export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./
  *  makeArchilDisk are on AdapterSpecDeps, shared by both). One per runner. */
 export type CliSpecDeps = AdapterSpecDeps;
 
+/** What a CLI harness refuses of an agent's computer, in words: a browser, which only pi's browser tool drives. */
+export const cliRefusesKind = (kind: string): string | undefined =>
+  kind === "browser" ? "This agent's computer is a browser, which only the pi harness drives here: pick pi for this agent, or another kind of computer in Settings → Computers." : undefined;
+
 /** The revision's body, as the fields the spec reads of it. */
 type RevisionBody = {
   readonly instructions?: string;
@@ -209,7 +213,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
+    // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
+    // whose computer is a browser is refused in words at its claim, before anything is made.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
   );
   holds.hold({ computer });
 
@@ -346,8 +352,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       };
 
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
-  // store at each decide, and the turn's origin read through the run's Workspace (Mode 2: on the run's disk) — adapterRunGate
-  // (RunGate.decide: the reflect-turn .learning refusal, deny with its words, a pin, allow, ask).
+  // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
+  // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
