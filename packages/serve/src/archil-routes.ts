@@ -66,11 +66,11 @@ const LIVE: readonly RunState[] = ["queued", "running", "parked"];
  *  agent's disk). A live run whose launch can't be read is counted: the disk is kept while a run might be on it. */
 export async function liveRunsOnDisk(runs: Pick<Store["runs"], "list" | "launch">, agentId: string, diskId: string): Promise<number> {
   let count = 0;
-  for (const state of LIVE) {
-    for (const run of await runs.list({ state })) {
-      const read = await runs.launch(run.id).then((row) => ({ disk: readLaunchBody(row.body)?.archilDisk }), () => undefined);
-      if (read === undefined || (read.disk === undefined ? run.agentId === agentId : read.disk.diskId === diskId)) count += 1;
-    }
+  // One read of every run, so a run that changes state meanwhile (parked to running) cannot fall between two reads.
+  for (const run of await runs.list({})) {
+    if (!LIVE.includes(run.state)) continue;
+    const read = await runs.launch(run.id).then((row) => ({ disk: readLaunchBody(row.body)?.archilDisk }), () => undefined);
+    if (read === undefined || (read.disk === undefined ? run.agentId === agentId : read.disk.diskId === diskId)) count += 1;
   }
   return count;
 }

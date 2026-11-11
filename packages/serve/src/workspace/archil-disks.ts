@@ -160,7 +160,9 @@ export async function ensureDisk(options: ArchilControlOptions, name: string, co
 export async function availableDisk(options: ArchilControlOptions, id: string, { timeoutMs = 120_000, everyMs = 1_000, signal }: { timeoutMs?: number; everyMs?: number; signal?: AbortSignal } = {}): Promise<ArchilDiskInfo> {
   const until = Date.now() + timeoutMs;
   for (;;) {
-    const disk = await getDisk(options, id, signal ? { signal } : {});
+    // Each read is bounded by the time left, so a stalled response cannot outwait the deadline.
+    const left = AbortSignal.timeout(Math.max(1, until - Date.now()));
+    const disk = await getDisk(options, id, { signal: signal ? AbortSignal.any([signal, left]) : left });
     if (disk === undefined) throw new ArchilDiskError(`Archil has no disk ${id} in ${options.region}`, 404);
     if (disk.status === "available") return disk;
     if (disk.status === "failed" || disk.status === "deleting" || disk.status === "deleted") throw new ArchilDiskError(`the disk ${id} is ${disk.status} at Archil`);

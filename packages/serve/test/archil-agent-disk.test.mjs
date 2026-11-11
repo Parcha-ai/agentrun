@@ -200,7 +200,7 @@ test("the live runs on an agent's disk are any agent's: a run whose launch names
     { id: "b-ended", agentId: "agent-b", state: "ended", disk: { diskId: DISK, kind: "launch" } },
   ];
   const store = {
-    list: async ({ state }) => runs.filter((run) => run.state === state),
+    list: async ({ state }) => runs.filter((run) => state === undefined || run.state === state),
     launch: async (id) => {
       const run = runs.find((one) => one.id === id);
       if (run.unreadable) throw new Error("no launch");
