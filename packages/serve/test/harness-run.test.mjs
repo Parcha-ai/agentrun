@@ -32,8 +32,7 @@ async function started(api, id, instructions, harness = "claude-agent", tools = 
   return run.body.run_id;
 }
 
-// SKIP (follow-up #2078): the run's request and cost counts read undefined on the runner
-test.skip("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
+test("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true], ["opencode", true]]);
   const runId = await started(api, "chat", "Answer the question.");
@@ -250,8 +249,7 @@ test.skip("a request booked in the session whose root entry was never written (t
   assert.equal(storeCount(data, runId, "adapter.request"), 2);
 });
 
-// SKIP (follow-up #2078): a reopened run whose new request is unpriced does not read cost unknown on the runner
-test.skip("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
+test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "later", "Second turn unpriced.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -446,7 +444,8 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
-// SKIP (follow-up #2078): a follow-up whose turn shows nothing does not end the run with that turn's empty answer on the runner
+// SKIP (follow-up #2058): the reopened run completes, but its answer reads the earlier turn's ("Answer 1.") where its own
+// turn showed none: the store's answer is the run's last model text, not the last turn's.
 test.skip("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer that turn's own (none), without waiting for another message", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "answerless", "The second turn answers nothing.");

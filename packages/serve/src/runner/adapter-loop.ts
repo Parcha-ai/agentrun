@@ -330,6 +330,11 @@ interface CliRecord {
   /** The first input when someone other than the person wrote it (a trigger's): the host's input entry with its origin, as
    *  pi's steer writes one, once for the run like the person's. */
   input(text: string, origin: MessageOrigin): Promise<void>;
+  /** A message that opened a finished run again (a reopen's follow-up, request id `requestId`): its own person entry, or
+   *  input entry with its origin when someone other than the person wrote it, carrying the request id, once per request
+   *  id (a claim taken over after it was written writes none). Its commit is the one the follow-up's command row is taken
+   *  in, as pi's submission is. */
+  followUp(text: string, requestId: string, origin?: MessageOrigin): Promise<void>;
   /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
    *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
@@ -375,6 +380,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   const parked = new Set<string>();
   const sent = new Set<string>();
   let personWritten = false;
+  // The request ids of the follow-ups written (followUp): each is written once.
+  const followUps = new Set<string>();
   // Each end-of-run turn's prompt the record wrote as it asked the turn, by its request id: a turn asked again (a later
   // claim, after a crash in the turn) reuses it, never writes a second.
   const askedAt = new Map<string, EntryId>();
@@ -387,6 +394,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
     else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
+    if ((entry.kind === KINDS.message || entry.kind === KINDS.input) && typeof data.requestId === "string") followUps.add(data.requestId);
   }
   for (const [callId, ended] of started) {
     if (ended || (parked.has(callId) && !sent.has(callId))) continue;
@@ -430,6 +438,14 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       inTurn(async () => {
         if (personWritten) return;
         await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
+        personWritten = true;
+      }),
+    followUp: (input, requestId, origin) =>
+      inTurn(async () => {
+        if (followUps.has(requestId)) return;
+        if (origin) await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin, requestId } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
+        else await append(KINDS.message, { role: "person", text: input, requestId } as MessageData);
+        followUps.add(requestId);
         personWritten = true;
       }),
     async start(callId, tool, input, replaySafe) {
@@ -796,12 +812,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && session.state === "idle") {
       const theSession = session;
-      // The answer to a wait in the claim: the row's waiting summary goes in its commit.
-      const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
+      const theRecord = cliRecord;
+      // Who wrote it, when the person did not (a trigger's message that reopened the run): its input is that origin's.
+      const by = originOf((command.body as { origin?: unknown } | null)?.origin);
+      // The row is taken in the commit that places it: pi's submission of the turn; a CLI's (whose harness writes no
+      // submission) the record's follow-up entry, written before the send. The answer to a wait in the claim: the row's
+      // waiting summary goes in that commit too.
+      const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(requestId);
+      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
-        await cliRecord?.person(text);
-        await theSession.send(text, { id: requestId });
+        await theRecord?.followUp(text, requestId, by);
+        await theSession.send(text, { id: requestId, ...(by ? { origin: by } : {}) });
       })();
       reopen.placed?.();
       try {
