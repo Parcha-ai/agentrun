@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import { CHROME_FLAGS, chromeFence, findChrome, NO_CHROME } from "../dist/chrome.js";
@@ -220,6 +220,11 @@ test("testConnection starts the Chrome once with its sandbox on and keeps nothin
 	assert.ok(tested.ok, tested.ok ? "" : tested.error.message);
 	assert.match(tested.value.detail, /starts here with its sandbox on: no key is needed/);
 	assert.deepEqual((await p.list({})).value, []);
+});
+
+test("a relative root is made absolute once, so the profile Chrome is given and the one a liveness check or a release matches are the same path", () => {
+	const p = new LocalBrowserProvider({ executablePath: CHROME, root: "browsers", uid: UID });
+	assert.equal(p.root, resolve("browsers"));
 });
 
 test("the registry builds it from its options alone; an id that is not one is refused", async () => {

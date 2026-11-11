@@ -44,6 +44,10 @@ const refused = (words: string): Error => Object.assign(new Error(words), { code
  *  computer's allow-list never reaches the host itself; without them it refuses any allow-list there. */
 export const DOCKER_HOST_ADDRESSES_ENV = "AGENTRUN_DOCKER_HOST_ADDRESSES";
 
+/** The variables the local browser's provider finds its Chrome by (the computer package's findChrome): the server's own
+ *  values are handed to it, and no other variable of the server's. */
+export const CHROME_LOOKUP = ["CHROME_PATH", "PI_BROWSER_CHROME", "PATH"] as const;
+
 /** `env`'s AGENTRUN_DOCKER_HOST_ADDRESSES: its addresses, each once; undefined when unset or empty, never one made up.
  *  An entry that is not an IP address throws, naming it: the server's start checks the setting, so no run meets one. */
 export function dockerHostAddressesOf(env: KeyEnv): string[] | undefined {
@@ -194,7 +198,12 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : given) });
+  // The local browser finds its Chrome where the server's environment names one (CHROME_PATH, PI_BROWSER_CHROME, else
+  // PATH): those three alone, for the claim and Settings → Computers' test alike.
+  const chromeEnv = { env: Object.fromEntries(CHROME_LOOKUP.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]]))) };
+  const providers = computerProviderMakers({
+    load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : id === "local" ? { ...given, ...chromeEnv } : given),
+  });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

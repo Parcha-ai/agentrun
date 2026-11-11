@@ -338,6 +338,16 @@ test("the composer builds every provider through the one provider builder, and g
   assert.equal(typeof computerDeps.spec, "function");
 });
 
+test("the local browser's provider is built with the server's Chrome lookup (CHROME_PATH, PI_BROWSER_CHROME, PATH) and no other variable", async () => {
+  const built = [];
+  const env = { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin", ANTHROPIC_API_KEY: mark("model-key") };
+  const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
+  await computerDeps.providers.local({}, { ledger: {} });
+  await factories.local({});
+  assert.deepEqual(built.map(([id]) => id), ["local", "local"], "the claim's and Settings → Computers' alike");
+  for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin" });
+});
+
 // AGENTRUN_DOCKER_HOST_ADDRESSES: the Docker host's own addresses, for a Docker provider that isn't on that host (the
 // server in a container). The provider's egress proxy refuses them as the host's; without them it refuses any
 // allow-list there. Each entry is an IP address or the setting is refused in words; nothing is ever made up.

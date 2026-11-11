@@ -23,7 +23,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BROWSER_IMAGE, browserClient, browserHello, carries, labelsProblem } from "./browser.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
@@ -109,7 +109,9 @@ export class LocalBrowserProvider implements ComputerProvider {
 		this.#env = env;
 		this.#headed = headed;
 		this.#uid = uid;
-		this.root = root ?? join(tmpdir(), `agentrun-local-browser-${uid ?? "user"}`);
+		// Absolute once, here: Chrome is given its profile by the supervisor's absolute path, and a liveness check or a
+		// release matches that path exactly, so a relative root would read a running Chrome as gone.
+		this.root = resolve(root ?? join(tmpdir(), `agentrun-local-browser-${uid ?? "user"}`));
 	}
 
 	/**
