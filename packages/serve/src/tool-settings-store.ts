@@ -49,8 +49,7 @@ class ToolSettingsOverStore {
 
 export type { ToolSettingsOverStore };
 
-/** The ToolSettings surface over the one store: the switch swaps `new ToolSettings(dir)` for this, then awaits load() once
- *  at start before the first get(). */
+/** The server's tool settings over the one store: the server awaits load() once at start, before the first get(). */
 export function toolSettingsOverStore(store: ToolSettingsStore, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)): ToolSettingsOverStore {
   return new ToolSettingsOverStore(store, warn);
 }

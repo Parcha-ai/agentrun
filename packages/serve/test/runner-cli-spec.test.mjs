@@ -1,7 +1,7 @@
 // A CLI harness's run as the runner runs it (runner/cli-run-spec.ts cliRunSpecFromLaunch): a run stored with its launch,
 // claimed by a runner whose dispatch resolves a CLI harness to the kernel's adapter loop on this spec, runs its first
 // turn and ends, its answer in the run's own record (record "loop"). The adapter is the one main builds for the harness
-// (adapters.ts adapterFor: its provider on its wire, its catalog price); the run's tools are the kernel registry's hands
+// (its harness-table.ts entry's adapter: its provider on its wire, its catalog price); the run's tools are the kernel registry's hands
 // on its Workspace, its gate the store's tool settings. Every harness here is a stand-in on loopback: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -113,7 +113,7 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. `archil`: Mode 2
  *  over that disk fake, Archil's control plane the fake as a fetch function (`control`: no port, every request recorded). `env`: more of the
  *  runner's environment; `model`: the launch's model. */
-async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" } } = {}) {
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" }, prepare } = {}) {
   const control = archil ? archilControlFetch() : undefined;
   // A second net: in Mode 2, any fetch to a host other than this machine's loopback is refused and recorded (`outbound`).
   const outbound = [];
@@ -141,6 +141,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
+  await prepare?.(dir);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"] } });
   const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -174,6 +175,20 @@ function noComputer() {
       return { release: async () => void (released += 1) };
     },
   };
+}
+
+// Ported from date-line.test.mjs: every harness's system prompt starts with one line saying today's date in UTC and where
+// the run works, the same line pi's spec puts first (runner-system-prompt.test.mjs), before the revision's instructions.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`the ${harness} session's system prompt starts with the environment line, the same as pi's, then the revision's instructions`, async (t) => {
+    const { environmentLine } = await import("../dist/environment.js");
+    // The data directory's harnesses, linked as a first use installs them.
+    const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : undefined;
+    const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
+    assert.equal(built.session.system[0], environmentLine(), "the date line first");
+    assert.match(built.session.system[0], /^Today is \d{4}-\d{2}-\d{2} \(UTC\)\./);
+    assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
+  });
 }
 
 test("a claude-agent run, claimed by the runner, runs its first turn through the dispatch on the CLI spec, on the pinned Agent SDK and CLI, and ends with its answer", { timeout: 180_000 }, async (t) => {
@@ -218,6 +233,16 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   // The release follows the run's end commit (the loop lets its resources go after it), so it is waited for, not raced.
   await until(() => computers.released() === 1, "the computer's release");
   assert.equal(computers.released(), 1, "released once");
+});
+
+// A run whose effort is above its harness's highest level (a revision's or the host's "max"; OpenCode's and Codex's
+// reasoning stops at xhigh) thinks at that highest, and its metrics name the level it ran at, never the one it asked for.
+test("a CLI run's effort above its harness's highest runs at that highest, and its metrics name the level it ran at", async (t) => {
+  const gateway = await responsesGateway(t, "Done.");
+  const env = { AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const { row } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env, launch: { effort: "max" } });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.equal(row.metrics?.effort, "xhigh", `the metrics name the level it ran at: ${JSON.stringify(row.metrics)}`);
 });
 
 // A run a trigger started: its launch names the trigger and the first input's origin (run-launch.ts, as the server writes
