@@ -17,7 +17,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const { GRADE_RUBRIC, gradedItems, gradePrompt, NOTES_FULL, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
-const { parseNoteFile, ruleOf } = await import("../dist/learn/notes.js");
+const { parseNoteFile, retire, ruleOf } = await import("../dist/learn/notes.js");
 const { checkProposal } = await import("../dist/learn/check.js");
 const { keptOf, mergeChangeOf, NOTE_NAME_IN_RUN, NOTE_NAME_TAKEN, takenOnMain } = await import("../dist/runner/learning-loop.js");
 const { SAME_NOTE, wordsOf } = await import("../dist/learning-words.js");
@@ -86,7 +86,7 @@ test("keptOf and mergeChangeOf: a re-filed skill merges as its note, held when p
 /** A learning run of run-1, which proposed NOTE and SKILL; its faux grader keeps NOTE and re-files SKILL as a note.
  *  `existing`: a note's text main holds at report-format.md first. Answers its end, the folder's notes and skills after,
  *  and the words its learning ended with. */
-async function refileRun(t, { existing, skill, committed, edited = {}, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
+async function refileRun(t, { existing, retired = [], skill, committed, edited = {}, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(tmpdir(), "learn-refile-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
@@ -105,6 +105,18 @@ async function refileRun(t, { existing, skill, committed, edited = {}, race = {}
     }
   };
   await land(typeof existing === "string" ? { "report-format.md": existing } : (existing ?? {}));
+  // `retired`: notes of `existing` a person retires before the run, so main holds them retired.
+  for (const file of retired) {
+    const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+    try {
+      const note = (await readSnapshot(folder.workspace)).notes.find((one) => one.file === file);
+      const text = (await mainTexts(folder.workspace, [file]))[file];
+      const made = await learningCommit(folder.workspace, { kind: "person", action: "retired", file, text: retire(text, "active"), ifMatch: `"${note.oid}"` });
+      assert.equal(made.ok, true, JSON.stringify(made));
+    } finally {
+      await folder.end();
+    }
+  }
   // `skill`: a skill's SKILL.md main holds first, as an earlier run's merge landed it.
   if (skill) {
     const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
@@ -558,4 +570,16 @@ test("a resume reads only the kept notes' paths at the run's merge commit, never
   } finally {
     await folder.end();
   }
+});
+
+// #2335 review (PRRT_kwDOUmdVMs62RAsf, on #2256's code): a re-filed skill whose note main holds with the same rule is
+// retired only when that note is active. A note a person retired keeps the rule out of every run, so retiring the skill
+// too would leave the rule nowhere: the skill stays, and the re-filed note is left out as a name main holds.
+test("a re-filed skill whose same-rule note on main is retired is not retired: the rule never vanishes", async (t) => {
+  const same = skillAsNote(SKILL.file, SKILL.text).text;
+  const answer = verdictOf([{ file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const { end, notes, skills } = await refileRun(t, { existing: same, retired: ["report-format.md"], skill: SKILL, notes: [], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes["report-format.md"], /^status: retired$/m, "main's note stays retired");
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "active"]], "the skill is not retired: the rule stays served");
 });
