@@ -320,8 +320,8 @@ npm run build
 npm test -w @parcha/agentrun-computer
 ```
 
-The Docker variant runs only where Docker exists, as CI's `computer-docker` job does: `npm run test:docker -w
-@parcha/agentrun-computer`. The other providers' suites need that vendor's key; never set one, or a real `docker` on
+The Docker variant runs only where Docker exists, as CI's `computer-docker` job does: `AGENTRUN_COMPUTER_LIVE_DOCKER=1
+npm run test:docker -w @parcha/agentrun-computer` (without the variable, every Docker test skips). The other providers' suites need that vendor's key; never set one, or a real `docker` on
 `PATH`, for a server under test.
 
 **Checks when it changed.**

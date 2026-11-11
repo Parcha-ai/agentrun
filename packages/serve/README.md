@@ -276,8 +276,10 @@ and a 200 says it can work, and the platforms here take one path.
 
 A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
-claim lapses another runner claims the run and resumes it from its journal. `agentrun-serve runner --check --data DIR`
-says whether a runner's heartbeat is fresh.
+claim lapses another runner claims the run and resumes it from its journal. `agentrun-serve runner --check --data DIR --name N`
+(or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) says whether the runner named `N` has a fresh heartbeat: it exits 0
+when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
+`agentrun-serve runner --data DIR --name N`.
 
 ## Sandbox
 
