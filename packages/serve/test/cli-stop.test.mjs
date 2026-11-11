@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { agent, client, FAUX, scratch } from "./support.mjs";
 
+const { REPEAT_MS } = await import("../dist/stop-signals.js");
+
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const TOKEN = `ar_test_${"s".repeat(40)}`;
 
@@ -17,11 +19,11 @@ async function until(check, what, ms = 60_000) {
 }
 
 /** The CLI on its own data root with one run mid-turn (the faux model waits a minute on its second request), so a stop's
- *  3 s drain has a run to wait on. */
-async function midTurn(t) {
+ *  drain (`drain`, 3 s unless said) has a run to wait on. */
+async function midTurn(t, { drain = "3s" } = {}) {
   const dir = await scratch(t);
   const data = join(dir, "agents");
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, "--drain-timeout", "3s"], { env: { ...process.env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, "--drain-timeout", drain], { env: { ...process.env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   let out = "";
@@ -51,15 +53,17 @@ test("one Ctrl-C that reaches the server twice in a moment drains as one stop: i
   assert.equal(existsSync(join(data, ".server.json")), false, "the record is removed");
 });
 
-// SKIP (follow-up #2080): its 1.5 s exit bound is a wall-clock race on a loaded machine.
-test.skip("a second Ctrl-C a while later stops at once, saying the runs resume on the next start", { timeout: 120_000 }, async (t) => {
-  const { child, exited, data, said } = await midTurn(t);
+// Event-driven, no wall-clock bound: the drain is 10 minutes, longer than the case, and the run is held mid-turn, so the
+// drain never ends by itself here. The second press comes once the first's stop has said it is draining and the repeat
+// window (stop-signals.ts REPEAT_MS) has passed, so it is a second press, never the same one. Exit 130 and "stopping now"
+// come only from the second press's stop at once.
+test("a second Ctrl-C a while later stops at once, saying the runs resume on the next start", { timeout: 120_000 }, async (t) => {
+  const { child, exited, data, said } = await midTurn(t, { drain: "600s" });
   child.kill("SIGINT");
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
-  const forcedAt = Date.now();
+  await until(() => /^agentrun-serve: stopping: waiting up to 600 s for 1 run to finish its turn$/m.test(said()), `the first press drains: ${said()}`);
+  await new Promise((resolve) => setTimeout(resolve, REPEAT_MS + 200));
   child.kill("SIGINT");
   const end = await exited;
-  assert.ok(Date.now() - forcedAt < 1_500, `it stopped at once, not after the drain (${Date.now() - forcedAt} ms)`);
   assert.equal(end.signal, null, "it exits by itself, not by the signal");
   assert.equal(end.code, 130, said());
   assert.match(said(), /^stopping now; runs resume on the next start \(1 was running\)$/m);
