@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-const { inTree, installHoldOf, processIdentity, releaseHold, takeHold } = await import("../dist/harness-install.js");
+const { inTree, installHoldOf, pidNamespace, processIdentity, releaseHold, takeHold } = await import("../dist/harness-install.js");
 
 const scratch = (t, name) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), `harness-install-${name}-`));
@@ -132,9 +132,22 @@ test("a hold that names no identity, or whose installer's can't be read, is held
   assert.equal(typeof (await takeHold(dir, taker)), "string", "past the bound: taken over, so a reused pid never holds it for good");
 });
 
+test("a hold from another pid namespace on the same hostname (another container on the same data) is never judged by this one's process table: held within the install's bound", async (t) => {
+  const dir = join(scratch(t, "hold-namespace"), "harnesses", "fake");
+  mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
+  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, identity: "boot-1:100", startedAt: Date.now(), token: "theirs" }));
+  // Here pid 4242 is gone (or another process): read in this namespace, it would look dead.
+  const here = { host: "this-host", pidns: "pid:[2]", isAlive: () => assert.fail("another namespace's pid is never asked here"), identity: () => assert.fail("never read here") };
+  assert.equal(await takeHold(dir, here), undefined, "young: held, as another host's");
+  assert.equal(JSON.parse(readFileSync(installHoldOf(dir), "utf8")).token, "theirs");
+  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, identity: "boot-1:100", startedAt: Date.now() - 60 * 60_000, token: "theirs" }));
+  assert.equal(typeof (await takeHold(dir, here)), "string", "past the install's bound: taken over");
+});
+
 test("this process's identity is read from the system where it shows one, the same each time; a pid that is gone has none", { skip: !existsSync("/proc/self/stat") && "no /proc here" }, async () => {
   const mine = processIdentity(process.pid);
   assert.match(mine ?? "", /^[0-9a-f-]+:\d+$/, "its boot and its start");
   assert.equal(processIdentity(process.pid), mine);
   assert.equal(processIdentity(2 ** 22 + 7), undefined, "no such process");
+  assert.match(pidNamespace() ?? "", /^pid:\[\d+\]$/, "this process's pid namespace");
 });
