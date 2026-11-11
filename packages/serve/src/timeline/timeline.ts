@@ -1002,7 +1002,7 @@ export function endedOnTurnEndingTool(entries: readonly EntryLike[]): string | u
   return last.tool_use_id ?? undefined;
 }
 
-/** A workflow's decision receipt as its run's store keeps it (workflow/decisions.ts' DecisionRow): the fields
+/** A workflow's decision receipt as its run's store keeps it (workflow/decisions.ts's DecisionRow): the fields
  *  runMetricsOf reads. */
 export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknown; status?: unknown; driver_spend?: unknown };
 
