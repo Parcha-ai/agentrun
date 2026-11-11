@@ -13,8 +13,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BOX_ENV } from "../dist/run-box.js";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
+
+/** The whole environment of a box's programs, as the server gives it: a constant, never its own. */
+const BOX_ENV = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -133,7 +135,7 @@ test("which Docker in a VM gets a box's network on a Mac, by docker info's own s
 
 test("on a Mac, a Docker reached by DOCKER_HOST over TCP, or a docker info that fails, gets no network, saying why; Linux keeps its own check, unchanged", async (t) => {
   const { vmDocker } = await import("../dist/box-egress-vm.js");
-  const { boxNetworkOf } = await import("../dist/run-box.js");
+  const { boxNetworkOf } = await import("../dist/box-settings.js");
   const docker = await fakeDocker(t, "docker-desktop");
   const env = { ...process.env, DOCKER_CONFIG: join(docker.state, "no-config") };
   assert.deepEqual(await vmDocker(env, { platform: "darwin" }), { runtime: "Docker Desktop" });
