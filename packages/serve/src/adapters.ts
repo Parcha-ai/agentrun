@@ -217,11 +217,6 @@ type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): Age
 /** This server's data, as `env` names it (the server sets it for itself and its runs). */
 const dataOf = (env: NodeJS.ProcessEnv): string => env[DATA_ENV] || defaultData(env);
 
-/** The SDK version claude-agent pins: the one constant, the package's own (CLAUDE_AGENT_SDK_VERSION). */
-export async function claudeSdkVersion(load: () => Promise<unknown> = loadClaude): Promise<string> {
-  return ((await load()) as ClaudePackage).CLAUDE_AGENT_SDK_VERSION;
-}
-
 /** What claude-agent's install needs (harness-install.ts HarnessPins): the pinned SDK version, and this platform's CLI package. */
 export async function claudePins(load: () => Promise<unknown> = loadClaude): Promise<HarnessPins> {
   const claude = (await load()) as ClaudePackage;
@@ -365,13 +360,6 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
-}
-
-/** `harness`'s adapter for a run, as its entry in the harness table builds it (harness-table.ts). */
-export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const make = harnessOf(env, harness)?.adapter;
-  if (!make) throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
-  return make(env, needs);
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and

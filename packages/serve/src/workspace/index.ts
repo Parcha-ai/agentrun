@@ -1,6 +1,5 @@
 // The Workspace port (workspace.ts), its folder layout (paths.ts), attach to a computer (attach.ts), where a run's
-// tools run (place.ts), the local backend and the Archil one. Nothing on main imports this folder until the cutover
-// that moves every writer onto it.
+// tools run (place.ts), the local backend and the Archil one.
 export * from "./workspace.js";
 export {
   type AttachableComputer, attachedWorkspace, checkReadBack, COMPUTER_CHUNK, type MountCheck, NO_COMPUTER, noProcesses,
