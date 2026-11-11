@@ -3,7 +3,7 @@
 // to .agentrun/output/ in the run's folder (read can open it), a signal is 128 + n, the environment is only what it is
 // given, and a timeout, an abort and a cwd outside are said as pi's own environment says them.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -33,15 +33,6 @@ function seed(root) {
   writeFileSync(join(root, "sub", "b.md"), "# b\nfoo foo\n");
   writeFileSync(join(root, "img.png"), PNG);
 }
-/** Every file under `root`, path to text. */
-function files(root, at = "") {
-  const out = {};
-  for (const name of readdirSync(join(root, at)).sort()) {
-    const rel = at ? `${at}/${name}` : name;
-    try { Object.assign(out, files(root, rel)); } catch { out[rel] = readFileSync(join(root, rel), "utf8"); }
-  }
-  return out;
-}
 
 const NAMES = ["read", "write", "edit"];
 /** The same tools on the Workspace. */
@@ -50,32 +41,6 @@ function onWorkspace(root, cwd = "/workspace") {
   return hostToolsOf({ env: async () => env }, NAMES, ctx, new Map(), fileTools());
 }
 const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
-
-const CASES = [
-  ["read", { path: "a.txt" }],
-  ["read", { path: "/workspace/a.txt" }],
-  ["read", { path: "@a.txt" }],
-  ["read", { path: "a.txt", offset: 2, limit: 1 }],
-  ["read", { path: "big.txt" }],
-  ["read", { path: "big.txt", offset: 2990 }],
-  ["read", { path: "sub/b.md" }],
-  ["read", { path: "img.png" }],
-  ["read", { path: "nope.txt" }],
-  ["read", { path: "../x" }],
-  ["read", { path: "/etc/passwd" }],
-  ["read", { path: "~/.bashrc" }],
-  ["read", { path: "file:///etc/passwd" }],
-  ["write", { path: "new/deep.txt", content: "made\n" }],
-  ["write", { path: "a.txt", content: "replaced\n" }],
-  ["write", { path: "/workspace/abs.txt", content: "abs\n" }],
-  ["write", { path: "../escape.txt", content: "no" }],
-  ["write", { path: "/tmp/escape.txt", content: "no" }],
-  ["edit", { path: "sub/b.md", edits: [{ oldText: "# b", newText: "# B" }] }],
-  ["edit", { path: "sub/b.md", edits: [{ oldText: "missing text", newText: "x" }] }],
-  ["edit", { path: "sub/b.md", edits: [{ oldText: "foo", newText: "bar" }] }],
-  ["edit", { path: "nope.md", edits: [{ oldText: "a", newText: "b" }] }],
-  ["edit", { path: "../../x", edits: [{ oldText: "a", newText: "b" }] }],
-];
 
 test("on the runner the folder is named by its own path: an absolute path under it is the same file, and answers name it relative", async () => {
   const root = scratch();

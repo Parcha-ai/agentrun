@@ -14,18 +14,6 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const SERVE = new URL("../dist/index.js", import.meta.url).href;
 const DECISIONS = new URL("../dist/decisions.js", import.meta.url).href;
 const SECRETS = new URL("../dist/secrets.js", import.meta.url).href;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const coi = {
-  v: 2, name: "coi-check",
-  schemas: {
-    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-    Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
-  },
-  input: { schemaId: "In" },
-  output: { schemaId: "Coi", path: "coi" },
-  root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
-};
 
 test("the run's process reads the keys once and closes their descriptor: the number no longer names the pipe", { skip: !existsSync("/proc/self/fdinfo") && "no /proc here" }, async () => {
   // As the server launches it: the keys on the first descriptor after stdio and the secrets pipe. Read, then a file
