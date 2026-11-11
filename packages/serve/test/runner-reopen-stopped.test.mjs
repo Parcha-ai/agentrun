@@ -25,6 +25,7 @@ const { viewOverStore, momentOverStore } = await import("../dist/store-view.js")
 const { message } = await import("../dist/runs-over-store.js");
 const { emptyState, STOPPED_BY_YOU, translate } = await import("../dist/live/translate.js");
 const { timelineReducer } = await import("@parcha/pi-durable-agent/timeline");
+const { computerHold } = await import("../dist/workspace/computer-hold.js");
 after(closeOpenSessions);
 
 /** The run's live timeline rows, as the live stream folds its journal's commits (the conformance suite's liveRows). */
@@ -87,8 +88,9 @@ function stalling(stallAt = [1], answers = ["Second answer.", "Third answer.", "
   return { fetch, requests, said, sent, inFlight: sent(stallAt[0] ?? 1) };
 }
 
-/** A pi run through a runner, its requests in `stallAt` held open; the server's store, the runner and the route. */
-async function runner(t, stallAt = [1], answers) {
+/** A pi run through a runner, its requests in `stallAt` held open; the server's store, the runner and the route. `computer`:
+ *  the run has a desktop, a hold of its own per claim, whose show-up each claim writes on the run's root before its turn. */
+async function runner(t, stallAt = [1], answers, { computer = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-reopen-stopped-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [];
@@ -109,7 +111,17 @@ async function runner(t, stallAt = [1], answers) {
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
     const running = startRunner({
       store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
-      createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+      createLoop: createDispatchLoop({
+        launchOf: (runId) => store.runs.launch(runId),
+        resolve: (harness, given) => (harness === "pi"
+          ? createAdapterLoop(async (claim, run) => {
+              const spec = await adapterRunSpecFromLaunch(given, run, deps, claim);
+              if (!computer) return spec;
+              const hold = computerHold();
+              return { ...spec, computer: { kind: "desktop", hold }, release: async () => { hold.close(); await spec.release?.(); } };
+            })
+          : undefined),
+      }),
     });
     t.after(() => running.close().catch(() => {}));
     return running;
@@ -162,6 +174,29 @@ test("a person's stop ends the turn, not the run: it reads input_required and id
   assert.ok(commands.every((row) => row.takenAt !== null && row.refused === null), `the stop and the message were taken, not refused: ${JSON.stringify(commands)}`);
   const after_ = (await runTimeline(server, RUN, context, { settled: true })).map((row) => row.text ?? row.summary ?? "").join("\n");
   assert.ok(after_.indexOf(STOPPED_BY_YOU) < after_.indexOf("Second question.") && after_.indexOf("Second question.") < after_.indexOf("Second answer."), `in order:\n${after_}`);
+});
+
+// A run with a desktop: each claim writes the computer's show-up on the run's root before its turn, so the reopen is read
+// from the root as the claim found it (adapter-loop.ts foundEntries), never after that write.
+test("a run with a desktop: a person's stop then a message reopens it, the stopped turn is closed and never resumed, and a message to it once completed reopens it too", { timeout: 120_000 }, async (t) => {
+  const { server, origin } = await runner(t, [1], undefined, { computer: true });
+  await origin.inFlight;
+  await sendCommand(server, RUN, { kind: "stop", body: {} });
+  const stopped = await settled(server);
+  assert.deepEqual([stopped.state, stopped.outcome], ["stopped", "stopped"], JSON.stringify(stopped));
+  await message(server, await momentOverStore(server, RUN), "Second question.");
+  const ended = await settled(server, "ended");
+  // The stopped turn closed, never sent again: the reopened claim's one request is the message's own turn.
+  assert.equal(origin.requests.length, 2, `one request for the stopped turn, one for the message: ${origin.requests.length}`);
+  const asked = JSON.stringify(origin.requests[1].messages);
+  assert.ok(asked.includes("Second question."), `the second request is the message's turn: ${asked.slice(0, 400)}`);
+  assert.ok((await server.commands(RUN, 0)).every((row) => row.takenAt !== null && row.refused === null), "the stop and the message were taken");
+
+  // Completed, a run with a desktop takes a message as a new turn too.
+  await message(server, await momentOverStore(server, RUN), "Third question.");
+  await endedAfter(server, ended);
+  assert.equal(origin.requests.length, 3, `the completed run's message was asked as one new turn: ${origin.requests.length}`);
+  assert.ok(JSON.stringify(origin.requests[2].messages).includes("Third question."), "the third request is the second message's turn");
 });
 
 test("a cancel ends the run for good: it reads cancelled, and a message is refused with nothing written", { timeout: 120_000 }, async (t) => {
