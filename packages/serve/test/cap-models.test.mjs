@@ -316,7 +316,8 @@ async function sentUnder(api, ctx, tokens) {
 
 test("pi's input adds what its provider adds server-side, from the model proxy's own table: an Anthropic model with tools and an image is held at the same figure", async () => {
   const ctx = { tools: [tool], messages: [{ role: "user", content: [{ type: "text", text: "What is this?" }, image], timestamp: 0 }] };
-  const tokens = bound(ctx) + ANTHROPIC_TOOLS + ANTHROPIC_IMAGE;
+  // The image (a size its header does not give) at its most, in place of its base64's bytes.
+  const tokens = bound(ctx) + ANTHROPIC_TOOLS + ANTHROPIC_IMAGE - image.data.length;
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 1.001), true, "sent within its bound plus the overhead");
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 0.999), false, "refused past it: the overhead is counted");
 });

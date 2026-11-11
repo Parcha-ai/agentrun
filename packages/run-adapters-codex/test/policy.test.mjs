@@ -115,13 +115,15 @@ test("a request whose body fits what is left, but not with its image's allowance
     await send(p.url, { body });
     return sent;
   };
-  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing.
+  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing. The
+  // allowance is counted in place of the bytes its data URL takes in the body.
+  const allowance = 73_800 - imageItem.image_url.length;
   let bytes;
-  const refused = await sentBy((r) => { bytes = r.inputTokensMax - 73_800; return bytes + 73_800 - 1; });
+  const refused = await sentBy((r) => { bytes = r.inputTokensMax - allowance; return bytes + allowance - 1; });
   assert.equal(refused.length, 0);
-  const passed = await sentBy(() => bytes + 73_800);
+  const passed = await sentBy(() => bytes + allowance);
   assert.equal(passed.length, 1);
-  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance');
+  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance, less its data URL\'s bytes');
 });
 
 test("the recorded stream's usage is booked from response.completed, read as JSON", async () => {
