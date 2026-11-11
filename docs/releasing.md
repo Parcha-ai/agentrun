@@ -26,7 +26,7 @@ The packages a release may publish are named, in publication order, in `releaseP
 
 ## Verify the source and packages
 
-Use Node 22.23.2, npm 11.21.0 and GNU tar for release verification. From a clean checkout:
+Use Node 24.22.3, npm 11.21.0 and GNU tar for release verification. From a clean checkout:
 
 ```sh
 npm install --global npm@11.21.0 --ignore-scripts
@@ -79,7 +79,7 @@ The preflight checks tag identity, clean source, package versions, licenses and 
 
 ## Publish and verify
 
-Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag, after `ci.yml` has finished on the tagged commit's push to `main`. The workflow does not run the suites again: it first requires that run's `verify (<node>)` jobs to have passed (`scripts/release-ci-gate.mjs`), with `verify (22.19.0)` and `verify (22.23.2)` present, and stops if the run is missing, still running or red. Other jobs of that run do not stop a release. It then builds and runs the checks that make the archives, requires a public repository, publishes the verified archives with the `latest` tag in dependency layers (each layer published, then all of its packages verified against the registry at once, a failure stopping the release before the next layer), and verifies registry integrity and a fresh installed consumer. A version is published as `latest` because npm's package page shows the README of the publish that carried the `latest` tag; moving `latest` later with `npm dist-tag` leaves the page without one. The install commands in the READMEs and docs name `@latest`, so a release needs no step after the run for them to install it.
+Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag, after `ci.yml` has finished on the tagged commit's push to `main`. The workflow does not run the suites again: it first requires that run's `verify` job to have passed (`scripts/release-ci-gate.mjs`), and stops if the run is missing, still running or red. Other jobs of that run do not stop a release. It then builds and runs the checks that make the archives, requires a public repository, publishes the verified archives with the `latest` tag in dependency layers (each layer published, then all of its packages verified against the registry at once, a failure stopping the release before the next layer), and verifies registry integrity and a fresh installed consumer. A version is published as `latest` because npm's package page shows the README of the publish that carried the `latest` tag; moving `latest` later with `npm dist-tag` leaves the page without one. The install commands in the READMEs and docs name `@latest`, so a release needs no step after the run for them to install it.
 
 The `beta` dist-tag is kept only for older links that name `@beta`, and the workflow does not move it: it publishes as a trusted publisher, which can publish but cannot run `npm dist-tag`. To bring it up to a release, a maintainer with npm rights runs `npm dist-tag add <name>@<version> beta` once for each published package, with that release's version. It is optional; nothing in this repository installs `@beta`.
 
