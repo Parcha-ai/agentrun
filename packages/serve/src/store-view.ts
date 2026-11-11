@@ -7,6 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { structuredAnswer } from "./answer-json.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { MIN_SECRET } from "./learn/secrets.js";
@@ -174,6 +175,8 @@ interface StoreRun {
   readonly approvalsMode: Approvals;
   /** A completed workflow run's output, as its end kept it (EndData.output); null when it kept none. */
   readonly output: unknown;
+  /** An agentic run's output schema, as its revision kept it (definition.output_schema); undefined when it has none. */
+  readonly outputSchema: unknown;
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
@@ -204,6 +207,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const harness = launch?.harness ?? harnessOfBody((revision?.body ?? {}) as { harness?: string });
   // Whether the run ran unattended, from the revision it is pinned to (approvals "never"), else the default (ask).
   const approvalsMode = approvalsOf((revision?.body as { approvals?: unknown } | undefined)?.approvals);
+  const outputSchema = row.kind === "agentic" ? (revision?.body as { outputSchema?: unknown } | undefined)?.outputSchema : undefined;
   const terminal = row.state !== "running";
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
@@ -317,7 +321,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, decisions };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, outputSchema, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -356,7 +360,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const { row, runRow, launch, view, unshown, values, output } = run;
+  const { row, runRow, launch, view, unshown, values, output, outputSchema } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
@@ -366,9 +370,13 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const servedAnswer = (text: string | null): string | null => (text ? servedOnce(store, runId, text, values) : text);
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
-  // A workflow run's output, as its end kept it, served as runs.ts serves it (servedOutput): each string in it cut of the
-  // values the run holds, its shape kept; none while the run's sign-in can't be read back. An agentic run has none.
-  const servedOutput = row.kind === "workflow" && !unshown && output !== null ? redactedOutput(output, values) : null;
+  // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
+  // an output schema and the answer's last fenced json block meets it (answer-json.ts structuredAnswer), else none. Served
+  // as runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while
+  // the run's sign-in can't be read back.
+  const structured = row.kind === "agentic" && outputSchema !== undefined && status === "completed" && finalAnswer ? structuredAnswer(finalAnswer, outputSchema) : undefined;
+  const ownOutput = row.kind === "workflow" ? output : structured && "value" in structured ? structured.value : null;
+  const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
   const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
