@@ -16,10 +16,11 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
-const { GRADE_RUBRIC, gradedItems, gradePrompt, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
+const { GRADE_RUBRIC, gradedItems, gradePrompt, NOTES_FULL, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
 const { parseNoteFile, ruleOf } = await import("../dist/learn/notes.js");
 const { checkProposal } = await import("../dist/learn/check.js");
 const { keptOf, mergeChangeOf, NOTE_NAME_TAKEN, SAME_NOTE, takenOnMain } = await import("../dist/runner/learning-loop.js");
+const { wordsOf } = await import("../dist/learning-words.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 const { learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
 const { learningCommit, mainTexts } = await import("../dist/learn/commit.js");
@@ -384,4 +385,38 @@ test("a merge already on main (a resume after its commit) reads the same: its le
   assert.equal(learning.pending, undefined);
   assert.deepEqual([learning.verdict.items.find(({ file }) => file === again.file).keep, learning.verdict.items.find(({ file }) => file === again.file).why], [false, SAME_NOTE]);
   assert.equal(words, "Learned: Retries", "the resumed merge says what the first would have");
+});
+
+// #2256 review, P1: a merge on main whose end was never recorded (the runner stopped between the commit and the record).
+// Its resume reads the run's own notes on main; they are its merge's, never "already there", so they are learned.
+test("a note-only merge committed before its end was recorded (a crash between them) resumes merged: its notes learned, never dropped as already there", async (t) => {
+  const { end, learning, words, notes } = await refileRun(t, { committed: [{ path: NOTE.file, text: NOTE.text }], notes: [NOTE], files: [], answer: verdictOf([{ file: NOTE.file, decision: "keep", why: "useful" }]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.ok(notes[NOTE.file], "the first attempt's note is on main");
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["retries.md"]);
+  assert.equal(words, "Learned: Retries");
+});
+
+// #2256 review, P2: a skill re-filed as a note counts against a run's new-note cap, as the run's own notes do; one past it
+// is left out alone, saying so, never merged as a ninth note.
+test("a skill re-filed as a note counts against the new-note cap: past it, that item alone is left out, saying so", () => {
+  const own = Array.from({ length: CAPS.newNotes }, (_, i) => noteNamed(`rule-${i}`, `Rule ${i}`, `Rule number ${i} applies.`));
+  const keepAll = verdictOf([...own.map(({ file }) => ({ file, decision: "keep", why: "useful" })), { file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const full = parseVerdict(keepAll, [...own, SKILL]);
+  const refiled = full.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([refiled.keep, refiled.why, refiled.note], [false, NOTES_FULL, undefined], JSON.stringify(refiled));
+  assert.equal(full.merge, true, "the run's own notes still merge");
+  assert.equal(keptOf({ seed: "s1", notes: own, files: [SKILL] }, full).notes.length, CAPS.newNotes);
+  // One of its own notes dropped: the re-filed rule fits.
+  const roomy = parseVerdict(verdictOf([...own.map(({ file }, i) => ({ file, decision: i ? "keep" : "drop", question: "Useless", why: "useful" })), { file: SKILL.file, decision: "note", why: "a rule for every report" }]), [...own, SKILL]);
+  assert.equal(roomy.items.find(({ file }) => file === SKILL.file).note?.file, "report-format.md");
+  assert.equal(keptOf({ seed: "s1", notes: own, files: [SKILL] }, roomy).notes.length, CAPS.newNotes);
+});
+
+// #2256 review, P2: a merged run's words, rebuilt from its record's verdict (a read's detail), leave out a rule main
+// already held (SAME_NOTE), as the merge's own words do.
+test("a merged run's words rebuilt from its verdict never say a rule main already held", () => {
+  const learning = { state: "merged", reason: null, detail: null, learned: [{ file: "retries.md", name: "Retries", supersedes: [] }], verdict: { merge: true, reason: "ok", items: [{ file: "retries.md", keep: true, why: "useful" }, { file: SKILL.file, keep: false, question: "Duplicate", why: SAME_NOTE }] } };
+  assert.equal(wordsOf(learning, (text) => text), "Learned: Retries");
 });
