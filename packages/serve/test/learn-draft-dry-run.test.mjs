@@ -154,3 +154,62 @@ test("a dry run handed a draft with a code node anyway runs none of its code: th
   }
   delete globalThis[MARKER];
 });
+
+// A draft's schemas are synthesized in the host by its dry run: an untrusted draft whose schemas would build a huge value
+// (two nested arrays of minItems 10000: 100M elements) is refused by the static checks, and a dry run handed one anyway
+// stands down as not run before anything is built. Both within a time bound, with no allocation to speak of.
+const HUGE = { type: "object", properties: { grid: { type: "array", minItems: 10_000, items: { type: "array", minItems: 10_000, items: { type: "string" } } } }, required: ["grid"] };
+/** A draft whose input schema is `input`, and whose one step's output schema is `out`. */
+const sized = (name, input, out = schemas.Answer) => ({ v: 2, name, schemas: { Question: input, Answer: out }, input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] } });
+const BIG_INPUT = sized("big-input", HUGE);
+/** The same arrays in a step's output schema, with an example given: synthesized at the step, not as the input. */
+const BIG_OUTPUT = sized("big-output", schemas.Question, { type: "object", properties: { answer: { type: "number" }, grid: HUGE.properties.grid }, required: ["answer"] });
+
+test("a draft whose schemas would synthesize a huge value is refused statically, never dry-run, within a time bound", async (t) => {
+  for (const [flow, example] of [[BIG_INPUT, undefined], [BIG_OUTPUT, JSON.stringify({ question: "q" })]]) {
+    const started = Date.now();
+    const { result, proposal } = await proposed(t, [noteBlock, block(flow.name, flow, example)].join("\n\n"));
+    assert.ok(Date.now() - started < 10_000, `${flow.name}: settled in ${Date.now() - started} ms`);
+    assert.deepEqual([result.state, result.notes, result.workflows], ["proposed", 1, 0], JSON.stringify(result));
+    const left = (result.left ?? []).filter(({ path }) => path === `workflows/${flow.name}/workflow.json`);
+    assert.ok(left.some(({ rule, detail }) => rule === "workflow" && /synthesi/.test(detail) && !detail.startsWith(DRY_RUN_FAILED)), `${flow.name}: refused for its size, statically: ${JSON.stringify(result.left)}`);
+    assert.equal(proposal?.dryRuns?.[`workflows/${flow.name}/workflow.json`], undefined, "never dry-run");
+  }
+});
+
+test("draftProblems refuses a schema past the synthesis bound: a minItems or minLength past its cap, or a nesting whose product is", () => {
+  const minItems = sized("x", { type: "object", properties: { list: { type: "array", minItems: 5_000, items: { type: "number" } } } });
+  const minLength = sized("x", { type: "object", properties: { text: { type: "string", minLength: 1_000_000 } } });
+  const product = sized("x", { type: "object", properties: { a: { type: "array", minItems: 60, items: { type: "array", minItems: 60, items: { type: "number" } } } } });
+  for (const [what, flow] of [["minItems", minItems], ["minLength", minLength], ["product", product]]) {
+    const problems = draftProblems(dsl, JSON.stringify(flow), []);
+    assert.ok(problems.some(({ rule, detail }) => rule === "workflow" && /synthesi/.test(detail)), `${what}: ${JSON.stringify(problems)}`);
+  }
+  // Within the bounds: nothing said.
+  const fine = sized("x", { type: "object", properties: { a: { type: "array", minItems: 10, items: { type: "array", minItems: 10, items: { type: "string", minLength: 20 } } } } });
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(fine), []), []);
+});
+
+test("a dry run handed a huge draft anyway stands down as not run before it builds anything, within a time bound", async () => {
+  for (const [flow, example] of [[BIG_INPUT, undefined], [BIG_OUTPUT, JSON.stringify({ question: "q" })]]) {
+    const started = Date.now();
+    const dry = await skills.draftDryRun(dsl, JSON.stringify(flow), example);
+    assert.ok(Date.now() - started < 2_000, `${flow.name}: settled in ${Date.now() - started} ms`);
+    assert.equal(dry.status, "not_run", JSON.stringify(dry));
+    assert.match(dry.detail, /synthesi/, dry.detail);
+  }
+});
+
+test("the count is the DSL's own synthesis, counted without building it: values and string characters, for every shape it reads", () => {
+  const counted = (value) => (value === null || typeof value !== "object" ? { values: 1, chars: typeof value === "string" ? value.length : 0 } : Object.values(value).map(counted).reduce((a, b) => ({ values: a.values + b.values, chars: a.chars + b.chars }), { values: 1, chars: 0 }));
+  const definitions = { Row: { type: "object", properties: { id: { type: "string", minLength: 3 }, tags: { type: "array", minItems: 2, items: { type: "string" } } } } };
+  for (const schema of [
+    { type: "object", properties: { a: { type: "array", minItems: 10, items: { type: "array", minItems: 10, items: { type: "string", minLength: 20 } } } } },
+    { type: "object", properties: { rows: { type: "array", minItems: 4, items: { $ref: "#/definitions/Row" } }, missing: { $ref: "#/definitions/None" } } },
+    { type: "object", properties: { maybe: { anyOf: [{ type: "null" }, { type: "string", minLength: 7 }] }, one: { oneOf: [{ type: "number" }, { type: "string" }] }, none: { type: "array", maxItems: 0, items: { type: "string" } } } },
+    { type: "object", properties: { pick: { enum: ["left", "right"] }, fixed: { const: "x" }, empty: { type: "string", maxLength: 0 }, flag: { type: "boolean" }, bare: { type: "array" } } },
+  ]) {
+    const built = dsl.synthesizeInstance(schema, definitions);
+    assert.deepEqual(skills.synthesizedSize(schema, definitions), counted(built), JSON.stringify(schema));
+  }
+});

@@ -80,7 +80,9 @@ A draft the static checks pass is then dry-run (`draftDryRun`, the DSL's `dryRun
 when they refuse the answer whole, never is. It runs on its block's `example:` line, one JSON object, the run's own
 input to it, else on an input synthesized from its input schema. Every model, Jev and tool-call answer is synthesized
 from the node's output schema: no request is sent, nothing is paid and no tool runs. No code runs in the host: the dry
-run hands every code node to a runner that refuses it, so the DSL never evaluates a code expression or body. It checks
+run hands every code node to a runner that refuses it, so the DSL never evaluates a code expression or body. Nothing large is built in the host either: a schema whose minItems is past 100 or
+minLength past 1,000, or whose synthesized instance would hold more than 2,000 values or 64,000 characters, is refused
+(`workflow`), and a dry run handed one anyway stands down as not run before building it. It checks
 the wiring of the path that one input takes at run time (the state each step reads, the output's path and schema),
 not every branch or body, and never the answers. A draft whose dry run fails is left out (`workflow`, "its dry run failed ..."), and the end-of-run turn is asked
 once more for the whole answer with that draft fixed or left out; the second answer stands only when the checks keep it and no draft in it still fails its dry run.

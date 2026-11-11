@@ -189,6 +189,110 @@ const refuseCode = async (node: { readonly label: string }): Promise<never> => {
   throw new Error(`the code node "${node.label}" is never run: a learned draft holds no code node`);
 };
 
+/** The most of a value a draft's dry run may synthesize from one of its schemas (the DSL's synthesizeInstance builds
+ *  each in the host, before any step it counts): an array's minItems and a string's minLength each, and the values and
+ *  string characters the schema's whole synthesized instance holds. Past any of them the draft is refused statically
+ *  (draftProblems), and a dry run handed one anyway stands down as not run before anything is built (draftDryRun). */
+export const SYNTH_MIN_ITEMS = 100;
+export const SYNTH_MIN_LENGTH = 1_000;
+export const SYNTH_VALUES = 2_000;
+export const SYNTH_CHARS = 64_000;
+/** The depth past which the DSL's synthesis stops (synthesizeInstance: null past 12). */
+const SYNTH_DEPTH = 12;
+
+type Synthesized = { values: number; chars: number };
+/** A literal's values and string characters (a const, an enum's first), as the value it is. */
+const literalSize = (value: unknown): Synthesized =>
+  value === null || typeof value !== "object"
+    ? { values: 1, chars: typeof value === "string" ? value.length : 0 }
+    : Object.values(value as Record<string, unknown>).map(literalSize).reduce((a, b) => ({ values: a.values + b.values, chars: a.chars + b.chars }), { values: 1, chars: 0 });
+/** What the DSL's synthesizeInstance would build of `schema` at `depth`, counted without building it: its values and its
+ *  strings' characters. It reads the schema as synthesis does (a $ref to its definitions, a const or an enum's first, an
+ *  anyOf's first non-null branch, a oneOf's first, an object's every property, an array of max(1, minItems) items, a
+ *  string of max(1, minLength) characters, nothing past depth 12), and counts an array's items once, times its length,
+ *  each (schema, depth) once (`seen`), so the count itself is bounded by the schema's size. */
+function synthesized(schema: unknown, definitions: Readonly<Record<string, unknown>>, depth: number, seen: Map<unknown, Map<number, Synthesized>>): Synthesized {
+  if (depth > SYNTH_DEPTH || !schema || typeof schema !== "object") return { values: 1, chars: 0 };
+  const known = seen.get(schema)?.get(depth);
+  if (known) return known;
+  const spec = schema as Record<string, unknown>;
+  const of = (sub: unknown) => synthesized(sub, definitions, depth + 1, seen);
+  let out: Synthesized = { values: 1, chars: 0 };
+  const type = Array.isArray(spec.type) ? spec.type[0] : spec.type;
+  if (typeof spec.$ref === "string") {
+    const match = /^#\/definitions\/(.+)$/.exec(spec.$ref);
+    if (match && definitions[match[1]!]) out = of(definitions[match[1]!]);
+  } else if (spec.const !== undefined || (Array.isArray(spec.enum) && spec.enum.length)) {
+    // The literal itself, as written in the draft (so bounded by its size).
+    out = literalSize(spec.const !== undefined ? spec.const : (spec.enum as unknown[])[0]);
+  } else if (Array.isArray(spec.anyOf) && spec.anyOf.length) {
+    out = of(spec.anyOf.find((branch) => (branch as { type?: unknown } | null)?.type !== "null") ?? spec.anyOf[0]);
+  } else if (Array.isArray(spec.oneOf) && spec.oneOf.length) {
+    out = of(spec.oneOf[0]);
+  } else if (type === "object" || (!type && spec.properties)) {
+    for (const property of Object.values((spec.properties as Record<string, unknown>) || {})) {
+      const one = of(property);
+      out = { values: out.values + one.values, chars: out.chars + one.chars };
+    }
+  } else if (type === "array") {
+    if (spec.maxItems !== 0 && spec.items) {
+      const length = Math.max(1, Number.isInteger(spec.minItems) ? (spec.minItems as number) : 1);
+      const item = of(spec.items);
+      out = { values: 1 + length * item.values, chars: length * item.chars };
+    }
+  } else if (type === "string") {
+    if (spec.maxLength !== 0) out = { values: 1, chars: Math.max(1, Number.isInteger(spec.minLength) ? (spec.minLength as number) : 1) };
+  }
+  let atDepth = seen.get(schema);
+  if (!atDepth) seen.set(schema, (atDepth = new Map()));
+  atDepth.set(depth, out);
+  return out;
+}
+
+/** What the DSL's synthesizeInstance would build of `schema` over `definitions`, counted without building it. */
+export const synthesizedSize = (schema: unknown, definitions: Readonly<Record<string, unknown>> = {}): Synthesized => synthesized(schema, definitions, 0, new Map());
+
+/** Every workflow in `doc` with its schemas: the draft's own and each composed workflow node's child, at any depth. */
+function workflowsOf(doc: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const walk = (value: unknown, isWorkflow: boolean) => {
+    if (!value || typeof value !== "object") return;
+    if (isWorkflow) out.push(value as Record<string, unknown>);
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "schemas") continue;
+      walk(child, key === "workflow" && (value as { node?: unknown }).node === "workflow");
+    }
+  };
+  walk(doc, true);
+  return out;
+}
+
+/** Why a dry run of `doc` would build too much in the host: a schema whose minItems or minLength is past its cap, or
+ *  whose synthesized instance holds more values or characters than SYNTH_VALUES or SYNTH_CHARS. Empty when none. Read
+ *  from the JSON alone, building nothing. */
+export function synthesisProblems(doc: unknown): string[] {
+  const problems: string[] = [];
+  for (const workflow of workflowsOf(doc)) {
+    const schemas = workflow.schemas && typeof workflow.schemas === "object" ? (workflow.schemas as Record<string, unknown>) : {};
+    const seen = new Map<unknown, Map<number, Synthesized>>();
+    for (const [id, schema] of Object.entries(schemas)) {
+      // Each cap, on any keyword in the schema, wherever it sits.
+      const caps = new Set<string>();
+      JSON.stringify(schema, (key, value) => {
+        if (key === "minItems" && typeof value === "number" && value > SYNTH_MIN_ITEMS) caps.add(`minItems ${value} (the most is ${SYNTH_MIN_ITEMS})`);
+        if (key === "minLength" && typeof value === "number" && value > SYNTH_MIN_LENGTH) caps.add(`minLength ${value} (the most is ${SYNTH_MIN_LENGTH})`);
+        return value;
+      });
+      const definitions = (schema as { definitions?: Record<string, unknown> } | null)?.definitions ?? schemas;
+      const size = synthesized(schema, definitions, 0, seen);
+      if (size.values > SYNTH_VALUES) caps.add(`${size.values > 1e12 ? "over a trillion" : size.values} values (the most is ${SYNTH_VALUES})`);
+      if (size.chars > SYNTH_CHARS) caps.add(`${size.chars > 1e12 ? "over a trillion" : size.chars} characters (the most is ${SYNTH_CHARS})`);
+      if (caps.size) problems.push(`its schema ${JSON.stringify(id.slice(0, 64))} would have its dry run synthesize too large a value: ${[...caps].join(", ")}`);
+    }
+  }
+  return problems;
+}
+
 /** A draft's workflow.json `json` dry-run by the workflow DSL (dryRunWorkflow) on `example` (its block's `example:`
  *  line, one JSON object), else on an input synthesized from its input schema. Every model, Jev and tool-call answer is
  *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and no code it holds
@@ -212,6 +316,10 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
     if (typeof given !== "object" || given === null || Array.isArray(given)) return { status: "failed", detail: `${DRY_RUN_FAILED}: its example: line is not one JSON object` };
     input = given as Record<string, unknown>;
   }
+  // Nothing is synthesized past the bounds: a draft whose schemas would build too much stands down here, before the DSL
+  // builds anything of it (the static checks refuse it first; this holds for a draft handed here anyway).
+  const tooLarge = synthesisProblems(doc);
+  if (tooLarge.length) return { status: "not_run", detail: tooLarge.join("; ").slice(0, 300) };
   let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
   try {
     result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode });
@@ -339,7 +447,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy)];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...synthesisProblems(doc).map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
