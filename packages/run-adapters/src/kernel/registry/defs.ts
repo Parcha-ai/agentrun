@@ -2,8 +2,7 @@
 // edit and bash are pi's (pi 1.5.0's coding tools, MIT), with serve's additions: bash's timeout words and read's image
 // sentence on a computer. The five background tools are serve's (background.ts). A test holds every one of them, in
 // order, to serve's own on main. A computer of a kind past files and a shell adds its own tools after them
-// (capabilityToolDefs): the desktop's, the phone's, the browser's.
-import { browserToolDefs, type BrowserContract } from "./browser.js";
+// (capabilityToolDefs): the desktop's, the phone's.
 import { DESKTOP_TOOL_DEFS } from "./desktop.js";
 import type { CapabilityKind } from "./hands.js";
 import { PHONE_TOOL_DEFS } from "./phone.js";
@@ -166,12 +165,10 @@ export function hostToolDefs(options: { maxExecS: number; shell: ShellPlace }): 
 }
 
 /** The kinds, in the order their tools follow the host tools. */
-export const CAPABILITY_KINDS: readonly CapabilityKind[] = Object.freeze(["desktop", "phone", "browser"]);
+export const CAPABILITY_KINDS: readonly CapabilityKind[] = Object.freeze(["desktop", "phone"]);
 
-/** A computer kind's own tools, which a run of that kind sees after its host tools: the desktop's (desktop.ts), the
- *  phone's (phone.ts), or the browser's, pi-browser's contracts the host passes (browser.ts). */
-export function capabilityToolDefs(kind: CapabilityKind, options: { readonly browserTools?: readonly BrowserContract[] } = {}): readonly ToolDef[] {
-  if (kind === "desktop") return DESKTOP_TOOL_DEFS;
-  if (kind === "phone") return PHONE_TOOL_DEFS;
-  return browserToolDefs(options.browserTools);
+/** A computer kind's own tools, which a run of that kind sees after its host tools: the desktop's (desktop.ts) or the
+ *  phone's (phone.ts). */
+export function capabilityToolDefs(kind: CapabilityKind): readonly ToolDef[] {
+  return kind === "desktop" ? DESKTOP_TOOL_DEFS : PHONE_TOOL_DEFS;
 }

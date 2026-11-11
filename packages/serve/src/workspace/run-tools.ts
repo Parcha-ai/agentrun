@@ -22,15 +22,15 @@
 // computer only when the kind has files and exec AND its provider mounts the folder: a sandbox always, a desktop when
 // its provider mounts (the caller gives the mount check only then). Otherwise the folder stays the no-computer Workspace
 // with no computer's shell (above), and the computer adds only its kind's tools: a desktop's screen and input, a phone's
-// screen, touch and apps (computer-ports.ts, over its computerd calls, as its groups offer them), a browser's tools over
-// its CDP connect (pi-browser's definitions, BROWSER_TOOLS, and the runs the caller gives).
+// screen, touch and apps (computer-ports.ts, over its computerd calls, as its groups offer them). A browser adds none
+// here: the run's browser tool (tools.ts) drives it.
 //
 // runTools is the one call: runHands binds the run's hands and executors, the kernel's createRegistry makes the run's
 // registry over them, and bindTools gives its tools as the kernel's HostTool, through the run's gate. The run's end
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, capabilityToolDefs, type CdpSession, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, capabilityToolDefs, createRegistry, endBackground, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, Group } from "@parcha/agentrun-computer";
 import type { Park, RunGate } from "../tool-gate.js";
 import type { AttachableComputer, MountCheck } from "./attach.js";
@@ -49,15 +49,15 @@ import type { Workspace } from "./workspace.js";
  * - desktop: a screen and input; the folder is attached only when its provider mounts it (`check` given) and it offers
  *   files and exec;
  * - phone: a screen, touch and apps; never attached;
- * - browser: its CDP connect, and what the run's browser tool drives it by (`browser`, from a provider's launch); never
- *   attached.
+ * - browser: what the run's browser tool drives it by (its CDP URL through its provider); no tools of the registry's,
+ *   never attached.
  * `groups`: what the computer offers (its hello's groups), which fill its kind's ports.
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
   | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly groups: readonly Group[]; readonly check?: MountCheck }
   | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
-  | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession>; readonly browser?: ClaimBrowser };
+  | { readonly kind: "browser"; readonly browser: ClaimBrowser };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
  *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). With them, the
@@ -73,9 +73,9 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 }
 
 /** The kind's ports, as the computer's groups offer them, the kinds whose tools the run gets (a desktop's with a screen
- *  and input, a phone's with a screen and touch, a browser's always), and the kind's tools its groups do not offer: a
+ *  and input, a phone's with a screen and touch; a browser's none), and the kind's tools its groups do not offer: a
  *  phone's tree without apps.ui_tree, its keys without input.keys (an iPhone's today). */
-function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone" | "browser">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
+function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
     const screen = computer.groups.includes("screen");
@@ -88,7 +88,6 @@ function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hand
     const keys = computer.groups.includes("input.keys");
     return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }
-  if (computer?.kind === "browser") return { ports: { browser: { connect: computer.connect } }, kinds: ["browser"], without: [] };
   return { ports: {}, kinds: [], without: [] };
 }
 
@@ -243,37 +242,19 @@ export type RunTools = {
   end(): Promise<void>;
 };
 
-/** A browser computer's tools as the run's start gives them: pi-browser's runs by tool name (over hands.browser), and
- *  what the browser offers, which lists browser_downloads, browser_upload and browser_request_handoff (pi-browser's
- *  listedFor). */
-export type RunBrowser = {
-  readonly executors: Readonly<Record<string, Executor>>;
-  readonly offers: { readonly downloads: boolean; readonly upload: boolean; readonly handoff: boolean };
-};
-
 /**
  * A run's tools on `workspace`, attached to `computer` when its kind has files and exec and its provider mounts the
  * folder (RunComputer). `computer.check` is the mount check attach runs (attach.ts MountCheck: `{ readBackOf, epoch }`),
  * which the caller builds with the claim's epoch, so a read-back under another epoch is refused. `options.mode`: 1, or 2
  * (the run's folder on Archil); `options.aliases`: other absolute names of the run's folder a tool call may give (the
- * harness's scratch folder); `options.browser`: a browser computer's runs and offers. The tools' definitions, words and
- * limits come only from the kernel's registry, and a browser's from pi-browser's BROWSER_TOOLS; this binds their
- * executors to the run. A browser computer given no runs lists none of the kernel's browser tools: the run's browser
- * tool (tools.ts, pi-browser's durable extension) drives it instead.
+ * harness's scratch folder). The tools' definitions, words and limits come only from the kernel's registry; this binds
+ * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
+ * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly browser?: RunBrowser; readonly hold?: RunHold }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
-  const kinds = options.browser ? run.kinds : run.kinds.filter((kind) => kind !== "browser");
-  // pi-browser's contracts, listed for what this browser offers; with no browser, all of them, so a browser tool called
-  // in another run is refused in words that name the setting.
-  const { BROWSER_TOOLS, listedFor } = await import("@parcha/pi-browser");
-  const offers = options.browser?.offers;
-  const browserTools = kinds.includes("browser") ? BROWSER_TOOLS.filter((contract) => listedFor(contract, offers ?? { downloads: false, upload: false, handoff: false })) : BROWSER_TOOLS;
-  const registry = createRegistry({
-    maxExecS: run.maxExecS, shell: run.shell, kinds, browserTools, without: run.without,
-    executors: { ...run.executors, ...(options.browser ? { browser: options.browser.executors } : {}) },
-  });
-  const brought = new Set(kinds.filter((kind) => kind !== "browser").flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
+  const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, without: run.without, executors: run.executors });
+  const brought = new Set(run.kinds.flatMap((kind) => capabilityToolDefs(kind).map((def) => def.name)));
   return {
     workspace: run.workspace,
     registry,

@@ -10,7 +10,6 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { CdpSession } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
 import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
@@ -173,13 +172,6 @@ async function cdpUrlOf(provider: ComputerProvider, ref: { readonly id: string; 
   return url;
 }
 
-/** A CDP session to the browser computer `ref`: its URL now (cdpUrlOf), dialed by pi-browser's link (connectCdp). */
-async function cdpOf(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): Promise<CdpSession> {
-  const url = await cdpUrlOf(provider, ref);
-  const { connectCdp } = await import("@parcha/pi-browser/providers/cdp-session");
-  return connectCdp(url);
-}
-
 /** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first (the
  *  janitor's releaseOlder: one claim's computer at a time), then made with the run's labels (and the run's folder, when
  *  it mounts), connected, its groups from its hello; its read-back is the provider's own; its release deletes it. */
@@ -210,10 +202,9 @@ async function providerLaunch(
     // What the machine says it is (a phone's android or ios): its live view's input platform.
     machine: hello.kind,
     client,
-    // A browser's CDP session (its connection carries a CDP target): each dial asks the provider's connect again, so a
-    // session its vendor ended is refused in the provider's words, and dials the signed URL it hands over with
-    // pi-browser's own link. The URL is a secret: it goes only to the socket.
-    ...(connected.value.cdp ? { connect: () => cdpOf(provider, ref), cdpUrl: () => cdpUrlOf(provider, ref) } : {}),
+    // A browser's CDP URL (its connection carries a CDP target): each read asks the provider's connect again, so a
+    // session its vendor ended is refused in the provider's words. The URL is a secret: it goes only to the driver's dial.
+    ...(connected.value.cdp ? { cdpUrl: () => cdpUrlOf(provider, ref) } : {}),
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
       if (!attached.ok) return attached;

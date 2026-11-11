@@ -1,8 +1,9 @@
-// The driver of the local browser (AgentRun's `local` computer provider, this machine's Chrome): raw CDP, with no
-// Stagehand and nothing loaded into the browser. snapshot is Chrome's accessibility tree with "frame-node" ids, and run
-// takes actions alone (an op, a snapshot id, a value), each carried out with CDP input events and answered with one line
-// of what changed; run code is refused in words, since the model's code would run beside a browser on this machine. The
-// snapshot and the actions are Browser Use Pi's (vendor/browser-use-pi, MIT).
+// The driver of every browser computer (AgentRun's browser kind: Browserbase's, Kernel's, or the `local` provider's
+// Chrome on this machine), over its CDP URL: raw CDP, with no Stagehand and nothing loaded into the browser. snapshot is
+// Chrome's accessibility tree with "frame-node" ids, and run takes actions alone (an op, a snapshot id, a value), each
+// carried out with CDP input events and answered with one line of what changed; run code is refused in words, since the
+// model's code would run in the host's process. The snapshot and the actions are Browser Use Pi's (vendor/browser-use-pi,
+// MIT).
 //
 // The commands it sends: Target (to find or open its tab), Page (enable, navigate, frame tree, screenshot, layout,
 // dialogs), Runtime (enable, evaluate and callFunctionOn of this file's and ax.ts's own functions, releaseObject),
@@ -25,8 +26,8 @@ const stale = (message: string) => new Error(message);
 const staleSnapshotIdError = (id: string) => STALE_SNAPSHOT_ID_ERROR.replace("${id}", id);
 
 /** What `run` with code is told on this browser. */
-export const LOCAL_CODE_REFUSED =
-  'run code is not available on the local browser (this machine\'s Chrome): send actions instead, each an op with a snapshot id and a value, for example {"actions":[{"op":"click","id":"0-42"}]}, and navigate with {"actions":[{"op":"goto","url":"https://example.com"}]}. Read the page with browser_read.';
+export const CDP_CODE_REFUSED =
+  'run code is not available on this browser (the agent\'s browser computer): send actions instead, each an op with a snapshot id and a value, for example {"actions":[{"op":"click","id":"0-42"}]}, and navigate with {"actions":[{"op":"goto","url":"https://example.com"}]}. Read the page with browser_read.';
 
 /** How long one CDP command may take before the action is said to be unanswered. */
 const COMMAND_MS = 30_000;
@@ -114,7 +115,7 @@ export function cdpDriver(): DriverFactory<PageDriver> {
       snapshot: (options = {}) => ax.snapshot(options.includeIframes === undefined ? {} : { includeIframes: options.includeIframes }),
 
       run: async ({ code, actions, checked }) => {
-        if (code !== undefined) throw refusedError(LOCAL_CODE_REFUSED);
+        if (code !== undefined) throw refusedError(CDP_CODE_REFUSED);
         if (!actions?.length) throw refusedError("run requires exactly one of code or actions");
         await check(actions, checked === true);
         const lines: string[] = [];

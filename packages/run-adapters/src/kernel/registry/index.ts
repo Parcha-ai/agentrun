@@ -1,10 +1,9 @@
 // The kernel's one tool registry: the host tools' definitions, words and limits, the gate's shell family, the run's
-// hands, and the executors the kernel owns; a computer kind's own tools (desktop, phone, browser) and the narrow ports
-// they run on. Unused on main until the cutover wires serve onto it.
+// hands, and the executors the kernel owns; a computer kind's own tools (desktop, phone) and the narrow ports they run
+// on. A browser computer's tools are the host's browser tool's (serve's tools.ts, pi-browser's durable extension), not
+// the registry's.
 export { BACKGROUND_EXECUTORS, endBackground, NEEDS_A_COMPUTER, NO_SHELL } from "./background.js";
 export { boundedBash } from "./bash.js";
-export { browserToolDefs } from "./browser.js";
-export type { BrowserContract } from "./browser.js";
 export { bashTimeoutWords, CAPABILITY_KINDS, capabilityToolDefs, hostToolDefs } from "./defs.js";
 export type { ShellPlace, ToolDef } from "./defs.js";
 export { DESKTOP_ACTIONS, DESKTOP_EXECUTORS, DESKTOP_KEYS, DESKTOP_MAX_ACTIONS, DESKTOP_TOOL_DEFS } from "./desktop.js";
@@ -12,7 +11,7 @@ export { defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, she
 export type { Permission } from "./gate.js";
 export { answerOf, exitCodeOf, needsKindWords } from "./hands.js";
 export type {
-  Browser, CapabilityKind, CdpSession, ExecResult, Executor, Hands, HostExecutors, Input, InputAction, Phone, PhoneKey, PhoneNode, PhonePoint, ProcessInfo, Processes, Screen,
+  CapabilityKind, ExecResult, Executor, Hands, HostExecutors, Input, InputAction, Phone, PhoneKey, PhoneNode, PhonePoint, ProcessInfo, Processes, Screen,
   ScreenPoint, Shot, ToolAnswer, ToolCall,
 } from "./hands.js";
 export { PHONE_EXECUTORS, PHONE_KEYS, PHONE_SWIPE_MAX_MS, PHONE_SWIPE_MS, PHONE_TOOL_DEFS, PHONE_TREE_MAX_CHARS, PHONE_TREE_MAX_NODES } from "./phone.js";

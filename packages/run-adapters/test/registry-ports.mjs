@@ -1,4 +1,4 @@
-// Fakes of the registry's narrow computer ports (kernel/registry hands.ts: screen, input, phone, browser), for the
+// Fakes of the registry's narrow computer ports (kernel/registry hands.ts: screen, input, phone), for the
 // kernel registry's tests: each records every call, in order, as [method, ...args], and answers what a test scripts.
 // A refusal throws as the port says: an error with the computer's `code` and words.
 
@@ -71,25 +71,6 @@ export function fakePhone({ width = 1080, height = 2400, apps = [{ id: "com.exam
         return { apps, foreground };
       },
       async open(id) { record("apps.open", id); },
-    },
-  };
-}
-
-/** A browser: connect answers a fake CDP session that records what is sent. */
-export function fakeBrowser() {
-  const calls = [];
-  return {
-    calls,
-    async connect() {
-      calls.push(["connect"]);
-      return {
-        async send(method, params) {
-          calls.push(["send", method, params]);
-          return {};
-        },
-        on: () => () => {},
-        close: () => void calls.push(["close"]),
-      };
     },
   };
 }

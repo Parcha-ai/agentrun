@@ -210,7 +210,7 @@ One session at a time may save to a profile in one process. A second saver is re
 | `snapshot` | The page's accessibility tree with bracketed ids: a working view for the next `run`. Never filed, so it is not citable evidence. | Reruns. |
 | `screenshot`, `browser_read` | Read the page. Each read is filed as evidence with its URL, SHA-256 and the offset into the session's recording. A screenshot is held to 2,000 px on its long edge. A `screenshot` can take a `clip` (CSS pixels from the viewport's top-left corner), an `id` from the latest snapshot or a CSS `selector` (scrolled into view first) to capture one region (a blank `id` or `selector`, or a clip of zero width and height, counts as not given); an empty or off-screen region, or an element that matches nothing or more than one, is refused with the typed envelope before any capture. Its `details.media` gives the image's path, type, size and the region. | Reruns. A read whose session was lost answers `session_replaced`. |
 | `browser_downloads` | Copy what the session downloaded into the host's workspace, with a manifest of SHA-256 sums. The pi extension lists it unless `fileTools` is false; the durable adapter lists it only when the host supplies `workspace`. | Reruns; files already there are skipped. |
-| `run` | Act: code, or a batch of ref actions (`goto` takes a URL instead of an id). The local browser takes actions only. | Never reruns. The model is told the call may have taken effect and where the page was, and the identical code is refused once (`effect_unknown`). |
+| `run` | Act: code, or a batch of ref actions (`goto` takes a URL instead of an id). An AgentRun browser computer (raw CDP) takes actions only. | Never reruns. The model is told the call may have taken effect and where the page was, and the identical code is refused once (`effect_unknown`). |
 | `browser_release`, `browser_relaunch` | End the session; end it and open another. | Idempotent. A create carries a tag, so a rerun finds its session. |
 | `browser_request_handoff` | Hand the session to a person for a step only a human can do, and wait for the host's handoff port to say how it ended. While the person has it, every other call answers `waiting_for_human`. Listed only when the host gives a `handoff` port. | Reruns and waits on the same request; a request asked again carries the same `request_id`, which the port treats as one. |
 | `web_fetch`, `web_search` | Fetch a page or search, through the provider's services. | Reruns. |
@@ -309,8 +309,8 @@ The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly, and `
   `node scripts/vendor-facade.mjs --check` verifies them and `--commit SHA --release NAME` re-vendors. Stagehand is created
   sealed: no inference, no cache, and no trace endpoint, so no trace is exported. Stagehand attaches one client to a browser
   at a time: closing a driver disconnects it, so the next attach is allowed.
-- `/driver/cdp`: `cdpDriver()`, the driver of AgentRun's local browser (the computer package's `local` provider, this
-  machine's Chrome). It is raw CDP: no Stagehand, and nothing loaded into the browser. `snapshot` is Chrome's
+- `/driver/cdp`: `cdpDriver()`, the driver of every AgentRun browser computer (Browserbase's, Kernel's, or the computer
+  package's `local` provider's Chrome on this machine), over its CDP URL. It is raw CDP: no Stagehand, and nothing loaded into the browser. `snapshot` is Chrome's
   accessibility tree with the same "frame-node" ids (`[0-42]`: the frame's place, then Chrome's backend node id). `run`
   takes actions only. Each action is scrolled into view, hit-tested at its centre, and pressed and released there, or
   typed with inserted text and a real last key. Each answers one line: `[ok] click [0-42] button "Add" -> page changed`

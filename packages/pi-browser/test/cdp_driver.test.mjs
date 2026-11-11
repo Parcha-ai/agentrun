@@ -5,7 +5,7 @@
 // work and code is refused in words.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cdpDriver, LOCAL_CODE_REFUSED } from "../dist/driver/cdp.js";
+import { cdpDriver, CDP_CODE_REFUSED } from "../dist/driver/cdp.js";
 import { BROWSER_TOOLS, NAVIGATED_SNAPSHOT_ERROR, pageTools } from "../dist/index.js";
 import { fakeAxPage } from "./fixtures/fake-ax-page.mjs";
 
@@ -100,14 +100,14 @@ test("through pageTools' run: actions work, and code is refused in words that sa
   assert.equal(coded.isError, true);
   const failure = JSON.parse(coded.content[0].text);
   assert.equal(failure.code, "refused");
-  assert.equal(failure.message, LOCAL_CODE_REFUSED);
+  assert.equal(failure.message, CDP_CODE_REFUSED);
 });
 
-test("the contract offers goto and says, for both browsers, that the local one takes actions only", () => {
+test("the contract offers goto and says, for both drivers, that a browser computer takes actions only", () => {
   const run = BROWSER_TOOLS.find((tool) => tool.name === "run");
   const goto = run.parameters.properties.actions.items.oneOf.find((one) => one.properties.op.const === "goto");
   assert.deepEqual(goto.required, ["op", "url"]);
-  assert.match(run.description, /The local browser \(this machine's Chrome\) takes actions only: code is refused there/);
+  assert.match(run.description, /An agent's browser computer \(Browserbase, Kernel or Local Chrome\) takes actions only: code is refused there/);
   assert.match(run.description, /Stagehand Playwright facade/, "the vendor browsers keep run code");
   const snapshot = BROWSER_TOOLS.find((tool) => tool.name === "snapshot");
   assert.match(snapshot.description, /the snapshot names each frame it left out/);

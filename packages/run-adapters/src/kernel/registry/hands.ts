@@ -44,7 +44,7 @@ export type Processes = {
 };
 
 /** A computer's kind past files and a shell: each adds its own tools to the run's (defs.ts capabilityToolDefs). */
-export type CapabilityKind = "desktop" | "phone" | "browser";
+export type CapabilityKind = "desktop" | "phone";
 
 /** A kind's tool refused in a run whose computer is not of that kind (or lacks the port): the words name the setting. */
 export const needsKindWords = (tool: string, kind: CapabilityKind): string =>
@@ -114,16 +114,6 @@ export type Phone = {
   };
 };
 
-/** A connection to a browser's DevTools protocol (pi-browser's CdpLink, in shape). */
-export type CdpSession = {
-  send(method: string, params?: object, sessionId?: string): Promise<unknown>;
-  on(listener: (event: { method?: string; params?: unknown; sessionId?: string }) => void): () => void;
-  close(): void;
-};
-
-/** A browser computer: a connection to its CDP. The browser's tools and take-over are the host's (pi-browser's). */
-export type Browser = { connect(): Promise<CdpSession> };
-
 /** The agent's hand-over of a desktop or a phone to the person, through the run's hold: ask opens it (what the person is
  *  to do, how both will know it is done, when it expires, ISO time) and resolves with its first answer, or expired. An
  *  abort of `signal` (a stop, a lost claim) rejects it. */
@@ -152,8 +142,6 @@ export type Hands = {
   readonly input?: Input;
   /** A phone's screen, touch, typing and apps; absent where the computer is no phone. */
   readonly phone?: Phone;
-  /** A browser's CDP; absent where the computer is no browser. */
-  readonly browser?: Browser;
   /** A desktop's or a phone's hand-over to the person (the run's hold); absent where there is none. */
   readonly handoff?: Handoff;
 };
@@ -187,6 +175,5 @@ export async function answerOf(call: ToolCall, run: () => Promise<ToolAnswer>): 
 /** A host tool's run. */
 export type Executor = (args: unknown, call: ToolCall) => Promise<ToolAnswer>;
 
-/** What the host gives the registry, by tool name: read, write and edit, and bash's own run, which the registry bounds;
- *  and, for a browser, its tools' runs (pi-browser's, over hands.browser), by tool name. */
-export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash", Executor>>> & { readonly browser?: Readonly<Record<string, Executor>> };
+/** What the host gives the registry, by tool name: read, write and edit, and bash's own run, which the registry bounds. */
+export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash", Executor>>>;

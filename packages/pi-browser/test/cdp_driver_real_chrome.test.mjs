@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { cdpDriver, LOCAL_CODE_REFUSED } from "../dist/driver/cdp.js";
+import { cdpDriver, CDP_CODE_REFUSED } from "../dist/driver/cdp.js";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 
@@ -86,7 +86,7 @@ test("a real Chrome: snapshot, type in a field, select, click a button, read the
   assert.match(read.text, /Good day, Ada/);
   assert.match(await driver.snapshot(), /Good day, Ada/);
 
-  await assert.rejects(driver.run({ code: "return 1" }), { message: LOCAL_CODE_REFUSED });
+  await assert.rejects(driver.run({ code: "return 1" }), { message: CDP_CODE_REFUSED });
   const shotBytes = await driver.screenshot({ type: "png" });
   assert.equal(shotBytes.mimeType, "image/png");
   assert.ok(Buffer.from(shotBytes.data, "base64").subarray(1, 4).toString() === "PNG");

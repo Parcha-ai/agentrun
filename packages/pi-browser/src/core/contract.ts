@@ -34,7 +34,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []): J
 const snapshot: ToolContract = {
   name: "snapshot",
   label: "Browser: snapshot",
-  description: "Capture the active page's accessibility tree and hydrate its displayed IDs for subsequent run actions. Every call replaces the active page's ID map. On the local browser (this machine's Chrome) a frame another site runs in its own process is not in the tree: the snapshot names each frame it left out.",
+  description: "Capture the active page's accessibility tree and hydrate its displayed IDs for subsequent run actions. Every call replaces the active page's ID map. On an agent's browser computer a frame another site runs in its own process is not in the tree: the snapshot names each frame it left out.",
   parameters: object({ includeIframes: { type: "boolean", default: true } }),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "none", listedWhen: "always",
 };
@@ -48,7 +48,7 @@ export const BROWSER_KEEPS = Object.freeze({
 
 const runDescription = (signIns: boolean): string =>
   `Browse and automate websites in the persistent browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
-  'Navigate with JavaScript such as await page.goto("https://example.com"), or with a goto action; there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. The local browser (this machine\'s Chrome) takes actions only: code is refused there. Each action must use "op" (never "kind") and "id" (never "ref"), but goto, which takes a "url". Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"goto","url":"https://example.com"}]}, {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
+  'Navigate with JavaScript such as await page.goto("https://example.com"), or with a goto action; there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. An agent\'s browser computer (Browserbase, Kernel or Local Chrome) takes actions only: code is refused there. Each action must use "op" (never "kind") and "id" (never "ref"), but goto, which takes a "url". Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"goto","url":"https://example.com"}]}, {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
 
 const run: ToolContract = {
   name: "run",
@@ -242,7 +242,7 @@ export function browserSection(policy: { readonly idleReleaseS: number }, offere
   return [
     "You control one remote browser:",
     "- snapshot: the active page's accessibility tree, with bracketed element IDs for run actions.",
-    "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\" (a goto action \"op\" and \"url\"), never \"kind\" or \"ref\". The local browser (this machine's Chrome) takes actions only.",
+    "- run: snapshot actions by ID, or JavaScript against the Playwright-shaped page API. Pass exactly one of code or actions; every action uses \"op\" and \"id\" (a goto action \"op\" and \"url\"), never \"kind\" or \"ref\". An agent's browser computer takes actions only.",
     "- screenshot: the rendered page as an image.",
     "- browser_read: the current page's content, filed as evidence with its URL.",
     "- browser_relaunch: a fresh session, Verified or egressing from a given place.",

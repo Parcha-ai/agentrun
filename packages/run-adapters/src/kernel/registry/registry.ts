@@ -2,12 +2,11 @@
 // write and edit, and bash's own run, are the host's (pi's tools over the run's hands, until their semantics move
 // here); the kernel bounds bash and runs the five background tools itself. A computer of a kind past files and a shell
 // adds its kind's tools after them, in a fixed order: the desktop's and the phone's run on the kernel's own executors
-// over the hands' narrow ports; the browser's are the host's contracts and runs (pi-browser's). A registry missing an
-// executor for a tool the model sees is refused when it is built, so a run never offers a tool it cannot run. A kind's
-// tool the run does not have is refused in words that name the setting.
+// over the hands' narrow ports. A registry missing an executor for a tool the model sees is refused when it is built,
+// so a run never offers a tool it cannot run. A kind's tool the run does not have is refused in words that name the
+// setting.
 import { BACKGROUND_EXECUTORS, NEEDS_A_COMPUTER, NO_SHELL } from "./background.js";
 import { boundedBash } from "./bash.js";
-import type { BrowserContract } from "./browser.js";
 import { CAPABILITY_KINDS, capabilityToolDefs, hostToolDefs, type ShellPlace, type ToolDef } from "./defs.js";
 import { DESKTOP_EXECUTORS, DESKTOP_TOOL_DEFS } from "./desktop.js";
 import { answerOf, type CapabilityKind, type Executor, type HostExecutors, needsKindWords, type ToolAnswer, type ToolCall } from "./hands.js";
@@ -21,12 +20,11 @@ export type Registry = {
   invoke(name: string, args: unknown, call: ToolCall): Promise<ToolAnswer>;
 };
 
-/** The registry of a run's host tools, by where its shell is, and its computer's kinds (`kinds`: none, or the desktop,
- *  the phone or the browser it is), with the host's executors. `browserTools`: pi-browser's BROWSER_TOOLS, as the host
- *  lists them for this run; needed with the browser kind, and naming them in a refusal without it. `without`: a kind's
+/** The registry of a run's host tools, by where its shell is, and its computer's kinds (`kinds`: none, or the desktop
+ *  or the phone it is), with the host's executors. `without`: a kind's
  *  tools this run's computer does not offer (its capabilities lack them: an iPhone's tree and keys, say), not listed to
  *  the model; one called anyway runs, and its port's absence answers in words. */
-export function createRegistry(options: { maxExecS: number; shell: ShellPlace; kinds?: readonly CapabilityKind[]; executors: HostExecutors; browserTools?: readonly BrowserContract[]; without?: readonly string[] }): Registry {
+export function createRegistry(options: { maxExecS: number; shell: ShellPlace; kinds?: readonly CapabilityKind[]; executors: HostExecutors; without?: readonly string[] }): Registry {
   const { shell, executors } = options;
   const kinds = CAPABILITY_KINDS.filter((kind) => options.kinds?.includes(kind));
   const own = hostToolDefs({ maxExecS: options.maxExecS, shell });
@@ -40,11 +38,11 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; k
   }
   const defs = [...own];
   for (const kind of kinds) {
-    for (const def of capabilityToolDefs(kind, options.browserTools ? { browserTools: options.browserTools } : {})) {
+    for (const def of capabilityToolDefs(kind)) {
       // A tool two kinds share (the hand-over) is listed once, as the first kind gives it.
       if (runs.has(def.name)) continue;
-      const run = kind === "desktop" ? DESKTOP_EXECUTORS[def.name] : kind === "phone" ? PHONE_EXECUTORS[def.name] : executors.browser?.[def.name];
-      if (!run) throw new Error(`the registry has no executor for ${def.name}, a ${kind} tool the model sees: the host gives the browser's runs`);
+      const run = kind === "desktop" ? DESKTOP_EXECUTORS[def.name] : PHONE_EXECUTORS[def.name];
+      if (!run) throw new Error(`the registry has no executor for ${def.name}, a ${kind} tool the model sees`);
       runs.set(def.name, run);
       if (!options.without?.includes(def.name)) defs.push(def);
     }
@@ -53,7 +51,6 @@ export function createRegistry(options: { maxExecS: number; shell: ShellPlace; k
   const kindOf = new Map<string, CapabilityKind>([
     ...DESKTOP_TOOL_DEFS.map((def) => [def.name, "desktop"] as const),
     ...PHONE_TOOL_DEFS.map((def) => [def.name, "phone"] as const),
-    ...(options.browserTools ?? []).map((contract) => [contract.name, "browser"] as const),
   ]);
   const byName = new Map(defs.map((def) => [def.name, def]));
   return {

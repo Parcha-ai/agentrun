@@ -16,7 +16,7 @@
 // serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
-import type { CdpSession, ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, ComputerSettingKind, Group, KindCapabilities, MountKind, MountReadBack, MountSpec, ProviderEntry, Result } from "@parcha/agentrun-computer";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
@@ -38,13 +38,12 @@ export type KindRegistry = {
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
- *  phone), the read-back of its mount (when mounted), its CDP connect (browser), and its release. */
+ *  phone), the read-back of its mount (when mounted), its CDP URL (browser), and its release. */
 export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
   readBack?(): Promise<Result<MountReadBack>>;
-  connect?(): Promise<CdpSession>;
   /** A browser's CDP URL as its provider's connect hands it over now (a secret: it goes only to a socket), for the run's
    *  browser tool to drive; throws the provider's words, with its code, when the session has ended. */
   cdpUrl?(): Promise<string>;
@@ -256,12 +255,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 /** The started computer as runTools takes it, or what it lacks, in words. */
 function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined, provider: string): RunComputer | string {
   const groups = launched.groups as readonly Group[];
-  if (kind === "browser") {
-    if (!launched.connect) return "it gave no CDP connection";
-    // The run's browser tool drives it over its CDP URL (a launch that gives only a connect leaves the tool none).
-    const browser: ClaimBrowser | undefined = launched.cdpUrl ? { id: launched.id, provider, url: () => launched.cdpUrl!() } : undefined;
-    return { kind, connect: () => launched.connect!(), ...(browser ? { browser } : {}) };
-  }
+  // The run's browser tool drives a browser over its CDP URL.
+  if (kind === "browser") return launched.cdpUrl ? { kind, browser: { id: launched.id, provider, url: () => launched.cdpUrl!() } } : "it gave no CDP connection";
   const { client } = launched;
   if (!client) return "it gave no computer protocol client";
   if (kind === "phone") return { kind, computer: { client }, groups };
