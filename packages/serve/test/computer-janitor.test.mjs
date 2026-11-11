@@ -1,7 +1,8 @@
 // The computer janitor (workspace/computer-janitor.ts): at the runner's start, then on its interval, it ends each computer
 // of this server past its deadline, over each provider whose keys the server has and whose vendor doesn't end its own.
-// Never another server's computer (its run is not in this store), never one a live claim holds, and a provider that
-// fails is said and the others swept. The runner process starts it only when asked, and never under --faux.
+// Never another server's computer (its run is not in this store), never one a claim holds, and a provider that fails is
+// said and the others swept. Its close never waits on a stuck vendor past its bound. The runner process starts it only
+// when asked, and never under --faux.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,11 +16,11 @@ import { fauxLoops, until } from "./runner-support.mjs";
 
 const NOW = 1_800_000_000_000;
 const PAST = new Date(NOW - 60_000);
-const AHEAD = new Date(NOW + 60 * 60_000);
 
 /** A provider whose computers are `computers` ({ name, labels, deadline }), ended by release; `failing` makes its list
- *  fail in words. Its lifetime is the janitor's unless `lifetime` says otherwise. */
-function provider(id, computers, { failing, lifetime = "janitor" } = {}) {
+ *  fail in words, `hanging` makes it never answer, whatever its signal. Its lifetime is the janitor's unless `lifetime`
+ *  says otherwise. */
+function provider(id, computers, { failing, hanging, lifetime = "janitor" } = {}) {
   const released = [];
   return {
     released,
@@ -29,6 +30,7 @@ function provider(id, computers, { failing, lifetime = "janitor" } = {}) {
       capabilities: () => ({ lifetime, maxLifetimeMs: 24 * 60 * 60_000 }),
       check: () => [],
       async list() {
+        if (hanging) return new Promise(() => {});
         if (failing) return { ok: false, error: { code: "unreachable", message: `${id}'s vendor did not answer` } };
         return { ok: true, value: computers.map((one) => ({ ref: { id: one.name, name: one.name }, labels: one.labels, deadline: one.deadline, state: "running", network: "none" })) };
       },
@@ -43,21 +45,26 @@ function provider(id, computers, { failing, lifetime = "janitor" } = {}) {
 
 const labels = (run, epoch) => ({ "agentrun.run": run, "agentrun.epoch": String(epoch) });
 
-/** This server's runs: one ended (its computer left by a crashed runner), one held by a live claim at epoch 3. */
+/** This server's runs: one ended (its computer left by a crashed runner); one held by a claim at epoch 3; one whose
+ *  claim at epoch 2 reads as lapsed on this process's clock, which the janitor never judges (the lease is the store's). */
 const RUNS = {
   "run-mine": { id: "run-mine", state: "ended", epoch: 1, runner: null, claimedUntil: null },
   "run-live": { id: "run-live", state: "running", epoch: 3, runner: "runner-b", claimedUntil: NOW + 60_000 },
+  "run-lapsed": { id: "run-lapsed", state: "running", epoch: 2, runner: "runner-c", claimedUntil: NOW - 60_000 },
 };
-const store = (runs = RUNS) => ({ runs: { get: async (id) => runs[id] }, computerLedger: {} });
+const store = (runs = RUNS) => ({ runs: { get: async (id) => runs[id], list: async () => Object.values(runs) }, computerLedger: {} });
 
 /** The computers as the runner composed them: a registry of `providers`, each with a key named <ID>_KEY, and the key
- *  reader answering the keys in `keys`. */
-function computers(providers, keys) {
+ *  reader answering the keys in `keys`; a key named in `unreadable` throws as a store that can't be read. */
+function computers(providers, keys, unreadable = []) {
   const PROVIDERS = providers.map(({ made }) => ({ id: made.id, label: made.id, keys: [{ name: `${made.id.toUpperCase()}_KEY`, option: "apiKey", required: true }] }));
   return {
     kinds: { PROVIDERS },
     providers: Object.fromEntries(providers.map(({ made }) => [made.id, async () => made])),
-    keyOf: async (name) => keys[name],
+    keyOf: async (name) => {
+      if (unreadable.includes(name)) throw new Error(`the store could not open ${name}`);
+      return keys[name];
+    },
     keyTable: { keys: Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.keys])), labels: {} },
   };
 }
@@ -76,7 +83,7 @@ test("a sweep ends only this server's computer past its deadline: never another 
   assert.deepEqual(orgo.computers.map((one) => one.name), ["other-server", "live-held"]);
 });
 
-test("a live run's computer of an older epoch is a lost claim's, and is swept; one with no readable epoch is kept", async () => {
+test("a claimed run's computer of an older epoch is a lost claim's, and is swept; one with no readable epoch is kept", async () => {
   const docker = provider("docker", [
     { name: "older-epoch", labels: labels("run-live", 2), deadline: PAST },
     { name: "no-epoch", labels: { "agentrun.run": "run-live" }, deadline: PAST },
@@ -84,6 +91,40 @@ test("a live run's computer of an older epoch is a lost claim's, and is swept; o
   ]);
   await sweepServerComputers({ store: store(), computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
   assert.deepEqual(docker.released, [["older-epoch", "delete"]]);
+});
+
+test("a claim the janitor's own clock reads as lapsed still holds its computer: no claim is judged on this process's clock (review)", async () => {
+  const docker = provider("docker", [{ name: "lapsed-held", labels: labels("run-lapsed", 2), deadline: PAST }]);
+  await sweepServerComputers({ store: store(), computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
+  assert.deepEqual(docker.released, [], "kept until the run is claimed again at a later epoch");
+});
+
+test("a provider that keeps only the run's hash (Orgo's names) is swept by it: the hash of this store's run, and never another's (review)", async () => {
+  const { runHash } = await import("@parcha/agentrun-computer");
+  const orgo = provider("orgo", [
+    { name: "mine-by-hash", labels: { "agentrun.run.hash": runHash("run-mine"), "agentrun.epoch": "1" }, deadline: PAST },
+    { name: "other-by-hash", labels: { "agentrun.run.hash": runHash("run-of-another-server"), "agentrun.epoch": "1" }, deadline: PAST },
+    { name: "held-by-hash", labels: { "agentrun.run.hash": runHash("run-live"), "agentrun.epoch": "3" }, deadline: PAST },
+  ]);
+  await sweepServerComputers({ store: store(), computers: computers([orgo], { ORGO_KEY: "k" }), now: () => NOW });
+  assert.deepEqual(orgo.released, [["mine-by-hash", "delete"]]);
+});
+
+test("a key that can't be read fails that provider alone: the others are swept (review)", async () => {
+  const modal = provider("modal", theThree());
+  const orgo = provider("orgo", theThree());
+  const swept = await sweepServerComputers({ store: store(), computers: computers([modal, orgo], { ORGO_KEY: "k" }, ["MODAL_KEY"]), now: () => NOW });
+  assert.deepEqual(swept.map(({ provider, swept }) => [provider, swept.ok]), [["modal", false], ["orgo", true]]);
+  assert.match(swept[0].swept.error.message, /could not open MODAL_KEY/);
+  assert.deepEqual(orgo.released, [["mine-late", "delete"]]);
+});
+
+test("closing the janitor never waits on a stuck vendor call past its bound (review)", async () => {
+  const stuck = provider("docker", theThree(), { hanging: true });
+  const janitor = startJanitor({ store: store(), computers: computers([stuck], { DOCKER_KEY: "k" }), env: {}, log: () => {}, closeMs: 50, now: () => NOW });
+  const started = Date.now();
+  await janitor.close();
+  assert.ok(Date.now() - started < 5_000, `close returned in ${Date.now() - started} ms`);
 });
 
 test("a provider whose keys aren't here, or whose vendor ends its own computers, is not asked", async () => {

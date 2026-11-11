@@ -63,10 +63,11 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   const runner = startRunner({ store, createLoop, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
-  // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines go through
-  // console, which drops a write's error: a raw write to a pipe its reader closed would end the process (EPIPE).
+  // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
+  // server's log, on stdout, which the CLI keeps from ending the server when its reader has gone (cli.ts); a stderr the
+  // reader closed would end the process at the first line (EPIPE), console or not.
   const { startJanitor } = await import("../workspace/computer-janitor.js");
-  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.error(`agentrun-serve runner: ${line}`) }) : undefined;
+  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.log(`agentrun-serve runner: ${line}`) }) : undefined;
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
   return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await store.close(); seal.release(); } };
 }

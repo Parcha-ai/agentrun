@@ -1,6 +1,8 @@
 // The run and its claim epoch, as two labels every computer of a run carries. The claim epoch is the one fence for runs
 // and computers: a new claim is epoch + 1, and it releases every computer of the run labelled with a lower epoch
-// (releaseOlder, in janitor.ts). Both names live here alone.
+// (releaseOlder, in janitor.ts). Both names live here alone, with the run label's hash: a provider whose computers keep
+// only that (Orgo's names) lists it under RUN_HASH_LABEL, so a caller can still tell whose run a computer is.
+import { createHash } from "node:crypto";
 import { epochProblem } from "./mount.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -10,6 +12,29 @@ export { epochProblem };
 export const RUN_LABEL = "agentrun.run";
 /** The claim epoch of the run's runner that made the computer, in decimal. */
 export const EPOCH_LABEL = "agentrun.epoch";
+/** The run label's hash (runHash), listed in place of RUN_LABEL by a provider that keeps only the hash and is listed
+ *  with no run label to match. */
+export const RUN_HASH_LABEL = "agentrun.run.hash";
+
+/** The run label's hash, as a provider keeps it where the run itself doesn't fit (a computer's name): base32 of its
+ *  sha256, lower case, 16 letters. */
+export function runHash(run: string): string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+	const bytes = createHash("sha256").update(run, "utf8").digest();
+	let bits = 0;
+	let value = 0;
+	let out = "";
+	for (const byte of bytes) {
+		value = (value << 8) | byte;
+		bits += 8;
+		while (bits >= 5 && out.length < 16) {
+			out += alphabet[(value >>> (bits - 5)) & 31];
+			bits -= 5;
+		}
+		if (out.length >= 16) break;
+	}
+	return out;
+}
 
 /** An epoch as a label holds it: decimal digits, no sign, no leading zero, no space. */
 const EPOCH_TEXT = /^(?:0|[1-9][0-9]*)$/;

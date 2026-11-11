@@ -18,7 +18,7 @@ import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
-import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
+import { EPOCH_LABEL, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
@@ -233,25 +233,6 @@ const pause = (ms: number, signal?: AbortSignal) =>
 		if (signal?.aborted) finish();
 		else signal?.addEventListener("abort", finish, { once: true });
 	});
-
-/** The run label's hash, as a name carries it: base32 of its sha256, lower case, 16 letters. */
-function runHash(run: string): string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-	const bytes = createHash("sha256").update(run, "utf8").digest();
-	let bits = 0;
-	let value = 0;
-	let out = "";
-	for (const byte of bytes) {
-		value = (value << 8) | byte;
-		bits += 8;
-		while (bits >= 5 && out.length < 16) {
-			out += alphabet[(value >>> (bits - 5)) & 31];
-			bits -= 5;
-		}
-		if (out.length >= 16) break;
-	}
-	return out;
-}
 
 /**
  * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when
@@ -856,8 +837,10 @@ export class OrgoProvider implements ComputerProvider {
 			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			const ref = { id: record.id, name: record.name };
 			const running = RUNNING.has(record.status);
+			// The name keeps the run's hash, not the run: listed with no run to match, the hash is given, so a caller (serve's
+			// janitor) can still tell whose run a computer is.
 			let read: Record<string, string> = {
-				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
+				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : parts.run !== undefined ? { [RUN_HASH_LABEL]: parts.run } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
 			// The janitor's deadline is the name's; a name of an older make has none, and Orgo's end stands for it.
