@@ -405,6 +405,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(passed.err, /case learned run 1: completed, pass/);
   const report = JSON.parse(readFileSync(join(dir, "pass.json"), "utf8"));
   assert.deepEqual([report.pass, report.cases.map((c) => c.name), report.server], [true, ["learned"], { kind: "in_process" }]);
+  // Each run keeps its metrics as its end wrote them (GET /stats over its own agent): its requests, tokens and tool calls.
+  const { metrics } = report.cases[0].runs[0];
+  assert.ok(metrics && metrics.requests > 0 && metrics.input + metrics.cache_read + metrics.cache_write > 0 && metrics.output > 0, JSON.stringify(metrics));
+  assert.equal(metrics.tool_calls, Object.values(metrics.tools).reduce((sum, t) => sum + t.calls, 0));
 
   // One failing case proves exit 1 and the report; a passing one beside it adds a real run and nothing more.
   const failed = await run([PKG, "--case", "mcp-mismatch", "--runs", "1", "--faux", FAUX, "--report", join(dir, "fail.json")]);
