@@ -261,3 +261,6 @@ export interface SessionKeyData {
   /** The conversation whose entries are this session's resume log. */
   readonly conversation: number;
 }
+
+/** The session a workflow's model requests are booked under, in its run's journal. */
+export const WORKFLOW_SESSION = "workflow";
