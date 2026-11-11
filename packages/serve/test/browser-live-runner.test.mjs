@@ -71,18 +71,18 @@ test("on the runner path the browser's hand-over goes to the store under the run
   assert.deepEqual(await rawRows(r.file), []);
 });
 
-test("without the seam (the old per-run process) the hand-over is the run's directory's files, as before", async (t) => {
+test("without the seam no viewer is handed over and nothing is written in the run's folder: a viewer's token never lands where the run's agent and its file list reach", async (t) => {
   const r = await runnerRun(t);
-  const handed = sessionHandovers(r.root);
+  // On the runner the run's folder is its workspace; a hand-over with no store to go to goes nowhere.
+  const handed = sessionHandovers(r.root, undefined);
   const a = viewer("ar-run-1-1");
   await handed.changed(a.row, "created");
-  assert.deepEqual((await readHandovers(r.root)).map(({ id, token, tag }) => ({ id, token, tag })), [{ id: a.id, token: a.token, tag: a.tag }]);
-  assert.deepEqual(await rawRows(r.file), [], "nothing in the store");
+  await handed.reopened(a.tag, a.row.liveView.fullscreen);
+  assert.deepEqual(filesUnder(r.root).filter(([, bytes]) => bytes.includes(a.token)).map(([path]) => path), [], "no file holds the viewer's token");
+  assert.equal(existsSync(join(r.root, "browser-live")), false, "no hand-over directory in the run's folder");
+  assert.deepEqual(await rawRows(r.file), [], "and nothing in the store");
   await handed.changed(a.row, "released");
-  assert.deepEqual(await readHandovers(r.root), []);
-  await handed.changed(a.row, "created");
   await handed.released();
-  assert.equal(existsSync(join(r.root, BROWSER_LIVE_DIR)), false, "the run's release takes the directory");
 });
 
 test("the server reads what the runner put: liveViewerLink names the newest viewer whose port answers, liveViewerById the one the proxy asks for; none once released or when no port answers", async (t) => {

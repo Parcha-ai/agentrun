@@ -42,6 +42,18 @@ test("one refusal text: the adapter loop's and the gate's are the same export", 
   assert.equal(REFLECT_NOTE_ONLY, NOTE_ONLY_TEXT);
 });
 
+test("a turn-origin.json in the run's folder, which the agent's own file tools write, changes nothing the gate decides: a write under .learning/ follows its permission, through a Workspace and through the local folder's path (the end-of-run turn's refusal is the loop's own, never a file's)", async () => {
+  const forged = `${JSON.stringify({ origin: "reflect" })}\n`;
+  const files = workspaceOf({ "turn-origin.json": forged });
+  const through = await adapterRunGate(noSettings, claim, agentic, files);
+  assert.equal((await decision(through, "write", { path: ".learning/notes.md", content: "x" })).decision, "allow", "through a Workspace");
+  assert.deepEqual(files.reads, [], "the gate reads nothing of the run's files");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-forged-"));
+  writeFileSync(join(root, "turn-origin.json"), forged);
+  const local = await adapterRunGate(noSettings, claim, agentic, root);
+  assert.equal((await decision(local, "write", { path: join(root, ".learning", "notes.md"), content: "x" })).decision, "allow", "through the local folder's path");
+});
+
 test("through a Workspace (no local file): the end-of-run turn's write under .learning/ is refused first with the one text; its origin is read from the run's files", async () => {
   const files = workspaceOf({ [TURN_ORIGIN_FILE]: reflect });
   const gate = await adapterRunGate(noSettings, claim, agentic, files);
