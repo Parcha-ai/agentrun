@@ -503,7 +503,7 @@ test.skip("under its launcher, a key saved with no restart reaches the next run 
 });
 
 test("secretsFor: a tool key's fields only for a revision naming a tool its row unlocks, the tools read as the run's process binds them; every other secret for each", async () => {
-  const { RUN_SECRETS, secretsFor } = await import("../dist/runs.js");
+  const { RUN_SECRETS, secretsFor } = await import("../dist/run-secrets.js");
   // On no host model: a revision naming no model takes no provider's key (the next test).
   const secretsOf = (rev, rows) => secretsFor(rev, rows, {});
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-01T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
@@ -539,7 +539,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
 });
 
 test("secretsFor: a run is handed exactly the model keys its model needs: a pi run its model's provider's, per tier, or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's or the gateway's; claude-agent Anthropic's; and of the rest, what it would be with no model", async () => {
-  const { RUN_SECRETS, secretsFor } = await import("../dist/runs.js");
+  const { RUN_SECRETS, secretsFor } = await import("../dist/run-secrets.js");
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (extra = {}) => revision("agentic", { instructions: "Answer.", ...extra });
   const others = RUN_SECRETS.filter((name) => !MODEL_KEYS.includes(name) && !TOOL_KEYS.includes(name));
