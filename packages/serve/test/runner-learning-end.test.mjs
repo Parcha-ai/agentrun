@@ -227,3 +227,45 @@ test("the draft ask describes each tool a call node may run, by the server's own
   assert.ok(prompt.includes(`- \`web_fetch\`: ${toolOf("web_fetch").summary.slice(0, 120)}`), "web_fetch in the server's own words");
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
+
+// A run whose only work is its learned workflows, each answering, with nothing said after its first message, gives
+// nothing new to look back on: it is not asked its end-of-run turn (no model request), and its learning is dropped
+// `empty` in said.onlyWorkflow's words, at no cost. Any other tool, or a learned workflow that fails, is asked as before.
+// The suite's learned_workflow stands in for the run's (the hook reads the run's timeline, by the tool's name).
+const learnsFrom = (dir) => seedOf(dir, "agent-1").then((seed) => runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir));
+const workflow = (run) => ({ name: "learned_workflow", run });
+const read = { name: "read", run: async () => "the file's text" };
+
+test("a run whose only work is one learned workflow that answers is not asked its end-of-run turn: no model request, its learning reads nothing new, at no cost", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, learnsFrom);
+  const requests = [];
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ call: "learned_workflow" }, { say: "It is 42." }, { say: REFLECTED }], tools: { learned_workflow: workflow(async () => "{\"answer\":42}") }, requests });
+  const row = await w.ended();
+  const turn = await w.turnOf(row);
+  assert.equal(turn.reflect, undefined, "no end-of-run turn was placed");
+  assert.deepEqual(turn.users, ["Follow the script."], "only the job's message");
+  assert.equal(requests.length, 2, `the job's two requests and no third: ${requests.length}`);
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual({ state: kept?.proposal?.state, reason: kept?.proposal?.reason, detail: kept?.proposal?.detail, look_back_usd: kept?.proposal?.look_back_usd }, { state: "dropped", reason: "empty", detail: said.onlyWorkflow, look_back_usd: 0 });
+  assert.ok(!kept.learningRunId, "no learning run queued");
+  const end = await runLearningEnd(w.server, "run-1");
+  assert.deepEqual({ state: end?.state, reason: end?.reason, detail: end?.detail }, { state: "dropped", reason: "empty", detail: said.onlyWorkflow });
+});
+
+test("a run with a learned workflow and one other tool is still asked its end-of-run turn", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, learnsFrom);
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ calls: [{ call: "learned_workflow" }, { call: "read" }] }, { say: "It is 42." }, { say: REFLECTED }], tools: { learned_workflow: workflow(async () => "{\"answer\":42}"), read } });
+  const row = await w.ended();
+  assert.ok((await w.turnOf(row)).reflect, "the run was asked its end-of-run turn");
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
+});
+
+test("a run whose learned workflow fails is still asked its end-of-run turn", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, learnsFrom);
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ call: "learned_workflow" }, { say: "It failed." }, { say: REFLECTED }], tools: { learned_workflow: workflow(async () => { throw new Error("the workflow's node failed"); }) } });
+  const row = await w.ended();
+  assert.ok((await w.turnOf(row)).reflect, "the run was asked its end-of-run turn");
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
+});
