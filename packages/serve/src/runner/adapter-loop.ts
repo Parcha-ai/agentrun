@@ -657,17 +657,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let mcp: ClaimMcp | undefined;
   let mcpStale = false;
 
-  /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
-   *  waits at (its pending cap is the cap a raise is checked against); the newest raise entry is its last raise. */
   /** Marks the raise's follow-up the server's (MESSAGE_ORIGIN, timeline/origin.ts) before it is sent: its own commit, the
    *  input's user entry left as pi writes it (its submission, which a re-claim answers from, unchanged), so the Timeline
-   *  shows the next user entry with exactly this text as "AgentRun: …". A CLI's run records its follow-up through its own
-   *  record, which carries the origin itself. */
-  const markServerFollowUp = async (theHarness: Harness, theRoot: Conversation, text: string): Promise<void> => {
+   *  shows the next user entry with exactly this text as "AgentRun: …". Once per follow-up: the marker names its request
+   *  id, and a re-claim that finds one under it writes none (a second would stay open, and could take a person's later
+   *  message of the same words for the server's). A CLI's run records its follow-up through its own record, which carries
+   *  the origin itself. */
+  const markServerFollowUp = async (theHarness: Harness, theRoot: Conversation, text: string, requestId: string): Promise<void> => {
     if (cliRecord) return;
-    await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: MESSAGE_ORIGIN, data: { origin: CAP_RAISED_ORIGIN, text } as unknown as JsonValue }), context);
+    const marked = (await entriesOf(gate!.journal, theRoot.id, context)).some((entry) => entry.kind === MESSAGE_ORIGIN && (entry.data as { requestId?: unknown } | undefined)?.requestId === requestId);
+    if (marked) return;
+    await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: MESSAGE_ORIGIN, data: { origin: CAP_RAISED_ORIGIN, text, requestId } as unknown as JsonValue }), context);
   };
 
+  /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
+   *  waits at (its pending cap is the cap a raise is checked against); the newest raise entry is its last raise. */
   async function raiseStateOf(): Promise<RaiseState> {
     let budget: { id: string; data: BudgetData } | undefined;
     let last: { data: RaiseData; pause?: string } | undefined;
@@ -1287,8 +1291,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (!resumes || raising.capUsd === undefined || !spec.cap?.followUpOf) return await parkAtCap(harness, root, gate, paused);
             // The server's words, shown as its row ("AgentRun: …"), never as the person's; under the id a raise's answer named.
             const followUp = spec.cap.followUpOf(raising.capUsd).text;
-            await markServerFollowUp(harness, root, followUp);
-            await session!.send(followUp, { id: raiseFollowUpId(raising.state?.lastRaise?.pause ?? "follow-up") });
+            const followUpId = raiseFollowUpId(raising.state?.lastRaise?.pause ?? "follow-up");
+            await markServerFollowUp(harness, root, followUp, followUpId);
+            await session!.send(followUp, { id: followUpId });
             followedUp = true;
           }
         }
@@ -1300,8 +1305,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const state = await raiseStateOf();
           if (state.pause === undefined && state.lastRaise?.pause !== undefined) {
             const followUp = spec.cap.followUpOf(state.lastRaise.to).text;
-            await markServerFollowUp(harness, root, followUp);
-            await session!.send(followUp, { id: raiseFollowUpId(state.lastRaise.pause) });
+            const followUpId = raiseFollowUpId(state.lastRaise.pause);
+            await markServerFollowUp(harness, root, followUp, followUpId);
+            await session!.send(followUp, { id: followUpId });
             followedUp = true;
           }
         }

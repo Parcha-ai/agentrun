@@ -200,9 +200,10 @@ export async function raiseCap(store: RunsStore, moment: RunMoment, cap: number)
   if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
   const raises = await raiseRows(store, moment.id);
   const last = raises.at(-1);
-  // A run paused at its cap goes on with one follow-up turn the runner sends under its pause's id (raiseFollowUpId): the
-  // answer names it, so every raise of this pause (a retry, two sent at once) names the same message.
-  const resumed = (): { resumed: true; messageId?: string } => ({ resumed: true, ...(moment.pause !== undefined ? { messageId: raiseFollowUpId(moment.pause) } : {}) });
+  // An agentic run paused at its cap goes on with one follow-up turn the runner sends under its pause's id
+  // (raiseFollowUpId): the answer names it, so every raise of this pause (a retry, two sent at once) names the same message.
+  // A workflow run sends none (the step that waits is judged again), so its answer names no message.
+  const resumed = (): { resumed: true; messageId?: string } => ({ resumed: true, ...(moment.kind === "agentic" && moment.pause !== undefined ? { messageId: raiseFollowUpId(moment.pause) } : {}) });
   // The same raise again (a retry): what the first one did stands, no second row. It resumes the run only while that raise
   // is still on its way (its row untaken): once taken, a pause the run stands at now is a new one, under the raised cap,
   // which this retry does not raise (it answers resumed false, and the run stays paused).

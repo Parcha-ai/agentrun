@@ -4,6 +4,8 @@
 // keeps the cap it was admitted at, and the answer says so. A server started again raises a paused run's cap the same.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { journalRecords } from "../dist/runner/journal-reader.js";
 import { agent, follow, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -28,13 +30,16 @@ async function paused(api, id) {
 }
 
 test("a run paused at its cap, its cap raised, goes on: one follow-up turn in the server's words runs under the new cap and completes, and the answer names that turn", async (t) => {
-  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const { api, store } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await paused(api, "raised");
   const raised = await raise(api, runId, { max_cost_usd: 1 });
   assert.deepEqual([raised.status, raised.body.max_cost_usd, raised.body.resumed], [200, 1, true], JSON.stringify(raised.body));
-  // The answer names the follow-up the runner sends for this pause: its submission's own id in the run's journal.
   assert.match(String(raised.body.message_id), /^agentrun:raise:/, JSON.stringify(raised.body));
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  // The answer names the follow-up the runner sent for this pause: the request id of a submission in the run's journal.
+  const { submissions = [] } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  const followUps = submissions.map((submission) => submission.requestId ?? submission.value?.requestId).filter((id) => String(id).startsWith("agentrun:raise:"));
+  assert.deepEqual(followUps, [raised.body.message_id], `the one follow-up's submission is under the id the answer named: ${JSON.stringify(submissions.map((s) => Object.keys(s)))}`);
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.pending, run.cost.cap_usd], ["completed", null, null, 1], JSON.stringify(run));
   // The server's line after the person's message, as the server's row ("AgentRun: …"), never as the person's.
@@ -42,6 +47,16 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   assert.ok(!rows.some((row) => row.kind === "user_message" && row.text === CONTINUE("$1")), "the follow-up is never the person's message");
   assert.equal(run.result.final_answer, "On The cap was raised to $1; continue the task.: done.");
   assert.ok(run.cost.usd <= 1, `within the new cap: ${run.cost.usd}`);
+});
+
+test("a paused workflow run's raise names no message: it sends no follow-up, its waiting step is judged again; an agentic run's names its follow-up", async () => {
+  const { raiseCap } = await import("../dist/runs-over-store.js");
+  const rows = [];
+  const store = { commands: async () => rows, command: async (_runId, command) => (rows.push({ ...command, takenAt: null }), { id: rows.length }) };
+  const moment = (kind) => ({ id: "run-1", agentId: "agent-1", kind, cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, maxCostUsd: 0.05, pausedWords: "Out of budget.", paused: true, pause: "7", live: false });
+  assert.deepEqual(await raiseCap(store, moment("workflow"), 1), { resumed: true });
+  rows.length = 0;
+  assert.deepEqual(await raiseCap(store, moment("agentic"), 1), { resumed: true, messageId: "agentrun:raise:7" });
 });
 
 test("a raise is checked: only above the run's own cap, a number, nothing else named; a run with no cap and an ended run take none; an unknown run is 404", async (t) => {
