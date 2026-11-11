@@ -5,7 +5,7 @@
 // No App (never connected, disconnected, or rows that do not open under this key): no access, and such a server's calls
 // are refused in words (GITHUB_UNUSABLE.noAccess). An App disconnected or replaced while a run holds a token: its next
 // mint is refused as disconnected, and the claim step drops and revokes the token it holds.
-import { unseal } from "@parcha/pi-durable-agent";
+import { unseal } from "../sealing.js";
 import { GITHUB_API, GITHUB_FIELDS, GITHUB_SCOPE, githubCall, githubTargetOf, mintInstallationToken } from "../github.js";
 import type { TriggerSettings } from "../store/index.js";
 import { isObject } from "../validate.js";

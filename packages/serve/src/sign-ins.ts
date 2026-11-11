@@ -9,9 +9,6 @@ import type { Vendor } from "./sign-ins-store.js";
 export const SIGN_INS_DIR = "sign-ins";
 /** The one saved profile an agent keeps per vendor. */
 export const SIGN_IN_KEY = "default";
-/** The file a run's process writes in its run directory when a session that saved to its sign-in let go: when the
- *  lease ends, its time is the sign-in's `verified_at`. A time, never a pointer. */
-export const SIGN_IN_SAVED = "sign-in-saved";
 
 /** The vendor's side: make an agent's object (its pointer), and delete one. */
 export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };

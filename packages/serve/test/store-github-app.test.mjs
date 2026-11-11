@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { seal } from "@parcha/pi-durable-agent";
+import { seal } from "../dist/sealing.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

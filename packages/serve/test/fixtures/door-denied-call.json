@@ -1,0 +1,91 @@
+{
+  "source": "pi-durable-disk watchEvents (the door's GET /events), its gate denying every call before its intent",
+  "script": [
+    {
+      "call": "read"
+    },
+    {
+      "say": "done"
+    }
+  ],
+  "snapshot": "snapshot",
+  "events": [
+    {
+      "type": "message_start",
+      "role": "user"
+    },
+    {
+      "type": "message_end",
+      "role": "user"
+    },
+    {
+      "type": "submission",
+      "status": "placed"
+    },
+    {
+      "type": "run_start"
+    },
+    {
+      "type": "turn_start"
+    },
+    {
+      "type": "message_start",
+      "role": "system"
+    },
+    {
+      "type": "message_end",
+      "role": "system"
+    },
+    {
+      "type": "message_start",
+      "role": "assistant"
+    },
+    {
+      "type": "message_end",
+      "role": "assistant"
+    },
+    {
+      "type": "usage_changed"
+    },
+    {
+      "type": "tool_execution_end",
+      "role": "toolResult",
+      "tool": "read"
+    },
+    {
+      "type": "message_start",
+      "role": "toolResult"
+    },
+    {
+      "type": "message_end",
+      "role": "toolResult"
+    },
+    {
+      "type": "turn_end"
+    },
+    {
+      "type": "turn_start"
+    },
+    {
+      "type": "message_start",
+      "role": "assistant"
+    },
+    {
+      "type": "message_end",
+      "role": "assistant"
+    },
+    {
+      "type": "turn_end"
+    },
+    {
+      "type": "run_end"
+    },
+    {
+      "type": "submission",
+      "status": "done"
+    },
+    {
+      "type": "usage_changed"
+    }
+  ]
+}

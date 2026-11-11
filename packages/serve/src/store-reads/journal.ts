@@ -4,8 +4,8 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";
-import { CAPS, costLabel, timelineOf, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
+import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
@@ -13,9 +13,10 @@ import { redactedAnswer } from "../key-refusal.js";
 import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
-import { KINDS } from "../runner/journal-kinds.js";
-import { bookedSpend } from "../runner/metrics.js";
+import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
+import { bookedSpend, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
+import { waitingText } from "../tool-gate.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
@@ -28,7 +29,7 @@ export async function runEntries(store: Store, runId: string, context: Context):
  *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
 export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
   const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? []);
+  const from = reflectFrom(records.submissions ?? [], records.entries);
   if (from === undefined) return undefined;
   const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
   return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
@@ -39,9 +40,36 @@ export async function runReflect(store: Store, runId: string, context: Context):
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
+/** The calls the CLI record holds parked at their gate (a start marked parked) with no sent mark and no end. */
+function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
+  const parked = new Set<string>();
+  const past = new Set<string>();
+  for (const entry of entries) {
+    const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
+    if (typeof callId !== "string") continue;
+    if (entry.kind === KINDS.callStart && (entry.data as { parked?: unknown }).parked === true) parked.add(callId);
+    else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
+  }
+  for (const callId of past) parked.delete(callId);
+  return parked;
+}
+
 function piShaped(entries: readonly EntryLike[]): EntryLike[] {
-  return entries.map((entry) => {
+  const waiting = parkedUnsent(entries);
+  return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // A call through a CLI's own MCP client that its gate parked (adapter-loop.ts park): the CLI was answered the gate's
+    // waiting words (mcp-run.ts), which the record never keeps as the call's end, since an end is its outcome and the call
+    // is answered from it. While the call is parked and unsent, those words show as its result row from its ask on, as pi's
+    // parked call shows them; its sent mark or its end (run, refused, withdrawn) ends that.
+    // Once per call, at its first ask: a call asked again (a resume, a raise while it waits) shows one waiting result.
+    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.delete(data.callId)) {
+      const tool = typeof data.tool === "string" ? data.tool : "tool";
+      const timestamp = typeof data.requestedAt === "string" && Number.isFinite(Date.parse(data.requestedAt)) ? { timestamp: Date.parse(data.requestedAt) } : {};
+      // Its own id (the ask's, marked), so the renderer never takes it for the ask entry seen twice.
+      const result = { ...entry, id: `${String(entry.id)}:parked`, kind: "pi.tool-result", data: {}, model: [{ role: "tool", toolCallId: data.callId, content: waitingText(tool), ...timestamp }] } as unknown as EntryLike;
+      return [entry, result];
+    }
     // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
     const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
@@ -61,9 +89,12 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
-      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text.
+      // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
+      // a crash cut, written with no output, reads in the words its model was given (endedAnswer: the kernel's interrupted
+      // text), as pi's own interrupted result does, never an empty failure.
       const failed = data.status !== undefined && data.status !== "done";
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content: data.output ?? "", ...(failed ? { isError: true } : {}), ...timestamp }] };
+      const content = data.output === undefined && data.status === "interrupted" ? endedAnswer("", { status: "interrupted" }).text : (data.output ?? "");
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...timestamp }] };
     }
     return entry;
   });
@@ -113,22 +144,26 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
- *  (withPaidCosts). A CLI run's record carries no per-request cost, so the usage row the renderer folds from its model
- *  turns is put in its booking's words (bookedUsage): its model requests at what the run's model proxy booked them at,
- *  and its paid tool calls at what they charged, as a pi run's usage row counts them. The end-of-run turn's rows are
- *  labelled as the server labels them (reflect-range.ts labelled). */
+ *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
+ *  costIsBooked) has the usage row the renderer folds from its model turns put in its booking's words (bookedUsage): its
+ *  model requests at what the run's model proxy booked them at, and its paid tool calls at what they charged, as a pi
+ *  run's usage row counts them; its decisions' rows and cost come from their receipts (decision-rows.ts withDecisions),
+ *  once. The end-of-run turn's rows are labelled as the server labels them (reflect-range.ts labelled). */
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
-  const cli = entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+  const cli = isCliRecord(entries);
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
-  const rows = cli ? bookedUsage(rendered, entries, options) : rendered;
+  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
 }
 
-/** A CLI run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every session of the
- *  run): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
+/** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every
+ *  session of the run but its decisions'): its model requests and its paid tool calls, their sum (unknown while one's cost is, with what is known so far,
  *  costsofar/1), in the renderer's words (`Cost` once ended, else `Cost so far`). The renderer's own row is replaced in
  *  place; a run that booked a request and rendered none gets one at the end. One that booked none keeps its rows, with no
  *  usage row. */

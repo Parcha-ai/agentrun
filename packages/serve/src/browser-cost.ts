@@ -24,25 +24,26 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
-import { BARRIER, syncNow } from "@parcha/pi-durable-disk";
+import { TOOL_COST } from "./timeline/index.js";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
-import { type PaidBooking, paidStep, runJournal } from "./paid-calls.js";
+import { type PaidBooking, paidStep } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 
 /** The run journal's record of a browser session about to be created at its provider: its tag (pi-browser's, which a
  *  reconcile finds the vendor's session by), its conversation and the hold its call keeps for it (`held_usd`, null with
- *  no cap). Written with pi-browser's own `creating` record and synced (barriers.ts browserSessionOpen) before the vendor
- *  is asked, so a box loss never leaves a session billed that no record in the store names. */
+ *  no cap). Written with pi-browser's own `creating` record and flushed before the vendor is asked, so a lost box never
+ *  leaves a session billed that no record in the store names. */
 export const BROWSER_SESSION_OPEN = "agentrun.browser_session_open";
 
 /** List prices by pi-browser provider name (`provider.name`): Browserbase's (pi-browser's LIST_PRICES), $0.12 an hour with
- *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`), free. */
+ *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`, and
+ *  the `local` computer provider's), free. */
 export const BROWSER_PRICES: Readonly<Record<string, { usdPerHour: number; minimumS: number }>> = Object.freeze({
   browserbase: { usdPerHour: 0.12, minimumS: 60 },
   kernel: { usdPerHour: 0.06, minimumS: 0 },
   cdp: { usdPerHour: 0, minimumS: 0 },
+  local: { usdPerHour: 0, minimumS: 0 },
 });
 /** An operator's price for a provider, in USD an hour: this prefix and the provider's name in capitals
  *  (AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE, _KERNEL, _CDP). */
@@ -79,7 +80,7 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
  *  (default: the server's stderr). */
-export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking; pause?: (refusal: LedgerRefusal) => Promise<void> } = {}) {
+export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), ledger: { paid?: PaidBooking; pause?: (refusal: LedgerRefusal) => Promise<void>; flush?: () => Promise<void> } = {}) {
   /** The runner's one ledger (the kernel cap's paidCalls), when the run has one: each browser call is one paid request on
    *  it, held at the hold main takes for it and settled at the charges booked under it; a charge under no call (a
    *  session's release, its top-up to the minute) is one more, settled at that charge. In place of this process's spend. */
@@ -352,13 +353,14 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   }
 
   /** pi-browser's `beforeCreate`: the session's open recorded in the run's journal (BROWSER_SESSION_OPEN) beside its
-   *  `creating` record, and the journal synced (barriers.ts browserSessionOpen) before the vendor's session is created.
-   *  A sync that fails throws, and pi-browser creates nothing. */
+   *  `creating` record, then flushed to disk (`ledger.flush`, the runner's store flush) before the vendor's session is
+   *  created. The runner's flush before a tool call comes before the call opens its session, so it never covers this
+   *  record. A write or a flush that fails throws, and pi-browser creates nothing. */
   const opening: BeforeCreate = async (open) => {
     const hold = [...calls.values()].find((c) => c.cid === open.conversationId)?.hold;
     const data = { tag: open.tag, conversation: open.conversationId, provider, held_usd: hold ? hold.usd : null };
     await open.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_SESSION_OPEN, data })));
-    await syncNow(runJournal(), BARRIER.browserSessionOpen);
+    await ledger.flush?.();
   };
 
   /** The cap's refusal as the call's error, and the conversation's session let go, so it runs no longer. */

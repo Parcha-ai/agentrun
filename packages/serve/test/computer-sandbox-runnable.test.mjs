@@ -96,6 +96,63 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
+test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: a type Daytona gives runs, one it does not is refused (409)", async (t) => {
+  const api = await server(t, { archil: true });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
+  const given = await saveAndStart(api, "gpu-given", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
+  assert.deepEqual([given.saved, given.refused], [[], []], JSON.stringify(given));
+  const said = await saveAndStart(api, "gpu-refused", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } } });
+  const words = /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100, /;
+  assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+  assert.match(said.saved[0][2], words);
+  assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+  assert.match(said.refused[0][2], words);
+  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+});
+
+// A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a
+// server whose AGENTRUN_BOX_ALLOW is none, the operator's word for no network at all, its run is refused at the start in
+// words naming the setting, as the claim refuses it; under the default list (the setting unset) or the operator's own
+// list it is not, and runs open (the claim's networkOf).
+const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.`;
+const NO_NETWORK_PHONE = noNetwork("Phone harness phone");
+for (const boxAllow of ["none", undefined, "pypi.org"]) {
+  const refused = boxAllow === "none";
+  test(`a cloud phone, its key saved, is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {
+    withEnv(t, boxAllow === undefined ? {} : { AGENTRUN_BOX_ALLOW: boxAllow }, ["AGENTRUN_BOX_ALLOW"]);
+    const api = await server(t, {});
+    const saved = await api("PUT", "/computers/phone-harness/keys", { PHONE_HARNESS_API_KEY: "fake-test-key" });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const said = await saveAndStart(api, `phone-${boxAllow ?? "unset"}`.replace(/\./g, "-"), { computer: { kind: "phone", provider: "phone-harness" } });
+    if (!refused) {
+      assert.deepEqual(said.refused, [], `the run is refused for its computer: ${JSON.stringify(said)}`);
+      return;
+    }
+    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.equal(said.refused[0][2], NO_NETWORK_PHONE);
+    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  });
+}
+
+// Local Chrome declares "open" and "allow", never "none" (public addresses from this machine, through its egress proxy):
+// under none, the operator's word for no network at all, a browser on it is refused at the start in the same words, by
+// its own name; under the default list (open) or the operator's own (that list) it is not refused for its network.
+for (const boxAllow of ["none", undefined, "pypi.org"]) {
+  const refused = boxAllow === "none";
+  test(`a Local Chrome browser is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {
+    withEnv(t, boxAllow === undefined ? {} : { AGENTRUN_BOX_ALLOW: boxAllow }, ["AGENTRUN_BOX_ALLOW"]);
+    const api = await server(t, {});
+    const said = await saveAndStart(api, `local-${boxAllow ?? "unset"}`.replace(/\./g, "-"), { computer: { kind: "browser", provider: "local" } });
+    if (!refused) {
+      assert.ok(!said.refused.some((one) => /AGENTRUN_BOX_ALLOW/.test(one[2])), `the run is not refused for its network: ${JSON.stringify(said)}`);
+      return;
+    }
+    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+    assert.equal(said.refused[0][2], noNetwork("Local Chrome browser"));
+    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  });
+}
+
 test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount of this machine's folder, which only Docker gives", async (t) => {
   // main's design (resolve-computer.ts): Mode 1 runs a sandbox only on Docker, whose bind mount reaches the run's folder on
   // this machine; a remote sandbox cannot, whatever keys it has.

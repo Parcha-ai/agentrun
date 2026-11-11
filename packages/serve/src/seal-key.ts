@@ -18,7 +18,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
 import { join } from "node:path";
-import { unseal } from "@parcha/pi-durable-agent";
+import { unseal } from "./sealing.js";
 import type { Store } from "./store/index.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { handedSecret, holdSealKey } from "./secrets.js";

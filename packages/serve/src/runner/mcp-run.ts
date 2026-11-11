@@ -26,6 +26,7 @@ import type { OAuthNetwork } from "../mcp-oauth.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
+import { STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
@@ -199,6 +200,8 @@ export interface ParkedFollowUpOptions {
   answer(call: McpGateCall, price: ApprovalPrice | null): Promise<AnswerData | "park">;
   deniedNow(call: McpGateCall): Promise<string | undefined>;
   run(call: McpGateCall): Promise<{ text: string; isError?: boolean }>;
+  /** A parked call refused (the person's deny, or its tool denied since): its end on the run's record, in those words. */
+  refused?(call: McpGateCall, text: string): Promise<void>;
 }
 
 /** For a harness with its own MCP client, on a claim that finds its MCP calls parked through the door: each asked call's
@@ -228,12 +231,19 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     const answer = await options.answer(call, ask.price ?? null);
     if (answer === "park") return "park";
     let result: { text: string; isError?: boolean };
-    if (!answer.approved) result = { text: deniedText(call.tool, answer.note), isError: true };
-    else {
+    if (!answer.approved) {
+      // A stop's withdrawal (a reopened run's parked call) reads as one; any other deny in its words.
+      result = { text: answer.decision === "withdrawn" ? STOPPED_WHILE_WAITING : deniedText(call.tool, answer.note), isError: true };
+      await options.refused?.(call, result.text);
+    } else {
       const done = ended.get(call.callId);
-      const denied = await options.deniedNow(call);
+      const denied = done ? undefined : await options.deniedNow(call);
       // A call that already ended is answered from its end (endedAnswer: a crash-cut one in the kernel's words).
-      result = done ? endedAnswer(call.tool, done) : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
+      if (done) result = endedAnswer(call.tool, done);
+      else if (denied !== undefined) {
+        result = { text: denied, isError: true };
+        await options.refused?.(call, denied);
+      } else result = await options.run(call);
     }
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
     callIds.push(call.callId);
