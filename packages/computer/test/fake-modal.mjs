@@ -187,9 +187,21 @@ function bridge(box, fake) {
 			if (argv[0] === DAEMON && argv[1] === "probe") {
 				if (box.probe === "fails") return reply({ result: { exitCode: 2, stdout: "", stderr: Buffer.from("probe: usage\n").toString("base64"), timedOut: false, truncated: false } });
 				if (box.probe === "hangs") return;
-				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
+				const sockets = argv[2] === "--sockets";
+				const targets = argv.slice(sockets ? 3 : 2).filter((_, i) => i % 2 === 1);
 				const reached = box.network === "none" ? [] : targets;
-				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, interfaces: box.interfaces ?? ["lo"], quiet: box.quiet ?? [], raised: box.raised ?? [], reached: box.reached ?? reached, accepted: box.accepted ?? [] };
+				const answered = box.reached ?? reached;
+				const accepted = box.accepted ?? [];
+				// Each target's outcome, as computerd's probe gives it: what isolation.vendor-agent reads.
+				const results = targets.map((target) => ({
+					target,
+					protocol: target.endsWith("/udp") ? "dns" : "tls",
+					outcome: answered.includes(target) ? "answered" : accepted.includes(target) ? "accepted" : "refused",
+					bytes: answered.includes(target) ? 1 : 0,
+					detail: answered.includes(target) ? "answered" : accepted.includes(target) ? "accepted, nothing back" : "refused",
+				}));
+				// With --sockets, the path unix sockets a program can connect to: none of anyone's but the computer's own here.
+				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, interfaces: box.interfaces ?? ["lo"], quiet: box.quiet ?? [], raised: box.raised ?? [], reached: answered, accepted, results, ...(sockets ? { sockets: { sockets: [], incomplete: [] } } : {}) };
 				if (box.probe === "no-accepted") delete report.accepted;
 				const text = box.probe === "garbled" ? "not json\n" : `${JSON.stringify(report)}\n`;
 				return reply({ result: { exitCode: 0, stdout: Buffer.from(text).toString("base64"), stderr: "", timedOut: false, truncated: false } });
