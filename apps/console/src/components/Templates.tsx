@@ -77,6 +77,15 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
  *  ticks it), and what it needs. Apply sends the parameters as typed and the ticks as `grants`, under one Idempotency-Key a
  *  retry reuses. A refusal is the server's words at its field; a made agent opens, or, with warnings or a schedule, they
  *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
+/** How long the Apply page waits on one of its new triggers' read-back before it leaves that trigger out. */
+export const TRIGGER_READ_MS = 3_000;
+/** `promise`'s answer, or undefined once `ms` have passed without one. */
+function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), ms)));
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
   // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
@@ -117,13 +126,22 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
-      // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read is left out
-      // (the Triggers page has it).
-      const read = await Promise.all(done.trigger_ids.map(async (id) => { try { return await v2.getTrigger(id); } catch { return null; } }));
-      const scheduled = read.filter((x): x is Schedule => x !== null && isScheduleTrigger(x));
-      // Opens the agent at once only when there is nothing to show first: a warning (a webhook trigger's among them), or
-      // a schedule's next run.
-      if (!done.warnings.length && !done.webhook_secrets?.length && !scheduled.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
+      // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read, or isn't
+      // answered within TRIGGER_READ_MS, is left out (the Triggers page has it): a slow read never holds the result back.
+      const schedulesOf = async (): Promise<Schedule[]> => {
+        const read = await Promise.all(done.trigger_ids.map((id) => bounded(v2.getTrigger(id), TRIGGER_READ_MS).catch(() => null)));
+        return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
+      };
+      // A warning or a webhook's once-shown secret is shown at once; its schedules are added as they are read.
+      if (done.warnings.length || done.webhook_secrets?.length) {
+        setSentValues(sending);
+        setMade(done);
+        void schedulesOf().then(setSchedules, () => {});
+        return;
+      }
+      // Otherwise the agent opens at once, unless a schedule's next run is there to show first.
+      const scheduled = done.trigger_ids.length ? await schedulesOf() : [];
+      if (!scheduled.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
       setSentValues(sending);
       setSchedules(scheduled);
       setMade(done);
@@ -204,13 +222,14 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 <span className="caps text-small font-semibold">{paramLabel(key)}{p.required && <span className="text-destructive-text"> *</span>}</span>
                 {/* The parameter's own words; its pattern is the server's to check, never printed. */}
                 <span className="mb-1.5 block text-small text-muted-foreground">{p.description}</span>
-                {p.format === "cron" && p.type === "string"
+                {/* A parameter with its own list of choices offers just those, whatever its format: the server holds it to them. */}
+                {choicesOf(p)
+                  ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)}
+                      options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
+                  : p.format === "cron" && p.type === "string"
                   ? <ScheduleWhen label={key} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
                   : p.format === "timezone" && p.type === "string"
                   ? <ZonePicker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
-                  : choicesOf(p)
-                  ? <Picker label={key} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)}
-                      options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
                   : p.type === "boolean"
                   ? <input type="checkbox" className="size-4 accent-primary" checked={values[key] === "true"} onChange={(e) => setParam(key, e.target.checked ? "true" : "false")} />
                   : <Input type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}

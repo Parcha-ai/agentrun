@@ -67,7 +67,8 @@ export function startValues(t: TemplateView): ParameterText {
   return Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]): [string, string][] => {
     if (p.type === "boolean") return typeof p.default === "boolean" ? [[key, String(p.default)]] : [];
     // A schedule's zone starts at the browser's own, as a new schedule on the Triggers page does; its cron line at the
-    // package's default, shown in words.
+    // package's default, shown in words. One with its own list of choices starts at none of them: the owner picks.
+    if (choicesOf(p)) return [];
     if (p.format === "timezone") return [[key, browserZone()]];
     if (p.format === "cron") return typeof p.default === "string" ? [[key, p.default]] : [];
     return [];

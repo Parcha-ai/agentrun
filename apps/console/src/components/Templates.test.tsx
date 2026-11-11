@@ -31,7 +31,7 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown> };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
@@ -39,7 +39,11 @@ async function open(name?: string, fake: Fake = {}) {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
     listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
     // A trigger the apply made, read back (GET /triggers/{id}); one the fake doesn't have is a 404.
-    getTrigger: async (id: string) => { if (!fake.triggers?.[id]) throw new ClientError(404, "not_found", `No trigger ${id}.`); return fake.triggers[id]; },
+    getTrigger: async (id: string) => {
+      if (fake.stallTriggers) return new Promise(() => {});
+      if (!fake.triggers?.[id]) throw new ClientError(404, "not_found", `No trigger ${id}.`);
+      return fake.triggers[id];
+    },
     applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], warnings: [] })))(n, body, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -399,6 +403,30 @@ describe("applying a template", () => {
     expect(row.textContent).not.toContain("30 7 * * 1-5");
     const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
     expect(link?.getAttribute("href")).toBe("#/agents/market-monitor-1");
+  });
+
+  // A parameter with its own list of choices offers just those, whatever its format: the server holds it to them, so a
+  // zone picker of every zone (or a schedule picker) would offer values Apply refuses. It starts at none of them.
+  it("a format parameter with its own choices offers just those, starting at none, never every zone or the browser's", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    const LIMITED: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: {
+      zone: { type: "string", required: true, description: "the zone it runs in", format: "timezone", enum: ["UTC", "Europe/Madrid"] },
+    } };
+    const t = await open("market-monitor", { templates: [LIMITED] });
+    const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
+    expect(valueOf(picker(zone, "zone")!)).toBe("");
+    expect((await optionsOf(picker(zone, "zone")!)).map((o) => o.value)).toEqual(["", "UTC", "Europe/Madrid"]);
+  });
+
+  // The result of an Apply is shown as soon as the server answers: a trigger read-back that never answers neither holds
+  // back its warning (a webhook's, which says where its secret is) nor the page.
+  it("a webhook warning shows as soon as Apply answers, even while a trigger's read-back hangs", async () => {
+    const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
+    const t = await open("pr-reviewer", { stallTriggers: true, apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"],
+      warnings: [{ field: "triggers.0.secret", reason: "not_allowed", message: SAYS }] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.host.querySelector('section[aria-label="Applied"]')!.textContent).toContain(SAYS);
   });
 
   it("after Apply, a trigger that can't be read back (or isn't a schedule) leaves the agent to open at once", async () => {
