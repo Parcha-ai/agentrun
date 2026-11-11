@@ -7,4 +7,5 @@ The console shows learning at work:
 - In the agent's Learning tab, a learned workflow opens as a graph, drawn with the same workflow graph a workflow agent's tab draws, with its workflow.json under it. A text that is not a workflow shows as text, as before.
 - A run's page (Report and Timeline) says what it used of what its agent learned: each learned skill it was given, read or not, and each learned workflow it called, how many times and how many of those failed. Nothing shows when it was given no skill and called no workflow.
 - The before and after counts runs that started from a learned skill or workflow as it counts those that started from a note, and its words name all three.
+- On the Learning tab, an agent with a learned skill or workflow in use but no note says "No note is in use." above its notes, no longer "No note is in use: the next run starts with nothing learned."
 Upgrading: nothing to do; the run page reads `GET /v2/runs/{id}/learning` for a run that learns.
