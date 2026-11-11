@@ -3,18 +3,17 @@
 // agent's own (definition.tool_settings), capabilities' tools (the one catalog) and an agent's projection of it (GET
 // /v2/agents/{id}'s tools), each answer as the served document says.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, TOOL_SETTINGS_KEY, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { blockersOf } from "../dist/runnable.js";
-import { SETTINGS_UNREAD } from "../dist/tool-gate.js";
 
 const base = { gateway: false, parallelKey: false };
 
@@ -290,25 +289,10 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.equal((await again.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves.pi, "exa-keyless");
 });
 
-test("a kept plane at a later launch: as it was, but Parallel with its key gone is unavailable, never another provider; a settings file it cannot read says so and gives the defaults", async (t) => {
+test("a kept plane at a later launch: as it was, but Parallel with its key gone is unavailable, never another provider", () => {
   const plane = { web_search: "native", web_fetch: "parallel", model: "anthropic/claude-sonnet-4-5" };
   assert.deepEqual(recheckPlane(plane, { PARALLEL_API_KEY: "not-a-secret" }), plane);
   assert.deepEqual(recheckPlane(plane, {}), { ...plane, web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY" });
-  const dir = await scratch(t);
-  const said = [];
-  assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, "no file: the defaults, nothing said");
-  // A file that does not read gives the defaults, its map marked unread (SETTINGS_UNREAD: approvals never lifts no ask
-  // over it); a file that reads with an entry dropped gives the defaults for that entry, unmarked.
-  await writeFile(join(dir, "tool-settings.json"), "{not json");
-  const unread = new ToolSettings(dir, (line) => said.push(line)).get();
-  assert.deepEqual(Object.keys(unread), [], "not JSON: the defaults");
-  assert.equal(unread[SETTINGS_UNREAD], true, "not JSON: marked unread");
-  await writeFile(join(dir, "tool-settings.json"), JSON.stringify({ web_search: { provider: "bing" } }));
-  assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, "an entry dropped: the defaults, unmarked (the file reads)");
-  assert.equal(said.length, 2);
-  assert.match(said[0], /tool-settings\.json does not read as JSON; every tool takes its defaults until a PUT/);
-  assert.match(said[1], /tool-settings\.json: web_search\.provider not_an_option; that entry is dropped/);
-  assert.ok(!said.join("").includes("bing"), "no value is said");
 });
 
 // SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write

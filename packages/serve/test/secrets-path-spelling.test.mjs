@@ -3,6 +3,7 @@
 // cut finds a held value in that spelling too, so no piece of it is left: the value as written found too, as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { posix } from "node:path";
 import { test } from "node:test";
 
 const { redactSecrets, valueMatcher } = await import("../dist/learn/secrets.js");
@@ -93,6 +94,44 @@ test("a learning note quoting a held value percent-encoded or dot-normalized is 
     const { problems, note: kept } = checkNote("where-it-failed.md", note(text), [value]);
     assert.ok(problems.some((problem) => problem.rule === "secret_value"), `${what}: refused as the host's value: ${JSON.stringify(problems)}`);
     assert.equal(kept, undefined, `${what}: no note kept`);
+  }
+});
+
+// A held value's leading ".." takes a folder of the path the model wrote: pi resolves "notes/../<value>.txt" whole and
+// names the missing file with the ".." gone. Both guards see that spelling: the cut leaves no piece of it, and a learning
+// note quoting it is refused as the host's value. One or two leading "..", with folders enough before them.
+const leading = () => [
+  // One ".." taken by "notes": the file is /work/<key>.txt.
+  { value: `../not-a-secret-path-key-${randomBytes(8).toString("hex")}`, wrote: "/work/notes/", left: "/work/" },
+  // Two, taken by "drafts" and "notes".
+  { value: `../../not-a-secret-path-key-${randomBytes(8).toString("hex")}`, wrote: "/work/notes/drafts/", left: "/work/" },
+  // Two, taken by "notes" and "work": the file is at the root.
+  { value: `../../not-a-secret-path-key-${randomBytes(8).toString("hex")}`, wrote: "/work/notes/", left: "/" },
+];
+/** The path pi's read names once it resolves the path the model wrote, the value inside it. */
+const resolvedPath = ({ value, wrote }) => posix.normalize(`${wrote}${value}.txt`);
+/** The value as that path holds it: its leading ".." gone. */
+const core = (value) => value.replace(/^(\.\.\/)+/, "");
+
+test("a held value with a leading \"..\" that a folder of the path takes, named as the resolver resolves the whole path, is cut: no piece of it is left", () => {
+  for (const one of leading()) {
+    assert.equal(resolvedPath(one), `${one.left}${core(one.value)}.txt`, "the path as the resolver writes it: the leading \"..\" gone");
+    const said = `ENOENT: no such file or directory, open '${resolvedPath(one)}'`;
+    const shown = redactSecrets(said, [one.value]);
+    assert.equal(holdsPiece(shown, core(one.value)), false, shown);
+    assert.equal(shown, `ENOENT: no such file or directory, open '${one.left}[redacted].txt'`, "cut in place, the rest of the error still reads");
+    assert.equal(valueMatcher([one.value])(said), true, "learning's matcher finds it too");
+  }
+});
+
+test("a learning note quoting a held value as its leading \"..\" resolved names it is refused as the host's value", () => {
+  const note = (text) => new TextEncoder().encode(`---\nname: where-it-failed\ndescription: The read that failed.\n---\n\n${text}\n`);
+  for (const one of leading()) {
+    const value = one.value;
+    const { problems, note: kept } = checkNote("where-it-failed.md", note(`The read failed: open '${resolvedPath(one)}'.`), [value]);
+    assert.ok(problems.some((problem) => problem.rule === "secret_value"), `refused as the host's value: ${JSON.stringify(problems)}`);
+    assert.equal(kept, undefined, "no note kept");
+    assert.equal(holdsPiece(JSON.stringify(problems), core(value)), false, "its problems print no piece of it");
   }
 });
 

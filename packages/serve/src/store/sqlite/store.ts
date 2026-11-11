@@ -15,14 +15,14 @@ import {
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
-  SignInHandedTo, SignInMissing, SIGN_IN_TOMBSTONES_KEPT, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
+  RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -351,13 +351,15 @@ class SqliteStore implements Store {
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
-    const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number) => {
+    const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number, ifCurrent?: string | null) => {
       // The parent is the agent's current revision now (null for its first): the agent must exist, which its first revision
-      // (create) and a later one (addRevision, upgrade) both guarantee before this. Held, so two revisions added at once
-      // never both name the same parent.
+      // (create) and a later one (addRevision, upgrade) both guarantee before this. Held (a writer's row lock), so two
+      // revisions added at once, by this server or another on the same store, never both name the same parent, and
+      // `ifCurrent` is compared with what no other writer can move until this commits.
       await d.lockRow(tx, "agents", "id", agentId);
       const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
+      if (ifCurrent !== undefined && agent.current_revision !== ifCurrent) throw new RevisionMoved(agentId, agent.current_revision);
       await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         revision.id, agentId, agent.current_revision, revision.kind, json(revision.body),
         revision.skills === undefined || revision.skills === null ? null : json(revision.skills),
@@ -447,8 +449,8 @@ class SqliteStore implements Store {
           for (const t of off) await writeScopes(tx, t.id, []);
           return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
         }),
-      addRevision: async ({ agentId, ...revision }) => {
-        await db.transaction((tx) => insertRevision(tx, agentId, revision, now()));
+      addRevision: async ({ agentId, ifCurrent, ...revision }) => {
+        await db.transaction((tx) => insertRevision(tx, agentId, revision, now(), ifCurrent));
       },
       setCurrent: async (agentId, revisionId) => {
         const changed = await db.transaction((tx) => tx.runCounted(
@@ -782,7 +784,9 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       list: async ({ agentId, revisionId, state, archived, limit }) => {
-        const where: string[] = [];
+        // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
+        // count, stat or notice names it.
+        const where: string[] = [NOT_A_LEARNING_RUN];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
@@ -1070,6 +1074,26 @@ class SqliteStore implements Store {
           "SELECT run_id, agent_id, turn, proposal, learning_run_id, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
           agentId, limit,
         )).map(proposalOf),
+      spend: async ({ from, to }) => {
+        type SpendRecord = { agent_id: string; proposal: string; created_at: number; learning_run_id: string | null; run_state: RunState | null; run_ended_at: number | null; run_cost_usd: number | null };
+        const rows = await db.all<SpendRecord>(
+          `SELECT lp.agent_id, lp.proposal, lp.created_at, lp.learning_run_id, lr.state AS run_state, lr.ended_at AS run_ended_at, lr.cost_usd AS run_cost_usd
+             FROM learning_proposals lp
+             JOIN runs src ON src.id = lp.run_id
+             LEFT JOIN runs lr ON lr.id = lp.learning_run_id
+            WHERE src.imported_from IS NULL AND COALESCE(lr.ended_at, lp.created_at) >= ? AND COALESCE(lr.ended_at, lp.created_at) < ?
+            ORDER BY COALESCE(lr.ended_at, lp.created_at), lp.run_id`,
+          from, to,
+        );
+        return rows.flatMap((row): LearningSpend[] => {
+          // A proposal: once its learning run ended, failed or was stopped, its row's cost is the grade's spend (a stop
+          // seen after a paid grade keeps it, learning-loop.ts).
+          if (row.learning_run_id !== null) return row.run_state === "ended" || row.run_state === "failed" || row.run_state === "stopped" ? [{ agentId: row.agent_id, at: row.run_ended_at ?? row.created_at, costUsd: row.run_cost_usd }] : [];
+          // Kept with no learning run: dropped before it was proposed (nothing graded), unless it is still a proposal.
+          const kept = JSON.parse(row.proposal) as { state?: unknown } | null;
+          return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
+        });
+      },
     };
 
     this.settings = {
@@ -1252,8 +1276,8 @@ class SqliteStore implements Store {
             agentId, provider, live.pointer_sealed, at,
           );
           await tx.run("DELETE FROM sign_ins WHERE agent_id = ? AND provider = ?", agentId, provider);
-          // The newest kept, the oldest dropped first (per agent, across providers).
-          await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ? AND id NOT IN (SELECT id FROM sign_in_tombstones WHERE agent_id = ? ORDER BY id DESC LIMIT ?)", agentId, agentId, SIGN_IN_TOMBSTONES_KEPT);
+          // Every tombstone is kept: what the agent learned is cut of each pointer it ever held (handed-values.ts
+          // agentPointers), and a dropped one would be shown again.
           return signInTombstoneOf(tomb!);
         }),
       handedHolder: async (hash, options) => (await handedHolderIn(db, hash, { settleMs: options?.settleMs ?? 0, now: options?.at !== undefined ? { sql: d.bigintParam, params: [options.at] } : clock() }))?.id,

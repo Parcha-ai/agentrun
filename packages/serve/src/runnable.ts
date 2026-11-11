@@ -25,10 +25,13 @@ import type { McpTool } from "@parcha/agentrun-kernel";
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
+/** A revision's computer setting: a kind, its provider, and a sandbox's GPUs (computer-setting.ts). */
+export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
+
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: { kind: string; provider?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
   | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
@@ -75,7 +78,7 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
  *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: { kind: string; provider?: string }) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> } = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -93,7 +96,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
-  // edit that leaves the place out keeps the agent's (agents.ts), so removing the field would change nothing.
+  // edit that leaves the place out keeps the agent's (agents-store.ts), so removing the field would change nothing.
   if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
   // An agent with a computer setting is checked by the claim's own answers (resolve-computer.ts computerReadiness: the
   // provider and its kind, the mode's mount, its keys), not as a box; one with only an old place keeps the box check.

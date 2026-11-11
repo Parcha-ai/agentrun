@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SignIn } from "@/components/SignIn";
 import { recorded } from "@/fixtures";
 import { signInProblem } from "@/lib/auth";

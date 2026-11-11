@@ -60,10 +60,11 @@ test("an allowed send pinned to one channel sends there, and a call to another i
   assert.equal(last.status, "completed");
   assert.match(await answerOf(api, elsewhere), REFUSAL);
   assert.equal(sends().length, 1, "the refused call never reached the server");
-  // Its Timeline row is a failed call, as any refusal's.
+  // Its Timeline row reads refused, as any refusal's (#2266): never a call that ran and failed.
   const result = rows.find((row) => row.tool_name === "mcp__fake__send_message" && row.kind === "tool_result");
   assert.ok(result, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
-  assert.match(result.summary, /failed/);
+  assert.match(result.summary, /^Refused: fake · send_message: /);
+  assert.doesNotMatch(result.summary, /failed/);
 });
 
 test("under ask, a call not as pinned is refused and never asks; one as pinned asks, and the owner's allow sends it", { timeout: 240_000 }, async (t) => {

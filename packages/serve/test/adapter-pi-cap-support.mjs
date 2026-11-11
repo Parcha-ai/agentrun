@@ -75,7 +75,8 @@ export async function capRun(t, options) {
 /** The run's cap as a loop spec carries it (what E2 fills from the run's launch): its figure and the kernel's park. */
 export const specCap = (capUsd) => ({ capUsd, park: (refusal) => cap.parkOf(refusal, capUsd) });
 
-/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch. */
+/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch; with no
+ *  `kind`, every root entry whole (for the run's Timeline). */
 export async function rootEntries(store, kind) {
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { createModels } = await import("@earendil-works/pi-ai/models");
@@ -87,7 +88,7 @@ export async function rootEntries(store, kind) {
     const out = [];
     for (let cursor; ; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, ctx);
-      for (const entry of page.items) if (entry.kind === kind) out.push(entry.data);
+      for (const entry of page.items) if (kind === undefined) out.push(entry); else if (entry.kind === kind) out.push(entry.data);
       if (page.next === undefined) break;
       cursor = page.next;
     }

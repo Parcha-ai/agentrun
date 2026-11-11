@@ -9,7 +9,7 @@ import { specFor } from "./runner-spec-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
-const { UNREADABLE_SIGN_IN } = await import("../dist/runs.js");
+const { UNREADABLE_SIGN_IN } = await import("../dist/run-view.js");
 const contract = await import("../dist/runner/loop-contract.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 
@@ -26,7 +26,6 @@ test("a handed sign-in reads back while it is saved, or forgotten with its tombs
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run(null)), true, "a run handed none");
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run([signIns.pointerHash(pointer)])), true, "saved, and it opens");
   assert.equal(await signIns.handedSignInReadsBack(store, randomBytes(32), run([signIns.pointerHash(pointer)])), false, "its seal does not open under another key");
-  assert.equal(await signIns.handedSignInReadsBack(store, undefined, run([signIns.pointerHash(pointer)])), false, "nor with no seal key");
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run([signIns.pointerHash("ctx-never-kept")])), false, "nothing of it is kept");
   await store.signIns.forget("agent-a", "browserbase", { hash: "not-held" });
   assert.equal(await signIns.handedSignInReadsBack(store, KEY, run([signIns.pointerHash(pointer)])), true, "forgotten, its tombstone opens");

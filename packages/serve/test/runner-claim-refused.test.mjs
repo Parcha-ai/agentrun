@@ -13,7 +13,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { ClaimRefused } = await import("../dist/runner/loop-contract.js");
 const { McpClaimRefused } = await import("../dist/runner/mcp-claim.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
-const { UNREADABLE_SIGN_IN } = await import("../dist/runs.js");
+const { UNREADABLE_SIGN_IN } = await import("../dist/run-view.js");
 const { endedReason } = await import("../dist/store/store.js");
 const { handedSignInReadsBack, pointerHash } = await import("../dist/sign-ins-store.js");
 

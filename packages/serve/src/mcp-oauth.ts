@@ -1,9 +1,9 @@
 // OAuth sign-in to a remote MCP server, run by this server with the official SDK's `auth` (@modelcontextprotocol/client):
 // RFC 9728 then RFC 8414 discovery, the client (the owner's pre-registered one; else this server's client metadata
 // document, only when its address is public https; else dynamic registration), PKCE S256, the RFC 8707 resource, the
-// code exchange and the refresh. What is here is only what the SDK's provider keeps: a sign-in in progress, in memory by
-// its state (random, used once, ten minutes), and the token set the callback hands mcp-servers.ts to seal. No token is
-// ever answered, logged or handed to the browser.
+// code exchange and the refresh. What is here is only what the SDK's provider keeps: a sign-in in progress, kept in the
+// store by its state (random, used once, ten minutes; mcp-servers-store.ts pendingOverStore), and the token set the
+// callback hands mcp-servers-store.ts to seal. No token is ever answered, logged or handed to the browser.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
@@ -24,7 +24,7 @@ const STATE_MS = 10 * 60_000;
 /** The most sign-ins that may be in flight at once: the in-memory map evicts to it, and the store-backed one refuses past it. */
 export const MAX_PENDING = 64;
 const REQUEST_MS = 15_000;
-/** How long a token refresh's request may take: a run's start waits for it, two tries at most (mcp-servers.ts), so an
+/** How long a token refresh's request may take: a run's start waits for it, two tries at most (runner/mcp-claim.ts), so an
  *  authorization server that never answers holds a start's answer no more than about eight seconds, well under a
  *  client's timeout, and its call is then refused unsent, saying to try again. */
 export const REFRESH_REQUEST_MS = 4_000;
@@ -261,17 +261,15 @@ const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? ne
 const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
-  /** `pendingStore`: where sign-ins in flight are kept. Omitted, an in-memory map (the file server); the store server
-   *  passes one over store.mcpOauth. `allowed`: the private-network hosts the owner allows (privateOAuthHosts), read
-   *  at a sign-in's start and again at its callback; omitted, none. */
-  constructor(private readonly network: OAuthNetwork = systemNetwork, private readonly pendingStore?: PendingStore, private readonly allowed: () => Promise<readonly string[]> = async () => []) {}
+  /** `pendingStore`: where sign-ins in flight are kept (over store.mcpOauth). `allowed`: the private-network hosts the
+   *  owner allows (privateOAuthHosts), read at a sign-in's start and again at its callback. */
+  constructor(private readonly network: OAuthNetwork, private readonly pendingStore: PendingStore, private readonly allowed: () => Promise<readonly string[]>) {}
 
-  private readonly pending = new Map<string, Pending>();
   /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash:
-   *  set by McpServers.attach as the server starts listening. */
+   *  set by McpServersOverStore.attach as the server starts listening. */
   base = "";
   /** Where this server listens (`http://<host>:<port>`), whatever `base` is: its port is never an endpoint a loopback
-   *  authorization server may name. Set by McpServers.attach. */
+   *  authorization server may name. Set by McpServersOverStore.attach. */
   listening = "";
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
    *  and its public address too when that is on loopback (a local https proxy on another port, in front of the
@@ -299,7 +297,6 @@ export class McpSignIns {
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
   async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string }): Promise<string> {
     const now = Date.now();
-    if (!this.pendingStore) for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
     const state = randomBytes(32).toString("base64url");
     const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
@@ -316,24 +313,15 @@ export class McpSignIns {
     }
     if (!opened) throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: its authorization server gave no page to open.`);
     if (entry.client?.client_id === provider.clientMetadataUrl) entry.kind = "metadata-document";
-    if (this.pendingStore) await this.pendingStore.set(state, entry);
-    else this.pending.set(state, entry);
+    await this.pendingStore.set(state, entry);
     return opened.href;
   }
 
-  /** The callback's sign-in, by its state: once, and only within ten minutes of its start. `was` is the server's save
-   *  when it started (null for none), so a sign-in the owner since replaced or forgot is not written back. */
-  take(state: string | null): Pending {
-    const entry = state ? this.pending.get(state) : undefined;
-    if (state) this.pending.delete(state);
-    if (!entry || entry.expires <= Date.now()) throw new ApiError("bad_request", `This sign-in link was used already, is older than ${STATE_MS / 60_000} minutes, or is not this server's: start the sign-in again in Settings → MCP servers.`);
-    return entry;
-  }
-
-  /** take() over the pending store (the store server), async: the callback's sign-in, by its state, once and only within
-   *  ten minutes of its start. The same refusal as take() when it is used, expired or unknown. */
+  /** The callback's sign-in, by its state, from the pending store: once, and only within ten minutes of its start. `was`
+   *  is the server's save when it started (null for none), so a sign-in the owner since replaced or forgot is not
+   *  written back. */
   async takePending(state: string | null): Promise<Pending> {
-    const entry = state && this.pendingStore ? await this.pendingStore.take(state) : undefined;
+    const entry = state ? await this.pendingStore.take(state) : undefined;
     if (!entry || entry.expires <= Date.now()) throw new ApiError("bad_request", `This sign-in link was used already, is older than ${STATE_MS / 60_000} minutes, or is not this server's: start the sign-in again in Settings → MCP servers.`);
     return entry;
   }

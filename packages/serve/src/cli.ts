@@ -18,7 +18,8 @@ import type { ImageState } from "./box-image.js";
 import { banner, boxImageLine } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { runnerBeside } from "./runner/beside.js";
+import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
+import { apiOnlyFrom } from "./api-only.js";
 
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
@@ -26,7 +27,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
-       agentrun-serve runner --data DIR [--loops N] [--name NAME]
+       agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -40,14 +41,16 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
                     browser, no vendor, no key), for the console's real-browser tests
   --allow-host NAME another Host name to accept (repeatable)
-  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
-                    holds); each run also reserves its harness's memory, and over either a new run is 429
+  --max-runs N      the most runs the runner beside the server holds at once, the rest waiting queued (default
+                    AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds); the capabilities'
+                    max_concurrent_runs says the same
   --documents DIR   a read-only directory of documents a workflow's pdf_pages calls read by file name (default
                     AGENTRUN_SERVE_DOCUMENTS)
   --allow-code-nodes run workflows' code nodes, in the run's process with no sandbox (default off, or
                     AGENTRUN_SERVE_CODE_NODES=1); off, a workflow with one saves with a warning and its runs are refused
-  --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
-                    Docker's 10 s grace); a run cut off resumes at the next start
+  --drain-timeout D how long the runner beside the server lets each busy run finish its turn when the server stops
+                    (default 30s; the image's is 6s, inside Docker's 10 s grace); a run still busy then is stopped and
+                    resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
                     says learning: true starts from what that agent learned and adds to it; off, no run does
   --learning-budget BYTES how much of what an agent learned its run's instructions hold (default
@@ -56,7 +59,10 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
-                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs
+                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
+                    each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
+                    memory holds; the rest wait queued) and on SIGTERM lets each busy run finish its turn for up to
+                    --drain-timeout D (default AGENTRUN_DRAIN_TIMEOUT, else 6s), then hands the rest back to resume
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -65,6 +71,10 @@ it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
+
+AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
+timeline, messages, stop, cancel, kill and cap raise, its files and uploads, capabilities, health and usage. Every other
+address (the page, sign-in, setup, settings, MCP, triggers and their hooks, agents) is a 404, and there are no accounts.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
@@ -279,7 +289,15 @@ const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
-const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
+// AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
+let apiOnly: boolean;
+try {
+  apiOnly = apiOnlyFrom(process.env);
+} catch (error) {
+  console.error(`${(error as Error).message}\n\n${USAGE}`);
+  process.exit(2);
+}
+const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
 // The Docker box image's first build said in words, as it starts and as it ends (print.ts boxImageLine); a line told
 // before the banner is printed waits for it.
 let imageSaid = false;
@@ -300,12 +318,18 @@ const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").m
 try {
   serve = await startServe(serveOptions = {
     onBoxImage,
+    // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
+    // platform starts it again, rather than answer 503 for as long as it runs.
+    onStoreLost: (error) => {
+      console.error(`agentrun-serve: ${error.message}`);
+      process.exit(1);
+    },
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
   });
@@ -315,8 +339,11 @@ try {
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
 // every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
-// `agentrun runner --data DIR` processes on the same data directory instead.
+// `agentrun runner --data DIR` processes on the same data directory instead. The runner holds what the server's flags say
+// (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
+// its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
 if (!values["no-runner"]) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
@@ -324,7 +351,7 @@ if (!values["no-runner"]) {
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
@@ -333,7 +360,7 @@ if (!values["no-runner"]) {
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, ...(apiOnly ? { apiOnly } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
@@ -341,15 +368,24 @@ bannered = true;
 for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
-if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+// API-only: there is no console, so nothing to open.
+if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
 // The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
 // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
-  stopping: () => serve.stopping(),
+  close: () => {
+    removeOwnRecord(record);
+    // A drain that has runs to wait on says so, as a run's own process did on the server's stop.
+    const busy = runnerProc?.runner.held().length ?? 0;
+    if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
+    return Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined);
+  },
+  // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
+  // and release are never cut short (besideStopping).
+  stopping: () => (runnerProc ? besideStopping(serve.stopping(), runnerProc.runner.held().length, drainMs) : serve.stopping()),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });

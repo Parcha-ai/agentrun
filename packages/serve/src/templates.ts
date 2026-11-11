@@ -12,10 +12,10 @@ import { type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
-import { AGENT_LAYER_PINS, pinIssues, sortedPin } from "./tool-plane.js";
+import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
@@ -45,6 +45,9 @@ const MCP_TOOL = /^[A-Za-z0-9_.-]{1,128}$/;
 export const MAX_FILE_BYTES = 256 << 10;
 export const MAX_PACKAGE_BYTES = 1 << 20;
 export const MAX_PACKAGE_FILES = 256;
+/** A file of a package's evals/ (a case's fake MCP server fixture, say), which no agent is given: its own bound, apart
+ *  from the agent's files' limits above. The answer's schema is given to the agent, so under evals/ too it keeps those. */
+export const MAX_EVAL_FILE_BYTES = 32 << 20;
 /** A parameter's sample, of its type, for the check that compiles a package before any apply. */
 const SAMPLES = { string: "x", number: 1, integer: 1, boolean: true } as const;
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
@@ -248,12 +251,19 @@ export function readPackage(dir: string): Package {
     if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
-  const all = files("");
+  // The agent's files' bytes (evals/ is the package's own test data, never part of an agent) under POST /v2/agents'
+  // limits, an eval's file under MAX_EVAL_FILE_BYTES alone; every file, evals/ too, counts toward MAX_PACKAGE_FILES. A
+  // file under evals/ an agent is given all the same (the answer's schema, which ships beside each SKILL.md) keeps the
+  // agent's limits: checked once the manifest names it, before it is read.
+  const listed = files("");
+  const all = listed.filter((path) => !path.startsWith("evals/"));
   const sizes = all.map((path) => [path, lstatSync(join(dir, path)).size] as const);
+  const agentBytes = sizes.reduce((sum, [, size]) => sum + size, 0);
   const limits = [
+    ...listed.filter((path) => path.startsWith("evals/") && lstatSync(join(dir, path)).size > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
     ...sizes.filter(([, size]) => size > MAX_FILE_BYTES).map(([path]) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
-    ...(sizes.reduce((sum, [, size]) => sum + size, 0) > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
-    ...(all.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
+    ...(agentBytes > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
+    ...(listed.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
   ];
   if (limits.length) throw new PackageError(dir, [...problems, ...limits]);
   const manifest = front(MANIFEST);
@@ -332,9 +342,15 @@ export function readPackage(dir: string): Package {
   });
   if (triggers.length && f.budget === undefined) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
+  let schemaBounded = true;
   if (f.output !== undefined) {
-    if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(f.output.schema)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
-    else {
+    const at = isObject(f.output) ? f.output.schema : undefined;
+    const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? lstatSync(join(dir, at)).size : 0;
+    if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
+    else if (evalSize > MAX_FILE_BYTES || agentBytes + evalSize > MAX_PACKAGE_BYTES) {
+      schemaBounded = false;
+      bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema ships beside each SKILL.md, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema ships beside each SKILL.md, so it counts as an agent file, under evals/ too`);
+    } else {
       try {
         outputSchema = JSON.parse(text(f.output.schema as string));
         if (!isObject(outputSchema)) throw new Error();
@@ -407,7 +423,7 @@ export function readPackage(dir: string): Package {
     }
   }
   // The answer's schema ships beside each SKILL.md too, as a rule does: the agent reads it there, and the skill names it.
-  const schemaFile = isObject(f.output) && inside(f.output.schema) ? (f.output.schema as string) : undefined;
+  const schemaFile = schemaBounded && isObject(f.output) && inside(f.output.schema) ? (f.output.schema as string) : undefined;
   for (const skill of schemaFile ? skillDirs.filter((d) => d.isDirectory()) : []) {
     const path = `${skill.name}/${basename(schemaFile!)}`;
     if (Object.hasOwn(skills, path)) bad(schemaFile!, `skills/${path} has the same name, and the answer's schema ships beside each SKILL.md`);
@@ -560,35 +576,19 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. A tool the package pins gets its
  *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
  *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
- *  a send with no destination set never runs. While an agent's own settings keep no pin (`pins`, AGENT_LAYER_PINS by
- *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings, and the tool is
- *  set to deny unless the server's settings already pin it (`serverPinned`, by gate name): a write a template grants
- *  never runs without its pin, whatever the agent's approvals. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean; serverPinned?: ReadonlySet<string>; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
+ *  a send with no destination set never runs. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
   const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
   const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue> }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
   const unpinned: { tool: string; parameters: string[] }[] = [];
-  const unkept: { tool: string; pin: Record<string, PinValue> }[] = [];
-  for (const { server, pin } of chosen.mcp) {
-    for (const [tool, args] of Object.entries(pin)) {
-      const name = mcpToolName(server, tool);
-      const each = Object.entries(args).map(([arg, value]) => [arg, pinFilled(value, parameters)] as const);
-      const empty = [...new Set(each.flatMap(([, one]) => one.empty))];
-      if (empty.length) {
-        settings[name] = { permission: "deny" };
-        unpinned.push({ tool: name, parameters: empty });
-      } else {
-        const filledPin = Object.fromEntries(each.map(([arg, one]) => [arg, one.value]));
-        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: sortedPin(filledPin) as Record<string, PinValue> };
-        else {
-          unkept.push({ tool: name, pin: filledPin });
-          if (!chosen.serverPinned?.has(name)) settings[name] = { permission: "deny" };
-        }
-      }
-    }
+  for (const { tool: name, pin, empty } of filledPins(chosen.mcp, parameters)) {
+    if (empty.length) {
+      settings[name] = { permission: "deny" };
+      unpinned.push({ tool: name, parameters: empty });
+    } else settings[name] = { ...settings[name], pin: sortedPin(pin) as Record<string, PinValue> };
   }
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
@@ -598,5 +598,14 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
   };
-  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned, unkept };
+  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
+}
+
+/** Each pin the package's MCP servers (`mcp`) set, by the tool's gate name, its values filled from `parameters`, and the
+ *  parameters it names that were not given (`empty`, none when it fills whole). */
+export function filledPins(mcp: readonly McpNeed[], parameters: Json): { tool: string; pin: Record<string, PinValue>; empty: string[] }[] {
+  return mcp.flatMap(({ server, pin }) => Object.entries(pin).map(([tool, args]) => {
+    const each = Object.entries(args).map(([arg, value]) => [arg, pinFilled(value, parameters)] as const);
+    return { tool: mcpToolName(server, tool), pin: Object.fromEntries(each.map(([arg, one]) => [arg, one.value])), empty: [...new Set(each.flatMap(([, one]) => one.empty))] };
+  }));
 }

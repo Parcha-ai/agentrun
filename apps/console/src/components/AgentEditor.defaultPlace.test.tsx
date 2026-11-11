@@ -6,9 +6,8 @@ import { toolOffers } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
 
 // A new agent's place, as the server serves it (capabilities.places.default_place): the form starts on it, and in a
-// sandbox it ticks bash with the other tools, so a new agent in the box has a shell. On the server (the runner), or on an
-// older server that serves no default_place, the form is today's: no place sent, bash not ticked. What the person picks
-// or unticks is what is sent.
+// sandbox it ticks bash with the other tools, so a new agent in the box has a shell. On the server (the runner), the form
+// starts on the server: no place sent, bash not ticked. What the person picks or unticks is what is sent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -62,17 +61,6 @@ describe("AgentEditor, a new agent's default place", () => {
     runner.step(/Tools/);
     expect(runner.input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
     expect(runner.input('input[type="checkbox"][value="browser"]')!.checked).toBe(true);
-  });
-
-  it("an older server that serves no default_place keeps today's form: on the server, bash not ticked, no place sent", async () => {
-    const { input, step, fill, save } = mount(served({}));
-    expect(input('input[name="place"][value="runner"]')!.checked).toBe(true);
-    step(/Tools/);
-    expect(input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
-    fill();
-    const sent = await save();
-    expect(sent).toMatchObject({ tools: ["read", "write", "browser"] });
-    expect(sent!.place).toBeUndefined();
   });
 
   it("never overrides the person: the default is sent as served, bash unticked stays off, and a pick of the server is sent", async () => {

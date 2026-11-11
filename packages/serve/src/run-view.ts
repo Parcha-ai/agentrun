@@ -6,10 +6,9 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "@parcha/pi-durable-agent/timeline";
+import { type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "@parcha/pi-durable-agent/timeline";
 import type { RevisionKind } from "@parcha/pi-durable-agent";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
-import { servedOnly } from "./served-only.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { APPROVAL_ROW, type PendingApproval, previewOf } from "./tool-gate.js";
@@ -17,14 +16,14 @@ import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
-import { pointerHash, type SignIns } from "./sign-ins.js";
+import { pointerHash, type signInReads } from "./sign-ins-store.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 
 /** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
- *  pointer) and `forgotten` (its tombstoned ones). Both the old `new SignIns(...)` and the store-backed bridge
- *  (sign-ins-store.ts signInsOverStore) satisfy it, so a view reads either path with no knowledge of which. */
-export type SignInReader = Pick<SignIns, "peek" | "forgotten">;
+ *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
+export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -106,25 +105,9 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined, boun
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
-/** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
- *  its id the refusal's with NOTE_SUFFIX, so it is no message: isMessageRow), marked `paused`, never an error row. The
- *  refusal's sentence is the pause's (pending.said), which a client shows once, as its banner. */
-export const BUDGET_PAUSED = "Paused at the run's cap";
 /** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
  *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
 export const BUDGET_WAITING = "Waiting for you to raise the cap";
-export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const at = rows.findLastIndex((row) => row.paused === true);
-  if (at < 0) return [...rows];
-  // The refusal's own marker (`paused`, servedError) and the server's origin stay on the refusal's row: the waiting row
-  // is no refusal and no row of the server's, and keeps the id it had, the refusal's own with ":paused".
-  const { paused: _marker, origin: _origin, ...refusal } = rows[at]!;
-  const own = refusal.id.endsWith(NOTE_SUFFIX) ? refusal.id.slice(0, -NOTE_SUFFIX.length) : refusal.id;
-  // Only the served view makes it (servedOnly): once the run is raised, show() stops making it and it goes, even while a
-  // live process feeds the timeline (keepCommitted).
-  const paused: TimelineEvent = servedOnly({ ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
-  return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
-}
 
 /** A text clipped to `max` characters, with an ellipsis where it is cut (runs.ts' clip). */
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -182,7 +165,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
-type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
+type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
 /** The least a journal entry a reader here reads is: its kind and its data. */
 type JournalEntry = { kind?: string; data?: unknown };
 const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
@@ -232,7 +215,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
     const decision = d.decision ?? (d.approved === true ? "allow" : d.approved === false ? "deny" : undefined);
     if (decision === undefined) continue;
     const given = out[d.callId];
-    if (given && !(decision === "withdrawn" && d.superseded)) continue;
+    if (given && !((decision === "withdrawn" || decision === "canceled") && d.superseded)) continue;
     const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : {};
     // A deny a person's message gave keeps that it was (`by`): its row reads "Declined by your message".
     out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...(decision === "deny" && d.by === "message" ? { by: "message" as const } : {}), ...superseded };
@@ -614,6 +597,9 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
 
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+/** Why a run is refused at its claim: the browser sign-in it was handed can't be read here (the seal key changed or is
+ *  missing, or the sign-in is damaged). */
+export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
 
 /** A withheld run's title: a short line that fits the title's length and holds nothing the run said, so a title that
  *  repeats the handed sign-in is never served when this server can't cut it. The full sentence stays in the run's error
@@ -634,9 +620,6 @@ export function handedMark(value: unknown): Handed | undefined {
   return MALFORMED;
 }
 
-/** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
- *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
-export const refusedValuesOf = (serverSecrets: () => string[], handed: ReadonlySet<string> | undefined): string[] => [...serverSecrets(), ...(handed ?? [])];
 /** A run's redactor (decision-rows.ts, tool previews): redacted over its refused values. */
 export const redactorOf = (values: string[]) => (text: string) => redacted(text, values);
 /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
@@ -648,7 +631,7 @@ export const servedRunErrorWith = <E extends { message: string; details?: unknow
  *  other words are while the run is hidden (`unshown`), as a list row read from disk withholds it. */
 export const servedReviewWith = <R extends { reason: string }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null => (review && { ...review, reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason) });
 
-/** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its `sign_in_handed`: none
+/** The pointers a run was handed, read back to cut them (sign-ins-store.ts peek and forgotten), by its `sign_in_handed`: none
  *  for a run with no mark (it was never handed one); else, for each hash it names, the live or forgotten pointer whose
  *  SHA-256 it is. `unreadable` when what it was handed can't be read back here: a MALFORMED mark, no vendor browser kept
  *  beside the mark, the sign-ins file can't be read, or any of its hashes matches no pointer that opens (one under another
@@ -719,7 +702,7 @@ export function outcomeShows(tool: string, answer: { decision: string; by?: stri
 function callSays(answer: ApprovalAnswer | undefined): string {
   if (!answer) return "Not run yet: it waits for your approval";
   if (answer.decision === "canceled") return "Not run: the run was cancelled while it waited";
-  if (answer.decision === "withdrawn") return answer.ended ? "Not run: the run ended while it waited" : "Not run: the run was stopped while it waited";
+  if (answer.decision === "withdrawn") return answer.ended ? ENDED_WHILE_WAITING : STOPPED_WHILE_WAITING;
   return "Allowed: it runs now";
 }
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
@@ -739,7 +722,12 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
   const owns = (row: TimelineEvent) => (row.kind === "tool_use" || row.kind === "tool_result") && !!row.tool_use_id && byCall.has(row.tool_use_id);
   const lastOf = new Map<string, string>();
   for (const row of given) if (owns(row)) lastOf.set(row.tool_use_id!, row.id);
+  // The result rows of the calls that waited: a Saved row read from such a call's write (pi's `<result>:saved:<n>`) says
+  // a file was written that the park never wrote; an allowed call's file is its outcome row's to say, as on main.
+  const waitedResults = new Set(given.filter((row) => row.kind === "tool_result" && owns(row)).map((row) => row.id));
   return given.flatMap((row) => {
+    const savedBy = row.kind === "phase" ? /^(.*):saved:\d+$/.exec(row.id)?.[1] : undefined;
+    if (savedBy !== undefined && waitedResults.has(savedBy)) return [];
     if (!owns(row)) return [row];
     const approval = byCall.get(row.tool_use_id!)!;
     const answer = answers[approval.id];
@@ -749,12 +737,24 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const own: TimelineEvent = { ...row, summary: outcome ? HELD : callSays(answer), tool_status: null };
     if (lastOf.get(approval.call_id) !== row.id) return [own];
     const args = shownArgs(approval, redact);
+    // A served row keeps the place it was first served at (rows.ts). The call's result comes in after the answer (the park
+    // writes none), so the approval and outcome rows take a new id once it is there: served anew below the result, the
+    // call's own rows, then its approval, then what came of it, as a person reads it.
+    const at = result ? `${approvalRowId(approval.call_id)}:after` : approvalRowId(approval.call_id);
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : "Asked your approval";
-    const asked: TimelineEvent = { ...row, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...row, id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     if (!outcome) return [own, asked];
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
-    const told: TimelineEvent = { ...(result ?? row), id: `${approvalRowId(approval.call_id)}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    const told: TimelineEvent = { ...(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    // A person's message that declined the call (runs-over-store.ts message: a deny carrying their words) is theirs as any
+    // message is: its own row, between the approval and what came of it, as main's declineBy kept it.
+    if (answer!.decision === "deny" && answer!.by === "message" && answer!.note) {
+      const words = redact(answer!.note);
+      const { origin: _origin, ...base } = result ?? row;
+      const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+      return [own, asked, theirs, told];
+    }
     return [own, asked, told];
   });
 }

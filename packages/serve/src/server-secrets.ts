@@ -1,17 +1,14 @@
-// The server's own secrets, as one list: its API token, its door token, its sign-in sessions' secret, its outbound
-// webhook's signing secret, and every value a trigger source keeps sealed (sealed-settings.ts). Each store adds itself
-// when it opens, as a reader, so a secret made or rotated since is in the list at once. With the host's, they are the one
-// list a server never shows (server.ts serverSecrets): what a run shows (runs.ts), what learning keeps (learning-run.ts),
-// what the server answers and the VM relay's errors are cut of it, and what an import writes (import.ts) of these; none
-// of them assembles its own.
-import { existsSync, readFileSync } from "node:fs";
+// The server's own secrets, as one list: its API token, its sign-in sessions' secret, its outbound webhook's signing
+// secret, and every value a trigger source keeps sealed (sealed-settings-store.ts). Each source is added as a reader, so a
+// secret made or rotated since is in the list at once. With the host's, they are the one list a server never shows
+// (server.ts serverSecrets): what a run shows, what learning keeps, what the server answers and what an import writes are
+// cut of it; none of them assembles its own. The trigger settings are store rows (server-secrets-store.ts); what stays
+// beside the store in the data directory is read here (besideTheStore), by the server and by a runner that shares it.
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TOKEN_FILE } from "./files.js";
 import { SESSION_SECRET_FILE } from "./owner.js";
-import { SealedSettings } from "./sealed-settings.js";
 import { secretForms } from "./standard-webhooks.js";
-import type { TriggerAdapter } from "./trigger-adapter.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { webhookSecretIn } from "./webhooks.js";
 
 export class ServerSecrets {
@@ -46,31 +43,16 @@ const fileIn = (data: string, name: string): string => {
   }
 };
 
-/** The server's own secrets data directory `data` keeps, each store opened with the seal key of `env`: the tokens' and
- *  the session secret's files, the outbound webhook's secret, and every adapter's sealed settings (a value that does not
- *  open is said to `say`), which are returned too, by adapter id, for the server to keep using. */
-export function openServerSecrets(data: string, env: NodeJS.ProcessEnv, adapters: readonly TriggerAdapter[], say: (fields: Record<string, string>) => void = () => {}): { secrets: ServerSecrets; settings: Map<string, SealedSettings> } {
+/** The server's own secrets data directory `data` keeps beside the store: the owner's API token and the sign-in session
+ *  secret (files the CLI and the console's sign-in read), and the outbound webhook's signing secret, opened with the
+ *  server's seal key `key` (a secret that does not open is left out). Each file is read until it is there, then kept: they
+ *  are made once, and a redaction reads the list often. */
+export function besideTheStore(data: string, key: Buffer): ServerSecrets {
   const secrets = new ServerSecrets();
-  // Each read until it is there, then kept: they are made once, and a redaction reads the list often.
   const read = new Map<string, string>();
   const kept = (name: string) => read.get(name) || (read.set(name, fileIn(data, name)), read.get(name)!);
   secrets.add("files", () => [kept(TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
-  const webhook = webhookSecretIn(data, env);
+  const webhook = webhookSecretIn(data, key);
   secrets.add("webhook", () => (webhook && "secret" in webhook ? [webhook.secret] : []));
-  // Where a webhook trigger's secret was kept before its source's sealed settings were: no longer read.
-  const leftover = join(data, "trigger-secrets.json");
-  if (existsSync(leftover)) say({ condition: "trigger_secrets_left_over", file: leftover, effect: "not read: give each webhook trigger made before a new secret with POST /v2/triggers/{id}/secret, or make it again" });
-  // There is always a seal key (seal-key.ts): every caller hands this one.
-  const key = sealKeyOf(env[SEAL_KEY_ENV]);
-  if (!key) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
-  const settings = new Map<string, SealedSettings>();
-  for (const adapter of adapters) {
-    if (!adapter.settings) continue;
-    const store = new SealedSettings(data, adapter.id, adapter.settings, key, say);
-    settings.set(adapter.id, store);
-    secrets.add(`trigger-settings:${adapter.id}`, () => store.values());
-    // A PEM key's lines, its short last one too, and the key whole: listed with no floor.
-    secrets.add(`trigger-settings-pem:${adapter.id}`, () => store.pemValues(), { whole: true });
-  }
-  return { secrets, settings };
+  return secrets;
 }

@@ -16,7 +16,7 @@ import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
-const { learningTestHooks, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { SCRIPT_FILE, SNAPSHOT_FILE } = await import("../dist/learn/folder.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
@@ -74,9 +74,6 @@ async function mode2End(t, { moveOn }) {
   const reflected = `\`\`\`note retry-slowly.md\n${held}\`\`\`\n\n\`\`\`note check-first.md\n${CHECK}\`\`\`\n\nReflected.`;
 
   // Every git call learning.ts makes itself, on this machine, from here on.
-  const localGit = [];
-  learningTestHooks.git = (args) => localGit.push(args[0]);
-  t.after(() => { delete learningTestHooks.git; });
 
   const store = await openSqliteStore({ dataDir: local, role: "runner" });
   stores.push(store);
@@ -115,7 +112,7 @@ async function mode2End(t, { moveOn }) {
     if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  return { kept: await server.learning.proposal("run-1"), seed, opened, calls, ended, localGit };
+  return { kept: await server.learning.proposal("run-1"), seed, opened, calls, ended };
 }
 
 /** What every case asserts: the proposal is the disk's seed's (its retry-slowly.md, given again with its very text, is no
@@ -127,10 +124,9 @@ function checkedOnDisk(end) {
   assert.equal(end.ended, 1, "and ended after it");
   // Every read through the folder's Workspace is a path from its root.
   for (const { read } of end.calls.filter((call) => "read" in call)) assert.ok(!read.startsWith("/") && !read.split("/").includes(".."), `a path from the folder's root: ${read}`);
-  // Nothing under the local learning path was read: learning.ts runs every local git through one function, which the
-  // hook sees. A read of the decoy would show up as the wrong content anyway: its main is another commit, and its
-  // retry-slowly.md another text, so the proposal above would hold that note too, or the check would fail.
-  assert.deepEqual(end.localGit, [], "no git ran on this machine's learning path: the decoy was never read");
+  // Nothing under the local learning path was read: no learning code in this process runs git, and a read of the decoy
+  // would show up as the wrong content: its main is another commit, and its retry-slowly.md another text, so the
+  // proposal above would hold that note too, or the check would fail.
 }
 
 test("a Mode 2 learning end checks its proposal against the learning folder on the run's Workspace, never the local data directory", async (t) => {

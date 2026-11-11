@@ -1,14 +1,14 @@
 // Learning, after a run: the notes its end-of-run turn answered with, and a skill or a workflow draft beside them, are read
 // by the host (learn/reflect.ts parseReflection), checked against the commit the run started from (learn/check.ts
-// checkProposal), and kept in the run's own directory as its proposal (`learning-proposal.json`), or dropped. The answer
-// is read from what the run's directory kept as the run settled (learning.ts keepTurn), never from the run's work or its
-// rows, which a follow-up may change; and no file the run wrote is read at all, in `.learning/` or anywhere. The seed is
+// checkProposal), and kept as its proposal (`learning-proposal.json`, in the directory the caller gives), or dropped. The
+// answer is what the runner's end-of-run turn read from the run's store (runner/learning-end.ts), never the run's work;
+// and no file the run wrote is read at all, in `.learning/` or anywhere. The seed is
 // read from the agent's learning folder through its Workspace, as the reflect hook's check reads it (learn/seed-check.ts):
 // the snapshot and its bodies when main is the seed (no exec), else one read-only exec of the learning script at that
 // commit. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse (a
 // note holding a secret among them) is never kept anywhere.
 import { join } from "node:path";
-import { type Change, checkProposal, draftFiles, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
+import { type Change, checkProposal, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { baseOf } from "./learn/seed-check.js";
 import { writeDurable } from "./files.js";
@@ -21,11 +21,13 @@ export type Proposed =
   | { state: "dropped"; reason: "unparsed"; detail: string }
   | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
-/** The rules that refuse a proposal whole, whatever item they name: its counts and caps, a path outside what a run may
- *  write, a deletion, the folder's index full, anything that must never be stored (a secret, a character a reader does
- *  not see), which says the run's answer is not to be trusted for any item, and text that is not UTF-8, which cannot be
- *  read for one. Every other problem is its item's alone; unstorable reads every item's text whole first. */
-const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["too_many_files", "too_many_notes", "too_many_skills", "too_many_workflows", "outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
+/** The rules that refuse a proposal whole, whatever item they name: a path outside what a run may write, a deletion,
+ *  the folder's index full (the notes' total, which no one item is past), anything that must never be stored (a secret,
+ *  a character a reader does not see), which says the run's answer is not to be trusted for any item, and text that is
+ *  not UTF-8, which cannot be read for one. Every other problem is its item's alone: a count cap names the items past it
+ *  (learn/check.ts), a size cap the item over it, and they are left out and the rest kept; unstorable reads every item's
+ *  text whole first. */
+const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
 
 /** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
 const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);
@@ -89,50 +91,62 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
 export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">> }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
-  // Each skill and draft as the folder would hold it; a draft is its two files, given together or not at all.
-  const given = parsed.ok ? [
-    ...(parsed.skills ?? []).map(({ name, text }) => [{ file: `${SKILLS_DIR}/${name}/SKILL.md`, text }]),
-    ...(parsed.workflows ?? []).map(({ name, text }) => {
-      const { json, readme } = draftFiles(name, text);
-      return [{ file: `${WORKFLOWS_DIR}/${name}/workflow.json`, text: json }, { file: `${WORKFLOWS_DIR}/${name}/README.md`, text: readme }];
-    }),
-  ] : [];
+  // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
+  // answer's order; a draft is its two files, given together or not at all.
+  const fileGroups = new Map<string, { file: string; text: string }[]>();
+  const keyOf = (kind: string, name: string) => `${kind}\u0000${name}`;
+  for (const { name, text } of parsed.ok ? (parsed.skills ?? []) : []) fileGroups.set(keyOf(SKILL_BLOCK, name), [{ file: `${SKILLS_DIR}/${name}/SKILL.md`, text }]);
+  for (const { name, text } of parsed.ok ? (parsed.workflows ?? []) : []) {
+    const { json, readme } = draftFiles(name, text);
+    fileGroups.set(keyOf(WORKFLOW_BLOCK, name), [{ file: `${WORKFLOWS_DIR}/${name}/workflow.json`, text: json }, { file: `${WORKFLOWS_DIR}/${name}/README.md`, text: readme }]);
+  }
+  const given = [...fileGroups.values()];
   // The seed is read whatever the answer: a seed the folder does not hold fails the check.
   const { snapshot, texts } = await seedAt(input.folder, input.seed, () => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file)] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
   const { base, kept } = baseOf(snapshot);
   const held = new Set(base.files);
   const files = given.filter((group) => group.some(({ file, text }) => texts.get(file) !== text)).flat();
-  const changes: Change[] = [
-    ...parsed.notes.filter(({ file, text }) => texts.get(file) !== text).map(({ file, text }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) })),
-    ...files.map(({ file, text }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) })),
-  ];
+  const changeOf = ({ file, text }: { file: string; text: string }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) });
+  // Each changed item in the order the answer gave its block, whatever its kind: a count cap names the items past it in
+  // that order (learn/check.ts), so a skill the answer led with is never the one past the changed-path cap.
+  const noteTexts = new Map(parsed.notes.map(({ file, text }) => [file, text]));
+  const changed = new Set(files.map(({ file }) => file));
+  const changes: Change[] = parsed.order.flatMap(({ kind, name }): Change[] => {
+    if (kind === NOTE_BLOCK) {
+      const text = noteTexts.get(name)!;
+      return texts.get(name) !== text ? [changeOf({ file: name, text })] : [];
+    }
+    return (fileGroups.get(keyOf(kind, name)) ?? []).filter(({ file }) => changed.has(file)).map(changeOf);
+  });
   // The workflow DSL reads a draft, and is loaded only when there is one to read.
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(dsl ? { dsl } : {}) });
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
-  // and the rest is checked again; a problem that names no item, or one that refuses the whole (WHOLE), drops it all,
-  // as does a rest the checks still refuse.
+  // and the rest is checked again, until it passes; a problem that names no item, or one that refuses the whole (WHOLE),
+  // drops it all, as does a rest with nothing left. A later pass can name what an earlier one did not reach (the
+  // supersedes count, asked only of a rest with no other problem); each pass leaves out at least one item, so it ends.
   let checked = check(changes);
   let left: Problem[] = [];
-  let passing = files;
+  const out = new Set<string>();
   if (checked.problems.length) {
     const named = new Set(changes.map(({ path }) => itemOf(path)));
-    if (checked.problems.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined || !named.has(itemOf(problem.path)))) return { state: "dropped", reason: "checker", problems: checked.problems };
     // Before any item is kept from an answer the checks refuse: every name and text it gave, read whole. Something
     // that must never be stored anywhere in it (in an item the checks refused unread, too) refuses it all.
     const never = unstorable(changes, input.refuse);
-    if (never.length) return { state: "dropped", reason: "checker", problems: [...checked.problems, ...never] };
-    const out = new Set(checked.problems.map((problem) => itemOf(problem.path!)));
-    const rest = changes.filter(({ path }) => !out.has(itemOf(path)));
-    const again = rest.length ? check(rest) : undefined;
-    // A rest the checks refuse again: its own problems are what keeps it out, said with the first pass's.
-    if (!again || again.problems.length) return { state: "dropped", reason: "checker", problems: [...checked.problems, ...(again?.problems ?? [])] };
-    left = checked.problems;
-    checked = again;
-    passing = files.filter(({ file }) => !out.has(itemOf(file)));
+    for (;;) {
+      if (checked.problems.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined || !named.has(itemOf(problem.path)))) return { state: "dropped", reason: "checker", problems: [...left, ...checked.problems] };
+      if (never.length) return { state: "dropped", reason: "checker", problems: [...left, ...checked.problems, ...never] };
+      left = [...left, ...checked.problems];
+      for (const problem of checked.problems) out.add(itemOf(problem.path!));
+      const rest = changes.filter(({ path }) => !out.has(itemOf(path)));
+      if (!rest.length) return { state: "dropped", reason: "checker", problems: left };
+      checked = check(rest);
+      if (!checked.problems.length) break;
+    }
   }
+  const passing = files.filter(({ file }) => !out.has(itemOf(file)));
   if (!checked.notes.length && !passing.length) return { state: "dropped", reason: "empty" };
   // Each message cut of the host's secrets whole first, and only then shortened: a secret the cut fell inside would
   // leave a part of itself that no longer matches. The whole message is read, however long (a message is bounded by

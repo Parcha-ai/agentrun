@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import tokensCss from "../tokens.css?raw";
 import { blend, contrast, hslToRgb, readTokens } from "./contrast";
 import { Block, Themes } from "./Themes";

@@ -173,7 +173,8 @@ describe("applying a template", () => {
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme");
     await t.click(t.tick("mcp:github/create_review"));
     await t.click(t.button(/^Apply/));
-    expect(t.host.querySelector('[data-field="parameters.repo"]')!.textContent).toContain("repo must look like owner/name.");
+    // A parameter's issue in the form's words, by its served reason and the field's label: never its raw path.
+    expect(t.host.querySelector('[data-field="parameters.repo"]')!.textContent).toContain("repo isn't in the form its description asks for.");
     expect(t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent).toContain("This tool is not one the template asks for.");
     expect(t.went).toEqual([]);
   });
@@ -339,7 +340,7 @@ describe("applying a template", () => {
     await pick(depth, "7");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack", depth: 7 });
-    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("parameters.post_to is one of crm, slack, none: where each brief goes");
+    expect(t.host.querySelector('[data-field="parameters.post_to"]')!.textContent).toContain("post_to takes one of: crm, slack, none.");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {

@@ -14,9 +14,11 @@ import { PROVIDERS } from "@parcha/agentrun-computer";
 import { VM_PROVIDER } from "../dist/boxes.js";
 import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
 import * as relayVm from "../dist/box-relay-vm.js";
-import { BOX_ENV } from "../dist/run-box.js";
 import { ModalClient as FakeClient, vm } from "./fixtures/fake-vm.mjs";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+
+/** The whole environment of a box's programs, as the server gives it: a constant, never its own. */
+const BOX_ENV = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE_VM = new URL("./fixtures/fake-vm.mjs", import.meta.url).pathname;

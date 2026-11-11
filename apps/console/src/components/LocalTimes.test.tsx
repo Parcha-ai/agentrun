@@ -11,7 +11,7 @@ import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 // in Puerto Rico (UTC-4), never 8:50 PM: its header, the Runs list, its Timeline and its Files.
 const AT = "2026-11-04T20:50:47Z";
 const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
-  run_id: "01a1a869-ce4e-7cf5-abf8-c5407893934a", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle",
+  run_id: "01a1a869-ce4e-7cf5-abf8-c5407893934a", place: { mode: "runner" }, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle",
   title: "Name three primes above 100.", created_at: AT, ended_at: "2026-11-04T20:50:50Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 } as Run;
 const text = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");

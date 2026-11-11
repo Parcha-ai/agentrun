@@ -54,6 +54,17 @@ describe("RunBar, files", () => {
     expect(started).toEqual([{ input: { content: "Check this invoice." }, file_ids: [made.file_id] }]);
     expect(opened).toEqual(["#/runs/run_1"]);
   });
+  it("turns Run with your coding agent off while files are attached: a coding agent's run can't carry this page's uploads", async () => {
+    const { pending, upload } = uploads();
+    const v2 = { startRun: async () => ({ run: { run_id: "run_1" }, status: 202 }), deleteUpload: async () => "" } as unknown as Client;
+    const page = mount(createElement(RunBar, { agent: agentFixture("invoice-checker"), efforts: [], v2, go: () => {}, upload, limits: { max_files_per_run: 20, max_upload_bytes: 50 * 2 ** 20 } }));
+    const handoff = () => page.button(/Run with your coding agent/);
+    expect(handoff().disabled).toBe(false);
+    page.pick(pdf());
+    await act(async () => { pending[0]!(made); await Promise.resolve(); });
+    expect(handoff().disabled).toBe(true);
+    expect(handoff().getAttribute("title")).toMatch(/Remove the attached files first/);
+  });
 });
 
 describe("Playground, files", () => {

@@ -48,7 +48,9 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -302,6 +304,8 @@ const DEFAULTS: E2BTimeouts = {
 
 /** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = ["archil"];
+/** The network an E2B computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 
@@ -335,7 +339,7 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be sent to E2B";
 const FIXED = "an E2B computer's network is fixed at create: create a new computer";
 const PUBLIC =
@@ -643,7 +647,7 @@ export class E2BProvider implements ComputerProvider {
 		return {
 			kind: this.#kind,
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...NETWORK],
 			networkReadBack: true,
 			isolation: "microvm",
 			os: "linux",
@@ -678,6 +682,7 @@ export class E2BProvider implements ComputerProvider {
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 			if (bad) refuse("labels", bad);
 		}
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (field === "cpus" || field === "memoryMb" || field === "pids") refuse(field, `an E2B computer has the size of its template: name a template of the size you need, not ${field}`);
@@ -1277,7 +1282,7 @@ export class E2BProvider implements ComputerProvider {
 		const opened = await this.#open(sandbox.value, ref.name);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: ARCH });
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: ARCH, fence: true });
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
 		if (drifted.length === 0) return recordedArchil(found.value.metadata) === undefined ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client) });
 		await opened.value.close();
@@ -1452,10 +1457,11 @@ export class E2BProvider implements ComputerProvider {
 		return ok(infos);
 	}
 
-	/** For the sweep: every sandbox E2B lists with agentrun.computer=1, whatever its name, as E2B reports it. */
-	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; state: string }>>> {
+	/** For the sweep: every sandbox E2B lists with agentrun.computer=1, whatever its name, as E2B reports it, with its
+	 *  metadata as its labels (the sweep kills only a conformance run's). */
+	async listLabelled({ signal }: CallContext = {}): Promise<Result<Array<{ id: string; state: string; labels: Record<string, string> }>>> {
 		const listed = await this.#listPages({ [COMPUTER_LABEL]: "1" }, signal);
-		return listed.ok ? ok(listed.value.map((sb) => ({ id: sb.sandboxId, state: sb.state }))) : listed;
+		return listed.ok ? ok(listed.value.map((sb) => ({ id: sb.sandboxId, state: sb.state, labels: { ...(sb.metadata ?? {}) } }))) : listed;
 	}
 
 	/** For the sweep: whether E2B still has a sandbox, read once by getInfo; not_found is gone. */

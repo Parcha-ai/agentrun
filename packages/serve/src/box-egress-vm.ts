@@ -21,7 +21,7 @@ import { chmod, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import { release } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ALLOW_HINT, type BoxEgress, EGRESS_SOCKET, INFO_TIMEOUT_MS } from "./box-egress.js";
+import { ALLOW_HINT, EGRESS_SOCKET, INFO_TIMEOUT_MS } from "./box-egress.js";
 import { withoutSecrets } from "./secrets.js";
 
 /** What `docker info` is asked on a Mac: the daemon's OS type, its kernel, the name it gives its OS, and its host name. */
@@ -350,14 +350,4 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
  *  boxes mount read-only at EGRESS_MOUNT. Unset on Linux, where the run's process starts its own proxy (box-egress.ts). */
 export const RUN_BOX_VOLUME_ENV = "AGENTRUN_RUN_BOX_VOLUME";
 
-/** The run's process's reading of RUN_BOX_VOLUME_ENV: the volume, or undefined when it is unset or not a name this
- *  server makes. */
-export function runBoxVolumeOf(env: NodeJS.ProcessEnv): string | undefined {
-  const value = env[RUN_BOX_VOLUME_ENV]?.trim();
-  return value && /^agentrun-egress-[0-9a-f]{12}$/.test(value) ? value : undefined;
-}
 
-/** A run's box's egress on a Mac: the server's proxy container, its socket in the volume the Docker provider mounts on
- *  every box (run-box.ts), so nothing for the run's process to start or bind. The volume outlives each proxy, so a box
- *  made before one started again reaches the new one. */
-export const vmEgress: BoxEgress = async () => ({ socket: EGRESS_SOCKET, fresh: false });

@@ -9,13 +9,18 @@
 // - any other model answers through the route's own fetch: the Messages request runs on pi-ai's model of it (the faux
 //   core under --faux, never the network; another provider's or the gateway's on its key from `env`), and its events
 //   come back as a Messages stream.
+//   A model whose catalog entry takes its tools as text (local-models.ts `toolsAs`) gets them in its system prompt and
+//   its calls read back from its reply (text-tools.ts), on this translation alone.
 // Its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past a model's tier is priced at
 // the tier, as its provider bills it), and its cost is that catalog entry, tiers included, for the cap's judgement.
+import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
+import type { ToolsAs } from "../local-models.js";
 import { chooseModel, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
 export type RouteCost = {
@@ -53,12 +58,12 @@ export interface ModelRoute {
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
-type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown };
+type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown; toolsAs?: ToolsAs };
 /** The wires a caller of routeOf speaks when it names none: Anthropic's Messages alone. */
 const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
-type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string };
+type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string }[] };
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`; a claimed run's pin, sent as
  *  pinned: chooseModel's PinnedModel), resolved from `env` as main resolves a run's model, on a wire of `wires` (the
@@ -72,10 +77,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
   const target = models.getModel(chosen.model.provider, chosen.model.modelId) as unknown as PiModel | undefined;
   if (!target) throw new Error(`no model ${chosen.model.provider}/${chosen.model.modelId} here`);
-  const price = (_model: string, used: RouteUsage): number => {
-    const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    return calculateCost(target as never, usage as never).total;
-  };
+  const price = (_model: string, used: RouteUsage): number => priceOn(target, used);
   // What the model takes as input and its input limits, on every wire: pi's session sends a model that takes no images
   // pi-ai's placeholder in place of one, and pi's read holds an image to the model's limits (port-models.ts sessionModel).
   const sees = { ...(target.input ? { input: target.input } : {}), ...(target.inputLimits ? { inputLimits: target.inputLimits } : {}) };
@@ -109,8 +111,13 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
   };
   return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
-    const context = contextOf(body, target, (id) => providerIds.get(id) ?? id);
-    const events = models.streamSimple(target as never, context as never, { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) } as never);
+    const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
+    // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
+    // result of its history as text, and its calls read from its reply. A request with no tools goes as it is.
+    const asText = target.toolsAs === "text" && (built.tools?.length ?? 0) > 0;
+    const context = asText ? toolsAsText(built) : built;
+    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) };
+    const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -130,7 +137,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
           return index;
         };
         try {
-          for await (const event of events) {
+          for await (const event of asText ? [] : events) {
             const at = event.contentIndex;
             if (event.type === "text_start") send({ type: "content_block_start", index: open(at), content_block: { type: "text", text: "" } });
             else if (event.type === "text_delta") send({ type: "content_block_delta", index: blockOf.get(at ?? -1), delta: { type: "text_delta", text: event.delta ?? "" } });
@@ -164,6 +171,67 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
               send({ type: "message_stop" });
             }
           }
+          if (asText) {
+            // The reply whole, then its text and its calls as Messages blocks. A reply that opens a call block and
+            // holds no call it can read is asked again, at most TEXT_TOOL_TRIES times in all, its usage summed, and
+            // only out of what the cap held for this one request (reaskTokens): the re-ask's output limit is what is
+            // left of it once the tries so far and the re-ask's own input, uncached, are paid.
+            const tools = built.tools ?? [];
+            const used = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+            const outputHeld = body.max_tokens ?? target.maxTokens;
+            let heldUsd = 0;
+            let spentUsd = 0;
+            let replies = events;
+            let nextTokens = 0;
+            for (let attempt = 1; ; attempt++) {
+              let again = false;
+              for await (const event of replies) {
+                if (event.type !== "done" && event.type !== "error") continue;
+                const message = (event.type === "done" ? event.message : event.error) ?? {};
+                if (event.type === "error") {
+                  sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
+                  break;
+                }
+                const given = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+                const part = { input: given.input, output: given.output, cacheRead: given.cacheRead ?? 0, cacheWrite: given.cacheWrite ?? 0 };
+                used.input += part.input;
+                used.output += part.output;
+                used.cacheRead += part.cacheRead;
+                used.cacheWrite += part.cacheWrite;
+                if (attempt === 1 && outputHeld !== undefined) heldUsd = priceOn(target, { ...part, output: outputHeld });
+                spentUsd += priceOn(target, part);
+                const said = (message.content ?? []).filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
+                // A reply cut at its output limit may stop inside a call: a call block in it is never run, it is broken.
+                const cut = (event.reason ?? message.stopReason) === "length";
+                const parsed = callsOfText(said, tools);
+                const read = cut && (parsed.calls.length > 0 || parsed.broken) ? { text: said.trim(), calls: [], broken: true } : parsed;
+                if (read.broken && attempt < TEXT_TOOL_TRIES && outputHeld !== undefined) {
+                  nextTokens = reaskTokens(target, part, heldUsd - spentUsd, outputHeld);
+                  if (nextTokens > 0 && nextTokens >= part.output) {
+                    again = true;
+                    break;
+                  }
+                }
+                if (read.text) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
+                  send({ type: "content_block_delta", index, delta: { type: "text_delta", text: read.text } });
+                  send({ type: "content_block_stop", index });
+                }
+                for (const call of read.calls) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "tool_use", id: messagesId(`call_${randomUUID().replace(/-/g, "").slice(0, 24)}`), name: call.name, input: {} } });
+                  send({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(call.arguments) } });
+                  send({ type: "content_block_stop", index });
+                }
+                const reason = read.calls.length ? "tool_use" : stopReasonOf(event.reason === "toolUse" ? "stop" : event.reason ?? message.stopReason);
+                send({ type: "message_delta", delta: { stop_reason: reason, stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite } });
+                send({ type: "message_stop" });
+              }
+              if (!again) break;
+              replies = models.streamSimple(target as never, context as never, { ...streamOptions, maxTokens: nextTokens } as never);
+            }
+          }
         } catch (error) {
           sendError(redact((error as Error)?.message ?? String(error)));
         }
@@ -191,6 +259,25 @@ type Part = { readonly type: string; readonly [key: string]: unknown };
 
 const textOf = (content: string | MessagesBlock[] | undefined): string => (typeof content === "string" ? content : (content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n"));
 
+/** A Messages block as pi-ai's part: a text as text, a base64 image as an image; anything else none. */
+const partOf = (block: MessagesBlock): Part[] =>
+  block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [];
+
+/** A tool_result's content as pi-ai's toolResult content: its parts in order (partOf), so a screenshot a tool returned
+ *  reaches the model, with the texts between two images joined by "\n" into one part, so a result of text alone is the
+ *  one text it always was (textOf). A string is one text. Never empty: a result with no text or image part is one empty
+ *  text. */
+const resultOf = (content: string | MessagesBlock[] | undefined): Part[] => {
+  if (typeof content === "string" || content === undefined) return [{ type: "text", text: content ?? "" }];
+  const parts: Part[] = [];
+  for (const part of content.flatMap(partOf)) {
+    const last = parts.at(-1);
+    if (part.type === "text" && last?.type === "text") parts[parts.length - 1] = { type: "text", text: `${String(last.text)}\n${String(part.text)}` };
+    else parts.push(part);
+  }
+  return parts.length ? parts : [{ type: "text", text: "" }];
+};
+
 /** A Messages request as pi-ai's context on `target`: its system prompt, tools and turns (a tool_result as its own
  *  toolResult message, naming the tool its call named; `providerId` maps a call id back to the provider's). */
 function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: string) => string): unknown {
@@ -211,12 +298,10 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
       messages.push({ role: "assistant", content, api: target.api, provider: target.provider, model: target.id, usage: zero, stopReason: content.some((part) => part.type === "toolCall") ? "toolUse" : "stop", timestamp: Date.now() });
       continue;
     }
-    const said = blocks.flatMap((block): Part[] =>
-      block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [],
-    );
+    const said = blocks.flatMap(partOf);
     for (const block of blocks.filter((each) => each.type === "tool_result")) {
       const id = block.tool_use_id ?? "";
-      messages.push({ role: "toolResult", toolCallId: providerId(id), toolName: named.get(id) ?? "", content: [{ type: "text", text: textOf(block.content) }], isError: block.is_error === true, timestamp: Date.now() });
+      messages.push({ role: "toolResult", toolCallId: providerId(id), toolName: named.get(id) ?? "", content: resultOf(block.content), isError: block.is_error === true, timestamp: Date.now() });
     }
     if (said.length) messages.push({ role: "user", content: said, timestamp: Date.now() });
   }
@@ -226,4 +311,29 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
     messages,
     ...(body.tools?.length ? { tools: body.tools.map((tool) => ({ name: tool.name, description: tool.description ?? "", parameters: tool.input_schema ?? { type: "object", properties: {} } })) } : {}),
   };
+}
+
+/** How many times a text-tools reply is asked for when it opens a call block that holds no call it can read. */
+const TEXT_TOOL_TRIES = 3;
+
+/** `used` priced on `target`'s catalog entry: pi-ai's calculateCost, tiers included (the proxy's booking, and the cap's). */
+function priceOn(target: PiModel, used: RouteUsage): number {
+  const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  return calculateCost(target as never, usage as never).total;
+}
+
+/** A text-tools re-ask's output limit: the most tokens it may answer with when what is left of the request's hold is
+ *  `leftUsd` (its first try's input as it was billed and its output limit `outputHeld`, less every try so far) and its
+ *  input, the prompt `last` was asked with, is priced uncached at the dearer of the input and cache-write prices, as the
+ *  cap prices a fresh input. Never more than `outputHeld`; 0 when nothing is left. So the one hold the cap took for
+ *  the request covers every try it makes. */
+export function reaskTokens(target: PiModel, last: RouteUsage, leftUsd: number, outputHeld: number): number {
+  const prompt = last.input + last.cacheRead + last.cacheWrite;
+  const at = (output: number) => Math.max(priceOn(target, { input: prompt, output, cacheRead: 0, cacheWrite: 0 }), priceOn(target, { input: 0, output, cacheRead: 0, cacheWrite: prompt }));
+  const inputUsd = at(0);
+  const perToken = (at(1_000_000) - inputUsd) / 1_000_000;
+  const room = leftUsd - inputUsd;
+  if (room < 0) return 0;
+  if (!(perToken > 0)) return outputHeld;
+  return Math.max(0, Math.min(outputHeld, Math.floor(room / perToken)));
 }

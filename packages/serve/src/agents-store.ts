@@ -1,5 +1,5 @@
-// The agents this server holds, over the one store (A: store.agents), the store-backed replacement for serve/src/agents.ts's
-// Agents class and pi-durable-agent's agent-store.ts (bodyOf, revisionOf folded into store/agent-body.ts). An agent is a
+// The agents this server holds, over the one store (store.agents); pi-durable-agent's agent-store.ts bodyOf and revisionOf
+// are folded into store/agent-body.ts. An agent is a
 // row with revisions written once; a definition is one revision; an edit commits the next and makes it current. A
 // revision's body is checked by store/agent-body.ts before anything is written; its skill texts ride on the revision's row.
 // The one server per store (the owner lock) is the sole writer of agents and revisions, so a read-then-write here is not
@@ -13,7 +13,7 @@ import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
-  AgentBodyInvalid, type AgenticBody, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
+  AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
   type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
@@ -97,7 +97,7 @@ export function externalOf(agent: AgentRow, revision: RevisionRow | null): (Exte
 /** A definition's tool settings as a revision body keeps them, through the one copy: checked by tool-plane's settingsIssues
  *  (a refusal is an input error) and made canonical by canonicalToolSettings (sorted keys, empty tools dropped, a pin's
  *  arguments sorted). `{ toolSettings }` when any survive, `{}` when none. Whether an agent may set its own pin is the
- *  request layer's gate (validate.ts AGENT_LAYER_PINS); here a pin that reaches this is kept canonical. */
+ *  request layer's gate (validate.ts); here a pin that reaches this is kept canonical. */
 function toolSettingsOf(given: unknown): { toolSettings?: ToolSettings } {
   if (!isObject(given)) return {};
   // Layer "agent": the one copy checks an agent's own tool settings (a broken agent pin is a 422, not served pin_broken).
@@ -108,7 +108,7 @@ function toolSettingsOf(given: unknown): { toolSettings?: ToolSettings } {
 }
 
 /** The revision a checked definition makes, in the store's shape (store/agent-body.ts's input), ready for bodyOf. `files`
- *  are the skill files by path. Ported from serve/src/agents.ts's revisionOf, over the folded validator. */
+ *  are the skill files by path. */
 function revisionInputOf(definition: Json, files: Record<string, string>): RevisionBodyInput {
   const issues = skillIssues(definition.skills, Object.keys(files));
   if (issues.length) throw invalid(issues);
@@ -237,22 +237,32 @@ export function makeRevision(definition: Json, files: Record<string, string>, no
   return note !== undefined ? { ...revision, note } : revision;
 }
 
+/** How many times an edit with no If-Match is built again on a current revision that moved while it was checked. */
+const EDIT_TRIES = 5;
+
 /** An edit: a new revision of the agent, made current. Without `skills` the current revision's skill files carry over. An
  *  edit that is the current revision writes nothing, so a PUT sent twice makes one revision. The agent keeps its id, name
  *  and description from its creation. `ifCurrent` (from If-Match) is the current revision the caller read, null for none;
- *  it is checked against the agent's current revision (one server per store writes agents). `check` may refuse the revision
- *  before a write. `contract`: an edit that always makes a new revision, even one equal to the current. */
+ *  it is checked against the agent's current revision when the edit is read, and the write is conditional on the revision
+ *  the edit was built on still being current, compared in the store's own transaction (addRevision's ifCurrent), so it
+ *  holds across every server on the store. `check` may refuse the revision before a write; it runs outside the write, so
+ *  another request may move the current revision meanwhile: an edit with If-Match is then precondition_failed, and one
+ *  without is built and checked again on the new current revision, so what it leaves out (skill files, harness, place, learning, cap) is never carried over from a
+ *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current. */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
   { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {},
 ): Promise<AgentEntry> {
-  const entry = (await getAgent(store, read.agent.id)) ?? read;
+  const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
+  const held = (entry: AgentEntry): AgentEntry => {
+    if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) throw stale();
+    return entry;
+  };
+  let entry = (await getAgent(store, read.agent.id)) ?? read;
   refuseExternal(entry.agent);
-  if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) {
-    throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
-  }
+  held(entry);
   const { agent } = entry;
   const kept = [
     ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -261,8 +271,34 @@ export async function commitAgent(
       .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
   ];
   if (kept.length) throw invalid(kept);
-  // What an edit leaves out keeps the agent's current revision's: its skill files, harness, place, learning switch and
-  // default cap. Absent here is unchanged, not the default.
+  for (let tries = 1; ; tries++) {
+    if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
+    const revision = editOn(entry, definition, skills, note);
+    await check?.(revision);
+    const base = entry.revision?.id ?? null;
+    const now = held((await getAgent(store, agent.id)) ?? entry);
+    if ((now.revision?.id ?? null) === base) {
+      if (!contract && now.revision && sameRevision(now.revision, revision)) {
+        checkVersion(definition, now.version);
+        return now;
+      }
+      checkVersion(definition, now.revisions + 1);
+      try {
+        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision });
+        return (await getAgent(store, agent.id))!;
+      } catch (error) {
+        if (!(error instanceof RevisionMoved)) storeError(error);
+      }
+    }
+    // Moved while it was checked or written: with If-Match that is stale; without, built and checked again on it.
+    if (ifCurrent !== undefined) throw stale();
+    if (tries >= EDIT_TRIES) throw new ApiError("precondition_failed", "the agent's current revision kept moving while this edit was checked: read the agent again");
+  }
+}
+
+/** The revision an edit makes on `entry`'s current one: what the edit leaves out keeps the current revision's, its skill
+ *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. */
+function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined): NewRevision & { note?: string } {
   const current = entry.revision;
   const currentBody = (current?.body ?? {}) as Partial<AgenticBody & WorkflowBody>;
   let files = skills;
@@ -273,21 +309,13 @@ export async function commitAgent(
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
-        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals, as main's agents.ts),
+        // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
       }
     : {};
-  const revision = makeRevision({ ...definition, ...carried }, files, note);
-  await check?.(revision);
-  if (!contract && current && sameRevision(current, revision)) {
-    checkVersion(definition, entry.version);
-    return entry;
-  }
-  checkVersion(definition, entry.revisions + 1);
-  await store.agents.addRevision({ agentId: agent.id, ...revision }).catch(storeError);
-  return (await getAgent(store, agent.id))!;
+  return makeRevision({ ...definition, ...carried }, files, note);
 }
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
@@ -340,7 +368,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
-    // Its approvals, of either kind: "ask" where none is set, as main's definition read says it (agents.ts definitionOf).
+    // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
