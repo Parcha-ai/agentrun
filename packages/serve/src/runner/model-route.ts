@@ -69,10 +69,13 @@ type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: strin
 export async function routeOf(model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
-  const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
+  const { models, unpriced } = await runModels(env, tier === "default" ? model : undefined, [tier]);
   const target = models.getModel(chosen.model.provider, chosen.model.modelId) as unknown as PiModel | undefined;
   if (!target) throw new Error(`no model ${chosen.model.provider}/${chosen.model.modelId} here`);
-  const price = (_model: string, used: RouteUsage): number => {
+  // A model serve has no price for (runModels' `unpriced`) carries a placeholder cost of zeros: its requests are booked at
+  // no known price (null), never $0, as a CLI run's are (adapters.ts priceOf).
+  const price = (_model: string, used: RouteUsage): number | null => {
+    if (unpriced.has(chosen.model.modelId)) return null;
     const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     return calculateCost(target as never, usage as never).total;
   };
