@@ -59,19 +59,6 @@ test("a read while the agent store is held exclusively waits, then answers once 
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
 });
 
-/** A workflow agent whose run is working, its model node answering 1.5 s after it starts, or once a file exists when
- *  `instructions` say "Answer once <file> exists.". */
-async function workingFlow(api, id, instructions = "Answer soon.") {
-  assert.equal((await api("POST", "/agents", flowAgent(id, answerFlow(instructions)))).status, 201);
-  const started = await api("POST", `/agents/${id}/runs`, { input: { question: instructions } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["working"]);
-  return started.body.run_id;
-}
-
-/** Refusals of the run's end, 100 ms apart, that add up to more than a request's 2 s wait. */
-const PAST_A_REQUEST = 21;
-
 // SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a follow-up to a stopped run is taken while another connection holds the agent store, and runs; taken or refused, never both", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t);

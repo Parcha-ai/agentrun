@@ -22,7 +22,7 @@ import { client, flowAgent, follow, letGo, runDir, scratch, serve, storeRun, wit
  *  while its least, $0.1024, fits what is left of the cap. */
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS"];
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const ENDED = ["completed", "failed", "cancelled"];
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
@@ -83,7 +83,7 @@ const collecting = (body, out) => ({
 
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
 test.skip("a capped workflow whose paid model node would cross the cap stops at it: the node's request is never sent, the run waits for a raise (input_required, pending budget naming the node), lets its process go after the hold, and a raise opens it again under the new cap, sending no completed node again", async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  withEnv(t, {}, KEYS);
   const { api, data } = await serve(t, { faux: PRICED });
   assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
   // $0.12: the first node's one request fits ($0.1024 at least, $0.04 spent), the second's does not ($0.04 spent and
@@ -202,7 +202,7 @@ test.skip("a capped workflow's llm call in a collecting map is not sent when it 
 
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
 test.skip("cancelling a capped workflow run paused at its cap whose process was let go ends it cancelled: nothing more is sent, and no process opens it again", async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  withEnv(t, {}, KEYS);
   const { api, data } = await serve(t, { faux: PRICED });
   assert.equal((await api("POST", "/agents", flowAgent("dropped", twoNodes()))).status, 201);
   const started = await api("POST", "/agents/dropped/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });
@@ -294,7 +294,7 @@ function keptRaiseOnly(data, runId, to) {
 
 // SKIP (follow-up #2080): the run never leaves queued or working on the runner
 test.skip("a raise serve.json kept and a crash cut short is finished at the server's next start: the paused run, its process let go, is opened again under the raised cap and completes", async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  withEnv(t, {}, KEYS);
   const { data, runId } = await pausedAndClosed(t, "kept");
   keptRaiseOnly(data, runId, 1);
   const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
@@ -306,7 +306,7 @@ test.skip("a raise serve.json kept and a crash cut short is finished at the serv
 
 // SKIP (follow-up #2080): the run never leaves queued or working on the runner
 test.skip("the same raise again, after a crash cut it short past serve.json, finishes it: the run completes under the raised cap", async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  withEnv(t, {}, KEYS);
   const { data, runId } = await pausedAndClosed(t, "retried");
   keptRaiseOnly(data, runId, 1);
   const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
@@ -321,7 +321,7 @@ test.skip("the same raise again, after a crash cut it short past serve.json, fin
 test.skip("a capped workflow's polled call held at its cap past its poll window is sent once raised, in its process and after its process was let go, its window moved by the hold", async (t) => {
   for (const letGoFirst of [false, true]) {
     const calls = join(await scratch(t), `parallel-calls-${letGoFirst}.jsonl`);
-    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, ...(letGoFirst ? { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" } : {}) }, KEYS);
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
     const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
     const flow = {
       v: 2, name: "polled",
@@ -361,7 +361,7 @@ test.skip("a polled call held at its cap and resumed by a raise while its window
   const cases = [{ deadline: 9, want: "failed" }, { deadline: 36, want: "completed" }];
   for (const { deadline, want } of cases) {
     const calls = join(await scratch(t), `parallel-calls-${deadline}.jsonl`);
-    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:18000", AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:18000" }, KEYS);
     const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
     const flow = {
       v: 2, name: "polled-resumed",

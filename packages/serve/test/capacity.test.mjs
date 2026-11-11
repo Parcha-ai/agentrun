@@ -100,7 +100,7 @@ test.skip("two follow-ups to a completed run that both wait for a place reach it
 });
 
 test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {
-  const { api } = await serve(t, { faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, readyTimeoutMs: 1_000 });
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
   const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -127,7 +127,7 @@ test.skip("a run whose first message never landed before the server stopped: not
   await sleep(1_500);
   assert.deepEqual(said, [], "nothing of the run after the server stopped");
   process.stderr.write = write;
-  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 });
+  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" });
   t.after(() => two.close());
   const { last } = await follow(client(two.baseUrl, two.token), run.body.run_id, ["completed", "failed"]);
   assert.equal(last.status, "completed", JSON.stringify(last));
