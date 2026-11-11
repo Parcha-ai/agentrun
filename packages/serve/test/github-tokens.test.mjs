@@ -257,6 +257,16 @@ test("the listing token tries each installation that covers a repository until o
   failures.repositories = 503;
   const refused = await server.api("POST", "/settings/mcp-servers/preview", entry);
   assert.deepEqual([refused.status, refused.body.error?.code], [502, "github_failed"], JSON.stringify(refused.body));
+  delete failures.repositories;
+  // The first covers a repository but its narrowed token is refused, and the second covers none: the refusal is the
+  // answer, never "none covers a repository", which would send the owner to add one already selected.
+  installations.get(778).repositories = [];
+  failures.mint = (installation, asked) => (installation === 777 && asked.repositories ? { status: 403, message: "This installation has been suspended" } : undefined);
+  const mintRefused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  const words = JSON.stringify(mintRefused.body);
+  assert.notEqual(mintRefused.status, 200, words);
+  assert.match(words, /GitHub gave no token for the App's installation on acme/, "the narrowed mint's refusal");
+  assert.doesNotMatch(words, /covers a repository|covers no repository/, words);
 });
 
 test("GitHub not answering the listing's read of an installation's repositories (a 503, a 429) is 502 github_failed, \"GitHub didn't answer: try again\", never github_not_connected: a preview, a save and a refresh each, and nothing stored changes", { timeout: 60_000 }, async (t) => {
