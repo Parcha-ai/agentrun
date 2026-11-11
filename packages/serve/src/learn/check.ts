@@ -221,17 +221,24 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   const values = input.refuseValues ?? [];
   const problems: Problem[] = [];
   const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, values));
-  const changes = input.changes.filter((change) => change.path !== INDEX_FILE);
-  if (changes.length > CAPS.changes) {
-    add("too_many_files", `${changes.length} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read`);
-    return { ok: false, problems, notes: [] };
-  }
+  const given = input.changes.filter((change) => change.path !== INDEX_FILE);
   const refused = valueMatcher(values);
+  // Each count cap names the items past it, in the order the answer gave them, so they alone are left out (propose.ts)
+  // and the rest is kept. The changed paths past CAPS.changes are named unread; but what refuses the whole answer by its
+  // path alone (a path outside what a run may write, a deletion, a name holding a secret) is read on every path first,
+  // past the cap too, so the cap never turns a whole refusal into one item left out.
+  for (const change of given.slice(CAPS.changes)) {
+    nameScanned(change.path, refused, add);
+    if (!learnedPlace(change.path) && (change.path.includes("/") || !change.path.endsWith(".md"))) add("outside", OUTSIDE, change.path);
+    else if (change.status === "deleted") add("deleted", "a run never deletes a note, a skill or a workflow", change.path);
+    add("too_many_files", `${given.length} changed paths; the cap is ${CAPS.changes} a run, and this one, past it, was not read`, change.path);
+  }
+  const changes = given.slice(0, CAPS.changes);
   const base = new Set(input.base.files);
   const notes: ProposedNote[] = [];
   const skills: string[] = [];
   const workflows = new Set<string>();
-  let added = 0;
+  const added: string[] = [];
   const one = (change: Change): void => {
     const { path } = change;
     const place = learnedPlace(path);
@@ -243,7 +250,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
       }
       return learnedChecked(change, place, refused, input, add);
     }
-    if (change.status === "added") added += 1;
+    if (change.status === "added") added.push(path);
     if (!nameChecked(path, refused, add, OUTSIDE)) return;
     if (change.status === "deleted") return add("deleted", "a run never deletes a note", path);
     if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
@@ -255,9 +262,9 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     notes.push(note);
   };
   for (const change of changes) one(change);
-  if (added > CAPS.newNotes) add("too_many_notes", `${added} new notes; the cap is ${CAPS.newNotes} a run`);
-  if (skills.length > CAPS.skills) add("too_many_skills", `${skills.length} skills added or changed; a run adds or changes at most ${CAPS.skills}`);
-  if (workflows.size > CAPS.workflows) add("too_many_workflows", `${workflows.size} workflow drafts added or changed; a run adds or changes at most ${CAPS.workflows}`);
+  for (const path of added.slice(CAPS.newNotes)) add("too_many_notes", `${added.length} new notes; the cap is ${CAPS.newNotes} a run, and this one is past it`, path);
+  for (const path of skills.slice(CAPS.skills)) add("too_many_skills", `${skills.length} skills added or changed; a run adds or changes at most ${CAPS.skills}, and this one is past it`, path);
+  for (const name of [...workflows].slice(CAPS.workflows)) add("too_many_workflows", `${workflows.size} workflow drafts added or changed; a run adds or changes at most ${CAPS.workflows}, and this one is past it`, `${WORKFLOWS_DIR}/${name}/workflow.json`);
   // A skill is what every later run reads as how to do the job: only a run that did it writes one.
   if (input.outcome !== "completed") for (const path of skills) add("skill_outcome", `the run's outcome is ${input.outcome ?? "not known"}: only a completed run adds or changes a skill`, path);
   // A draft is its workflow.json and its README.md, together, as the folder will hold them.
@@ -288,16 +295,22 @@ export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseV
   const active = new Set(base.active.map((note) => note.file));
   const out: Problem[] = [];
   const replaced = new Set<string>();
+  // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is. Counted in
+  // the order the notes come: a note that would take the count past the cap is named (and left out), and what it
+  // supersedes is neither counted nor held as superseded for the notes after it, so a later one that fits is kept.
+  const counted = new Set<string>();
   for (const note of notes) {
     if (files.has(note.file)) out.push({ rule: "exists", path: note.file, detail: "the folder has a note by this name" });
+    const would = new Set([...counted, ...note.supersedes]);
+    const over = would.size > CAPS.supersedes;
     for (const old of note.supersedes) {
       if (!active.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` });
       else if (replaced.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `${old} is superseded by another new note too` });
-      replaced.add(old);
+      if (!over) replaced.add(old);
     }
+    if (over) out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
+    else for (const old of note.supersedes) counted.add(old);
   }
-  // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is.
-  if (replaced.size > CAPS.supersedes) out.push({ rule: "supersedes", detail: `the new notes supersede ${replaced.size} notes; the cap is ${CAPS.supersedes} a run` });
   const gone = supersededBy(notes);
   const lines = [...active].filter((file) => !gone.has(file)).length + notes.filter((note) => note.status === "active").length;
   if (lines > INDEX_LINES) out.push({ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
