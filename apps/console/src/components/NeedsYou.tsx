@@ -30,7 +30,8 @@ export function BudgetPaused({ pending }: { pending: BudgetPending }) {
 }
 
 /** The server's suggested new cap for a run paused at its cap (`pending.suggested_cap_usd`), shown as served: the
- *  console computes none, and with none served (an older server) the raise starts empty. */
+ *  console computes none, and with none served (a pause that names no `spent_usd` names no raise either) the raise
+ *  starts empty. */
 export const suggestedCap = (pending: Pick<BudgetPending, "suggested_cap_usd"> | null | undefined): number | null =>
   typeof pending?.suggested_cap_usd === "number" && Number.isFinite(pending.suggested_cap_usd) ? pending.suggested_cap_usd : null;
 /** The least cap that sends the refused request (`pending.least_cap_usd`), as served; none for a pause that names no least. */

@@ -13,7 +13,7 @@ const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
 const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
-function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check } = {}) {
+function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew } = {}) {
   const calls = { asked: [], checked: [] };
   const deps = {
     facts: async () => ({ learns: true, costUsd: 0.01, ...facts }),
@@ -25,6 +25,7 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
     },
     newRunId: () => "run-learn-1",
     now: () => AT,
+    ...(nothingNew ? { nothingNew } : {}),
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
@@ -249,4 +250,13 @@ test("a run that never looked back keeps no answer time and no look-back cost", 
 test("checks that fail on their own drop the learning, saying so, and queue no run", async () => {
   const { hook, input } = hookWith({ check: () => { throw new Error("no seed"); } });
   assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked), ...ANSWERED } } }] });
+});
+
+test("a run that only ran its learned workflows is not asked, and its look back cost $0 even when its job's cost is unknown", async () => {
+  for (const costUsd of [0.01, null]) {
+    const { hook, input, calls } = hookWith({ facts: { costUsd }, nothingNew: async () => true });
+    const kept = await hook(input());
+    assert.deepEqual(calls.asked, [], "nothing asked");
+    assert.deepEqual(kept, { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, answered_at: new Date(AT).toISOString(), job_cost_usd: costUsd, look_back_usd: 0 } } }] }, `job cost ${costUsd}`);
+  }
 });

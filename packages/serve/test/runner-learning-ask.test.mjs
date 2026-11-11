@@ -59,7 +59,7 @@ async function spendInRecords(store, runId) {
 
 /** run-1 ended keeping NOTE, its learning run learn-1 claimed and run by the factory's loop, the grader's ask booked
  *  under `capUsd`. The loop's end, every request the provider got, and the store. */
-async function learnedUnder(t, capUsd) {
+async function learnedUnder(t, capUsd, wire = {}) {
   const { store, dir } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
@@ -68,10 +68,10 @@ async function learnedUnder(t, capUsd) {
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const sent = [];
   const ask = bookedAsk({
-    provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` },
+    provider: { api: wire.api ?? "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` },
     model: MODEL,
     price,
-    fetch: graderOrigin(sent),
+    fetch: (wire.origin ?? graderOrigin)(sent),
     beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => GRADER }),
   });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
@@ -100,4 +100,36 @@ test("a learning run whose cap leaves no room for the grade sends nothing: the c
   assert.equal(learning?.state, "dropped", JSON.stringify(learning));
   assert.equal(learning.reason, "grade_failed", "the grade could not be made");
   assert.equal(await spendInRecords(store, "learn-1"), 0, "nothing spent");
+});
+
+/** A gateway's Responses stream (what a pi grade on a gateway model reads): KEEP at USED, its connection left open
+ *  `lingerMs` after its completion event and its `[DONE]`, as a real gateway's can be: pi-ai's Responses client is done
+ *  at `[DONE]`, and the proxy books the request only once the stream ends. */
+const lingeringResponses = (lingerMs) => (sent) => async (_url, init = {}) => {
+  sent.push(JSON.parse(String(init.body ?? "{}")));
+  const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: KEEP, annotations: [] }] };
+  const events = [
+    { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
+    { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: KEEP },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: USED.input, output_tokens: USED.output, total_tokens: USED.input + USED.output } } },
+  ];
+  return new Response(new ReadableStream({
+    async start(controller) {
+      for (const event of events) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+      controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+      await new Promise((resolve) => setTimeout(resolve, lingerMs));
+      controller.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } });
+};
+
+test("a grade on a gateway's Responses stream that stays open after its answer is priced, never $0: the ask reads the spend once the proxy has booked the request", async (t) => {
+  const { end, store } = await learnedUnder(t, 1, { api: "openai-responses", origin: lingeringResponses(300) });
+  assert.deepEqual(end, { state: "ended" });
+  const learning = await runLearningEnd(store, "run-1");
+  assert.equal(learning?.state, "merged", JSON.stringify(learning));
+  assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 3 + USED.output * 15) / 1e6), `the grade's dollars: ${JSON.stringify(learning.cost_usd)}`);
+  assert.equal(eight(await spendInRecords(store, "learn-1")), eight(learning.cost_usd.grade), "the grade's figure is the booking's");
 });

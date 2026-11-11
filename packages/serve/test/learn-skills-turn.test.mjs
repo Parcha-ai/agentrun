@@ -49,7 +49,8 @@ test("an answer's skill and workflow blocks are read beside its notes, by name a
   assert.deepEqual(parsed.notes, [{ file: "check-units.md", text: units }]);
   assert.deepEqual(parsed.skills, [{ name: "find-policies", text: SKILL }]);
   assert.deepEqual(parsed.workflows, [{ name: "find-policies", text: `---\ndescription: ${DESCRIPTION}\n---\n${workflow({ tools: [] })}\n` }]);
-  assert.deepEqual(parseReflection(block("skill", "find-policies", SKILL)), { ok: true, notes: [], skills: [{ name: "find-policies", text: SKILL }] }, "a skill alone is an answer");
+  assert.deepEqual(parsed.order, [{ kind: "note", name: "check-units.md" }, { kind: "skill", name: "find-policies" }, { kind: "workflow", name: "find-policies" }], "every block in the answer's order");
+  assert.deepEqual(parseReflection(block("skill", "find-policies", SKILL)), { ok: true, notes: [], skills: [{ name: "find-policies", text: SKILL }], order: [{ kind: "skill", name: "find-policies" }] }, "a skill alone is an answer");
   // A skill's fence is four backticks: in three it is no skill's block, just text.
   assert.equal(parseReflection(block("skill", "find-policies", SKILL, "```")).skills, undefined);
 });

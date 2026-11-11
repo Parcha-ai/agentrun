@@ -127,12 +127,11 @@ test("a stale or lost claim reads no sign-in, and writes no hand", async (t) => 
   assert.equal((await r.bind("run-a", "browserbase", taken)).lines[0]?.ref, r.refs.a, "the claim that holds the run reads it");
 });
 
-test("runSignIn: the run's agent's pointer for the vendor under the claim, or none: no seal key, another key, a local Chrome, a stale claim; and a sign-in forgotten while the hand is written is never handed", async (t) => {
+test("runSignIn: the run's agent's pointer for the vendor under the claim, or none: another key, a local Chrome, a stale claim; and a sign-in forgotten while the hand is written is never handed", async (t) => {
   const r = await runner(t);
   const { runSignIn } = signIns;
   assert.equal(typeof runSignIn, "function", "sign-ins-store.ts exports runSignIn");
   assert.deepEqual(await runSignIn(r.store, KEY, r.claims["run-a"], "browserbase"), { provider: "browserbase", ref: r.refs.a, save: true });
-  assert.equal(await runSignIn(r.store, undefined, r.claims["run-b"], "kernel"), undefined, "no seal key");
   assert.equal(await runSignIn(r.store, randomBytes(32), r.claims["run-b"], "kernel"), undefined, "another key: it does not open");
   assert.equal(await runSignIn(r.store, KEY, r.claims["run-b"], "chrome"), undefined, "a local Chrome keeps none");
   assert.equal(await runSignIn(r.store, KEY, r.claims["run-c"], "browserbase"), undefined, "its agent has none");

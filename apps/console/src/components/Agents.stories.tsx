@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AgentEditor } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";

@@ -3,7 +3,7 @@
 // the OpenAPI document read every list of sources from the registry (trigger-adapters.ts), so a new source is one
 // adapter file and one line there.
 import type { InputIssue } from "./errors.js";
-import type { SettingsSpec } from "./sealed-settings.js";
+import type { SettingsSpec } from "./sealed-settings-store.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -31,7 +31,7 @@ export type TriggerAdapter = {
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
   owner: boolean;
-  /** What it keeps sealed (sealed-settings.ts), for the server or for each trigger: a field it mints (a signing secret)
+  /** What it keeps sealed (sealed-settings-store.ts), for the server or for each trigger: a field it mints (a signing secret)
    *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
   settings?: SettingsSpec;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */

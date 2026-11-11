@@ -11,7 +11,7 @@ import { goBack } from "@/lib/back";
 import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
-import { placeOf, runPlaceWords } from "@/lib/place";
+import { runPlaceWords } from "@/lib/place";
 
 /** `onRaiseCap`: raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again; offered on a capped agentic
  *  run that has not ended, here and beside a budget pause's banner. */
@@ -29,7 +29,7 @@ const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
   // Where it ran, as its start resolved it.
-  const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place));
+  const ranIn = runPlaceWords(run.place);
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;

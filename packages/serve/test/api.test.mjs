@@ -234,21 +234,23 @@ test("the error envelope: each code with its one status, 405 with Allow, 404 out
   check(await api("GET", "/agents?limit=0"), "bad_request");
 });
 
-test("every feature declared off answers 501 unsupported_here naming it, before any lookup", async (t) => {
+test("quotes, declared off, answer 501 unsupported_here naming it, before any lookup; the contract's routes this server does not serve are 404 and declared off", async (t) => {
   const { api, baseUrl } = await serve(t);
   const caps = (await client(baseUrl)("GET", "/capabilities")).body;
-  const probes = [
-    ["quotes", "POST", "/quotes", { agent_id: "x" }],
+  assert.equal(caps.features.quotes, false, "quotes are declared off");
+  const quote = await api("POST", "/quotes", { agent_id: "x" });
+  assert.equal(quote.status, 501);
+  assert.deepEqual([quote.body.error.code, quote.body.error.capability], ["unsupported_here", "quotes"]);
+  const gone = [
     ["runs.kill", "POST", "/runs/x/kill", {}],
     ["home.export", "GET", "/agents/x/home", undefined, { accept: "application/json" }],
     ["home.import", "PUT", "/agents/x/home", {}],
   ];
-  for (const [capability, method, path, body, headers] of probes) {
+  for (const [capability, method, path, body, headers] of gone) {
     const [group, name] = capability.split(".");
-    assert.equal(name ? caps.features[group][name] : caps.features[group], false, `${capability} is declared off`);
+    assert.equal(caps.features[group][name], false, `${capability} is declared off`);
     const res = await api(method, path, body, headers);
-    assert.equal(res.status, 501, `${method} ${path}`);
-    assert.deepEqual([res.body.error.code, res.body.error.capability], ["unsupported_here", capability]);
+    assert.deepEqual([res.status, res.body.error.code], [404, "not_found"], `${method} ${path}`);
   }
 });
 
