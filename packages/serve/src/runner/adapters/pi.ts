@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
-import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
+import { anthropicPolicy, CLAUDE_WEB_SEARCH_USD, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
@@ -132,7 +132,20 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
  *  dropped, and a request that offers the session's tools is the turn's answer request. `auth`: how the provider takes
  *  its credential (default x-api-key). */
 export function piPolicy(model: string, tools: readonly string[], auth?: "bearer" | "x-api-key", webSearch = false): ProviderPolicy {
-  return anthropicPolicy({ model, tools: [], builtins: tools, ...(auth ? { auth } : {}), ...(webSearch ? { webSearch: true, webSearchAllowance: HOSTED_SEARCH_ALLOWANCE_TOKENS } : {}) });
+  const policy = anthropicPolicy({ model, tools: [], builtins: tools, ...(auth ? { auth } : {}), ...(webSearch ? { webSearch: true, webSearchAllowance: HOSTED_SEARCH_ALLOWANCE_TOKENS } : {}) });
+  if (!webSearch) return policy;
+  // The hosted search's fees held with its tokens: each use its tool's max_uses allows, at the search's fee. One with no
+  // max_uses has no bound, and its worst case is unknown (the proxy's feeMaxUsd).
+  return { ...policy, feeMaxUsd: (body) => searchesAllowed(body, (tool) => typeof tool.type === "string" && tool.type.startsWith("web_search_"), "max_uses") * CLAUDE_WEB_SEARCH_USD } as ProviderPolicy;
+}
+
+/** The most searches `body` allows its hosted search tool (the one `isSearch` picks): its `limit` (the tool's own key, or
+ *  the body's on Responses), Infinity when it states none, 0 when the body offers no search. */
+function searchesAllowed(body: Record<string, unknown>, isSearch: (tool: Record<string, unknown>) => boolean, limit: string, bodyLimit = false): number {
+  const search = Array.isArray(body.tools) ? body.tools.find((tool): tool is Record<string, unknown> => typeof tool === "object" && tool !== null && isSearch(tool as Record<string, unknown>)) : undefined;
+  if (!search) return 0;
+  const most = bodyLimit ? body[limit] : search[limit];
+  return typeof most === "number" && Number.isInteger(most) && most >= 0 ? most : Infinity;
 }
 
 /** The policy of the session's wire, the one each CLI harness of that wire applies (no fork of either): Anthropic's
@@ -143,25 +156,31 @@ export function piPolicy(model: string, tools: readonly string[], auth?: "bearer
 export async function policyFor(provider: PiAdapterOptions["provider"], model: string, tools: readonly string[], webSearch = false): Promise<ProviderPolicy> {
   if (provider.api === "anthropic-messages") return piPolicy(model, tools, provider.auth, webSearch);
   // Loaded when a session of its wire opens, as the runner loads the codex harness.
-  const { codexPolicy } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live" }): ProviderPolicy };
+  const { codexPolicy, webSearchUsd } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live" }): ProviderPolicy; webSearchUsd(model: string): number | undefined };
   if (!webSearch) return codexPolicy({ model, tools });
-  return searchOnce(codexPolicy({ model, tools, webSearch: "live" }), codexPolicy({ model, tools }));
+  return searchOnce(codexPolicy({ model, tools, webSearch: "live" }), codexPolicy({ model, tools }), webSearchUsd(model));
 }
 
 /** Codex's live-search policy (`live`) as pi's session takes it. The Codex CLI offers its search on every request; pi
  *  offers it on one request alone, its web_search's hosted search (hosted-search.ts), so two of its rules are pi's here:
- *  - an answer that shows no search call ran none (0), where codex's reads every answer that does not state its count as
- *    unknown; one that shows a search call and states no count stays unknown;
+ *  - a request that offered no search ran none (0), read from the request's body, where codex's reads every answer that
+ *    does not state its count as unknown; the search's own request is read as codex reads it;
  *  - the hosted search's request has an input bound, its body's (`plain`, the policy with no search) plus the input
  *    HOSTED_SEARCH_ALLOWANCE_TOKENS allows its at most HOSTED_MAX_USES searches, as claude-agent's policy bounds Claude's
- *    search, so a capped run holds it and does not refuse it as unmeasured. */
-function searchOnce(live: ProviderPolicy, plain: ProviderPolicy): ProviderPolicy {
+ *    search, so a capped run holds it and does not refuse it as unmeasured; and its fees are held with its tokens, each
+ *    call its `max_tool_calls` allows at `searchUsd`, the model's price of one (none known: its worst case is unknown). */
+function searchOnce(live: ProviderPolicy, plain: ProviderPolicy, searchUsd: number | undefined): ProviderPolicy {
   const offersSearch = (body: Record<string, unknown>) => Array.isArray(body.tools) && body.tools.some((tool) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "web_search");
   return {
     ...live,
-    usageOf: (text) => {
-      const usage = live.usageOf(text) as ({ webSearches?: number | null } & object) | undefined;
-      return usage && usage.webSearches === null && !text.includes("web_search_call") ? { ...usage, webSearches: 0 } : usage;
+    usageOf: (text, body) => {
+      if (!body || offersSearch(body)) return live.usageOf(text, body);
+      const usage = plain.usageOf(text, body);
+      return usage && { ...usage, webSearches: 0 };
+    },
+    feeMaxUsd: (body) => {
+      const most = searchesAllowed(body, (tool) => tool.type === "web_search", "max_tool_calls", true);
+      return most === 0 ? 0 : most * (searchUsd ?? Number.NaN);
     },
     serverInputOverhead: (body) => {
       if (!offersSearch(body)) return live.serverInputOverhead?.(body);
