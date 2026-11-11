@@ -249,7 +249,7 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; maxToolCalls?: number } }, root: RunFiles, shell?: ShellPlace): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -296,7 +296,9 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     const asks = (await mcpOf(args)).filter((one) => gate.policy(one) === "ask");
     return asks.length ? learnedAskShown(asks) : undefined;
   };
-  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
+  // The revision's tool-call budget (tool-budget.ts), which the adapter loop holds each conversation's calls to.
+  const toolCalls = revision.body.maxToolCalls;
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), ...(toolCalls === undefined ? {} : { toolCalls }) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -331,7 +333,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
-  const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
+  const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; maxToolCalls?: number } };
   const granted = body.tools ?? [];
 
   // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
