@@ -442,7 +442,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
   // so its launch is prepared under them: a workflow run's title names the version it runs. A run of a version already
   // stored keeps the agent's as they are, as a run of any agent's earlier revision does.
-  const firstOfVersion = !stored || !(await store.agents.revisions(stored.agent.id)).some((row) => row.externalVersion === external.version);
+  const firstOfVersion = !stored || !(await store.agents.hasExternalVersion(stored.agent.id, external.version));
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
