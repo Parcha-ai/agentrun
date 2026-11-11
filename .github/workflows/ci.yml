@@ -509,6 +509,11 @@ jobs:
         # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
         working-directory: packages/serve
         run: node --test --test-timeout=240000 test/decision-key.test.mjs
+      - name: A run's folder swapped for a link reaches no host file
+        # The path-resolving branch every Mac takes (serve's local.ts), on the Mac's own kernel: its opens refuse a link
+        # anywhere on the way with O_NOFOLLOW_ANY (beneath.ts), which Linux CI stands in for by a walk through /proc.
+        working-directory: packages/serve
+        run: node --test --test-timeout=240000 --test-name-pattern="^local, resolving paths" test/workspace-local.test.mjs
       - name: The stranger's no-key quickstart
         # The README's quickstart, then the keyless examples against the registry's latest (#557). On a Mac the walk installs
         # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).
