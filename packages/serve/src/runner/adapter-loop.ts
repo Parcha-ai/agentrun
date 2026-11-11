@@ -36,6 +36,7 @@ import { portModels, type PortModels } from "../port-models.js";
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions">;
 import { bookedIn } from "../paid-calls.js";
+import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
@@ -57,7 +58,11 @@ export type RaiseCheck =
 export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string };
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
  *  key, as main's pending approval names it), else the call is asked about by its own name. */
-export type SpecGate = ((call: ToolCall) => GateAnswer | Promise<GateAnswer>) & { readonly askedAs?: (tool: string) => string };
+export type SpecGate = ((call: ToolCall) => GateAnswer | Promise<GateAnswer>) & {
+  readonly askedAs?: (tool: string) => string;
+  /** What an asked call's card shows beside its input (a learned workflow's MCP calls it would make), if anything. */
+  readonly askedFor?: (tool: string, args: unknown) => Promise<Record<string, unknown> | undefined>;
+};
 
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
@@ -669,6 +674,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
+  /** The calls of this run a person approved (an ask answered allow, on this claim or read from the journal on a resume),
+   *  each with the arguments its approval card showed (its journaled ask's): an approval covers what that card named. */
+  const approvedCalls = new Map<string, Readonly<Record<string, unknown>>>();
+  /** Each answered call's ask as journaled (the card the person saw), set by answerOf as it reads or writes the answer. */
+  const askedArgs = new Map<string, unknown>();
+  /** An MCP tool of the run as the claim's pass wrapped it, by its catalog name (set once its tools are wrapped). */
+  let mcpHosted: HostCalls["mcp"] = () => undefined;
   let mcpStale = false;
 
   /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
@@ -1147,7 +1159,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 flush: () => deps.flush(),
                 // Its paid requests booked under this call, on the run's one ledger (paid-calls.ts bookedIn, Ledger.paid); one
                 // refused for room pauses the run (Ledger.pause, the run's pause), as main's paidCall does.
-                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal })),
+                // The calls it may make of the run's other tools (a learned workflow's MCP nodes: host-calls.ts), each as this
+                // loop wrapped it, and whether a person approved this call.
+                route: () => bookedIn({ call: toolContext.callId, record: async () => {}, paid, pause: ledger.pause }, () => withHostCalls({ mcp: mcpHosted, approved: approvedCalls.get(toolContext.callId) },() => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }))),
                 beforeResult: async (answer) => {
                   const call: ToolCall = { callId: toolContext.callId, tool: tool.name as never, args: (args ?? {}) as Record<string, unknown> };
                   try {
@@ -1171,6 +1185,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
         });
         const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
+        // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
+        mcpHosted = (catalog) => {
+          const wire = mcp?.tools.find((one) => mcp?.catalogOf(one.name) === catalog);
+          const host = wire && tools.find((one) => one.name === wire.name);
+          return host && ((args, ctx) => host.call(args, ctx));
+        };
         // The session's model port, counting what it admitted and has not booked yet (a stop's booking comes once the
         // session's proxy sees its upstream end, which can be after pi went idle).
         const port = booking.models;
@@ -1541,8 +1561,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
       if (decision === "deny") return { deny: setToDenyText(asked) };
       if (decision === "allow") return "allow";
-      const answer = await answerOf({ ...call, tool }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
+      // The card shows the call's input, and beside it what the gate says the call would do that the person approves too
+      // (a learned workflow's MCP calls set to ask: askedFor).
+      const shown = await spec.gate?.askedFor?.(tool, call.args);
+      // Shown first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES) still names them whatever the input's size.
+      // The gate's own fields win over any of the same name in the call's input, which the model wrote.
+      const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
+      const answer = await answerOf({ ...call, tool, args }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
       if (answer === "park") return { park: true };
+      // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as
+      // approved with it (host-calls.ts), as far as the card they approved named it: its ask as journaled, the card they
+      // saw, never one built again now.
+      if (answer.approved) {
+        const seen = askedArgs.get(call.callId);
+        approvedCalls.set(call.callId, seen && typeof seen === "object" && !Array.isArray(seen) ? (seen as Record<string, unknown>) : {});
+      }
       return answer.approved ? "allow" : { deny: deniedText(asked, answer.note) };
     };
   }
@@ -1553,9 +1586,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
+    const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
+    // The card the person answers is the ask as first journaled: kept for the caller, which scopes an approval to it.
+    if (first) askedArgs.set(call.callId, first.args);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
-    const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
     // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price };
