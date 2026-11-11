@@ -570,6 +570,18 @@ export async function startRun(api, id, content, extra = {}, skills) {
   return run.body;
 }
 
+/** `send`'s answer, sent again while the store answers 409 home_busy (retryable: another write holds it, such as a CLI's
+ *  first-use install), after the retry_after_ms it names, as an API client does; at most 20 tries. The claude-agent MCP
+ *  cases went red on the first busy answer to an agent's create or a run's start (any-4 on #2410 and #2383, any-6 on #2470). */
+export async function whenFree(send) {
+  for (let tries = 1; ; tries++) {
+    const answer = await send();
+    const error = answer.body?.error;
+    if (answer.status !== 409 || error?.code !== "home_busy" || error.retryable !== true || tries >= 20) return answer;
+    await new Promise((resolve) => setTimeout(resolve, error.retry_after_ms ?? 500));
+  }
+}
+
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
  *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
