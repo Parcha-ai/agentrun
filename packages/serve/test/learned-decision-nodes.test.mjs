@@ -203,3 +203,31 @@ test("a learned workflow's judge node that sends an image runs: the image is rea
   assert.equal(lines()[0].images, 1, "with its image");
   assert.equal(book.admitted.length, 1);
 });
+
+test("a learned decision node's image is read through the run's own Workspace (Mode 2: its folder on the run's disk), never the runner's local work path", async (t) => {
+  const { writeFileSync } = await import("node:fs");
+  const { localWorkspace } = await import("../dist/workspace/index.js");
+  const { registry, sent } = await providers(t);
+  // The run's Workspace holds the image; the runner's local `work` path does not exist (as on Archil).
+  const disk = await scratch(t);
+  writeFileSync(join(disk, "shot.png"), PNG);
+  const doc = judgeFlow();
+  doc.schemas.In = { type: "object", required: ["claim", "image"], properties: { claim: { type: "string" }, image: { type: "string" } } };
+  doc.schemas.Check.properties.right.description = "Is the claim right, judging by page_1?";
+  Object.assign(doc.root.steps[0], { state: { claim: "{claim}", page: "page_1" }, images: { page_1: "{image}" } });
+  const flow = learned(doc);
+  const out = await runLearned({ ...runOf(flow, { providers: registry, book: booking() }), work: join(disk, "not-the-run-folder"), workspace: localWorkspace(disk) }, flow, { claim: "The screenshot shows a receipt.", image: "shot.png" });
+  assert.equal(out.isError, false, out.text);
+  assert.equal(sent(), 1);
+});
+
+test("the published tool settings schema names each decision provider's key, allow or deny, as the server accepts it", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const { DECISION_PROVIDER_KEYS } = await import("../dist/tool-plane.js");
+  const doc = openapiDocument(() => undefined);
+  const schema = doc.paths["/settings/tools"].put.requestBody.content["application/json"].schema;
+  for (const id of DECISION_PROVIDER_KEYS) {
+    assert.ok(schema.propertyNames.anyOf[0].enum.includes(id), `${id} is a key the schema names`);
+    assert.deepEqual(schema.properties[id]?.properties.permission.enum, ["allow", "deny"], id);
+  }
+});

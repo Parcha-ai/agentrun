@@ -64,10 +64,11 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `check`, through the runner's adapter loop on pi's spec, the host holding a fake
  *  Jev key (`toolSettings`: the agent's own). Its row, each session's records by key, its timeline and the calls the
  *  faux Jev got. */
-async function learnedJudgeRun(t, { toolSettings } = {}) {
+async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-learned-decisions-"));
   const jevCalls = join(dir, "jev.jsonl");
-  withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: jevCalls, AGENTRUN_TEST_FAUX_JEV_COST: String(JEV_USD) });
+  // `noUsage`: Jev's answer counts no tokens and reports no cost, so the decision's cost is unknown.
+  withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: jevCalls, AGENTRUN_TEST_FAUX_JEV_COST: String(JEV_USD), ...(noUsage ? { AGENTRUN_TEST_FAUX_JEV_NO_USAGE: "1" } : {}) }, noUsage ? [] : ["AGENTRUN_TEST_FAUX_JEV_NO_USAGE"]);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({ call: driveLearned });
@@ -83,7 +84,7 @@ async function learnedJudgeRun(t, { toolSettings } = {}) {
   });
   await server.agents.create({ id: "agent-1", name: "Checks" }, { id: "rev-1", kind: "agentic", body: { instructions: "Check the claim.", tools: ["read"], learning: true, ...(toolSettings ? { toolSettings } : {}) } });
   const seed = await landWorkflows(dir, "agent-1", [{ name: "check", description: "Checks whether a claim is right", workflow: checkFlow }]);
-  const launch = { input: { content: "Check the claim." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, learning: startAt(seed) };
+  const launch = { input: { content: "Check the claim." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, learning: startAt(seed), ...(capUsd !== undefined ? { maxCostUsd: capUsd } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
@@ -131,4 +132,12 @@ test("with jev denied on the agent, its claim hands no Jev key, the learned judg
   assert.match(JSON.stringify(result), /This workflow's decision node asks jev, which is set to deny for this agent\./, JSON.stringify(result));
   assert.deepEqual(sent, [], "nothing reached Jev");
   assert.deepEqual(records.decisions ?? [], [], "nothing booked on the run's decisions");
+});
+
+test("a capped pi run whose learned decision reports no cost saves its cost unknown: the cap's hold is never read as what the decision charged", { timeout: 120_000 }, async (t) => {
+  const { row, records, sent } = await learnedJudgeRun(t, { noUsage: true, capUsd: 1 });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(sent.length, 1, "the decision was sent and answered");
+  assert.deepEqual((records.decisions ?? []).map((record) => record.kind), ["runner.request", "runner.turn"], JSON.stringify(records.decisions));
+  assert.equal(row.costUsd, null, `an unknown charge leaves the run's cost unknown, never its hold: ${JSON.stringify(row)}`);
 });

@@ -40,6 +40,7 @@ import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
 import type { Complete } from "./llm.js";
+import type { Workspace } from "./workspace/workspace.js";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
@@ -180,6 +181,9 @@ export type LearnedWorkflowRun = {
    *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
    *  gate reads its settings live (main's process). */
   refresh?: () => Promise<void>;
+  /** The run's own Workspace (on the runner: its local folder in Mode 1, its folder on the run's disk in Mode 2), which
+   *  a decision node's images are read through. Absent: the local folder at `work`. */
+  workspace?: Workspace;
   /** The run's decisions (LS-07): its decision providers (decisions.ts decisionProvidersIn over the run's keys) and the
    *  one a node that names none is asked of; `book`, the run's decisions on its one cap (the adapter loop's
    *  ledger.decisions: DECISION_SESSION); `pause`, the run's pause on a refusal of that cap (ledger.pause), so its next
@@ -404,9 +408,10 @@ function decisionsOf(run: LearnedWorkflowRun, dsl: Parameters<typeof decisionsAs
 async function learnedJudge(run: LearnedWorkflowRun, decisions: NonNullable<LearnedWorkflowRun["decisions"]>) {
   const [{ judgeFromProviders }, { decisionJudge }, { imageLoader }] = await Promise.all([import("@parcha/agentrun-dsl"), import("./runner/workflow-spec.js"), import("./pdf-pages.js")]);
   type Judge = ReturnType<typeof judgeFromProviders>;
-  // A decision node's images (a page drawn by pdf_pages, a screenshot) are read from the run's work folder, as a workflow
-  // agent's are (pdf-pages.ts imageLoader).
-  const inner = judgeFromProviders({ providers: decisions.providers.providers, default: decisions.providers.default, loadImage: imageLoader(run.work) });
+  // A decision node's images (a page drawn by pdf_pages, a screenshot, an upload) are read through the run's own Workspace
+  // (Mode 2: its folder on the run's disk, never the runner's local path), as a workflow agent's are (pdf-pages.ts
+  // imageLoader).
+  const inner = judgeFromProviders({ providers: decisions.providers.providers, default: decisions.providers.default, loadImage: imageLoader(run.workspace ?? run.work) });
   const capped = decisionJudge<Judge>(inner, {
     getCap: () => decisions.book,
     providers: decisions.providers as never,

@@ -69,8 +69,8 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
 }
 
 /** An agent run's cost as its end commit stores it: its model requests' (`model`), its paid tool calls' (`paid`, the
- *  run's ledger.paid) and its decisions' (`decisions`, the run's ledger.decisions: a learned workflow's decision nodes,
- *  LS-07), summed; null (unknown) when any of them is. Never a known figure that leaves an unknown part out. */
+ *  run's ledger.paid) and its decisions' (`decisions`, a learned workflow's decision nodes, LS-07: bookedSpend over
+ *  their own session's records, so one that reported no cost is unknown, never the cap's hold for it), summed; null (unknown) when any of them is. Never a known figure that leaves an unknown part out. */
 export function runEndCost(parts: { readonly model: number | null; readonly paid: number | null; readonly decisions: number | null }): number | null {
   return parts.model === null || parts.paid === null || parts.decisions === null ? null : parts.model + parts.paid + parts.decisions;
 }
