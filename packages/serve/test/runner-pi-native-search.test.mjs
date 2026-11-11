@@ -42,18 +42,19 @@ const WIRES = {
   "openai-responses": { provider: "openai", model: "gpt-5", price: { input: 1.25, output: 10 }, searchTool: "web_search", origin: "https://api.openai.com" },
 };
 
-/** pi's own turns on `wire`: a web_search, then an answer. */
-async function turnsOn(t, wire) {
-  if (wire === "anthropic-messages") return scriptedOrigin([{ call: "web_search", args: { query: "widgets", n: 3 } }, { say: "done" }]);
-  const gateway = await startFauxGateway({ call: (request) => (JSON.stringify(request.body?.input ?? []).includes("function_call_output") ? undefined : { name: "web_search", input: { query: "widgets", n: 3 } }) });
+/** pi's own turns on `wire`: a web_search, then an answer that says `say`. */
+async function turnsOn(t, wire, say = "done") {
+  if (wire === "anthropic-messages") return scriptedOrigin([{ call: "web_search", args: { query: "widgets", n: 3 } }, { say }]);
+  const gateway = await startFauxGateway({ text: say, call: (request) => (JSON.stringify(request.body?.input ?? []).includes("function_call_output") ? undefined : { name: "web_search", input: { query: "widgets", n: 3 } }) });
   t.after(() => gateway.close());
   return (target, init) => fetch(`${gateway.url}${new URL(String(target)).pathname}`, init);
 }
 
 /** run-1, a pi run on `wire` granted web_search, its plane resolving it to the run's model's hosted search; its row once
- *  it rests, its timeline and view, the hosted search requests its route saw and its session records. */
-async function nativeSearchRun(t, wire) {
-  const on = WIRES[wire];
+ *  it rests, its timeline and view, the hosted search requests its route saw and its session records. `capUsd`: its
+ *  spend cap; `price`: its model's price per million tokens; `say`: what pi's last turn answers. */
+async function nativeSearchRun(t, wire, { capUsd = 1, price, say } = {}) {
+  const on = { ...WIRES[wire], ...(price ? { price } : {}) };
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-pi-native-search-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -70,9 +71,9 @@ async function nativeSearchRun(t, wire) {
   const plane = { web_search: "native", model: `${on.provider}/${on.model}` };
   // Under a cap, so the search's request must have a bounded input to be admitted (its search allowance), never refused as
   // unmeasured.
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Search." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: on.provider, modelId: on.model }, plane, max_cost_usd: 1 } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Search." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: on.provider, modelId: on.model }, plane, max_cost_usd: capUsd } });
   const searches = [];
-  const turns = await turnsOn(t, wire);
+  const turns = await turnsOn(t, wire, say);
   const origin = async (url, init = {}) => {
     const body = JSON.parse(String(init.body ?? "{}"));
     if ((body.tools ?? []).some((tool) => tool?.type === on.searchTool)) {
@@ -131,3 +132,53 @@ for (const [wire, on] of Object.entries(WIRES)) {
     assert.equal(eight(view?.cost?.usd ?? 0), eight(row.costUsd ?? 0), `the view's cost is the row's: ${JSON.stringify(view?.cost)}`);
   });
 }
+
+for (const wire of Object.keys(WIRES)) {
+  test(`a capped pi run's native web_search (${wire}) is held at its searches' fees as well as its tokens: a cap the fees could pass refuses the search before it is sent`, { timeout: 60_000 }, async (t) => {
+    // Tokens all but free, so only the fees can pass the cap: the search may run 5 searches at $0.01 each.
+    const capUsd = 0.005;
+    const { row, timeline, searches } = await nativeSearchRun(t, wire, { capUsd, price: { input: 0.0001, output: 0.0001 } });
+    assert.equal(searches.length, 0, "the search is refused before it leaves: its fees could pass the cap");
+    const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === "web_search");
+    assert.match(String(result?.tool_result_preview ?? ""), /error/, `the search answers its refusal: ${JSON.stringify(result)}`);
+    assert.ok(typeof row.costUsd === "number" && row.costUsd <= capUsd, `the run's cost stays within its cap: ${row.costUsd}`);
+  });
+}
+
+test("a pi run with native web_search whose answer only mentions a search call (openai-responses) still has a known cost: no search ran on a request that offered none", { timeout: 60_000 }, async (t) => {
+  const { row, records } = await nativeSearchRun(t, "openai-responses", { say: 'Each "web_search_call" item is one search the Responses API ran.' });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  const turns = records.filter((record) => record.kind === "runner.turn");
+  assert.deepEqual(turns.filter((record) => typeof record.data?.usd !== "number").map((record) => record.data), [], "every request's cost is known, the answer that only names a search call too");
+  assert.equal(eight(row.costUsd), eight(turns.reduce((sum, record) => sum + record.data.usd, 0)), "the run's cost is what its requests cost, none counted at its hold");
+});
+
+// A learned workflow's call node that names web_search runs its tool's effect, not the agent's binding: on a pi run whose
+// web_search is native, its search goes through the run's models as the agent's own search does, labelled web_search.
+const { specFor } = await import("./runner-spec-support.mjs");
+const { landWorkflows, startAt } = await import("./learned-workflow-seed-support.mjs");
+const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
+const SEARCH_FLOW = { v: 2, name: "search-one", schemas: { In: { type: "object", properties: { q: { type: "string" } }, required: ["q"] }, Found: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Found", path: "found" }, root: { node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{q}" }, out: "Found", as: "found", deadline_s: 30 } };
+
+test("a learned workflow's web_search call node on a pi run with native search searches through the run's models, as the agent's own web_search does", { timeout: 60_000 }, async (t) => {
+  const asked = [];
+  const model = { id: "claude-sonnet-5.5", name: "claude-sonnet-5.5", api: "anthropic-messages", provider: "anthropic", cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 } };
+  // The run's models: the search's request reaches them (and is answered with an error here: no provider is reached).
+  const models = { getModel: (provider, id) => (provider === "anthropic" && id === model.id ? model : undefined), getModels: () => [model], completeSimple: async () => { throw new Error("searched through the run's models"); }, streamSimple: () => ({}) };
+  const ledger = { models: async (label) => (asked.push(label), models) };
+  const launch = { plane: { web_search: "native", model: `anthropic/${model.id}` } };
+  const { spec } = await specFor(t, {
+    body: { learning: true, tools: ["web_search"] },
+    launch,
+    ledger,
+    before: async (_server, _key, dir) => {
+      launch.learning = startAt(await landWorkflows(dir, "agent-1", [{ name: "search-one", description: "Searches once", workflow: SEARCH_FLOW }]));
+    },
+  });
+  const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);
+  assert.ok(tool, `the run lists learned_workflow: ${JSON.stringify(spec.session.tools.map(({ name }) => name))}`);
+  const out = await tool.call({ name: "search-one", input: { q: "widgets" } }, { callId: "c-1", signal: new AbortController().signal });
+  assert.doesNotMatch(out.text, /no model to search on/, out.text);
+  assert.ok(asked.includes("web_search"), `the call node's search asked the run's models under web_search: ${JSON.stringify(asked)}`);
+  assert.match(out.text, /searched through the run's models/, out.text);
+});
