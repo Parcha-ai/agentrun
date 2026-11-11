@@ -55,6 +55,9 @@ test("check() refuses in words, field by field, with no docker call", () => {
 	assert.deepEqual(refused({ ...SPEC, network: undefined }), ["network"]);
 	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
 	assert.deepEqual(refused({ ...SPEC, cpus: 0 }), ["cpus"]);
+	// A count whose quota is no whole number of microseconds (1e18 CPUs is a quota of 1e23 µs) is no --cpu-quota Docker takes.
+	assert.deepEqual(provider.check({ ...SPEC, cpus: 1e18 }), [{ field: "cpus", message: "cpus must be at most 90071992547" }]);
+	assert.deepEqual(provider.check({ ...SPEC, cpus: 90_071_992_547 }), []);
 	assert.deepEqual(refused({ ...SPEC, memoryMb: 1.5 }), ["memoryMb"]);
 	assert.deepEqual(refused({ ...SPEC, pids: 0 }), ["pids"]);
 	assert.deepEqual(refused({ ...SPEC, workdir: "relative" }), ["workdir"]);

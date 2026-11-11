@@ -90,6 +90,20 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		docker("rm", "--force", "--volumes", created.value.name);
 	});
 
+	it("a computer asked for its CPUs, memory and processes has them: attach reads them back, as Docker's own inspect does", async () => {
+		// What serve's claim asks for with AGENTRUN_BOX_CPUS=1.5, AGENTRUN_BOX_MEMORY=512m and AGENTRUN_BOX_PIDS=256.
+		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", cpus: 1.5, memoryMb: 512, pids: 256, labels: { [RUN_LABEL]: run, role: "sized" } });
+		assert.equal(created.ok, true, JSON.stringify(created));
+		made.push(created.value.name);
+		const attached = await provider.attach({ id: created.value.name });
+		assert.equal(attached.ok, true, JSON.stringify(attached));
+		assert.deepEqual([attached.value.spec.cpus, attached.value.spec.memoryMb, attached.value.spec.pids], [1.5, 512, 256]);
+		const limits = JSON.parse(docker("inspect", "--type", "container", "--format", "{{json .HostConfig}}", created.value.name));
+		const bytes = 512 * 1024 * 1024;
+		assert.deepEqual([limits.CpuPeriod, limits.CpuQuota, limits.Memory, limits.MemorySwap, limits.PidsLimit], [100_000, 150_000, bytes, bytes, 256]);
+		docker("rm", "--force", "--volumes", created.value.name);
+	});
+
 	it("reads the Docker host's enforcement: every limit, and seccomp", async () => {
 		const host = await provider.host();
 		assert.equal(host.ok, true, JSON.stringify(host));

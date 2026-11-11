@@ -19,10 +19,12 @@ import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
+import { startServe } from "../dist/index.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerDepsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
+import { withEnv } from "./support.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -565,5 +567,67 @@ test("on compose, the default allow-list's Docker computer is made with every mo
     assert.ok(valuesOf(proxy, "--local")[0]?.split(",").includes("203.0.113.7"), `the proxy refuses the host's address: ${JSON.stringify(valuesOf(proxy, "--local"))}`);
     assert.equal(valuesOf(proxy, "--allow")[0], DEFAULT_BOX_ALLOW.join(","));
     await answer.release();
+  }
+});
+
+// AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY and AGENTRUN_BOX_PIDS size a Docker computer, a sandbox or a desktop, and no other:
+// at the claim they are on its spec as the Docker provider takes them (cpus, memoryMb, pids, which it runs the container
+// with as --cpu-quota, --memory and --pids-limit); unset, none is, so the provider's own defaults hold. A vendor's
+// computer (Daytona, Modal, E2B, a phone, a hosted browser) sizes itself and is never given them.
+const LIMITS = Object.freeze({ AGENTRUN_BOX_CPUS: "1.5", AGENTRUN_BOX_MEMORY: "2g", AGENTRUN_BOX_PIDS: "256" });
+const SIZED = Object.freeze({ cpus: 1.5, memoryMb: 2048, pids: 256 });
+const sizeOf = (spec) => Object.fromEntries(["cpus", "memoryMb", "pids"].filter((field) => Object.hasOwn(spec, field)).map((field) => [field, spec[field]]));
+
+test("the claim puts AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY and AGENTRUN_BOX_PIDS on a Docker sandbox's spec, and none of them when unset", async () => {
+  const sized = await placeClaim({ mode: "sandbox", box: "docker" }, "none", {}, { ...ENV, ...LIMITS });
+  assert.deepEqual(sized.record.loaded.map(([id]) => id), ["docker"]);
+  assert.deepEqual(sizeOf(sized.record.created[0]), SIZED, "the operator's limits, on the spec the Docker provider is asked to make");
+  await sized.answer.release();
+  const plain = await placeClaim({ mode: "sandbox", box: "docker" }, "none");
+  assert.deepEqual(sizeOf(plain.record.created[0]), {}, "unset: none on the spec, so the provider's defaults hold");
+  await plain.answer.release();
+});
+
+test("a Docker desktop's spec carries the limits as a Docker sandbox's does; no vendor's computer's spec carries any", () => {
+  const named = "example.org/desktop@sha256:" + "c".repeat(64);
+  const spec = computerSpecOf({ ...LIMITS, AGENTRUN_DOCKER_IMAGE: named });
+  for (const kind of ["sandbox", "desktop"]) assert.deepEqual(sizeOf(spec(entryOf("docker"), kind, { boxAllow: "none" })), SIZED, `a Docker ${kind}`);
+  const vendors = PROVIDERS.flatMap((entry) => (entry.id === "docker" ? [] : Object.keys(entry.defaultImage ?? {}).map((kind) => [entry.id, kind])));
+  assert.ok(vendors.length >= 8, `the registry declares the vendors' computers: ${JSON.stringify(vendors)}`);
+  for (const [id, kind] of vendors) assert.deepEqual(sizeOf(spec(entryOf(id), kind, {})), {}, `${id} ${kind} sizes itself`);
+});
+
+// A value the Docker provider would refuse at every claim stops the server's start instead, in the provider's own words
+// (its check()), naming the setting and what it takes.
+const REFUSED = [
+  ["AGENTRUN_BOX_CPUS", "0", "cpus must be a number of CPUs of at least 0.01", "a number of CPUs, such as 2 or 1.5"],
+  ["AGENTRUN_BOX_MEMORY", "4m", "memoryMb must be a whole number of MiB, at least 6", "a size with its unit (b, k, m or g), such as 512m or 4g"],
+  ["AGENTRUN_BOX_PIDS", "0", "pids must be a whole number from 1 to 4194304", "a whole number of processes and threads, such as 1024"],
+];
+
+test("a server whose AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY or AGENTRUN_BOX_PIDS the Docker provider refuses doesn't start, in the provider's words", async (t) => {
+  for (const [name, value, words, form] of REFUSED) {
+    await t.test(name, async (t) => {
+      withEnv(t, { [name]: value }, Object.keys(LIMITS));
+      const data = join(scratch(), "agents");
+      await assert.rejects(startServe({ data, port: 0, faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname }), { message: `${name} ${JSON.stringify(value)} is refused by the Docker provider: ${words} (${name} is ${form})` });
+    });
+  }
+});
+
+// The forms each setting takes, read once at the start: a number of CPUs, a size with its unit (MiB, the fraction dropped,
+// as Docker reads it), a whole number of processes. Anything else is one the provider refuses, never a guess.
+test("dockerLimitsOf reads each setting's form, and refuses what the Docker provider would", async () => {
+  const { dockerLimitsOf } = await import("../dist/workspace/computer-deps.js");
+  assert.deepEqual(dockerLimitsOf({}), {}, "none set: none");
+  assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_CPUS: " ", AGENTRUN_BOX_MEMORY: "" }), {}, "empty is unset");
+  assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_CPUS: "1.5" }), { cpus: 1.5 }, "only the ones set");
+  for (const [memory, mb] of [["2g", 2048], ["0.5g", 512], ["6.5m", 6], ["512M", 512], ["1048576k", 1024], [`${7 * 1024 * 1024}b`, 7]]) {
+    assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_MEMORY: memory }), { memoryMb: mb }, memory);
+  }
+  assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_PIDS: " 256 " }), { pids: 256 }, "trimmed");
+  const refusedBy = (name, value) => (error) => error.message.startsWith(`${name} ${JSON.stringify(value)} is refused by the Docker provider: `);
+  for (const [name, value] of [["AGENTRUN_BOX_CPUS", "two"], ["AGENTRUN_BOX_CPUS", "1000000000000000000"],["AGENTRUN_BOX_CPUS", "1e3"], ["AGENTRUN_BOX_CPUS", "-1"], ["AGENTRUN_BOX_MEMORY", "4gb"], ["AGENTRUN_BOX_MEMORY", "4096"], ["AGENTRUN_BOX_PIDS", "1.5"], ["AGENTRUN_BOX_PIDS", "4194305"]]) {
+    assert.throws(() => dockerLimitsOf({ [name]: value }), refusedBy(name, value), `${name}=${value}`);
   }
 });

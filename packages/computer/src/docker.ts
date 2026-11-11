@@ -207,6 +207,8 @@ const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is ref
 const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
+/** The most CPUs whose quota (CPU_PERIOD_US each) is still a whole number Docker takes. */
+const MAX_CPUS = Math.floor(Number.MAX_SAFE_INTEGER / CPU_PERIOD_US);
 const HELLO_TIMEOUT_MS = 30_000;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
@@ -402,6 +404,8 @@ export class DockerProvider implements ComputerProvider {
 			if ("problem" in allow) refuse("network", allow.problem);
 		} else if (network !== "none" && network !== "open") refuse("network", NETWORKS);
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= 0.01)) refuse("cpus", "cpus must be a number of CPUs of at least 0.01");
+		// Its CFS quota is a whole number of microseconds per period: a count too large for one is no quota Docker takes.
+		else if (cpus !== undefined && !Number.isSafeInteger(Math.round(cpus * CPU_PERIOD_US))) refuse("cpus", `cpus must be at most ${MAX_CPUS}`);
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb >= MIN_MEMORY_MB)) {
 			refuse("memoryMb", `memoryMb must be a whole number of MiB, at least ${MIN_MEMORY_MB}`);
 		}
