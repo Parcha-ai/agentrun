@@ -1079,6 +1079,8 @@ class AdbClient implements ComputerClient {
 			rect = r as Rect;
 		}
 		const bytes = await encodePng(rgba, width, rect);
+		// close() may have run while the frame was deflating: hold nothing for a closed connection.
+		if (this.#closed) return fail("gone", "the connection to the phone is closed");
 		const id = randomBytes(6).toString("hex");
 		this.#held = { id, bytes };
 		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
