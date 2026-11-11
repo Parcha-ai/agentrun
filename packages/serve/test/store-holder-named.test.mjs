@@ -1,6 +1,5 @@
 // A store transaction that ran out of time names who held the store, in its stack (never its message, which an answer may
-// carry): where it was opened, how late its deadline fired when this process's event loop was held, and the other
-// transactions open in this process. A begin that waited out its busy timeout names the transactions open here too, so
+// carry): where it was opened, and the other transactions open in this process. A begin that waited out its busy timeout names the transactions open here too, so
 // a log of a 409 home_busy or a 500 StoreDeadline says which caller to fix.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -19,23 +18,22 @@ async function file(t) {
   return join(dir, "c.sqlite");
 }
 
-/** Holds this process's event loop for `ms`, as a synchronous check of a large binary did. */
-const hold = (ms) => { const end = Date.now() + ms; while (Date.now() < end); };
+/** A wait of the transaction's own, with the event loop free: it counts toward the deadline in full. */
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("a transaction still open at its deadline names where it was opened, and that its timer fired late while the event loop was held", async (t) => {
+test("a transaction still open at its deadline names where it was opened", async (t) => {
   const db = await Connection.open(await file(t));
   t.after(() => db.close());
   await db.exec("CREATE TABLE notes (text TEXT)");
   const openedByThisTest = async () => db.transaction(async (tx) => {
     await tx.run("INSERT INTO notes (text) VALUES (?)", "held");
-    hold(1_300);
+    await wait(400);
     await tx.run("INSERT INTO notes (text) VALUES (?)", "never");
   }, { deadlineMs: 100 });
   await assert.rejects(openedByThisTest(), (error) => {
     assert.ok(error instanceof StoreDeadline, String(error));
     assert.doesNotMatch(error.message, /opened at|store-holder-named/, "the message, which an answer may carry, is as it was");
     assert.match(error.stack, /the transaction was opened at:\n[\s\S]*store-holder-named\.test\.mjs/);
-    assert.match(error.stack, /its deadline's timer fired \d+ ms late: this process's event loop was held that long/);
     return true;
   });
   assert.equal((await db.get("SELECT count(*) AS n FROM notes")).n, 0, "rolled back, nothing written");

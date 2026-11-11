@@ -7,6 +7,7 @@ import { type Answer, type Decision, type Effect, type Evidence, itemCounts, ite
 import { cn } from "@/lib/utils";
 import { at, nodeMeta } from "@/lib/workflowDoc";
 import { httpHref } from "@/lib/safeUrl";
+import { mcpCallTool } from "@/lib/mcp";
 
 type FileUrl = (ref: string) => string;
 const CONTAINERS = new Set(["chain", "parallel", "route", "map", "loop", "workflow"]);
@@ -48,7 +49,8 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <p className="caps flex items-center gap-1.5 text-label text-muted-foreground">
-              {node.kind}{meta.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : ""}
+              {node.kind}{meta.tool ? ` · ${toolName(meta.tool)}` : node.via ? ` · ${node.via}` : ""}
+              {meta.tool && mcpCallTool(meta.tool) && <McpMark />}
               {item && <><ChevronRight className="size-3" aria-hidden /> item {item.index + 1}</>}
             </p>
             <h2 className="mt-1 break-words font-mono text-lg font-semibold leading-tight">{item ? itemLabel(data, mapPath!, item.index) ?? `Item ${item.index + 1}` : node.label}</h2>
@@ -377,6 +379,11 @@ function Citations({ evidence }: { evidence: Evidence[] }) {
   );
 }
 
+/** A tool as a person reads it: an MCP server's (`mcp:<server>/<tool>`) as "<tool> on <server>", any other by its name. */
+const toolName = (tool: string) => { const m = mcpCallTool(tool); return m ? `${m.tool} on ${m.server}` : tool; };
+/** The mark beside an MCP server's tool, as the graph's card badges it. */
+const McpMark = () => <Chip tone="muted" title="An MCP server's tool"><span data-mcp>MCP</span></Chip>;
+
 /** A tool call: its input, and its output (a rendered page shows as its image). */
 export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fileUrl: FileUrl; zoom: (src: string) => void; compact?: boolean }) {
   const raw = e.output;
@@ -390,7 +397,8 @@ export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fil
     <section className="border bg-card">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
         <span className="caps inline-flex h-5 items-center border border-wf-tool/[.6] bg-wf-tool/[.12] px-1.5 text-micro leading-none text-wf-tool">tool</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-small">{e.tool}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-small" title={e.tool}>{toolName(e.tool)}</span>
+        {mcpCallTool(e.tool) && <McpMark />}
         <span className="font-mono text-label tabular-nums text-muted-foreground">{e.endedAt ? ms(span(e.startedAt, e.endedAt)) : ""}</span>
         <Chip tone={tone}>{e.status}</Chip>
       </header>

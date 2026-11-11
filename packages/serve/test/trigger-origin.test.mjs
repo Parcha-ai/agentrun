@@ -5,7 +5,7 @@
 // model and faux harness: no key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -48,7 +48,6 @@ function userEntries(data, runId) {
   const origins = timeline.messageOrigins(entries);
   return entries.filter((e) => e.model?.[0]?.role === "user").map((e) => ({ text: textOf(e), origin: origins.get(e) }));
 }
-const inputOf = async (data, runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).input.content;
 const { runEntries } = await import("../dist/store-reads/journal.js");
 /** On the store: each user entry the run's journal holds, with the origin messageOrigins reads for it (undefined: the
  *  person's), as userEntries reads a run's own database. */
