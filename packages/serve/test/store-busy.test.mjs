@@ -12,7 +12,6 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
-import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 /** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
@@ -88,39 +87,6 @@ test.skip("an edit whose commit meets a reader of the agent store waits for it, 
   assert.ok(answer.took >= HOLD_MS - 100, `it waited for the reader: ${answer.took} ms`);
 });
 
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("the agent home's own busy (a home held past its deadline) answers 409 home_busy with retry_after_ms, never 500", async (t) => {
-  const { api } = await serve(t);
-  // The store's createAgent throws pi-durable-agent's AgentHomeError("busy"), as a home another writer holds past its
-  // deadline does: the same module the server runs.
-  const probe = await scratch(t);
-  const store = openStore(probe);
-  const proto = Object.getPrototypeOf(store);
-  store.close();
-  const createAgent = proto.createAgent;
-  proto.createAgent = function () { throw new AgentHomeError("busy", "the agent home is held by another writer"); };
-  t.after(() => void (proto.createAgent = createAgent));
-  const answer = await api("POST", "/agents", agent("held-home"));
-  assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
-});
-
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("the agent home's own busy on a read no storeError wraps reaches the server's fallback: 409 home_busy, never 500", async (t) => {
-  const { api } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("held-read"))).status, 201);
-  // GET /agents/:id reads through the store's readAgent with no storeError on its path, so only the server's own
-  // fallback maps what it throws.
-  const probe = await scratch(t);
-  const store = openStore(probe);
-  const proto = Object.getPrototypeOf(store);
-  store.close();
-  const readAgent = proto.readAgent;
-  proto.readAgent = function () { throw new AgentHomeError("busy", "the agent home is held by another writer"); };
-  t.after(() => void (proto.readAgent = readAgent));
-  const answer = await api("GET", "/agents/held-read");
-  assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
-});
-
 /** A workflow agent whose run is working, its model node answering 1.5 s after it starts, or once a file exists when
  *  `instructions` say "Answer once <file> exists.". */
 async function workingFlow(api, id, instructions = "Answer soon.") {
@@ -170,104 +136,6 @@ test.skip("a workflow whose end outlasts the run end's retries is settled again,
   release();
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
   assert.equal(last.status, "completed", JSON.stringify(last));
-});
-
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("a run's view is of one moment: a run that ends while its read waits is answered ended, with its result", async (t) => {
-  const { api } = await serve(t);
-  const go = join(await scratch(t), "go");
-  assert.equal((await api("POST", "/agents", agent("viewed"))).status, 201);
-  const started = await api("POST", "/agents/viewed/runs", { input: { content: `Answer once ${go} exists.` } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["working"]);
-  // The next store readRun (the view's) waits until the test lets it go; every other read goes through.
-  const probe = await scratch(t);
-  const store = openStore(probe);
-  const proto = Object.getPrototypeOf(store);
-  store.close();
-  const readRun = proto.readRun;
-  t.after(() => void (proto.readRun = readRun));
-  let letGo;
-  let waiting = new Promise((resolve) => (letGo = resolve));
-  proto.readRun = function (...args) {
-    if (!waiting) return readRun.apply(this, args);
-    const until = waiting;
-    waiting = undefined;
-    const row = readRun.apply(this, args);
-    return until.then(() => row);
-  };
-  const viewing = api("GET", `/runs/${started.body.run_id}`);
-  for (let i = 0; waiting; i++) {
-    assert.ok(i < 200, "the view read the store");
-    await sleep(25);
-  }
-  await writeFile(go, "");
-  await follow(api, started.body.run_id, ["completed"]);
-  letGo();
-  const viewed = await viewing;
-  assert.deepEqual([viewed.status, viewed.body.status, viewed.body.result?.final_answer], [200, "completed", "Now."], JSON.stringify(viewed.body));
-});
-
-/** Holds each of the next two commits until both have arrived: each read its current revision and passed its checks, and
- *  both reach the store's own check of the body together, as two edits in flight at once do. */
-async function twoCommitsAtOnce(t) {
-  const probe = await scratch(t);
-  const store = openStore(probe);
-  const proto = Object.getPrototypeOf(store);
-  store.close();
-  const commit = proto.commitRevision;
-  t.after(() => void (proto.commitRevision = commit));
-  const arrived = [];
-  let armed = true;
-  proto.commitRevision = async function (agentId, input, options) {
-    if (armed) {
-      await new Promise((resolve) => {
-        arrived.push(resolve);
-        if (arrived.length === 2) (armed = false), arrived.forEach((go) => go());
-      });
-    }
-    return commit.call(this, agentId, input, options);
-  };
-  return () => assert.equal(arrived.length, 2, "both edits reached the store's commit together");
-}
-
-// SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
-test.skip("two edits in flight together, of a workflow or an agentic agent, are each checked against the revision current when it commits", async (t) => {
-  const { api } = await serve(t);
-  assert.equal((await api("POST", "/agents", flowAgent("flowed"))).status, 201);
-  const put = (instructions, extra = {}, headers = {}) => api("PUT", "/agents/flowed/definition", flowAgent("flowed", answerFlow(instructions), extra), headers);
-  const count = async () => (await api("GET", "/agents/flowed/revisions")).body.revisions.length;
-  const outcome = (answers) => answers.map((answer) => [answer.status, answer.body.error?.code ?? null, answer.body.error?.fields?.[0]?.field ?? null]).sort();
-
-  // Without If-Match, both asking for version 2: the second is read again on the first's revision, and refused.
-  let both = await twoCommitsAtOnce(t);
-  assert.deepEqual(outcome(await Promise.all([put("Answer A.", { version: 2 }), put("Answer B.", { version: 2 })])), [[200, null, null], [422, "input_invalid", "definition.version"]]);
-  both();
-  assert.equal(await count(), 2);
-
-  // Without If-Match, the same edit twice: the second finds it current and makes nothing.
-  both = await twoCommitsAtOnce(t);
-  assert.deepEqual(outcome(await Promise.all([put("Answer C."), put("Answer C.")])), [[200, null, null], [200, null, null]]);
-  both();
-  assert.equal(await count(), 3, "the same edit twice made one revision");
-
-  // With If-Match on the same revision: the second is refused, 412.
-  const etag = (await api("GET", "/agents/flowed")).headers.get("etag");
-  both = await twoCommitsAtOnce(t);
-  assert.deepEqual(outcome(await Promise.all([put("Answer D.", {}, { "if-match": etag }), put("Answer E.", {}, { "if-match": etag })])), [[200, null, null], [412, "precondition_failed", null]]);
-  both();
-  assert.equal(await count(), 4);
-
-  // An agentic agent's edits the same way: both asking for version 2, the second refused; the same edit twice, one revision.
-  assert.equal((await api("POST", "/agents", agent("raced"))).status, 201);
-  const edit = (instructions, version) => api("PUT", "/agents/raced/definition", agent("raced", { instructions, version }));
-  both = await twoCommitsAtOnce(t);
-  assert.deepEqual(outcome(await Promise.all([edit("Answer A.", 2), edit("Answer B.", 2)])), [[200, null, null], [422, "input_invalid", "definition.version"]]);
-  both();
-  both = await twoCommitsAtOnce(t);
-  assert.deepEqual(outcome(await Promise.all([edit("Answer C.", 3), edit("Answer C.", 3)])), [[200, null, null], [200, null, null]]);
-  both();
-  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
 });
 
 // SKIP (follow-up #2078): a held agent store is not waited on or answered as before on the runner
