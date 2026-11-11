@@ -374,7 +374,7 @@ async function heldWhileAnswering(world, run) {
   await world.until(async () => (await world.hold()) === "person", "the person holds the desktop once the look ended");
 }
 
-test("the agent answers while the person holds its desktop: the run waits for the hand-back, saying why on the Timeline, and only then ends and lets the desktop go (#2134)", async (t) => {
+test("the agent answers while the person holds its desktop: the run waits for the hand-back, saying why on the Timeline, and only then ends and lets the desktop go (#2134)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -392,7 +392,7 @@ test("the agent answers while the person holds its desktop: the run waits for th
   assert.ok(took >= 0 && waiting > took && gave > waiting, `the Timeline says the take, the wait, then the hand-back:\n${said.join("\n")}`);
 });
 
-test("a forgotten take-over does not hold the run forever: the hold's idle bound gives the desktop back, and the run ends (#2134)", async (t) => {
+test("a forgotten take-over does not hold the run forever: the hold's idle bound gives the desktop back, and the run ends (#2134)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding({ idleMs: 1_500 });
   await heldWhileAnswering(world, run);
@@ -404,7 +404,7 @@ test("a forgotten take-over does not hold the run forever: the hold's idle bound
   assert.ok(idle >= 0 && (waiting < 0 || idle > waiting), `the Timeline says the desktop went back for no input, after any wait:\n${said.join("\n")}`);
 });
 
-test("a stop while the run waits for the hand-back ends it stopped at once, and the desktop's take ends released (#2134)", async (t) => {
+test("a stop while the run waits for the hand-back ends it stopped at once, and the desktop's take ends released (#2134)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -421,7 +421,7 @@ test("a stop while the run waits for the hand-back ends it stopped at once, and 
   assert.deepEqual(run.ends, ["released"], "the release ends the take released");
 });
 
-test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", async (t) => {
+test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -438,7 +438,7 @@ test("a message while the run waits for the hand-back is not placed, so no turn 
   assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }]);
 });
 
-test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", async (t) => {
+test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   let stepStarted;
   const inStep = new Promise((resolve) => (stepStarted = resolve));
