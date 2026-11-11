@@ -59,7 +59,7 @@ async function chromeWith(t, html) {
   const { sessionId } = await setup.send("Target.attachToTarget", { targetId: targetInfos.find((one) => one.type === "page").targetId, flatten: true });
   const { frameTree } = await setup.send("Page.getFrameTree", {}, sessionId);
   await setup.send("Page.setDocumentContent", { frameId: frameTree.frame.id, html }, sessionId);
-  t.after(() => setup.close());
+  t.after(() => setup.close(), { timeout: 30_000 });
   const evaluate = (expression) => setup.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId);
   return { url, evaluate };
 }
