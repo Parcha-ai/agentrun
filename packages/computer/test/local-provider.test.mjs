@@ -74,7 +74,9 @@ test("check refuses what a local browser does not take, and a start as root, in 
 	// A list of names and CIDRs is taken; an empty one, a host that is not a name, and "none" are refused in words.
 	assert.deepEqual(provider().check({ ...SPEC, network: { allow: ["example.com", "*.example.org", "8.8.8.0/24"] } }), []);
 	// A listed range the fence refuses (loopback, private) is refused at check: a list never opens the fence.
-	for (const [network, words] of [[{ allow: [] }, /needs at least one name or CIDR/], [{ allow: ["not a host"] }, /not a name/], ["none", /"open" or \{ allow/], [{ allow: ["127.0.0.0/8"] }, /covers addresses the egress proxy refuses/], [{ allow: ["10.0.0.0/8"] }, /covers addresses the egress proxy refuses/]]) { // key-gate: loopback-rule ranges the fence refuses, refused at check
+	const loopbackRange = "127.0.0.0/8"; // key-gate: loopback-rule a range the fence refuses, refused at check
+	const privateRange = "10.0.0.0/8"; // key-gate: denylist a range the fence refuses, refused at check
+	for (const [network, words] of [[{ allow: [] }, /needs at least one name or CIDR/], [{ allow: ["not a host"] }, /not a name/], ["none", /"open" or \{ allow/], [{ allow: [loopbackRange] }, /covers addresses the egress proxy refuses/], [{ allow: [privateRange] }, /covers addresses the egress proxy refuses/]]) {
 		const said = provider().check({ ...SPEC, network });
 		assert.deepEqual(said.map((r) => r.field), ["network"], JSON.stringify(network));
 		assert.match(said[0].message, words);
