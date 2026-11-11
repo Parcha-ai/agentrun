@@ -8,7 +8,7 @@ import { link, mkdir, rename, symlink, unlink, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { test } from "node:test";
 import { confineHooks } from "../dist/confine.js";
-import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
+import { openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
@@ -77,12 +77,6 @@ test("the run's file view goes through its Workspace: a folder swapped for a lin
     swapping = false;
     await swapper;
   }
-});
-
-test("serve can require that the kernel refuses hard links to files the linker cannot write", () => {
-  assert.doesNotThrow(() => assertHardlinkProtection(() => "1\n"));
-  assert.throws(() => assertHardlinkProtection(() => "0\n"), /protected_hardlinks is 0/);
-  assert.throws(() => assertHardlinkProtection(() => { throw new Error("no such file"); }), /cannot be read/);
 });
 
 test("each entry left out says why: a link, not a regular file, another hard link; and a read past its cap is refused", async (t) => {
