@@ -989,6 +989,7 @@ A child is a conversation in the run's own journal, owned by its call, so it liv
   (`subagent: it stopped before it answered: ... spend_cap_reached`). The run's next request is refused the same way, so
   the run parks at its cap (`input_required`, a `budget` pending) and sends nothing more. A raise resumes the run, not
   the child: the agent reads the failed call on its next turn and may call `subagent` again, which starts a fresh child.
+  On a capped run, a call on a tier whose model has no known price is refused before any child starts.
 
 #### Patterns
 

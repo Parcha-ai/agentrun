@@ -18,7 +18,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { adapterRunSpecFromLaunch, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
+const { adapterRunSpecFromLaunch, capModelOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { providerFromRoute } = await import("../dist/runner/workflow-spec.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
@@ -198,4 +198,14 @@ test("a subagent tier's own model (model_tiers) that is not the host's model for
   assert.deepEqual([route.cost?.input, route.cost?.output], [3, 4], `the strong tier's price: ${JSON.stringify(route.cost)}`);
   const host = await routeOf(undefined, env, "strong", PI_WIRES);
   assert.equal(host.model, "team-strong", "a tier with no model of its own is the host's");
+});
+
+test("a tier's model the gateway has no price for routes unpriced, and the cap reads its price as unknown, never $0", async () => {
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL: "team-default", AGENT_MODEL_STRONG: "team-strong" };
+  const route = await routeOf("acme/mystery-1", env, "strong", PI_WIRES);
+  assert.equal(route.model, "acme/mystery-1");
+  assert.equal(route.unpriced, true, "no price set and none in the catalog");
+  assert.equal(capModelOf(route).price, null, "the cap never takes the placeholder zeros as a price");
+  const priced = await routeOf("acme/mystery-1", { ...env, AGENT_MODEL_STRONG_PRICE: "3,4" }, "strong", PI_WIRES);
+  assert.ok(!priced.unpriced && capModelOf(priced).price?.output === 4, "the tier's price, once set, is the cap's");
 });

@@ -157,7 +157,8 @@ export interface AdapterSpecDeps {
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
  *  overhead its provider adds; the output ceiling is the route's when it carries one, else none. */
 export function capModelOf(route: ModelRoute): CapModel {
-  const cost: RouteCost | undefined = route.cost;
+  // A model serve has no price for carries placeholder zeros: the cap reads it as unknown (null), never as $0.
+  const cost: RouteCost | undefined = route.unpriced ? undefined : route.cost;
   const price = cost
     ? {
         input: cost.input,
@@ -548,7 +549,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
       tier: (tier) => {
         const at = tierRoutes.get(tier);
-        return at ? { ref: { provider: tierProvider(tier), modelId: at.model } } : { why: tierWhy.get(tier) ?? "none is set" };
+        if (!at) return { why: tierWhy.get(tier) ?? "none is set" };
+        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on.
+        if (at.unpriced && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
+        return { ref: { provider: tierProvider(tier), modelId: at.model } };
       },
       preamble: environmentLine(),
     }));
