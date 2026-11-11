@@ -465,12 +465,15 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           }
           const taken = already ? { verdict: oneItemAFile(proposal, graded.verdict), replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
           const verdict = taken.verdict;
-          if (!verdict.merge) {
+          const merging = keptOf(proposal, verdict);
+          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded });
+          // Nothing new left to merge: dropped, unless the grader kept a re-filed skill whose rule main already holds as a
+          // note (takenOnMain's SAME_NOTE). Its old SKILL.md is still retired (mergeChangeOf's retire), in a write of that
+          // alone, so no old skill stays served beside the note.
+          if (!verdict.merge && !(graded.verdict.merge && change.retire?.length)) {
             await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
             return { state: "ended" };
           }
-          const merging = keptOf(proposal, verdict);
-          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded });
           const result = await learning.commit(ws, taken.replace.length ? { ...change, replace: taken.replace } : change);
           if (result.ok) {
             // What the merge left out against the main it committed on (a rule a note holds, a name one holds), each
@@ -483,7 +486,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(settled.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
-            const detail = mergedWords(settled.merging, settled.verdict, checked);
+            // A write that retired a skill alone learned nothing new: said so.
+            const detail = mergedWords(settled.merging, settled.verdict, checked) || said.empty;
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail, verdict: settled.verdict } satisfies MergedData, "ended");
             return { state: "ended" };
           }
