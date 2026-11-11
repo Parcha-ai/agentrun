@@ -7,7 +7,7 @@
 import { blurbOf } from "./tool-blurbs.js";
 import { LEARNED_MCP_TOOL } from "./learn/skills.js";
 import type { TSchema } from "typebox";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
@@ -35,8 +35,9 @@ import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
-import { SIGN_IN_KEY, SIGN_IN_SAVED, vendorsOver } from "./sign-ins.js";
+import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
+import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
@@ -103,10 +104,6 @@ export type ToolHost = {
    *  takes (adapter-loop AdapterRun.rowSummaryOn): a hand-over's wait sets the row's waiting summary in its waiting
    *  entry's commit, and its answer's commit clears it, so the server tells run.needs_input for a run held in its claim. */
   rowSummaryOn?(kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void;
-  /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
-   *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
-   *  (browser-person.ts personHands `answered`). */
-  handoverInJournal?: boolean;
   /** The run is on the runner: its live viewers are handed over through the store, not through files in its directory
    *  (browser-live.ts putLiveViewer/dropLiveViewer). The browser tool's live-viewer writers hang off this: `put` hands a
    *  session's viewer over (its token sealed under the run's `sealKey`), `drop` takes one (or all of the run's) back. The
@@ -387,8 +384,18 @@ const browserTool: ToolEntry = {
     const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
     const gates = fauxModelWaits(createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs }), Boolean(host.env[FAUX_ENV]));
     let opened: Harness | undefined;
+    // Every hand-over entry of the run's root conversation, in order: the asks' waiting entries (each ask's one record, in
+    // no file the run's agent reaches) and their answers.
+    const handovers = async () => (await opened?.commit(async (tx) => {
+      const found: Array<{ kind: string; data?: unknown }> = [];
+      for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+        const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+        for (const entry of page.items) if (entry.kind === "agent.handover") found.push({ kind: entry.kind, data: entry.data });
+        if (page.next === undefined) return found;
+        cursor = page.next;
+      }
+    }, context)) ?? [];
     const hands = person.personHands({
-      root: host.where.root,
       gates,
       personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
       carry: (tag, seconds) => spend.carry(tag, seconds),
@@ -405,48 +412,23 @@ const browserTool: ToolEntry = {
         await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
       },
       holdMs: windows.holdMs,
-      // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
-      waiting: async (tag) => (await opened?.commit(async (tx) => {
-        let count = 0;
-        for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
-          const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
-          for (const entry of page.items) {
-            const data = entry.data as { state?: unknown; session?: unknown } | undefined;
-            if (entry.kind === "agent.handover" && data?.state === "waiting" && data.session === tag) count += 1;
-          }
-          if (page.next === undefined) return count;
-          cursor = page.next;
-        }
-      }, context)) ?? 0,
-      // On the runner: an ask's answer is the root's first answered hand-over entry for it (runner/hand-back.ts).
-      ...(host.handoverInJournal ? {
-        answered: async (id: string) => (await opened?.commit(async (tx) => {
-          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
-            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
-            const found = answerIn(page.items, id);
-            if (found) return { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) };
-            if (page.next === undefined) return undefined;
-            cursor = page.next;
-          }
-        }, context)) ?? undefined,
-        // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
-        answer: async (id: string, data: Record<string, string>) => {
-          if (!opened) throw new Error("the run's journal is not open");
-          const on = opened;
-          const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
-            const found = answerIn(entries, id);
-            return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
-          });
-          return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
-        },
-      } : {}),
-      // Tests only (--faux): the process dies once between an ask's record and its row.
-      afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
-        const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
-        if (existsSync(mark)) return;
-        writeFileSync(mark, "");
-        process.kill(process.pid, "SIGKILL");
-      } : undefined,
+      // The asks: the root's waiting hand-over entries.
+      asks: async () => (await handovers()).flatMap((entry) => waitingAsk(entry.data) ?? []),
+      // An ask's answer: the root's first answered hand-over entry for it (runner/hand-back.ts).
+      answered: async (id: string) => {
+        const found = answerIn(await handovers(), id);
+        return found ? { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) } : undefined;
+      },
+      // The answer written only when the ask has none, read and written in one commit: exactly one answered entry.
+      answer: async (id: string, data: Record<string, string>) => {
+        if (!opened) throw new Error("the run's journal is not open");
+        const on = opened;
+        const { stood } = await answerOnce((change) => on.commit(change, context), ROOT_CONVERSATION_ID, (entries) => {
+          const found = answerIn(entries, id);
+          return found ? { stood: found } : { write: data as unknown as HandoverAnswered, stood: data as unknown as HandoverAnswered };
+        });
+        return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
+      },
     });
     const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
@@ -473,13 +455,10 @@ const browserTool: ToolEntry = {
     const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
-    const saved = kept?.save
-      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => {
-          if (verify) await verify(row, change);
-          else if (savedOnRelease(row, change)) writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 });
-        }
+    const saved = verify
+      ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => void (await verify(row, change))
       : undefined;
-    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
+    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
@@ -570,11 +549,10 @@ const browserTool: ToolEntry = {
         await spend.ledgerIdle();
       } finally {
         // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
-        // holds go, and the asks with them.
+        // holds go. The asks are the journal's, and stay there with their answers.
         await view.close();
         hands.close();
         await viewers.released();
-        person.dropAsks(host.where.root);
       }
     });
     return { tools, extensions: [extension] };
