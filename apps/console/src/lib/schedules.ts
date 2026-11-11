@@ -1,6 +1,6 @@
 import cronstrue from "cronstrue";
 import { ClientError } from "./client";
-import { clock, when } from "./format";
+import { clock } from "./format";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
 
 /** A trigger this console shows: a schedule that starts a run (isScheduleTrigger). */
@@ -46,11 +46,86 @@ export function cronWords(cron: string): string {
   }
 }
 
-/** When a schedule fires: its cron line and zone, its one time, or its interval. */
-export function whenWords(source: Schedule["source"]): string {
-  if ("cron" in source) return `${cronWords(source.cron)} · ${source.timezone}`;
-  if ("at" in source) return `Once, ${when(source.at)}`;
-  return `Every ${span(source.every_s)}`;
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** A time of day in `zone` on the clock `when` (format.ts) reads every console time on: "3:00 AM". */
+const clockIn = (t: Date, zone: string) => t.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: zone });
+
+/** A zone's short name at an instant: "EST", "EDT", "PST", "UTC"; Europe's "CET", "CEST", "BST" (which en-US says as
+ *  "GMT+1"); "GMT+9" for a zone with no short name in either. */
+export function zoneAbbr(t: Date, zone: string): string {
+  const name = (locale: string) => new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: "short" }).formatToParts(t).find((p) => p.type === "timeZoneName")?.value ?? zone;
+  const us = name("en-US");
+  if (!/^GMT[+-]/.test(us)) return us;
+  const gb = name("en-GB");
+  return /^GMT[+-]/.test(gb) ? us : gb;
+}
+
+/** An instant in `zone` with its day and zone: "Mon Nov 16, 3:00 AM EST". */
+export const zonedWhen = (iso: string, zone: string): string => {
+  const t = new Date(iso);
+  return `${t.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: zone }).replace(",", "")}, ${clockIn(t, zone)} ${zoneAbbr(t, zone)}`;
+};
+
+/** An instant's wall time in `zone`, as the milliseconds of that wall time read as UTC. */
+function wallIn(t: Date, zone: string): number {
+  const p: Record<string, string> = {};
+  for (const { type, value } of new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(t)) p[type] = value;
+  return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute));
+}
+
+/** The instant `hour`:`minute` is in `zone` on the day `ref` falls on there: its offset read at the guess, then again at
+ *  the instant found, so a day a clock changes on lands on the side the time is on. */
+function instantAt(ref: Date, zone: string, hour: number, minute: number): Date {
+  const day = new Date(wallIn(ref, zone));
+  const want = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, minute);
+  let t = want;
+  for (let i = 0; i < 2; i++) t += want - wallIn(new Date(t), zone);
+  return new Date(t);
+}
+
+/** A cron line's one time of day, when it has one ("0 8 * * 1": 08:00), and whether it names its days. */
+const dailyTime = (cron: string): { hour: number; minute: number; days: boolean } | null => {
+  const f = cron.trim().split(/\s+/);
+  if (f.length !== 5 || !/^\d{1,2}$/.test(f[0]!) || !/^\d{1,2}$/.test(f[1]!)) return null;
+  return { minute: Number(f[0]), hour: Number(f[1]), days: f.slice(2).some((x) => x !== "*" && x !== "?") };
+};
+
+/** When a cron line fires, for a viewer in `zone`. One time of day reads in the viewer's time, with the line's own time and
+ *  zone (24-hour, as the line has it) after it when its zone is another: "At 3:00 AM your time (08:00 UTC), only on
+ *  Monday"; in the viewer's own zone, "At 8:00 AM your time, only on Monday". The time is the one on `ref`'s day (the
+ *  next run, else now), so a clock change moves it. A line that names its days and lands on another day for the viewer
+ *  says so ("At 5:00 AM your time the next day (20:00 UTC), only on Monday"): its days are its own zone's. Any other
+ *  line keeps cronstrue's words, its zone after them when it is not the viewer's: "Every 15 minutes (UTC)". */
+function cronLine(cron: string, own: string, zone: string, ref: Date): string {
+  const words = cronWords(cron);
+  const other = own !== zone;
+  const daily = dailyTime(cron);
+  const head = daily && `At ${pad(daily.hour)}:${pad(daily.minute)}`;
+  if (daily && head && words.startsWith(head)) {
+    try {
+      const t = instantAt(ref, own, daily.hour, daily.minute);
+      const shift = daily.days ? Math.floor(wallIn(t, zone) / 864e5) - Math.floor(wallIn(t, own) / 864e5) : 0;
+      const day = shift > 0 ? " the next day" : shift < 0 ? " the day before" : "";
+      return `At ${clockIn(t, zone)} your time${day}${other ? ` (${head.slice(3)} ${own})` : ""}${words.slice(head.length)}`;
+    } catch {
+      // A zone this browser doesn't know: the line's own words, its zone named.
+    }
+  }
+  return `${words}${other ? ` (${own})` : ""}`;
+}
+
+/** A schedule's whole line, the one every place that shows a schedule uses (the Triggers list, a trigger's page, Apply's
+ *  made schedules), for a viewer in `zone` (the browser's): when it fires, then its next time with its day and zone ("At
+ *  3:00 AM your time (08:00 UTC), only on Monday · next Mon Nov 16, 3:00 AM EST"), or "no next time". A one time is its
+ *  time alone while that is its next ("Once, Mon Nov 16, 3:00 AM EST"); an interval is "Every 5 minutes · next …".
+ *  `instead` stands in for the next time (a one time that ran: "Done · ran …"); `now` is the day a line with no next time
+ *  reads its time on. */
+export function scheduleLine(source: Schedule["source"], nextAt: string | null, { zone = browserZone(), instead, now = Date.now() }: { zone?: string; instead?: string | null; now?: number } = {}): string {
+  const next = instead ? ` · ${instead}` : nextAt ? ` · next ${zonedWhen(nextAt, zone)}` : " · no next time";
+  if ("cron" in source) return `${cronLine(source.cron, source.timezone, zone, nextAt ? new Date(nextAt) : new Date(now))}${next}`;
+  if ("at" in source) return `Once, ${zonedWhen(source.at, zone)}${!instead && nextAt && Date.parse(nextAt) === Date.parse(source.at) ? "" : next}`;
+  return `Every ${span(source.every_s)}${next}`;
 }
 
 /** Dollars: "$2.00", "$0.50"; an amount finer than a cent as given ("$0.005"). */
@@ -149,7 +224,6 @@ export function firingWords(f: Firing): string {
 export const FIRING_LABEL: Record<Firing["status"], string> = { due: "Due", started: "Started", sent: "Sent", skipped: "Skipped", failed: "Failed", missed: "Missed" };
 
 const WALL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
-const pad = (n: number) => String(n).padStart(2, "0");
 
 /** The instant a wall time typed in this browser (datetime-local) is, in the browser's own zone, to the second
  *  ("2026-11-05T09:30:00Z"); null for no time. */

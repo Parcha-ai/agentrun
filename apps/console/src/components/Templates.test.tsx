@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
-import { when } from "@/lib/format";
-import { type Schedule, whenWords } from "@/lib/schedules";
 import type { TemplateView, Trigger } from "@/lib/v2";
 import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
 
@@ -383,8 +381,9 @@ describe("applying a template", () => {
   });
 
   // After an apply that made a schedule, the screen stays to say when it runs and its next run, in the Triggers page's
-  // words ("At 07:30, Monday through Friday · Europe/Madrid · next …"), with a link to it; the agent is one click on.
+  // line (scheduleLine: the viewer's time, the schedule's own in parentheses), with a link to it; the agent is one click on.
   it("after Apply, a schedule it made shows when it runs, in words, and its next run time, as on Triggers", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
     const DIGEST: Trigger = {
       id: "trg_m", name: "weekly-digest", enabled: true, source: { kind: "schedule", cron: "30 7 * * 1-5", timezone: "Europe/Madrid" },
       target: { kind: "start_run", agent_id: "market-monitor-1", input: { content: "Write the digest." }, max_cost_usd: 5 },
@@ -400,8 +399,7 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
     const row = t.host.querySelector('[aria-label="Schedules"] [data-trigger="trg_m"]')!;
     expect(row.querySelector("a")!.getAttribute("href")).toBe("#/triggers/trg_m");
-    expect(row.textContent).toContain(`${whenWords(DIGEST.source as Schedule["source"])} · next ${when(DIGEST.next_at!)}`);
-    expect(row.textContent).toContain("Europe/Madrid");
+    expect(row.querySelector("p")!.textContent).toBe("At 10:30 PM your time the day before (07:30 Europe/Madrid), Monday through Friday · next Wed Nov 11, 10:30 PM PST");
     expect(row.textContent).not.toContain("30 7 * * 1-5");
     const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
     expect(link?.getAttribute("href")).toBe("#/agents/market-monitor-1");

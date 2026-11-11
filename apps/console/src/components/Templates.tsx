@@ -11,8 +11,7 @@ import { Chip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
-import { when } from "@/lib/format";
-import { hookUrlOf, isScheduleTrigger, type Schedule, whenWords } from "@/lib/schedules";
+import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { choicesOf, grantsOf, issuesAt, needsOf, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
@@ -196,14 +195,13 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
               </div>
             );
         })}
-        {/* Each schedule the apply made: when it runs, in words in its zone, and its next run, as the Triggers page says
-            them. */}
+        {/* Each schedule the apply made: its line (scheduleLine), as the Triggers page says it. */}
         {schedules.length > 0 && (
           <ul className="mt-4 divide-y border" aria-label="Schedules">
             {schedules.map((s) => (
               <li key={s.id} data-trigger={s.id} className="px-4 py-3">
                 <a href={`#/triggers/${encodeURIComponent(s.id)}`} className="break-words text-prose font-semibold hover:underline">{s.name}</a>
-                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{whenWords(s.source)} · {s.next_at ? `next ${when(s.next_at)}` : "no next time"}</p>
+                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>
               </li>
             ))}
           </ul>

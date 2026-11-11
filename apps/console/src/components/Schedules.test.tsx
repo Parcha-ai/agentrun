@@ -121,11 +121,10 @@ describe("the schedules list", () => {
     expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_2"]);
     expect(rows[0].textContent).toContain("nightly triage");
     expect(rows[0].textContent).toContain("Triage");
-    expect(rows[0].textContent).toContain("At 01:30 · America/Los_Angeles");
-    expect(rows[0].textContent).toContain("Nov 5, 9:30 AM");
+    expect(rows[0].textContent).toContain("At 9:30 AM your time (01:30 America/Los_Angeles) · next Thu Nov 5, 9:30 AM UTC · Triage");
     expect(rows[0].textContent).toContain("Skipped: The last run is still working.");
     expect(rows[0].querySelector('a[href="#/triggers/trg_1"]')).not.toBeNull();
-    expect(rows[1].textContent).toContain("Every 5 minutes");
+    expect(rows[1].textContent).toContain("Every 5 minutes · no next time");
     expect(rows[1].textContent).toContain("Paused");
     expect(rows[1].textContent).toContain("Not fired yet");
     await t.click(/^New schedule$/);
@@ -308,7 +307,7 @@ describe("one schedule", () => {
     ] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("nightly triage");
-    expect(t.text()).toContain("At 01:30 · America/Los_Angeles");
+    expect(t.text()).toContain("At 9:30 AM your time (01:30 America/Los_Angeles) · next Thu Nov 5, 9:30 AM UTC");
     expect(t.text()).toContain("$2.00 a run");
     const rows = [...t.host.querySelectorAll("[data-firing]")];
     expect(rows.map((r) => r.getAttribute("data-firing"))).toEqual(["f3", "f2", "f1"]);
@@ -323,7 +322,9 @@ describe("one schedule", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1" })] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
-    expect(t.text()).toContain("next Nov 5, 1:30 AM");
+    // Its own zone is the viewer's: no parentheses, the zone said once, on its next time.
+    expect(t.text()).toContain("At 1:30 AM your time · next Thu Nov 5, 1:30 AM PST");
+    expect(t.text()).not.toContain("America/Los_Angeles");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
   });
