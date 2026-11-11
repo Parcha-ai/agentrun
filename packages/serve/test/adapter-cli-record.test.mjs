@@ -244,6 +244,7 @@ test("a CLI call parked on its ask is on the record while it waits, its start ma
   });
   assert.deepEqual(callsOf(waiting).map((call) => [call.callId, call.tool, call.status]), [["call-1", "lookup", "pending"]], "the parked call shows while it waits");
   assert.deepEqual(startsOf(waiting), [["call-1", true]], "its start, marked parked");
+  assert.equal(waiting.entries.find((entry) => entry.kind === KINDS.callStart).data.bridge, true, "and marked its bridge's: the CLI was handed nothing while it waits");
   assert.ok(callsOf(waiting)[0]?.startEntry < Number(waiting.entries.find((entry) => entry.kind === KINDS.ask).id), "the call's start reads before its ask");
   assert.deepEqual(ran, [{ q: "x" }], "run once, once allowed");
   assert.deepEqual(said.map((result) => result.text), ["found"], "the model is handed its result");
