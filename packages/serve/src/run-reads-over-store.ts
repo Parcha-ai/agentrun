@@ -15,7 +15,8 @@ import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { costIsBooked } from "./runner/metrics.js";
+import { runEntries, runTimeline } from "./store-reads/journal.js";
 import { StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
 import type { Workspace } from "./workspace/index.js";
@@ -114,8 +115,12 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
   const status = String(view.status);
   const ended = view.ended_at !== null;
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
+  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows: a workflow's
+  // usage row is its booking's (store-reads/journal.ts bookedUsage), its model nodes', its `llm` calls' and its paid
+  // tools', never its decisions', which the graph sums from their receipts. Its `llm` calls' answers are then all in it
+  // (llmRead), never counted again from the node log.
   const rows = ended ? await runTimeline(store, runId, deps.context) : [];
+  const booked = ended && costIsBooked(await runEntries(store, runId, deps.context), false);
   // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
   // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
@@ -129,7 +134,7 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     root: "",
     input: launch?.input ?? {},
     modelCost: ended ? costOf(rows) : 0,
-    llmRead: 0,
+    llmRead: booked ? Number.MAX_SAFE_INTEGER : 0,
     store,
     context: deps.context,
   }), cut.values, graphParts);
@@ -186,7 +191,8 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
   async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
     // The view first, then the rows, never both at once: the journal only grows, so the rows read after the view hold
     // every entry its status was read from. Read together, a message committed between the two reads gave a page that
-    // said working before the message row it works on (#2307). The rows may run ahead of the status, never behind it.
+    // said working before the message row it works on (#2307), or a waiting status with its parked call's row still
+    // missing. The rows may run ahead of the status, never behind it.
     const view = await deps.runView(store, runId);
     if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
     const rows = await deps.timelineRows(store, runId, deps.context);
