@@ -156,6 +156,9 @@ export interface BudgetData {
   readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number; readonly bound_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
+  /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
+   *  run's pause. */
+  readonly node?: string | null;
 }
 
 export interface CallStartData {

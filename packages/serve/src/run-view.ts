@@ -234,7 +234,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
 
 /** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
  *  as the run row's summary says them. */
-type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string };
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
@@ -309,7 +309,8 @@ export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "m
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
     ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
     : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+  // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
 }
 
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
