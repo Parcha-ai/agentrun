@@ -381,12 +381,20 @@ test("a server whose output ends with no \"Open \" line gives no address", async
 
 // The repository's Node rule, at the top of the bin and not behind a main-module guard (Node 20 has none, and a guarded
 // check there would pass by doing nothing): an older Node gets one line saying what to install, and exit 1.
-test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 before it loads anything", () => {
-  for (const node of ["20.20.0", "22.18.0", "23.11.0", "24.1.0"]) {
-    const fake = `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, "versions", { value: { ...process.versions, node: "${node}" } });`)}`;
-    const run = spawnSync(process.execPath, ["--import", fake, BIN, "--help"], { encoding: "utf8" });
-    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js 22.19 or newer on 22, or 24.2 or newer; you have v${node}.\n`], node);
+test("on a Node below the package's engines floor the bin says, in one line, the floor it needs, and exits 1 before it loads anything", () => {
+  // The floor the line names is the package's engines.node, never a number of its own (it once said 22.19 and 24.2).
+  const engines = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).engines.node;
+  const [, needMajor, needMinor] = /^>=(\d+)\.(\d+)\.\d+$/.exec(engines).map(Number);
+  assert.deepEqual([needMajor, needMinor], [24, 11], "the floor this test was written at");
+  const fakeNode = (node) => `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, "versions", { value: { ...process.versions, node: "${node}" } });`)}`;
+  for (const node of ["20.20.0", "22.19.0", "23.11.0", "24.2.0", `${needMajor}.${needMinor - 1}.9`]) {
+    const run = spawnSync(process.execPath, ["--import", fakeNode(node), BIN, "--help"], { encoding: "utf8" });
+    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js ${needMajor}.${needMinor} or newer; you have v${node}.\n`], node);
   }
+  // At the floor itself the check passes: the bin goes on and prints its usage.
+  const at = spawnSync(process.execPath, ["--import", fakeNode(`${needMajor}.${needMinor}.0`), BIN, "--help"], { encoding: "utf8" });
+  assert.doesNotMatch(at.stderr, /AgentRun needs Node\.js/, at.stderr);
+  assert.equal(at.status, 0, at.stderr);
 });
 
 // docs/SKILL.md's start step, as a coding agent runs it: when the command fails, the step ends and says why, never waits.

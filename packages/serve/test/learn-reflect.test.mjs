@@ -7,34 +7,18 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ANSWER_TOKENS_LEAST } from "../dist/cap.js";
 import { agentFolderOf } from "../dist/files.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { agent, client, follow, serve, withEnv } from "./support.mjs";
+import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, started } from "./learn-support.mjs";
+import { agent, follow, serve, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
-/** A request's least under OUTPUT_PRICED: its answer's 1,024 tokens (the faux model does not think), at $100 per million.
- *  A cap sends any request it can buy this much of, limited to what it can buy, and refuses one it cannot. */
-const LEAST = (ANSWER_TOKENS_LEAST * 100) / 1e6;
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
-
-/** The bin on `data`, as an operator starts it. */
-async function serverProcess(data) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", LEARN], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_ACCOUNTS: "0" } });
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=/.test(out); i++) {
-    // 90 s: a loaded machine can take well over 20 s to start a server process (the test's own timeout is 150 s).
-    assert.ok(i < 1800 && child.exitCode === null, `the server did not start: ${out}`);
-    await sleep(50);
-  }
-  return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim()) };
-}
 
 test("a seed that failed is a learning row, seed_failed, and a run that does not learn has none", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });

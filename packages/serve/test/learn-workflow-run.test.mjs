@@ -18,7 +18,7 @@ import { REPLAY } from "../dist/host-tools.js";
 import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
-import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;

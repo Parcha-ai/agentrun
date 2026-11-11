@@ -19,7 +19,7 @@ import { MODEL_KEYS } from "../dist/model.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
-import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
