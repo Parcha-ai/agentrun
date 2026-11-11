@@ -749,23 +749,38 @@ export function startRunner(options: RunnerOptions): Runner {
   commandTimer = setTimeout(deliverAll, commandPollMs);
 
   /** The untaken stop or cancel row each of `going` ends on (endingRow: a cancel before a stop), past its cursor, by run id:
-   *  the close's one read of their rows (store.commandsOf). A read that fails is said, and those runs are released for a
-   *  shutdown as before: their rows stay untaken, for the next claim. */
+   *  the close's one read of their rows (store.commandsOf), after the deliveries in flight. The whole of it is bounded by
+   *  the stop margin, so a store that stalls never holds the shutdown: a read that fails or runs past it is said, and those
+   *  runs are released for a shutdown as before, their rows untaken for the next claim. */
   const closingEnds = async (going: readonly Held[]): Promise<Map<string, Command>> => {
     const ends = new Map<string, Command>();
     if (going.length === 0) return ends;
-    // A delivery in flight finishes first: it may be handing on that same row.
-    await Promise.all(going.map((held) => held.inFlight?.catch(() => undefined)));
-    const still = going.filter((held) => !held.stopping && !held.ending && !held.fence.lost);
-    if (still.length === 0) return ends;
-    try {
+    const read = async (): Promise<Map<string, Command>> => {
+      // A delivery in flight finishes first: it may be handing on that same row.
+      await Promise.all(going.map((held) => held.inFlight?.catch(() => undefined)));
+      const still = going.filter((held) => !held.stopping && !held.ending && !held.fence.lost);
+      if (still.length === 0) return ends;
       const rows = await store.commandsOf(still.map((held) => ({ runId: held.claim.runId, after: held.cursor })));
+      const found = new Map<string, Command>();
       for (const held of still) {
         const end = endingRow((rows.get(held.claim.runId) ?? []).filter((row) => row.takenAt === null));
-        if (end) ends.set(held.claim.runId, end);
+        if (end) found.set(held.claim.runId, end);
       }
+      return found;
+    };
+    let bound: NodeJS.Timeout | undefined;
+    const late = new Promise<"late">((resolve) => (bound = setTimeout(() => resolve("late"), stopMarginMs)));
+    // A read that fails after the bound is never an unhandled rejection: the close has moved on without it.
+    const reading = read();
+    reading.catch(() => undefined);
+    try {
+      const found = await Promise.race([reading, late]);
+      if (found !== "late") return found;
+      for (const held of going) emit({ type: "error", runId: held.claim.runId, step: "commands", message: `the close's read of its stop rows took longer than ${stopMarginMs} ms: released for the next claim` });
     } catch (error) {
-      for (const held of still) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
+      for (const held of going) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
+    } finally {
+      clearTimeout(bound);
     }
     return ends;
   };

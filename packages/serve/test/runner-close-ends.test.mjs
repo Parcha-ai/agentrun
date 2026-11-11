@@ -32,3 +32,30 @@ for (const kind of ["cancel", "stop"]) {
     assert.deepEqual(loopOf("run-2").stopCalls.map((call) => call.kind), ["shutdown"]);
   });
 }
+
+test("a close whose read of the stop rows never answers is bounded by the stop margin: the run is stopped for a shutdown and released, its cancel left for the next claim", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  // The store answers every read but the close's one (the command poll never ticks here): that one never answers.
+  const stalled = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "commandsOf") return () => new Promise(() => {});
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const events = [];
+  const runner = startRunner({ store: stalled, createLoop: faux.createLoop, name: "runner-a", ...TIMING, stopMarginMs: 1_000, onEvent: (event) => events.push(event) });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(() => faux.loops.length === 1, "the run claimed");
+  const row = await sendCommand(server, "run-1", { kind: "cancel" });
+  const startedAt = Date.now();
+  await runner.close();
+  assert.ok(Date.now() - startedAt < 10_000, `the close resolved within its bounds: ${Date.now() - startedAt} ms`);
+  const released = await server.runs.get("run-1");
+  assert.deepEqual([released.state, released.runner], ["running", null], `released for the next runner: ${JSON.stringify(released)}`);
+  assert.equal((await commandRow(server, "run-1", row.id)).takenAt, null, "its cancel is left untaken for the next claim");
+  assert.deepEqual(faux.loops[0].stopCalls.map((call) => call.kind), ["shutdown"]);
+  assert.ok(events.some((event) => event.type === "error" && event.step === "commands" && /took longer than 1000 ms/.test(event.message)), `the close said why: ${JSON.stringify(events.filter((event) => event.type === "error"))}`);
+});
