@@ -304,6 +304,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [needsProblem, setNeedsProblem] = useState<string | null>(null);
   const [ownRun, setOwnRun] = useState<boolean | null>(null);
   const [needsTry, setNeedsTry] = useState(0);
+  // The failed runs Mission Control's last read of Needs you listed (its effect below), kept across that effect's restarts.
+  const failedSeenRef = useRef<Set<string> | null>(null);
   // Whether the runs asking a person have been read at least once: until then the Needs input tile's count is unknown,
   // never the empty list a failed first read leaves (a later failure keeps the last list, and its count).
   const [askingRead, setAskingRead] = useState(false);
@@ -476,12 +478,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
   useEffect(() => {
-    if (where.section !== "mission") return;
+    // Left Mission Control: its counts are read afresh on the way back, so the failed runs seen start over.
+    if (where.section !== "mission") { failedSeenRef.current = null; return; }
     let live = true;
     // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
     // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
-    // store's counts and analytics, and every run's row), so it is read again only then, never on every poll.
-    let failedSeen: Set<string> | null = null;
+    // store's counts and analytics, and every run's row), so it is read again only then, never on every poll. Kept across
+    // the reads' restarts (Run again restarts them, needsTry): a run that fails before the restarted reads' first one is
+    // still one the last read did not list.
+    const failedSeen = failedSeenRef;
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
@@ -498,8 +503,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         if (reads[1]?.status === "fulfilled") {
           setFailedRead(true);
           const ids = reads[1].value.map((r) => r.run_id);
-          if (failedSeen && ids.some((id) => !failedSeen!.has(id))) setMissionTry((n) => n + 1);
-          failedSeen = new Set(ids);
+          const seen = failedSeen.current;
+          if (seen && ids.some((id) => !seen.has(id))) setMissionTry((n) => n + 1);
+          failedSeen.current = new Set(ids);
         }
         if (reads[2]?.status === "fulfilled") setLiveRead(true);
         setNeeds((prev) => {

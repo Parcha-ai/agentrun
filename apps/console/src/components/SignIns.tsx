@@ -1,5 +1,5 @@
 import { KeyRound } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, problemOf } from "@/lib/client";
@@ -10,6 +10,9 @@ import type { SignIn } from "@/lib/v2";
 const VENDOR: Record<string, string> = { browserbase: "Browserbase", kernel: "Kernel" };
 const vendor = (provider: string) => VENDOR[provider] ?? provider;
 const runLink = (id: string) => <a href={`#/runs/${encodeURIComponent(id)}`} className="font-mono underline underline-offset-2">{id.slice(-8)}</a>;
+/** While a run holds one of the agent's sign-ins, how often the agent is read again, so its Forget comes back once that run
+ *  lets go, with no reload. */
+export const HELD_POLL_MS = 5_000;
 /** "Browserbase", "Browserbase and Kernel", "A, B and C". */
 const names = (list: readonly string[]) => (list.length < 2 ? list.join("") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`);
 
@@ -30,6 +33,17 @@ export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client,
   latest.current = agent;
   // The server always serves the list (GET /v2/agents/{id}); an agent read without one has none saved.
   const list = agent.sign_ins ?? [];
+  // A run holds one: read the agent again every HELD_POLL_MS until none is held, so the key's Forget comes back when the
+  // run ends (a failed read waits for the next). Not while a Forget is under way: its own read of the agent follows it.
+  const held = list.some((s) => s.state === "held");
+  useEffect(() => {
+    if (!held || busy) return;
+    let gone = false;
+    const timer = setInterval(() => {
+      void v2.getAgent(agent.agent_id).then((read) => { if (!gone) onAgent(read.agent); }, () => {});
+    }, HELD_POLL_MS);
+    return () => { gone = true; clearInterval(timer); };
+  }, [held, busy, agent.agent_id, v2, onAgent]);
   const resolved = agent.tools?.find((t) => t.name === "browser")?.resolved;
   // Hidden with none saved and no vendor browser, unless a forget's result is still to be read.
   if (!list.length && resolved !== "browserbase" && resolved !== "kernel" && !said) return null;

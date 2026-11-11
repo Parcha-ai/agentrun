@@ -96,4 +96,36 @@ describe("Mission Control's Failed tile and Needs you's Failed list", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
     expect(state.statsReads - before).toBe(1);
   });
+
+  it("a run that fails right after Run again (before the restarted reads' first one) still reads the total again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const state = { failed: [failedRun("f1", HOUR)] as unknown[], total: 1, statsReads: 0 };
+    serve(state);
+    // Run again's two calls: the failed run's first message (its timeline), then the new start.
+    const served = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/runs/f1/timeline") return json(200, { rows: [{ id: "u1", seq: 1, kind: "user_message", summary: "You: 2+2", text: "2+2", timestamp: ago(HOUR), created_at: ago(HOUR), agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null }], next_cursor: null, drop: [], reset: true, unchanged: false });
+      if (u.pathname === "/v2/agents/calc/runs" && init?.method === "POST") return json(201, { ...failedRun("r2", 0), status: "queued", state: "queued", ended_at: null, error: null });
+      return served(url, init);
+    });
+    location.hash = "#/";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const tile = () => [...host.querySelectorAll("li")].find((li) => /^Failed/.test(li.querySelector("p")?.textContent ?? ""));
+    const tick = async (ms: number, until: () => boolean, what: string) => {
+      for (let t = 0; t < ms && !until(); t += 50) await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+      expect(until(), what).toBe(true);
+    };
+    const again = () => [...host.querySelectorAll('section[aria-label="Needs you"] button')].find((b) => b.textContent === "Run again") as HTMLButtonElement | undefined;
+    await tick(4000, () => !!again() && !!tile()?.textContent?.includes("See all 1"), "Needs you with f1, and the tile's See all 1");
+    const before = state.statsReads;
+    await act(async () => { again()!.click(); });
+    // The new run fails at once, before the strip's reads restart (2.5 s after Run again).
+    state.failed = [failedRun("r2", 100), failedRun("f1", HOUR)];
+    state.total = 2;
+    await tick(5000, () => !!tile()?.textContent?.includes("See all 2"), "the tile's See all, read again for the new failure");
+    expect(state.statsReads - before).toBe(1);
+  });
 });

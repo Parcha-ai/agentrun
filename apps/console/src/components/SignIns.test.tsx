@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
-import { SignIns } from "./SignIns";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HELD_POLL_MS, SignIns } from "./SignIns";
 import type { Agent } from "@/lib/agentForm";
 import type { SignIn, SignInForgotten } from "@/lib/v2";
 import { ClientError } from "@/lib/client";
@@ -87,6 +87,23 @@ describe("the agent page's sign-ins", () => {
     expect(p.forgets()[0].disabled).toBe(true);
     expect(p.rows()[0].textContent).toMatch(/in use by run/i);
     expect(p.rows()[0].querySelector(`a[href="#/runs/${RUN}"]`)).toBeTruthy();
+  });
+
+  it("a held key's Forget comes back once the run lets go, with no reload: the agent is read again while one is held, and no more after", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const p = await show(agentWith([{ ...bb, state: "held", held_by: RUN }]), undefined, agentWith([bb]));
+      expect(p.forgets()[0].disabled).toBe(true);
+      expect(p.calls).toEqual([]);
+      await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
+      expect(p.calls).toEqual(["get shopper"]);
+      expect(p.forgets()[0].disabled).toBe(false);
+      expect(p.rows()[0].textContent).not.toMatch(/in use by run/i);
+      // None held now: no more reads.
+      await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS * 3); });
+      expect(p.calls).toEqual(["get shopper"]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("an unreadable one says runs start signed out until it's forgotten, and can be forgotten", async () => {
